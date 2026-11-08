@@ -204,6 +204,7 @@ pub async fn shutdown_background_workers_for_app_exit(core: &AppCore) {
     // mid-flight on (Processing Job Reclamation) so a normal quit requeues it for the next launch
     // rather than stranding it as an Orphaned Processing Job. We keep the short shutdown timeout
     // and requeue-and-exit rather than block quit on a multi-minute transcription.
+    crate::startup::step(core, "requeue_orphaned_jobs");
     match core.try_state::<AppInfraState>() {
         Some(infra) => match infra.reconcile_orphaned_processing_jobs().await {
             Ok(reclamation) => crate::debug_log::log_info(format!(

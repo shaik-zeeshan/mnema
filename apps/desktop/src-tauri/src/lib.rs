@@ -9,6 +9,7 @@ mod conversation;
 mod debug_health;
 mod debug_pipeline;
 mod debug_status;
+mod deep_links;
 mod general_app_log;
 mod keyboard_bindings;
 mod licensing;
@@ -29,9 +30,8 @@ mod voice_enrollment;
 mod webview_cache;
 mod windows;
 
-use std::{collections::VecDeque, path::Path, sync::Mutex};
 
-use tauri::{Emitter, Manager};
+use tauri::Manager;
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 use app_core::debug_log::{
@@ -41,193 +41,6 @@ use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
 const ALREADY_RUNNING_MESSAGE: &str =
     "Mnema is already running. Close the existing Mnema window before opening it again.";
-const BROKER_OPEN_CAPTURE_RESULT_EVENT: &str = "broker_open_capture_result";
-/// Event the main window listens for to switch the Insights surface to the Chat
-/// tab and select a given conversation. Emitted by `open_conversation_in_chat`
-/// when Quick Recall promotes a thread into the full Chat workspace (issue #111,
-/// ADR 0031). The conversation is already persisted under the same id, so Chat's
-/// `get_conversation` + resurrect-from-transcript path continues it seamlessly.
-const INSIGHTS_OPEN_CONVERSATION_EVENT: &str = "insights_open_conversation";
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct BrokerOpenCaptureResultPayload {
-    opaque_id: String,
-    kind: String,
-    frame_id: Option<i64>,
-    audio_segment_id: Option<i64>,
-    /// Audio Search Result Anchor: the match span start within the segment (ms)
-    /// and the aligned frame id, so an audio handoff lands on the selected
-    /// transcript match instead of the segment start. Absent for the broker-URL
-    /// path, which only resolves a capture reference (kind/frame/segment id).
-    #[serde(default)]
-    span_start_ms: Option<i64>,
-    #[serde(default)]
-    aligned_frame_id: Option<i64>,
-    /// The Quick Recall query that found this hit, so the Timeline can show a
-    /// dismissible `from Recall · "query"` landing chip. Absent for other senders.
-    #[serde(default)]
-    query: Option<String>,
-    /// The Recall hit was meaning-only (`foundByMeaning`), so the Timeline's
-    /// landed-frame match outlines draw dashed.
-    #[serde(default)]
-    by_meaning: bool,
-}
-
-#[derive(Default)]
-struct BrokerOpenCaptureResultState {
-    pending: Mutex<VecDeque<BrokerOpenCaptureResultPayload>>,
-}
-
-#[tauri::command]
-fn drain_pending_broker_open_capture_results(
-    state: tauri::State<'_, BrokerOpenCaptureResultState>,
-) -> Vec<BrokerOpenCaptureResultPayload> {
-    let Ok(mut pending) = state.pending.lock() else {
-        return Vec::new();
-    };
-    pending.drain(..).collect()
-}
-
-#[tauri::command]
-fn open_capture_result_in_main_window(
-    kind: String,
-    frame_id: Option<i64>,
-    audio_segment_id: Option<i64>,
-    span_start_ms: Option<i64>,
-    aligned_frame_id: Option<i64>,
-    query: Option<String>,
-    by_meaning: Option<bool>,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, BrokerOpenCaptureResultState>,
-) {
-    let payload = BrokerOpenCaptureResultPayload {
-        opaque_id: String::from("quick-recall"),
-        kind,
-        frame_id,
-        audio_segment_id,
-        span_start_ms,
-        aligned_frame_id,
-        query,
-        by_meaning: by_meaning.unwrap_or(false),
-    };
-    if let Ok(mut pending) = state.pending.lock() {
-        pending.push_back(payload.clone());
-    }
-    let _ = windows::open_main_window(&app_handle);
-    let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct InsightsOpenConversationPayload {
-    conversation_id: String,
-}
-
-/// Pending Insights→Chat conversation handoff(s) for a cold main window. Mirrors
-/// `BrokerOpenCaptureResultState`: the live event drives a warm window, while a
-/// freshly-opened (cold) main window drains this queue on mount so the handoff
-/// still lands when Insights mounts after the event fired.
-#[derive(Default)]
-struct InsightsOpenConversationState {
-    pending: Mutex<VecDeque<InsightsOpenConversationPayload>>,
-}
-
-#[tauri::command]
-fn drain_pending_insights_open_conversations(
-    state: tauri::State<'_, InsightsOpenConversationState>,
-) -> Vec<InsightsOpenConversationPayload> {
-    let Ok(mut pending) = state.pending.lock() else {
-        return Vec::new();
-    };
-    pending.drain(..).collect()
-}
-
-/// Non-draining peek used by the cold-window route shim: a freshly-opened main
-/// window boots on Timeline (`/`), so the layout asks whether a Quick Recall →
-/// Chat handoff is queued and, if so, routes to `/insights` — where the Insights
-/// surface mounts and drains the queue. Returns `false` if the lock is poisoned.
-#[tauri::command]
-fn has_pending_insights_open_conversations(
-    state: tauri::State<'_, InsightsOpenConversationState>,
-) -> bool {
-    state
-        .pending
-        .lock()
-        .map(|pending| !pending.is_empty())
-        .unwrap_or(false)
-}
-
-/// Show + focus the main window, navigate it to the Insights → Chat tab, and
-/// select `conversation_id`. Mirrors `open_capture_result_in_main_window`: the
-/// payload is emitted as a live event so a warm window reacts immediately, and
-/// is queued for a cold-window drain ONLY when the main window isn't already
-/// open. Queuing on a warm window would leave the entry stranded — the page
-/// doesn't remount, so `drain_pending_insights_open_conversations` never runs,
-/// and the next genuine mount would replay every stale handoff and hijack the
-/// view onto an old thread. Quick Recall calls this for "Open in Chat".
-#[tauri::command]
-fn open_conversation_in_chat(
-    conversation_id: String,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, InsightsOpenConversationState>,
-) {
-    let payload = InsightsOpenConversationPayload { conversation_id };
-    // A cold main window drains the queue on mount; a warm one is served by the
-    // live event alone. Only queue when the window is not yet open so a warm
-    // window never accumulates stale entries.
-    let main_window_open = app_handle.get_webview_window("main").is_some();
-    if !main_window_open {
-        if let Ok(mut pending) = state.pending.lock() {
-            pending.push_back(payload.clone());
-        }
-    }
-    let _ = windows::open_main_window(&app_handle);
-    let _ = app_handle.emit(INSIGHTS_OPEN_CONVERSATION_EVENT, payload);
-}
-
-/// Fired the instant a license deep link is routed — before any activation /
-/// claim / renewal work runs — so the frontend can raise the deep-link receipt
-/// modal in its "working" face right away. Every later transition (activated /
-/// pending / over-cap / renewed) rides the existing `license_status` event.
-const LICENSE_DEEP_LINK_EVENT: &str = "license_deep_link";
-
-/// Hand-mirrored in `$lib/license-deeplink-receipt.ts` (`DeepLinkFlow`).
-#[derive(Debug, Clone, serde::Serialize)]
-struct LicenseDeepLinkPayload {
-    /// "activate" | "claim" | "renewed" — the `mnema://license/*` route.
-    flow: &'static str,
-}
-
-/// Pending license deep-link announcement for a cold main window. Mirrors
-/// `InsightsOpenConversationState`: the live event drives a warm window, while
-/// a freshly-opened (cold) window — the checkout-bounce path launches the app
-/// via the deep link, so the webview isn't listening yet — takes this slot on
-/// mount. One slot, latest wins: only the newest deep link deserves a modal.
-#[derive(Default)]
-struct LicenseDeepLinkState {
-    pending: Mutex<Option<LicenseDeepLinkPayload>>,
-}
-
-#[tauri::command]
-fn take_pending_license_deep_link(
-    state: tauri::State<'_, LicenseDeepLinkState>,
-) -> Option<LicenseDeepLinkPayload> {
-    state.pending.lock().ok().and_then(|mut pending| pending.take())
-}
-
-/// Queue-when-cold + emit, same shape as `open_conversation_in_chat` (queuing
-/// on a warm window would strand a stale entry that replays on the next boot).
-fn announce_license_deep_link(app_handle: &tauri::AppHandle, flow: &'static str) {
-    let payload = LicenseDeepLinkPayload { flow };
-    if app_handle.get_webview_window("main").is_none() {
-        if let Ok(mut pending) = app_handle.state::<LicenseDeepLinkState>().pending.lock() {
-            *pending = Some(payload.clone());
-        }
-    }
-    let _ = app_handle.emit(LICENSE_DEEP_LINK_EVENT, payload);
-}
-
 fn is_app_log_target(target: &str) -> bool {
     APP_LOG_TARGET_PREFIXES.iter().any(|prefix| {
         target == *prefix
@@ -239,177 +52,6 @@ fn is_app_log_target(target: &str) -> bool {
 
 fn should_forward_window_event(event: &tauri::WindowEvent, webview_window_found: bool) -> bool {
     matches!(event, tauri::WindowEvent::Destroyed) || webview_window_found
-}
-
-fn broker_opaque_id_from_url(url: &url::Url) -> Option<String> {
-    if url.scheme() != "mnema" {
-        return None;
-    }
-    let mut segments = url.path_segments()?.collect::<Vec<_>>();
-    if let Some(host) = url.host_str() {
-        segments.insert(0, host);
-    }
-    match segments.as_slice() {
-        ["open", opaque_id] | ["broker", "open", opaque_id] => Some((*opaque_id).to_string()),
-        _ => return None,
-    }
-}
-
-/// Whether `url` is our MCP OAuth deep-link callback (`mnema://oauth/callback` in
-/// prod, `mnema-dev://oauth/callback` in dev). A custom-scheme URL parses its first
-/// path element as the HOST, so the callback lands as host `oauth` + path
-/// `/callback`. Broker deep links use host `open`/`broker`, so the two never
-/// collide — this is the dispatch discriminator in `on_open_url`.
-fn is_oauth_callback_url(url: &url::Url) -> bool {
-    matches!(url.scheme(), "mnema" | "mnema-dev")
-        && url.host_str() == Some("oauth")
-        && url.path() == "/callback"
-}
-
-/// The license-activation deep link (`mnema://license/activate?key=…` in prod,
-/// `mnema-dev://…` in dev). Host `license` + path `/activate` is distinct from the
-/// oauth (`oauth`) and broker (`open`/`broker`) hosts, so the three never collide.
-/// Returns the URL-decoded key (standard base64 `.`-joined, as minted).
-fn license_key_from_url(url: &url::Url) -> Option<String> {
-    if !matches!(url.scheme(), "mnema" | "mnema-dev") {
-        return None;
-    }
-    if url.host_str() != Some("license") || url.path() != "/activate" {
-        return None;
-    }
-    url.query_pairs()
-        .find(|(k, _)| k == "key")
-        .map(|(_, v)| v.into_owned())
-        .filter(|k| !k.is_empty())
-}
-
-/// The purchase-claim deep link (`mnema://license/claim?checkout_id=…` in prod,
-/// `mnema-dev://…` in dev) — Polar's success redirect. Host `license` + path
-/// `/claim` sits beside the activate route and apart from the oauth/broker hosts.
-fn claim_checkout_id_from_url(url: &url::Url) -> Option<String> {
-    if !matches!(url.scheme(), "mnema" | "mnema-dev") {
-        return None;
-    }
-    if url.host_str() != Some("license") || url.path() != "/claim" {
-        return None;
-    }
-    url.query_pairs()
-        .find(|(k, _)| k == "checkout_id")
-        .map(|(_, v)| v.into_owned())
-        .filter(|id| !id.is_empty())
-}
-
-/// The renewal-return deep link (`mnema://license/renewed` in prod,
-/// `mnema-dev://…` in dev) — the Polar RENEWAL product's success redirect. No
-/// payload: the machine already holds the key (a renewal extends the existing
-/// license, ADR 0055), so the hit only cues a short Receipt Refresh poll.
-/// Ops note: the Polar renewal product's success URL must point at
-/// `https://mnema.day/license/open?flow=renewal&checkout_id={CHECKOUT_ID}` — the
-/// bounce page that fires this deep link (providers can't emit custom schemes).
-fn is_license_renewed_url(url: &url::Url) -> bool {
-    matches!(url.scheme(), "mnema" | "mnema-dev")
-        && url.host_str() == Some("license")
-        && url.path() == "/renewed"
-}
-
-/// Route one deep-link URL to its handler. The `mnema`/`mnema-dev` scheme carries
-/// five unrelated payloads (license activation, purchase claim, renewal return,
-/// MCP OAuth callback, capture-broker handoff), discriminated by host+path so
-/// none swallows another.
-fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
-    if let Some(key) = license_key_from_url(url) {
-        announce_license_deep_link(app_handle, "activate");
-        let app_handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            app_core::licensing::activate_from_deep_link(
-                app_handle.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
-                key,
-            )
-            .await;
-            let _ = windows::open_main_window(&app_handle);
-        });
-    } else if let Some(checkout_id) = claim_checkout_id_from_url(url) {
-        announce_license_deep_link(app_handle, "claim");
-        let app_handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            // Surface the app before polling — the buyer was just bounced back
-            // from the browser and the claim poll can take ~30s.
-            let _ = windows::open_main_window(&app_handle);
-            app_core::licensing::claim_from_deep_link(
-                app_handle.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
-                checkout_id,
-            )
-            .await;
-        });
-    } else if is_license_renewed_url(url) {
-        announce_license_deep_link(app_handle, "renewed");
-        let app_handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            // Surface the app before polling — the buyer was just bounced back
-            // from the browser and the refresh poll can take up to ~60s.
-            let _ = windows::open_main_window(&app_handle);
-            app_core::licensing::renewed_from_deep_link(
-                app_handle.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
-            )
-            .await;
-        });
-    } else if is_oauth_callback_url(url) {
-        let core = app_handle.state::<std::sync::Arc<app_core::AppCore>>();
-        core.state::<app_core::ask_ai::mcp::McpManager>()
-            .complete_oauth_callback(&core, url);
-    } else {
-        enqueue_broker_open_result(app_handle, url);
-    }
-}
-
-async fn broker_payload_from_url(
-    config_dir: &Path,
-    url: &url::Url,
-) -> Option<BrokerOpenCaptureResultPayload> {
-    let opaque_id = broker_opaque_id_from_url(url)?;
-    let capture_ref = ::app_infra::brokered_access::authorize_active_opaque_capture_reference(
-        config_dir, &opaque_id,
-    )
-    .await
-    .ok()
-    .flatten()?;
-    Some(BrokerOpenCaptureResultPayload {
-        opaque_id: capture_ref.opaque_id,
-        frame_id: capture_ref.frame_id,
-        audio_segment_id: capture_ref.audio_segment_id,
-        kind: capture_ref.kind,
-        // The broker-URL handoff resolves only a capture reference, so it carries
-        // no search-result anchor; the audio receiver falls back to the segment start.
-        span_start_ms: None,
-        aligned_frame_id: None,
-        query: None,
-        by_meaning: false,
-    })
-}
-
-fn enqueue_broker_open_result(app_handle: &tauri::AppHandle, url: &url::Url) {
-    let Ok(config_dir) = app_handle.path().app_config_dir() else {
-        return;
-    };
-    if broker_opaque_id_from_url(url).is_none() {
-        return;
-    }
-    let url = url.clone();
-    let app_handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        let Some(payload) = broker_payload_from_url(&config_dir, &url).await else {
-            return;
-        };
-        if let Ok(mut pending) = app_handle
-            .state::<BrokerOpenCaptureResultState>()
-            .pending
-            .lock()
-        {
-            pending.push_back(payload.clone());
-        }
-        let _ = windows::open_main_window(&app_handle);
-        let _ = app_handle.emit(BROKER_OPEN_CAPTURE_RESULT_EVENT, payload);
-    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -443,135 +85,23 @@ fn exit_request_action_for_exit_request(
     ExitRequestAction::AllowExit
 }
 
-/// Startup work that runs after the main window is shown, off the window-open
-/// critical path: app-infra maintenance + background workers (see
-/// [`app_core::app_infra::startup::run_deferred_startup_blocking`]) and, once onboarding is
-/// complete, capture auto-start and the update-check timer. Auto-start runs
-/// only after the maintenance/repair passes complete so it preserves the
-/// ordering the previous synchronous startup path guaranteed.
-fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool) {
-    app_core::app_infra::startup::run_deferred_startup_blocking(
-        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-    );
-    reap_stale_system_audio_aggregate_devices();
-    hydrate_system_audio_permission_evidence(app_handle);
-    // If the user quit while the (now background) startup work was running,
-    // graceful exit may have already stopped capture and be heading for a hard
-    // process exit. Do not auto-start a NEW capture session or kick off the
-    // update check on top of that teardown — that would record a segment
-    // `complete_graceful_exit` then kills mid-write. The deferred maintenance
-    // above already bails on this condition too (defense in depth).
-    if app_core::exit::is_graceful_exit_in_progress(
-        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-    ) {
-        app_core::debug_log::log_info(
-            "graceful exit in progress; skipping capture auto-start and the update-check timer",
-        );
-        return;
-    }
-    // CRL refresh is anonymous and harmless without onboarding — kick off an
-    // initial fetch plus the daily timer regardless of onboarding state.
-    let core = app_handle.state::<std::sync::Arc<app_core::AppCore>>();
-    app_core::crl_refresh::spawn_crl_refresh(core.inner().clone());
-    app_core::crl_refresh::start_daily_crl_timer(core.inner().clone());
-    app_core::licensing::receipt_refresh::start_receipt_refresh_timer(core.inner().clone());
-    // Checks onboarding itself each tick, so it also covers a same-session finish.
-    app_core::native_capture::not_recording_reminder::spawn_not_recording_reminder(
-        core.inner().clone(),
-    );
-    if onboarding_complete {
-        app_core::native_capture::control::maybe_auto_start_native_capture(&core);
-        app_updates::start_update_check_timer(app_handle);
-    }
-}
-
-/// Destroys aggregate devices a crashed Mnema left behind: their UIDs collide
-/// with the ones the system-audio tap mints, and the collision fails the tap's
-/// start outright (ADR 0052). Runs off the first-paint path — an aggregate from a
-/// previous process can only matter once a recording starts.
-#[cfg(target_os = "macos")]
-fn reap_stale_system_audio_aggregate_devices() {
-    let destroyed = capture_system_audio::cleanup_stale_aggregate_devices();
-    if destroyed > 0 {
-        app_core::debug_log::log_info(format!(
-            "{} destroyed {destroyed} stale aggregate device(s) from a previous process",
-            capture_system_audio::LOG_PREFIX
-        ));
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn reap_stale_system_audio_aggregate_devices() {}
-
-/// Loads the persisted system-audio denial evidence into the cache the
-/// permission surfaces read (ADR 0052). Off the first-paint path with the reap
-/// above: until it lands the permission reads as "not yet requested", and the
-/// frontend re-polls on focus.
-#[cfg(target_os = "macos")]
-fn hydrate_system_audio_permission_evidence(app_handle: &tauri::AppHandle) {
-    use tauri::Manager;
-
-    let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() else {
-        return;
-    };
-    let infra = infra.inner().clone();
-    tauri::async_runtime::block_on(
-        app_core::native_capture::permissions::hydrate_system_audio_permission_evidence(&infra),
-    );
-}
-
-#[cfg(not(target_os = "macos"))]
-fn hydrate_system_audio_permission_evidence(_app_handle: &tauri::AppHandle) {}
-
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let context = tauri::generate_context!();
     let (host, core) = tauri_host::start_core(&context.config().identifier);
-    core.manage(app_core::one_time_prompts::OneTimePromptStateStore::default());
-    core.manage(app_core::licensing::LicenseGate(Mutex::new(None)));
-    core.manage(app_core::licensing::ActivationHint(Mutex::new(None)));
-    core.manage(
-        app_core::audio_transcription_models::AudioTranscriptionModelDownloadState::default(),
-    );
-    core.manage(
-        app_core::speaker_analysis_models::SpeakerAnalysisModelDownloadState::default(),
-    );
-    core.manage(app_core::ocr_models::OcrModelDownloadState::default());
-    core.manage(app_core::updates::AppUpdateSettingsState::default());
-    core.manage(app_core::semantic_search_models::SemanticSearchModelDownloadState::default());
-    // One settings state, shared by the Tauri builder and app-core.
-    let recording_settings = app_core::recording_settings::RecordingSettingsState::default();
-    core.manage(recording_settings.clone());
-    core.manage(app_core::onboarding_state::OnboardingStateStore::default());
-    core.manage(app_core::exit::AppExitCoordinatorState::default());
-    core.manage(app_core::native_capture::metadata::CaptureMetadataState::default());
-    core.manage(app_core::native_capture::privacy::PrivacyFilterRefreshState::default());
-    core.manage(app_core::broker_authorization_channel::BrokerAuthorizationChannelState::default());
-    // The Semantic Index Backfill worker's health, published each sweep pass and
-    // read by the debug surface's `get_semantic_index_status`. Registered here
-    // (not in the worker) so the state exists before deferred startup spawns it;
-    // one `Arc`, shared by the worker (app-core) and the Tauri command.
-    let semantic_worker_health = app_core::debug_status::SemanticWorkerHealthState::default();
-    core.manage(semantic_worker_health.clone());
-    // The capture lock, the bell list and the microphone preference: one `Arc`
-    // each, shared by the Tauri builder (its commands) and app-core (capture).
-    let native_capture_state = app_core::native_capture::lifecycle::NativeCaptureState::default();
-    core.manage(native_capture_state.clone());
+    app_core::startup::manage_default_states(&core);
+    // The states the Tauri commands also take as `State`: the same `Arc`s.
+    fn shared<T: Clone + Send + Sync + 'static>(core: &app_core::AppCore) -> T {
+        (*core.state::<T>()).clone()
+    }
+    let native_capture_state =
+        shared::<app_core::native_capture::lifecycle::NativeCaptureState>(&core);
     let app_notifications =
-        app_core::native_capture::app_notifications::AppNotificationsState::default();
-    core.manage(app_notifications.clone());
+        shared::<app_core::native_capture::app_notifications::AppNotificationsState>(&core);
     let microphone_preferences =
-        app_core::native_capture::microphone::MicrophoneControllerPreferencesState::default();
-    core.manage(microphone_preferences.clone());
-    core.manage(app_core::native_capture::microphone::MicrophoneDeviceChangeNotifierState::default());
-    core.manage(app_core::native_capture::system_wake::SystemWakeNotifierState::default());
-    core.manage(
-        app_core::native_capture::system_wake::DisplayReconfigurationNotifierState::default(),
-    );
-    core.manage(app_core::native_capture::metadata::MetadataNotifierState::default());
-    // MCP tool connectors (Workstream C, ADR 0048): persistent connection
-    // manager. Lazy — nothing connects here at launch; it dials on first use.
-    core.manage(app_core::ask_ai::mcp::McpManager::default());
+        shared::<app_core::native_capture::microphone::MicrophoneControllerPreferencesState>(&core);
+    let recording_settings = shared::<app_core::recording_settings::RecordingSettingsState>(&core);
+    let semantic_worker_health = shared::<app_core::debug_status::SemanticWorkerHealthState>(&core);
     tauri::Builder::default()
         .manage(core)
         .manage(native_capture_state)
@@ -582,9 +112,9 @@ pub fn run() {
         .manage(app_notifications)
         .manage(app_updates::AppUpdateRuntimeState::default())
         .manage(windows::PendingOpenSettingsState::default())
-        .manage(BrokerOpenCaptureResultState::default())
-        .manage(InsightsOpenConversationState::default())
-        .manage(LicenseDeepLinkState::default())
+        .manage(deep_links::BrokerOpenCaptureResultState::default())
+        .manage(deep_links::InsightsOpenConversationState::default())
+        .manage(deep_links::LicenseDeepLinkState::default())
         .manage(app_core::semantic_search_query::SemanticQueryEmbedderState::new())
         .manage(semantic_worker_health)
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -898,112 +428,62 @@ pub fn run() {
             managed_storage_layout::get_storage_usage,
             keyboard_bindings::get_keyboard_bindings_settings,
             keyboard_bindings::update_keyboard_bindings_settings,
-            drain_pending_broker_open_capture_results,
-            open_capture_result_in_main_window,
-            drain_pending_insights_open_conversations,
-            take_pending_license_deep_link,
-            has_pending_insights_open_conversations,
-            open_conversation_in_chat,
+            deep_links::drain_pending_broker_open_capture_results,
+            deep_links::open_capture_result_in_main_window,
+            deep_links::drain_pending_insights_open_conversations,
+            deep_links::take_pending_license_deep_link,
+            deep_links::has_pending_insights_open_conversations,
+            deep_links::open_conversation_in_chat,
         ])
         .setup(move |app| {
             host.attach(app.handle().clone());
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
-                    dispatch_deep_link(&app_handle, &url);
+                    deep_links::dispatch_deep_link(&app_handle, &url);
                 }
             });
             if let Ok(Some(urls)) = app.deep_link().get_current() {
                 for url in urls {
-                    dispatch_deep_link(app.handle(), &url);
+                    deep_links::dispatch_deep_link(app.handle(), &url);
                 }
             }
             let _ = app.deep_link().register_all();
             windows::install_macos_terminate_handler(app.handle());
-            app_core::native_capture::control::initialize_recording_settings_from_disk(
-                &app.state::<std::sync::Arc<app_core::AppCore>>(),
-            );
-            app_updates::initialize(app.handle());
-            app_core::one_time_prompts::initialize(
-                &app.state::<std::sync::Arc<app_core::AppCore>>(),
-            );
-            status_bar::initialize(app.handle())?;
-            keyboard_bindings::initialize(app.handle());
-            app_core::debug_log::install_panic_hook();
-            if let Err(error) = app_infra::initialize(app) {
-                match error {
-                    app_core::app_infra::AppInfraInitializeError::AlreadyRunning => {
-                        app.dialog()
-                            .message(ALREADY_RUNNING_MESSAGE)
-                            .kind(MessageDialogKind::Warning)
-                            .title("Mnema is already running")
-                            .blocking_show();
-                        app.handle().exit(0);
-                        return Ok(());
-                    }
-                    app_core::app_infra::AppInfraInitializeError::Other(message) => {
-                        return Err(std::io::Error::other(message).into());
-                    }
-                }
-            }
-            app_core::broker_authorization_channel::start(
-                &app.state::<std::sync::Arc<app_core::AppCore>>(),
-            )
-            .map_err(std::io::Error::other)?;
-            {
-                use app_core::native_capture::model_warnings as warnings;
-                let core = app.state::<std::sync::Arc<app_core::AppCore>>();
-                warnings::maybe_push_audio_transcription_unavailable_startup_warning(&core);
-                warnings::maybe_push_ocr_unavailable_startup_warning(&core);
-            }
-            app_core::native_capture::microphone::controller::start_microphone_device_change_notifier(
-                app.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
-            );
-            native_capture::start_system_wake_notifier(app.handle().clone());
-            native_capture::start_display_reconfiguration_notifier(app.handle().clone());
-            native_capture::start_metadata_notifier(app.handle().clone());
-            let onboarding_complete = windows::is_onboarding_complete(app.handle());
-            let onboarding_state = app
+            let core = app
                 .state::<std::sync::Arc<app_core::AppCore>>()
-                .state::<app_core::onboarding_state::OnboardingStateStore>();
+                .inner()
+                .clone();
+            let started = core.start(
+                |_| {
+                    status_bar::initialize(app.handle())?;
+                    keyboard_bindings::initialize(app.handle());
+                    Ok(())
+                },
+                |_| {
+                    native_capture::start_system_wake_notifier(app.handle().clone());
+                    native_capture::start_display_reconfiguration_notifier(app.handle().clone());
+                    native_capture::start_metadata_notifier(app.handle().clone());
+                },
+            );
+            let report = match started {
+                Ok(report) => report,
+                Err(app_core::StartError::AlreadyRunning) => {
+                    app.dialog()
+                        .message(ALREADY_RUNNING_MESSAGE)
+                        .kind(MessageDialogKind::Warning)
+                        .title("Mnema is already running")
+                        .blocking_show();
+                    app.handle().exit(0);
+                    return Ok(());
+                }
+                Err(app_core::StartError::Failed(error)) => return Err(error),
+            };
+            app_infra::manage_shared_states(app).map_err(std::io::Error::other)?;
+            let onboarding_state = core.state::<app_core::onboarding_state::OnboardingStateStore>();
             windows::open_startup_window(app.handle(), &onboarding_state)
                 .map_err(std::io::Error::other)?;
-            // The window is open and the database is ready; run the remaining
-            // startup work (index maintenance, filesystem repair, background
-            // workers) off the window-open critical path so it no longer delays
-            // the first paint. Capture auto-start and the update check run only
-            // after that maintenance completes, preserving the ordering the old
-            // synchronous path guaranteed (notably: hidden-segment workspace
-            // repair respects the live active-capture workspace set so it never
-            // deletes a workspace a manually-started recording is already using).
-            //
-            // This thread is detached and never joined. That is safe: it is
-            // best-effort and bails early once a graceful exit is requested (both
-            // at its start and after maintenance), so it does not start NEW
-            // capture or workers while the app is tearing down. Any maintenance
-            // step it does not finish is re-run on the next launch — every step
-            // commits through SQLite WAL, so a hard process exit mid-step is
-            // crash-safe and idempotent to re-run. We therefore do not build a
-            // join-with-timeout against the hard `complete_graceful_exit` path.
-            let deferred_app_handle = app.handle().clone();
-            if let Err(error) = std::thread::Builder::new()
-                .name("mnema-deferred-startup".to_string())
-                .spawn(move || {
-                    run_deferred_startup(&deferred_app_handle, onboarding_complete)
-                })
-            {
-                // Spawning a thread effectively never fails; if it does, run the
-                // deferred startup inline as a last resort rather than leaving the
-                // app without background workers or capture. This re-blocks first
-                // paint with the full maintenance workload, which is why it is the
-                // fallback and not the normal path. Logged through the app log sink
-                // so a "no background workers" incident is captured in the packaged
-                // app log rather than only on stderr.
-                app_core::debug_log::log_warn(format!(
-                    "failed to spawn deferred startup thread; running inline (re-blocks first paint): {error}"
-                ));
-                run_deferred_startup(app.handle(), onboarding_complete);
-            }
+            core.spawn_deferred_startup(&report);
             status_bar::refresh(app.handle());
             Ok(())
         })
@@ -1020,7 +500,9 @@ pub fn run() {
                 ) {
                     ExitRequestAction::StartGracefulExit => {
                         api.prevent_exit();
-                        windows::request_graceful_exit(app_handle);
+                        app_handle
+                            .state::<std::sync::Arc<app_core::AppCore>>()
+                            .shutdown(app_core::ExitKind::Quit);
                     }
                     ExitRequestAction::PreventExit => {
                         api.prevent_exit();
@@ -1052,137 +534,9 @@ fn system_uses_24_hour_time() -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::{
-        broker_opaque_id_from_url, broker_payload_from_url, claim_checkout_id_from_url,
-        exit_request_action_for_exit_request, is_app_log_target, is_license_renewed_url,
-        is_oauth_callback_url, license_key_from_url, should_forward_window_event,
+        exit_request_action_for_exit_request, is_app_log_target, should_forward_window_event,
         ExitRequestAction,
     };
-
-    /// The deep-link dispatch discriminator: an OAuth callback and a capture-broker
-    /// handoff share the `mnema`/`mnema-dev` scheme, so they must NOT swallow each
-    /// other. `is_oauth_callback_url` claims only the `oauth/callback` host+path,
-    /// and `broker_opaque_id_from_url` claims only the broker hosts — in BOTH
-    /// directions.
-    #[test]
-    fn oauth_callback_and_broker_urls_dispatch_apart() {
-        let prod = url::Url::parse("mnema://oauth/callback?code=abc&state=xyz").expect("url");
-        let dev = url::Url::parse("mnema-dev://oauth/callback?code=abc&state=xyz").expect("url");
-        assert!(is_oauth_callback_url(&prod));
-        assert!(is_oauth_callback_url(&dev));
-
-        let broker_open = url::Url::parse("mnema://open/f1").expect("url");
-        let broker_nested = url::Url::parse("mnema://broker/open/f1").expect("url");
-        // A broker URL is never read as an oauth callback…
-        assert!(!is_oauth_callback_url(&broker_open));
-        assert!(!is_oauth_callback_url(&broker_nested));
-        // …and an oauth callback is never read as a broker URL (no cross-swallow).
-        assert!(broker_opaque_id_from_url(&prod).is_none());
-        assert_eq!(broker_opaque_id_from_url(&broker_open).as_deref(), Some("f1"));
-        assert_eq!(broker_opaque_id_from_url(&broker_nested).as_deref(), Some("f1"));
-    }
-
-    #[test]
-    fn license_deep_link_extracts_url_decoded_key_and_stays_apart() {
-        // Standard base64 (`+ / =`) joined by `.`, percent-encoded in the URL.
-        let key = "eyJlbWFpbCI6ImFAYi5jbyJ9.sig+with/slash=";
-        let url = url::Url::parse(&format!(
-            "mnema://license/activate?key={}",
-            "eyJlbWFpbCI6ImFAYi5jbyJ9.sig%2Bwith%2Fslash%3D"
-        ))
-        .expect("url");
-        assert_eq!(license_key_from_url(&url).as_deref(), Some(key));
-
-        // Never confused for oauth or broker; never claims their URLs.
-        assert!(!is_oauth_callback_url(&url));
-        assert!(broker_opaque_id_from_url(&url).is_none());
-        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
-        let broker = url::Url::parse("mnema://open/f1").expect("url");
-        assert!(license_key_from_url(&oauth).is_none());
-        assert!(license_key_from_url(&broker).is_none());
-        // Missing/empty key -> not an activation link.
-        assert!(license_key_from_url(
-            &url::Url::parse("mnema://license/activate").expect("url")
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn claim_deep_link_extracts_checkout_id_and_stays_apart() {
-        let prod =
-            url::Url::parse("mnema://license/claim?checkout_id=co_abc123").expect("url");
-        let dev =
-            url::Url::parse("mnema-dev://license/claim?checkout_id=co_abc123").expect("url");
-        assert_eq!(claim_checkout_id_from_url(&prod).as_deref(), Some("co_abc123"));
-        assert_eq!(claim_checkout_id_from_url(&dev).as_deref(), Some("co_abc123"));
-
-        // Never claims the activate/oauth/broker payloads…
-        let activate = url::Url::parse("mnema://license/activate?key=abc.def").expect("url");
-        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
-        let broker = url::Url::parse("mnema://open/f1").expect("url");
-        assert!(claim_checkout_id_from_url(&activate).is_none());
-        assert!(claim_checkout_id_from_url(&oauth).is_none());
-        assert!(claim_checkout_id_from_url(&broker).is_none());
-        // …and none of them claims a claim URL (no cross-swallow).
-        assert!(license_key_from_url(&prod).is_none());
-        assert!(!is_oauth_callback_url(&prod));
-        assert!(broker_opaque_id_from_url(&prod).is_none());
-
-        // Missing/empty checkout_id -> not a claim link. Wrong scheme neither.
-        assert!(claim_checkout_id_from_url(
-            &url::Url::parse("mnema://license/claim").expect("url")
-        )
-        .is_none());
-        assert!(claim_checkout_id_from_url(
-            &url::Url::parse("mnema://license/claim?checkout_id=").expect("url")
-        )
-        .is_none());
-        assert!(claim_checkout_id_from_url(
-            &url::Url::parse("https://license/claim?checkout_id=co_abc123").expect("url")
-        )
-        .is_none());
-    }
-
-    #[test]
-    fn renewed_deep_link_matches_both_schemes_and_stays_apart() {
-        let prod = url::Url::parse("mnema://license/renewed").expect("url");
-        let dev = url::Url::parse("mnema-dev://license/renewed").expect("url");
-        assert!(is_license_renewed_url(&prod));
-        assert!(is_license_renewed_url(&dev));
-        // A stray query string (checkout providers append them) still matches.
-        assert!(is_license_renewed_url(
-            &url::Url::parse("mnema://license/renewed?checkout_id=co_x").expect("url")
-        ));
-
-        // Never claims the activate/claim/oauth/broker payloads…
-        let activate = url::Url::parse("mnema://license/activate?key=abc.def").expect("url");
-        let claim = url::Url::parse("mnema://license/claim?checkout_id=co_x").expect("url");
-        let oauth = url::Url::parse("mnema://oauth/callback?code=x").expect("url");
-        let broker = url::Url::parse("mnema://open/f1").expect("url");
-        assert!(!is_license_renewed_url(&activate));
-        assert!(!is_license_renewed_url(&claim));
-        assert!(!is_license_renewed_url(&oauth));
-        assert!(!is_license_renewed_url(&broker));
-        // …and none of them claims a renewed URL (no cross-swallow).
-        assert!(license_key_from_url(&prod).is_none());
-        assert!(claim_checkout_id_from_url(&prod).is_none());
-        assert!(!is_oauth_callback_url(&prod));
-        assert!(broker_opaque_id_from_url(&prod).is_none());
-
-        // Wrong scheme -> not a renewed link.
-        assert!(!is_license_renewed_url(
-            &url::Url::parse("https://license/renewed").expect("url")
-        ));
-    }
-
-    #[test]
-    fn broker_deep_link_rejects_unsigned_opaque_id() {
-        let dir = tempfile::tempdir().expect("config dir should be created");
-        let url = url::Url::parse("mnema://open/f1").expect("url should parse");
-
-        let payload = tauri::async_runtime::block_on(broker_payload_from_url(dir.path(), &url));
-
-        assert!(payload.is_none());
-    }
 
     #[test]
     fn app_log_filter_keeps_only_our_targets() {

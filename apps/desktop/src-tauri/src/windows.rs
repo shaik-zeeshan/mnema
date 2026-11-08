@@ -3,7 +3,7 @@ use app_core::onboarding_state::{
     current_onboarding_state, persist_onboarding_state, OnboardingState, OnboardingStateStore,
     OnboardingStateView,
 };
-use app_core::AppCore;
+use app_core::{AppCore, ExitKind};
 use serde::Serialize;
 use std::{
     collections::VecDeque,
@@ -903,7 +903,7 @@ pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
                 macos_immediate_process_exit(0);
             }
 
-            request_graceful_exit(app);
+            app.state::<Arc<AppCore>>().shutdown(ExitKind::Quit);
         } else {
             macos_immediate_process_exit(0);
         }
@@ -931,14 +931,6 @@ pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn install_macos_terminate_handler(_app: &tauri::AppHandle) {}
 
-pub(crate) fn request_graceful_exit(app: &tauri::AppHandle) {
-    request_graceful_exit_with_completion(app, false);
-}
-
-pub(crate) fn request_graceful_restart_after_update(app: &tauri::AppHandle) {
-    request_graceful_exit_with_completion(app, true);
-}
-
 /// General-purpose **relaunch** for a settings change that only takes effect
 /// after a restart (e.g. a new capture save directory). UNGUARDED by design:
 /// unlike the update restart (`restart_after_app_update`), which REFUSES while a
@@ -948,99 +940,11 @@ pub(crate) fn request_graceful_restart_after_update(app: &tauri::AppHandle) {
 /// update guard.
 #[tauri::command]
 pub fn request_app_relaunch(app_handle: tauri::AppHandle) {
-    request_graceful_exit_with_completion(&app_handle, true);
-}
-
-fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_exit: bool) {
-    let exit_state = app.state::<Arc<AppCore>>().state::<AppExitCoordinatorState>();
-    if !exit_state.begin_exit(restart_after_exit) {
-        return;
-    }
-
-    let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        app_core::debug_log::log_info(if restart_after_exit {
-            "starting graceful app relaunch; stopping capture and background workers before unloading cached Local Whisper contexts"
-        } else {
-            "starting graceful app exit; stopping capture and background workers before unloading cached Local Whisper contexts"
-        });
-
-        let stop_app_handle = app_handle.clone();
-        match tauri::async_runtime::spawn_blocking(move || {
-            if app_core::native_capture::control::current_native_capture_session(&stop_app_handle.state::<std::sync::Arc<app_core::AppCore>>()).is_running {
-                Some(app_core::native_capture::control::stop_native_capture_from_core(&stop_app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-                ))
-            } else {
-                None
-            }
-        })
-        .await
-        {
-            Ok(Some(Ok(_))) => app_core::debug_log::log_info(
-                "stopped active native capture during graceful app exit",
-            ),
-            Ok(Some(Err(error))) => app_core::debug_log::log_error(format!(
-                "failed to stop active native capture during graceful app exit: [{}] {}",
-                error.code, error.message
-            )),
-            Ok(None) => {}
-            Err(error) => {
-                app_core::debug_log::log_error(format!(
-                    "failed to join native capture stop during graceful app exit: {error}"
-                ));
-            }
-        }
-        app_core::debug_log::log_info(
-            "stopping background workers before terminating",
-        );
-        app_core::app_infra::shutdown_background_workers_for_app_exit(
-            &app_handle.state::<Arc<AppCore>>(),
-        )
-        .await;
-
-        match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
-            Ok(unloaded) => {
-                app_core::debug_log::log(format!(
-                    "unloaded {unloaded} cached Local Whisper context(s) after background worker shutdown"
-                ));
-            }
-            Err(error) => {
-                app_core::debug_log::log_warn(format!(
-                    "failed to unload cached Local Whisper contexts after background worker shutdown: {error}"
-                ));
-            }
-        }
-
-        complete_graceful_exit(&app_handle);
-    });
-}
-
-fn complete_graceful_exit(app: &tauri::AppHandle) {
-    let exit_state = app.state::<Arc<AppCore>>().state::<AppExitCoordinatorState>();
-    let restart_requested = exit_state.should_restart_after_graceful_exit();
-    exit_state.mark_final_graceful_exit_ready();
-
-    if restart_requested {
-        app_core::debug_log::log_info("completed graceful app exit; relaunching");
-        app.restart();
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        app_core::debug_log::log_info(
-            "completed graceful app exit; exiting without running process static destructors",
-        );
-        macos_immediate_process_exit(0);
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        app.exit(0);
-    }
+    app_handle.state::<Arc<AppCore>>().shutdown(ExitKind::Restart);
 }
 
 #[cfg(target_os = "macos")]
-fn macos_immediate_process_exit(code: i32) -> ! {
+pub(crate) fn macos_immediate_process_exit(code: i32) -> ! {
     unsafe extern "C" {
         fn _exit(status: std::os::raw::c_int) -> !;
     }
@@ -1156,7 +1060,7 @@ pub fn handle_window_event(
 
     match action {
         DestroyedWindowAction::FocusMainWindow => focus_main_window_if_visible(app),
-        DestroyedWindowAction::ExitApp => request_graceful_exit(app),
+        DestroyedWindowAction::ExitApp => app.state::<Arc<AppCore>>().shutdown(ExitKind::Quit),
         DestroyedWindowAction::None => {}
     }
     refresh_macos_dock_icon_visibility(app);

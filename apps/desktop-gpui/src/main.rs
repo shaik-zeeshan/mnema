@@ -49,8 +49,10 @@ fn main() {
         };
         mnema_gpui::bridge::tokio::init_from_handle(cx, core.runtime_handle());
         cx.set_global(Core(core));
-        // shortcut: real startup (app_infra::initialize, maintenance, workers,
-        // `spawn_deferred_startup`) is S4; until then nothing opens the DB.
+        // shortcut: nothing opens the DB yet. Wiring `startup::manage_default_states`,
+        // `AppCore::start` / `spawn_deferred_startup` and Quit → `AppCore::shutdown`
+        // waits for the already-running dialog, the OS notifiers and the
+        // `terminate:` swizzle (S7).
 
         keymap::bind(&keymap::Bindings::default(), cx);
         cx.on_action(|_: &Quit, cx| cx.quit());

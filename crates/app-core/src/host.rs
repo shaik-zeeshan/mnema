@@ -22,6 +22,8 @@ pub trait Host: Send + Sync + 'static {
     /// could not be shown, so a caller waiting on it can give up instead of hanging.
     fn open_window(&self, req: WindowRequest) -> Result<(), String>;
     fn window_signal(&self, signal: WindowSignal);
+    /// The graceful exit ([`AppCore::shutdown`](crate::AppCore::shutdown)) is
+    /// done: end the process, or relaunch it for `ExitKind::Restart`.
     fn exit(&self, kind: ExitKind);
 }
 
@@ -90,6 +92,9 @@ pub enum WindowSignal {
     /// banner. The in-app row is app-core's; a host without native
     /// notifications ignores this.
     NotRecordingReminder { post: bool },
+    /// Deferred startup reached the update check (onboarding is complete): start
+    /// the host's periodic update check. A host without an updater ignores it.
+    StartUpdateCheckTimer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

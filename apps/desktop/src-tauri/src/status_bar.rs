@@ -744,7 +744,9 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
         OPEN_SETTINGS_ID => {
             let _ = crate::windows::focus_main_and_open_settings(app.clone(), None, None);
         }
-        QUIT_ID => crate::windows::request_graceful_exit(app),
+        QUIT_ID => app
+            .state::<std::sync::Arc<app_core::AppCore>>()
+            .shutdown(app_core::ExitKind::Quit),
         _ => {}
     }
 }

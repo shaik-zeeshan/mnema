@@ -1,6 +1,6 @@
-//! The Tauri side of `app_core::app_infra`: `initialize` (which also hands the
-//! shared states to Tauri's state, for the commands that take them as `State`)
-//! and the command wrappers.
+//! The Tauri side of `app_core::app_infra`: `manage_shared_states` (hands the
+//! states `AppCore::start` opened to Tauri's state, for the commands that take
+//! them as `State`) and the command wrappers.
 
 use std::sync::Arc;
 
@@ -11,28 +11,23 @@ use tauri::{Manager, State};
 pub mod quick_recall;
 pub mod retention;
 
-/// Opens app-infra on the core, then registers the same states with Tauri for
-/// the commands that take them as `State`.
-pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
+/// Registers the states `AppCore::start` opened with Tauri, for the commands
+/// that take them as `State`.
+pub fn manage_shared_states(app: &mut tauri::App) -> Result<(), String> {
     let core = app.state::<Arc<AppCore>>().inner().clone();
-    core_infra::initialize(&core)?;
 
     if !app.manage(core.state::<AppInfraState>().as_ref().clone()) {
         app_core::debug_log::log_error(
             "app infrastructure state was already initialized; refusing duplicate setup",
         );
-        return Err(AppInfraInitializeError::Other(
-            "app infrastructure state was already initialized".to_string(),
-        ));
+        return Err("app infrastructure state was already initialized".to_string());
     }
 
     if !app.manage(core.state::<BackgroundWorkersState>().as_ref().clone()) {
         app_core::debug_log::log_error(
             "background workers state was already initialized; refusing duplicate setup",
         );
-        return Err(AppInfraInitializeError::Other(
-            "background workers state was already initialized".to_string(),
-        ));
+        return Err("background workers state was already initialized".to_string());
     }
 
     let deepgram = core.state::<app_core::transcription_deepgram::DeepgramAuthStatusState>();
@@ -42,9 +37,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         app_core::debug_log::log_error(
             "deepgram auth status state was already initialized; refusing duplicate setup",
         );
-        return Err(AppInfraInitializeError::Other(
-            "deepgram auth status state was already initialized".to_string(),
-        ));
+        return Err("deepgram auth status state was already initialized".to_string());
     }
     Ok(())
 }

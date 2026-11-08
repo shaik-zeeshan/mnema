@@ -89,6 +89,16 @@ pub fn current_settings(core: &AppCore) -> AppUpdateSettings {
     settings
 }
 
+/// Logs the update channel loaded at startup.
+pub fn initialize(core: &AppCore) {
+    let settings = current_settings(core);
+    crate::debug_log::log_info(format!(
+        "loaded app update settings (channel={:?}, endpoint={})",
+        settings.channel,
+        settings.channel.endpoint()
+    ));
+}
+
 pub fn persist_settings(
     core: &AppCore,
     settings: AppUpdateSettings,

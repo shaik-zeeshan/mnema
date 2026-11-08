@@ -12,8 +12,8 @@ use crate::{
     WindowSignal,
 };
 
-/// Records every emit, message dialog, tray refresh, opened URL, window request
-/// and window signal; confirms answer yes; `open_window` fails with
+/// Records every emit, message dialog, tray refresh, opened URL, window request,
+/// window signal and exit; confirms answer yes; `open_window` fails with
 /// `open_window_error` when set; everything else is a no-op.
 #[derive(Default)]
 pub(crate) struct FakeHost {
@@ -24,6 +24,7 @@ pub(crate) struct FakeHost {
     pub(crate) opened_windows: Mutex<Vec<WindowRequest>>,
     pub(crate) window_signals: Mutex<Vec<WindowSignal>>,
     pub(crate) open_window_error: Mutex<Option<String>>,
+    pub(crate) exits: Mutex<Vec<ExitKind>>,
 }
 
 impl Host for FakeHost {
@@ -56,7 +57,9 @@ impl Host for FakeHost {
     fn window_signal(&self, signal: WindowSignal) {
         self.window_signals.lock().unwrap().push(signal);
     }
-    fn exit(&self, _kind: ExitKind) {}
+    fn exit(&self, kind: ExitKind) {
+        self.exits.lock().unwrap().push(kind);
+    }
 }
 
 /// An `AppCore` on `host` whose data/config/cache/log dirs all live under `dir`.

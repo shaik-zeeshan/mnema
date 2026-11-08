@@ -244,7 +244,7 @@ pub(crate) fn install_and_restart(app_handle: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let status = install_app_update(app_handle.clone()).await;
         if status.state == AppUpdateState::RestartRequired {
-            windows::request_graceful_restart_after_update(&app_handle);
+            core(&app_handle).shutdown(app_core::ExitKind::Restart);
             return;
         }
         let message = status
@@ -472,15 +472,6 @@ async fn run_update_check(
             set_runtime_error(app_handle, state, mapped)
         }
     }
-}
-
-pub fn initialize(app_handle: &tauri::AppHandle) {
-    let settings = current_settings(&core(app_handle));
-    app_core::debug_log::log_info(format!(
-        "loaded app update settings (channel={:?}, endpoint={})",
-        settings.channel,
-        settings.channel.endpoint()
-    ));
 }
 
 /// Checks immediately (the first `interval` tick fires at once) and every
@@ -726,7 +717,7 @@ pub fn restart_after_app_update(app_handle: tauri::AppHandle) -> Result<(), AppU
         return Err(error);
     }
 
-    windows::request_graceful_restart_after_update(&app_handle);
+    core(&app_handle).shutdown(app_core::ExitKind::Restart);
     Ok(())
 }
 

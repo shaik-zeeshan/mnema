@@ -264,14 +264,28 @@ impl Host for TauriHost {
             }
             #[cfg(not(target_os = "macos"))]
             WindowSignal::NotRecordingReminder { .. } => {}
+            WindowSignal::StartUpdateCheckTimer => app_updates::start_update_check_timer(app),
         }
     }
 
     fn exit(&self, kind: ExitKind) {
         let Some(app) = self.app() else { return };
-        match kind {
-            ExitKind::Quit => windows::request_graceful_exit(app),
-            ExitKind::Restart => windows::request_app_relaunch(app.clone()),
+        if kind == ExitKind::Restart {
+            app_core::debug_log::log_info("completed graceful app exit; relaunching");
+            app.restart();
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            app_core::debug_log::log_info(
+                "completed graceful app exit; exiting without running process static destructors",
+            );
+            windows::macos_immediate_process_exit(0);
+        }
+
+        #[cfg(not(target_os = "macos"))]
+        {
+            app.exit(0);
         }
     }
 }
@@ -481,7 +495,7 @@ mod tests {
 
     #[test]
     fn event_names_match_the_constants_the_old_emit_sites_use() {
-        use crate::*;
+        use crate::deep_links::*;
         let constants = [
             app_core::updates::APP_UPDATE_STATUS_CHANGED_EVENT,
             app_core::app_infra::TIMELINE_DATA_CHANGED_EVENT,

@@ -13,13 +13,13 @@ use std::{
 
 use super::worker_spawn::*;
 use crate::app_infra::*;
-use crate::{AppCore, AppInfraState};
+use crate::{startup::step, AppCore, AppInfraState};
 
 /// What the last deferred startup repaired, for the developer window's Startup
 /// row. Data only; the row's copy lives with the health rows. Stored once, at
 /// the end of [`run_deferred_startup_blocking`], so it is `None` while startup
 /// is still running and for a run a quit cut short. The aggregate-device reap
-/// runs afterwards in `lib.rs` and is not part of it.
+/// runs afterwards in `crate::startup` and is not part of it.
 #[derive(Debug, Clone, Default)]
 pub struct StartupReport {
     pub duration_ms: u64,
@@ -68,8 +68,8 @@ impl Drop for StartupPanicFlag {
 /// processing/retention/repair workers.
 ///
 /// This is intended to be invoked from a dedicated background thread *after* the
-/// window has opened (see `lib.rs` setup). Ordering matters and is preserved from
-/// the previous synchronous path: maintenance and hidden-segment repair complete
+/// window has opened (see `AppCore::spawn_deferred_startup`). Ordering matters
+/// and is preserved from the previous synchronous path: maintenance and hidden-segment repair complete
 /// before any worker (or capture auto-start) runs, and orphaned-job reconciliation
 /// (inside `run_startup_maintenance`) completes before the processing workers
 /// spawn — it is only safe while nothing is executing those jobs (ADR 0020).
@@ -117,6 +117,7 @@ pub fn run_deferred_startup_blocking(core: &Arc<AppCore>) {
     // thread so a first-run keychain prompt never blocks the window opening.
     // A denied unlock is cached: features degrade with a distinct
     // SecretVaultDenied error instead of re-prompting per read.
+    step(core, "vault_unlock");
     match infra.secret_vault().unlock_now() {
         Ok(()) => {
             report.vault_unlocked = true;
@@ -143,6 +144,7 @@ pub fn run_deferred_startup_blocking(core: &Arc<AppCore>) {
     // next launch. The ADR-0020 ordering still holds: orphaned-job reconciliation
     // lives inside `run_startup_maintenance` and completes (or this thread is
     // gone via a panic — see below) before the workers spawn.
+    step(core, "maintenance");
     match core.block_on(infra.run_startup_maintenance()) {
         Ok(summary) => report.maintenance = Some(summary),
         Err(error) => {
@@ -175,6 +177,7 @@ pub fn run_deferred_startup_blocking(core: &Arc<AppCore>) {
     // intentionally remains uncaught: it unwinds this thread, is recorded by the
     // installed panic hook, and prevents worker spawn because the reconcile may
     // not have completed.
+    step(core, "repair_passes");
     let post_maintenance = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // FIRST, and deliberately so. `run_startup_maintenance` has just cleared every lock row
         // older than the stale threshold, which by construction includes the previous session's
@@ -228,6 +231,7 @@ pub fn run_deferred_startup_blocking(core: &Arc<AppCore>) {
         );
     }
 
+    step(core, "workers");
     spawn_retention_cleanup_worker(Arc::clone(&infra), core.clone(), background_workers.clone());
 
     crate::user_context::spawn_user_context_worker(
@@ -295,8 +299,11 @@ pub fn run_deferred_startup_blocking(core: &Arc<AppCore>) {
     // cache it for synchronous reads (capture-stop, status bar), and emit the
     // `license_status` event the frontend listens for. Runs here on the
     // deferred-startup seam (after the window opens) — it never gates launch.
-    crate::licensing::run_license_gate(core);
+    if step(core, "license_gate") {
+        crate::licensing::run_license_gate(core);
+    }
 
+    step(core, "processing_worker");
     spawn_processing_worker(infra, base_dir, core.clone(), background_workers);
 
     report.duration_ms = started.elapsed().as_millis() as u64;

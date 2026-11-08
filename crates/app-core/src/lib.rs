@@ -46,6 +46,7 @@ pub mod semantic_search_worker;
 pub mod sensitive_capture_recommendations;
 pub mod speaker_analysis_models;
 pub mod speaker_analysis_runtime;
+pub mod startup;
 #[cfg(test)]
 mod test_support;
 pub mod third_party_notices;
@@ -61,6 +62,7 @@ pub use host::{
     ConfirmDialog, DialogKind, ExitKind, Host, MessageDialog, WindowRequest, WindowSignal,
 };
 pub use paths::Paths;
+pub use startup::{StartError, StartReport};
 
 /// The app's one `AppInfra` (DB, jobs, pipeline), managed once it opens.
 pub type AppInfraState = std::sync::Arc<::app_infra::AppInfra>;

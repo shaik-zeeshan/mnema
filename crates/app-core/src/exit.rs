@@ -1,10 +1,14 @@
-//! The graceful-exit coordinator: whether a quit has begun, whether it should
-//! relaunch, and whether its work is done. Managed on the `AppCore`; each host's
-//! exit path drives it and long-running startup work polls it.
+//! The graceful exit ([`AppCore::shutdown`]) and its coordinator: whether a quit
+//! has begun, whether it should relaunch, and whether its work is done. Managed
+//! on the `AppCore`; each host's quit paths call `shutdown` and long-running
+//! startup work polls it.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
 
-use crate::AppCore;
+use crate::{startup::step, AppCore, ExitKind};
 
 #[derive(Default)]
 pub struct AppExitCoordinatorState {
@@ -43,6 +47,96 @@ impl AppExitCoordinatorState {
 
 pub fn is_graceful_exit_in_progress(core: &AppCore) -> bool {
     core.state::<AppExitCoordinatorState>().is_exit_requested()
+}
+
+impl AppCore {
+    /// Graceful exit: stop capture, shut the background workers down (with a
+    /// timeout) and requeue the jobs they were on, unload the cached Local
+    /// Whisper contexts, then [`Host::exit`](crate::Host::exit) with the merged
+    /// intent. Runs on the runtime and returns at once. A call while one is in
+    /// flight only merges its restart intent (a later plain quit never cancels a
+    /// pending relaunch).
+    pub fn shutdown(self: &Arc<Self>, kind: ExitKind) {
+        let restart_after_exit = kind == ExitKind::Restart;
+        let exit_state = self.state::<AppExitCoordinatorState>();
+        if !exit_state.begin_exit(restart_after_exit) {
+            return;
+        }
+        step(self, "begin_exit");
+
+        let core = Arc::clone(self);
+        self.spawn(async move {
+            crate::debug_log::log_info(if restart_after_exit {
+                "starting graceful app relaunch; stopping capture and background workers before unloading cached Local Whisper contexts"
+            } else {
+                "starting graceful app exit; stopping capture and background workers before unloading cached Local Whisper contexts"
+            });
+
+            step(&core, "stop_capture");
+            let stop_core = Arc::clone(&core);
+            match core
+                .spawn_blocking(move || {
+                    if crate::native_capture::control::current_native_capture_session(&stop_core)
+                        .is_running
+                    {
+                        Some(crate::native_capture::control::stop_native_capture_from_core(
+                            &stop_core,
+                        ))
+                    } else {
+                        None
+                    }
+                })
+                .await
+            {
+                Ok(Some(Ok(_))) => crate::debug_log::log_info(
+                    "stopped active native capture during graceful app exit",
+                ),
+                Ok(Some(Err(error))) => crate::debug_log::log_error(format!(
+                    "failed to stop active native capture during graceful app exit: [{}] {}",
+                    error.code, error.message
+                )),
+                Ok(None) => {}
+                Err(error) => {
+                    crate::debug_log::log_error(format!(
+                        "failed to join native capture stop during graceful app exit: {error}"
+                    ));
+                }
+            }
+            crate::debug_log::log_info("stopping background workers before terminating");
+            step(&core, "shutdown_workers");
+            crate::app_infra::shutdown_background_workers_for_app_exit(&core).await;
+
+            step(&core, "unload_whisper");
+            match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
+                Ok(unloaded) => {
+                    crate::debug_log::log(format!(
+                        "unloaded {unloaded} cached Local Whisper context(s) after background worker shutdown"
+                    ));
+                }
+                Err(error) => {
+                    crate::debug_log::log_warn(format!(
+                        "failed to unload cached Local Whisper contexts after background worker shutdown: {error}"
+                    ));
+                }
+            }
+
+            complete_graceful_exit(&core);
+        });
+    }
+}
+
+/// Marks the exit final (the host's quit hooks then let it through) and hands
+/// the process to the host, relaunching when any request asked for it.
+fn complete_graceful_exit(core: &AppCore) {
+    let exit_state = core.state::<AppExitCoordinatorState>();
+    let restart_requested = exit_state.should_restart_after_graceful_exit();
+    exit_state.mark_final_graceful_exit_ready();
+    step(core, "host_exit");
+    core.host().exit(if restart_requested {
+        ExitKind::Restart
+    } else {
+        ExitKind::Quit
+    });
 }
 
 #[cfg(test)]

@@ -11,9 +11,9 @@ mod status;
 #[cfg(target_os = "macos")]
 pub use install_gate::{check_update_bundle, GateRefusal, OwnIdentity};
 pub use settings::{
-    current_settings, load_app_update_settings_from_path, persist_settings, AppUpdateChannel,
-    AppUpdateSettings, AppUpdateSettingsRuntime, AppUpdateSettingsState, PREVIEW_UPDATE_ENDPOINT,
-    STABLE_UPDATE_ENDPOINT,
+    current_settings, initialize, load_app_update_settings_from_path, persist_settings,
+    AppUpdateChannel, AppUpdateSettings, AppUpdateSettingsRuntime, AppUpdateSettingsState,
+    PREVIEW_UPDATE_ENDPOINT, STABLE_UPDATE_ENDPOINT,
 };
 pub use status::{
     apply_running_build_window_gate, build_out_of_window, decide_remote_update, emit_status,
