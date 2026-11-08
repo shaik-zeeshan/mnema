@@ -1002,6 +1002,8 @@ pub async fn get_or_generate_digest(
 
             if stored.input_fingerprint == fingerprint
                 || (!corrected_since_generated
+                    // A shape-version bump (`vN:`) is not churn: never floor-serve old prose.
+                    && stored.input_fingerprint.split(':').next() == fingerprint.split(':').next()
                     && within_freshness_floor(range_kind, stored.generated_at_ms, now_ms()))
             {
                 return Ok(present(digest_dto(
@@ -1230,3 +1232,11 @@ pub async fn get_or_generate_digest(
 #[cfg(test)]
 #[path = "digest_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "digest_cache_tests.rs"]
+mod cache_tests;
+
+#[cfg(test)]
+#[path = "digest_narrative_tests.rs"]
+mod narrative_tests;

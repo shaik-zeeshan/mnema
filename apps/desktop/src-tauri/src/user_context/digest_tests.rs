@@ -47,11 +47,6 @@ fn digest_preamble_leads_with_the_guardrail_and_bans_markdown() {
     assert!(preamble.starts_with(guardrail::SENSITIVE_GUARDRAIL_INSTRUCTION));
     assert!(preamble.contains("second person"));
     assert!(preamble.contains("Do NOT use markdown"));
-    // The read is a quick 2-3 line take, not a recap of the range.
-    assert!(preamble.contains("at most 2 short sentences, 40 words in total at most"));
-    assert!(preamble.contains("do not recount the days"));
-    // The turn is the headline's: the narrative must not take it over.
-    assert!(preamble.contains("is the headline's turn, not the narrative's"));
     // The headline ask rides the same preamble: a dash-free sentence + turn.
     assert!(preamble.contains("headline for the range: a full sentence"));
     assert!(preamble.contains("Never put a dash in the headline"));
@@ -517,33 +512,6 @@ fn normalize_narrative_trims_and_rejects_empty() {
     );
     assert_eq!(normalize_narrative("   \n\t"), None);
     assert_eq!(normalize_narrative(""), None);
-}
-
-/// An engine that ignores the 40-word ask: whole sentences that fit the cap are
-/// kept; with no sentence end inside the cap, a word cut ending in "…".
-#[test]
-fn normalize_narrative_caps_long_answers_at_a_sentence_end() {
-    let exact = "x".repeat(NARRATIVE_CHAR_CAP);
-    assert_eq!(normalize_narrative(&exact), Some(exact.clone()));
-    let (a, filler) = ("You spent the day on the billing migration.", "word ".repeat(80));
-    // A sentence ending on the cap's last char is kept whole.
-    let at_cap = format!("{a} {}.", "x".repeat(NARRATIVE_CHAR_CAP - a.len() - 2));
-    let cases = [
-        // "3.5h" and "e.g. the" are not sentence ends; one before a newline is.
-        (format!("{a} Then 3.5h of review, e.g. the {filler}"), a.to_string()),
-        (format!("{a}\nThen {filler}"), a.to_string()),
-        (format!("One! Two? Then {filler}"), "One! Two?".to_string()),
-        (format!("{at_cap} More text."), at_cap.clone()),
-    ];
-    for (input, want) in cases {
-        assert_eq!(normalize_narrative(&input), Some(want), "{input}");
-    }
-    // No sentence end in the cap (a bare "..." is not one): a char-counted word cut.
-    let dotted = format!("... {}", "Wé ".repeat(120));
-    for (run_on, tail) in [(filler.clone(), "word…"), (dotted, "Wé…")] {
-        let cut = normalize_narrative(&run_on).expect("narrative");
-        assert!(cut.chars().count() <= NARRATIVE_CHAR_CAP && cut.ends_with(tail), "{cut}");
-    }
 }
 
 /// Headline post-validation: trim; empty/whitespace → `None` (NOT a
