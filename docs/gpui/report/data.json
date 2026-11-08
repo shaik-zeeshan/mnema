@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-09 01:20",
+  "updated": "2026-11-09 02:10",
   "verdict": "About 40% done. Timeline, Chat and Settings are built (screenshots waiting for your sign-off); the main window and all shared controls are approved; the recording engine move is halfway through its four parts. Insights is building now.",
   "metrics": [
     {
@@ -9,8 +9,8 @@
     },
     {
       "label": "Backend moved",
-      "value": "~45%",
-      "note": "≈45k of ~104k Rust lines left the Tauri app"
+      "value": "~70%",
+      "note": "most of the recording engine now shared"
     },
     {
       "label": "Screens built",
@@ -19,8 +19,8 @@
     },
     {
       "label": "Tests passing",
-      "value": "1,364",
-      "note": "799 shared + 565 Tauri, 0 failing"
+      "value": "1,370",
+      "note": "1,021 shared + 349 Tauri, 0 failing"
     },
     {
       "label": "Screenshots",
@@ -35,7 +35,7 @@
     },
     {
       "label": "Backend move (S1–S4)",
-      "pct": 55
+      "pct": 70
     },
     {
       "label": "Native layer (S7)",
@@ -56,9 +56,9 @@
   ],
   "now": [
     {
-      "id": "S3b",
-      "title": "Recording engine move — part 2 of 4",
-      "detail": "segments.rs, the heart of recording: start/stop, low-disk, inactivity pause/resume, wake recovery, audio commit. The riskiest move; every function body diffed against the original."
+      "id": "S3c+d",
+      "title": "Recording engine move — parts 3–4 of 4",
+      "detail": "The capture root (start/stop/settings), the not-recording reminder, then Ask AI and conversations, plus every piece that was waiting for the recording engine."
     },
     {
       "id": "S12",
@@ -180,6 +180,12 @@
       "title": "Settings screen",
       "what": "Rail with search, save status, scroll-spy, all sections; autosave timings (450 / 0 / 250 ms) and the 500 ms reload spin tested. Saves that need the recording engine, native dialogs or the updater wait for those steps.",
       "commit": "daf681ab"
+    },
+    {
+      "id": "S3b",
+      "title": "Recording engine move — part 2",
+      "what": "segments.rs (the heart of recording) and the recording lifecycle moved in 12 files; every moved function diffed against the original; 1,370 tests green.",
+      "commit": "84ff6911"
     }
   ],
   "next": [
