@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-09 04:00",
-  "verdict": "Over half done. The backend move is finished through startup and shutdown; six of eight screens are built. The native layer (tray, hotkeys, links, Dock, quit) — the step that makes the GPUI app usable end to end — is running, alongside the Timeline smoothness pass.",
+  "updated": "2026-11-09 05:00",
+  "verdict": "About 60% done. The GPUI app now starts, quits and works with macOS end to end in a dev bundle (tray, hotkeys, links, Dock, ⌘Q). Six of eight screens are built; Quick Recall and the audio drawer are building now.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~55%",
+      "value": "~60%",
       "note": "of the whole build"
     },
     {
@@ -19,8 +19,8 @@
     },
     {
       "label": "Tests passing",
-      "value": "1,504",
-      "note": "1,284 shared + 91 Tauri + 129 GPUI, 0 failing"
+      "value": "1,534",
+      "note": "1,307 shared + 71 Tauri + 156 GPUI, 0 failing"
     },
     {
       "label": "Screenshots",
@@ -39,11 +39,11 @@
     },
     {
       "label": "Native layer (S7)",
-      "pct": 0
+      "pct": 85
     },
     {
       "label": "Screens (S5, S6, S8–S15)",
-      "pct": 75
+      "pct": 78
     },
     {
       "label": "Packaging + updater (S16)",
@@ -56,14 +56,14 @@
   ],
   "now": [
     {
-      "id": "S7",
-      "title": "Native layer",
-      "detail": "Wires the shared startup/shutdown into the GPUI app, plus tray, global hotkeys, mnema:// links, single instance, Dock, graceful ⌘Q, reminder notification, real native dialogs, and a dev .app bundle."
+      "id": "S10",
+      "title": "Quick Recall panel",
+      "detail": "The ⌘⌥Space floating panel: search, filters, ghost completion, results, QuickLook, Ask with streaming answers; summon latency target ≤ 50 ms."
     },
     {
-      "id": "S8-perf",
-      "title": "Timeline smoothness pass",
-      "detail": "A correct frame-time measurement (work per frame + dropped frames) and fixes for the scrub stutters."
+      "id": "S9",
+      "title": "Audio drawer + image memory",
+      "detail": "Transcript reader with karaoke, speaker-coloured waveform, speaker repair, native playback; plus cutting the Timeline image cache from gigabytes to megabytes."
     }
   ],
   "done": [
@@ -210,6 +210,18 @@
       "title": "Small windows",
       "what": "CLI access request (live), update window, permission helper, developer window with mini mode.",
       "commit": "fa8b93c9"
+    },
+    {
+      "id": "S7",
+      "title": "Native layer",
+      "what": "The GPUI app runs the shared startup and graceful quit; tray, global hotkeys, mnema:// links, single instance, Dock, native dialogs, reminder notification, a dev .app bundle. Checked unattended: links, single instance, hidden-from-capture, Dock, ⌘⌥M, ⌘Q.",
+      "commit": "c1e48d62"
+    },
+    {
+      "id": "S8-perf",
+      "title": "Timeline smoothness",
+      "what": "A correct frame-time measurement; scrubbing now costs ~2–6 ms of work per frame (budget 8), Chat streaming ~2.5 ms. Remaining drops come from system memory pressure.",
+      "commit": "c365b475"
     }
   ],
   "next": [
@@ -354,5 +366,50 @@
         "gallery-status"
       ]
     }
-  ]
+  ],
+  "checklist": {
+    "intro": "Things only a person (or a signed build) can check. Build the dev app with `bash scripts/bundle-gpui-app.sh --dev` and open it with `open`; it runs on a copy of your dev data. Quit your real Mnema first.",
+    "items": [
+      {
+        "try": "Tray before onboarding",
+        "right": "Set the copy's onboarding-state.json aside, open the bundle, click the tray icon: Complete Setup / Settings / Quit Mnema.",
+        "tag": "dev bundle"
+      },
+      {
+        "try": "Tray after onboarding",
+        "right": "Full menu. A lone source can't be unchecked; Delete Last 1 Minute… shows a warning sheet; Exclude Current App… (Safari in front) confirms then says App Excluded; Quit is graceful.",
+        "tag": "dev bundle"
+      },
+      {
+        "try": "Settings › Storage › Browse… and Insights › Context › delete",
+        "right": "A folder picker opens and the path appears; deleting a statement shows a ‘Delete context’ sheet.",
+        "tag": "dev bundle"
+      },
+      {
+        "try": "⌘⌥R / ⌘⌥P with recording, then ⌘Q while recording",
+        "right": "Recording starts/stops; on ⌘Q the log shows ‘stopped active native capture during graceful app exit’ before exit.",
+        "tag": "signed build"
+      },
+      {
+        "try": "Shortcut conflict",
+        "right": "Bind ⌘⌥Space in another app, relaunch: a ‘Global shortcuts unavailable’ notification row appears.",
+        "tag": "dev bundle"
+      },
+      {
+        "try": "Not-recording reminder",
+        "right": "Stay stopped 30+ minutes; allow notifications; both Start and Snooze for today work.",
+        "tag": "signed build"
+      },
+      {
+        "try": "Sleep/wake while recording",
+        "right": "Log shows will-sleep, recovery on wake, screens sleep/wake; the REC clock and Timeline polling pause while screens sleep.",
+        "tag": "signed build"
+      },
+      {
+        "try": "A settings change that needs a restart",
+        "right": "The app relaunches by itself.",
+        "tag": "dev bundle"
+      }
+    ]
+  }
 }

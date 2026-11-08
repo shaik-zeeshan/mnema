@@ -97,6 +97,13 @@ def build(d, drafts):
         f'<td>' + (f'<a href="{E(drafts[slug(g)]["url"])}">open</a>' if slug(g) in drafts else "publishing…") + '</td></tr>'
         for g in d["shots"]) + "</tbody></table>")
 
+    if d.get("checklist"):
+        p.append(section(n, "Your hands-on checklist")); n += 1
+        p.append(f'<p>{E(d["checklist"]["intro"])}</p>')
+        p.append('<ol class="pp-steps">' + "".join(
+            f'<li><span class="pp-sn">{i}</span><span class="pp-st"><b>{E(x["try"])}</b><small>{E(x["right"])}</small></span>'
+            f'<span class="pp-chip">{E(x["tag"])}</span></li>' for i, x in enumerate(d["checklist"]["items"], 1)) + "</ol>")
+
     p.append(section(n, "What comes next")); n += 1
     p.append('<ol class="pp-steps">' + "".join(
         f'<li><span class="pp-sn">{i}</span><span class="pp-st"><b>{E(x["title"])}</b><small>{E(x["detail"])}</small></span>'

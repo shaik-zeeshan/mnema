@@ -113,9 +113,9 @@ After **every** merged slice/feature:
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
 ### Next up (orchestrator queue; keep current)
-1. **Running, two at a time:** S7 native layer (slot 1) and the S8 perf pass (slot 2: the metric fix, the scrub stutters, the gallery cell). Done: S4 4ea3fb16 (`startup-log-diff.sh` not run yet; it needs the founder's real Mnema quit), S15 fa8b93c9 (42 baselines awaiting sign-off; Esc = userCancelled as in today's app).
+1. **Running, two at a time:** S10 Quick Recall (slot 1) and S9 AudioDrawer plus the image-cache memory fix (slot 2; ruling: 192 encoded entries plus ~9 decoded at stage size, as in today's app). Done: S7 c1e48d62 (the founder checklist is in the report), S8 perf c365b475. Not yet run: `startup-log-diff.sh` (needs the founder's real Mnema quit).
    - Accepted drift (Tauri-only, deleted at S17): asset-grant failures log at Warn, not Error, and app icons are returned even if their grant fails.
-   - Next: S10 Quick Recall (after S7), S9 AudioDrawer, S14 Onboarding (after S7), S16 rest (packaging + updater flow), S17 on the founder's go.
+   - Next: S14 Onboarding, S16 rest (packaging + updater flow), the W3 parity sweep, the docs pass (AGENTS.md / capture-pipeline paths), S17 on the founder's go.
    - Old worktrees (all removed):
    - S3a capture leaves: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-ac2748086a4bbf839`
    - S13 Settings: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-aef107fcd394658f0`
