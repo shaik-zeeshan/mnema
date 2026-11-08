@@ -1,0 +1,17 @@
+{
+ "get_app_update_status": {
+  "app": {
+   "productName": "Mnema",
+   "version": "0.1.24",
+   "identifier": "day.mnema",
+   "platform": "macos",
+   "arch": "aarch64"
+  },
+  "channel": "stable",
+  "state": "upToDate",
+  "update": null,
+  "progress": null,
+  "error": null,
+  "lastCheckedAtUnixMs": 1793782200000
+ }
+}

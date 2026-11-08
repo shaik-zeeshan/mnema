@@ -42,6 +42,11 @@ icon_assets!(
         Speech,
         CornerDownRight,
         List,
+        OctagonAlert,
+        Power,
+        ShieldCheck,
+        Minimize2,
+        Maximize2,
     ]
 );
 

@@ -17,6 +17,8 @@ mod gallery;
 mod insights;
 #[path = "visual/settings.rs"]
 mod settings;
+#[path = "visual/small.rs"]
+mod small;
 #[path = "visual/timeline.rs"]
 mod timeline;
 
@@ -232,6 +234,17 @@ fn run() -> anyhow::Result<()> {
             let model = model_for(FixtureId::Empty).unwrap();
             return settings::parity(&mut cx, &dir, &state, setting.clone(), model);
         }
+        if let [f] = filters.as_slice() {
+            if small::SURFACES.contains(&f.as_str()) {
+                let state = std::env::var("PARITY_STATE")?;
+                let theme_name = std::env::var("PARITY_THEME")?;
+                let (_, setting) = THEMES
+                    .iter()
+                    .find(|(t, _)| *t == theme_name)
+                    .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
+                return small::parity(&mut cx, &dir, f, &state, setting.clone());
+            }
+        }
         if !filters.iter().all(|f| "shell".contains(f.as_str())) {
             return Ok(()); // another surface's parity run
         }
@@ -289,6 +302,7 @@ fn run() -> anyhow::Result<()> {
     let idle = model_for(FixtureId::Empty).unwrap();
     failures.extend(settings::goldens(&mut cx, &filters, &THEMES, &idle)?);
     failures.extend(insights::goldens(&mut cx, &filters, &THEMES)?);
+    failures.extend(small::goldens(&mut cx, &filters, &THEMES)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

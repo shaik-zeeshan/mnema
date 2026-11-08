@@ -1,0 +1,14 @@
+{
+ "get_pending_cli_access_request": {
+  "requestId": "req-claude-1",
+  "client": {
+   "label": "Claude Code",
+   "source": "inferred"
+  },
+  "command": "search --query \"pricing page draft\" --limit 20",
+  "minimumScope": "lastDay",
+  "preferredScope": "last7Days",
+  "currentScope": null,
+  "createdAt": "2026-11-04T09:01:30Z"
+ }
+}

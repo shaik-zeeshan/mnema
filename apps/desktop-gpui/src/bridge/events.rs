@@ -81,8 +81,13 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 chat.update(cx, |chat, cx| chat.reload(cx));
             }
         }
+        HostMsg::Event(CoreEvent::AppUpdateStatusChanged(status)) => {
+            crate::small::update::status_changed(status, cx)
+        }
         // Surface entities subscribe to theirs as S8+ land.
         HostMsg::Event(_) => {}
+        HostMsg::OpenWindow(req) if crate::small::open_request(&req, cx) => {}
+        HostMsg::WindowSignal(signal) if crate::small::signal(&signal, cx) => {}
         HostMsg::OpenUrl(target) if target.starts_with('/') => {
             cx.open_with_system(std::path::Path::new(&target))
         }

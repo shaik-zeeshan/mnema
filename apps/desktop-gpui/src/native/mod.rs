@@ -23,6 +23,29 @@ pub fn ns_window(window: &Window) -> Option<&NSWindow> {
 
 /// Mnema never records itself: `none`, or `read-only` with developer options
 /// (so screenshots of the app work). Must run before the window's first show.
+/// Show without becoming key or activating the app (the permission helper must
+/// never take focus from System Settings).
+pub fn order_front_regardless(window: &Window) {
+    if let Some(ns_window) = ns_window(window) {
+        ns_window.orderFrontRegardless();
+    }
+}
+
+/// Keep above normal windows (the developer window's pin and mini mode).
+pub fn set_always_on_top(window: &Window, on: bool) {
+    if let Some(ns_window) = ns_window(window) {
+        // NSFloatingWindowLevel = 3, NSNormalWindowLevel = 0.
+        ns_window.setLevel(if on { 3 } else { 0 });
+    }
+}
+
+/// The content min size, changed at runtime (mini mode lowers it before shrinking).
+pub fn set_min_size(window: &Window, w: f32, h: f32) {
+    if let Some(ns_window) = ns_window(window) {
+        ns_window.setContentMinSize(objc2_foundation::NSSize::new(w as f64, h as f64));
+    }
+}
+
 pub fn apply_sharing_type(window: &Window, developer_options: bool) {
     if let Some(ns_window) = ns_window(window) {
         ns_window.setSharingType(if developer_options {

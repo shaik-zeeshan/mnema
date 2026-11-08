@@ -83,6 +83,13 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **Delayed-commit Dismiss:** `insights::undo::DelayedDismiss` (5000 ms). Any navigation away (tab, back, another subject, the shell leaving Insights) calls `Insights::leave`, which commits now.
 - **Shell:** Insights emits `InsightsEvent::{Ask, OpenTimeline}`; the shell routes ⌘J and Esc to it first, and bare keys (`[` `]` ↑ ↓) through `insights::register_keys` on its root.
 
+## Small windows *(set by S15)*
+- **Opening:** `small::open_request(&WindowRequest, cx)` (CliAccessRequest / Update / PermissionHelper) and `small::signal(&WindowSignal, cx)` (CloseCliAccessRequest) are wired from `bridge/events.rs`; `small::debug::open(cx)` from the shell's `OpenDebug` (developer options only). `small::open_or_focus::<V>(Kind, cx, build, reuse)` keeps one window per kind and brings an open one forward. `small::options` = no native titlebar, transparent background, `small::parts::frame` draws the 12 px-corner surface. `shell::developer_options(cx)` is the last loaded switch (sharingType + the debug gate).
+- **Backends:** each window takes a sync trait object run on the background executor: `access::AccessBackend` (`CoreAccess` = `broker_authorization_channel`; `FixtureAccess` records `Call`s), `helper::GrantCheck` (`LiveGrant`), `debug::data::DebugBackend` (`CoreDebug`; `FixtureDebug` serves a parity map). Window data stays the commands' camelCase JSON, so the parity fixture and app-core feed the same view.
+- **Access request keys:** focus starts on Deny (`deny_focus`); Enter is swallowed at the root (capture `prevent_default`, so not even the focused button presses); Esc and the strip's close light deny (`userCancelled`); a dismissed window answers `closed` via `access::answer_closed_on_dismiss`; our own teardown uses `remove_window`, which never fires that hook.
+- **Controls added:** `Button::focus_handle(&h)` (owner-held focus), `Button::ghost_danger()`, `Segmented::fill()` (equal options across the parent).
+- **Goldens:** `<surface>-<state>-<theme>.png` for `tests/visual/small.rs::STATES` (access, update, permission-helper, debug, debug-mini) at each window's real size, from `parity/fixtures/<surface>/*.json`.
+
 ## Tests
 - **Behaviour:**
   - `#[gpui::test]` with `TestAppContext` / `VisualTestContext`;

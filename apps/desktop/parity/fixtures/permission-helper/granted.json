@@ -1,0 +1,10 @@
+{
+ "get_capture_permissions": {
+  "permissions": {
+   "screen": "granted",
+   "microphone": "granted",
+   "systemAudio": "notDetermined"
+  },
+  "session": null
+ }
+}

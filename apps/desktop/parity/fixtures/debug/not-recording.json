@@ -1,0 +1,419 @@
+{
+ "get_recording_settings": {
+  "captureScreen": true,
+  "captureMicrophone": true,
+  "captureSystemAudio": true,
+  "segmentDurationSeconds": 300,
+  "screenFrameRate": 1.0,
+  "screenResolution": {
+   "mode": "preset",
+   "preset": "original"
+  },
+  "videoBitrate": {
+   "mode": "preset",
+   "preset": "medium",
+   "customMbps": null
+  },
+  "saveDirectory": "/Users/ana/.mnema",
+  "autoStart": true,
+  "developerOptionsEnabled": true,
+  "previewCacheTtlSeconds": 3600,
+  "followTimelineLive": false,
+  "retentionPolicy": "never",
+  "appearance": "system",
+  "timeFormat": "system",
+  "ocr": {
+   "enabled": true,
+   "provider": "apple_vision",
+   "modelId": null,
+   "language": null,
+   "recognitionMode": "fast",
+   "languageCorrection": false,
+   "tesseractPageSegmentationMode": "single_block",
+   "tesseractPreprocessMode": "grayscale",
+   "tesseractUpscaleFactor": 1,
+   "tesseractCharWhitelist": null
+  },
+  "transcription": {
+   "enabled": true,
+   "microphoneEnabled": true,
+   "systemAudioEnabled": false,
+   "provider": "parakeet",
+   "modelId": "parakeet-tdt-0.6b-v3",
+   "language": "auto",
+   "memoryMode": "balanced",
+   "idleUnloadSeconds": 300,
+   "chunkSeconds": 30
+  },
+  "speakerAnalysis": {
+   "separateSpeakers": false,
+   "recognizeSavedPeople": false,
+   "autoLabelOwner": true,
+   "provider": "speakrs",
+   "modelId": "pyannote-community-1-wespeaker",
+   "timeoutSeconds": 600
+  },
+  "audioSpeechDetection": {
+   "detector": "silero"
+  },
+  "metadata": {
+   "enabled": true,
+   "browserUrlMode": "sanitized"
+  },
+  "privacy": {
+   "excludedApps": [
+    {
+     "id": "app-1",
+     "bundleId": "com.1password.1password",
+     "displayName": "1Password",
+     "enabled": true
+    },
+    {
+     "id": "app-2",
+     "bundleId": "com.apple.MobileSMS",
+     "displayName": "Messages",
+     "enabled": true
+    }
+   ],
+   "filterSystemAudio": true
+  },
+  "access": {
+   "askAiEnabled": false,
+   "askAiMaxToolCalls": 12,
+   "askAiWebFetchEnabled": false,
+   "askAiModel": null,
+   "askAiModelProvider": null,
+   "quickRecallAutoAnswer": "localOnly"
+  },
+  "aiRuntime": {
+   "enabled": false,
+   "providers": [],
+   "defaultModel": null,
+   "mcpServers": [],
+   "favoriteModels": [],
+   "recentModels": []
+  },
+  "userContext": {
+   "enabled": false,
+   "derivationBudgetTier": "balanced",
+   "backfillWindowDays": 30,
+   "backfillGoDeeper": false
+  },
+  "semanticSearch": {
+   "enabled": true,
+   "provider": "local",
+   "modelId": "nomic-embed-text-v1.5"
+  },
+  "pauseCaptureOnInactivity": true,
+  "idleTimeoutSeconds": 10,
+  "microphoneActivitySensitivity": 50,
+  "systemAudioActivitySensitivity": 50,
+  "activityMode": "system_input_or_screen"
+ },
+ "plugin:app|version": "0.1.24",
+ "get_processing_pipeline_status": [
+  {
+   "processor": "ocr",
+   "queued": 9,
+   "retrying": 0,
+   "running": 1,
+   "completed": 4210,
+   "failed": 1,
+   "failedLast24h": 1,
+   "averageCompletedSecondsLast24h": 0.4,
+   "lastError": "image decode error"
+  },
+  {
+   "processor": "audio_transcription",
+   "queued": 14,
+   "retrying": 12,
+   "running": 0,
+   "completed": 4210,
+   "failed": 1,
+   "failedLast24h": 1,
+   "averageCompletedSecondsLast24h": 6.2,
+   "lastError": "deepgram: connection refused"
+  },
+  {
+   "processor": "speaker_analysis",
+   "queued": 2,
+   "retrying": 0,
+   "running": 0,
+   "completed": 4210,
+   "failed": 0,
+   "failedLast24h": 0,
+   "averageCompletedSecondsLast24h": 11.0,
+   "lastError": null
+  }
+ ],
+ "get_semantic_index_status": {
+  "vectorCount": 12480,
+  "backlogCount": 31,
+  "liveDimension": 768,
+  "modelLoaded": true,
+  "consecutiveLoadFailures": 0,
+  "quarantinedCount": 0,
+  "lastLoadError": null
+ },
+ "get_retention_cleanup_status": {
+  "policy": "days_30",
+  "deletedCaptureSegments": 12,
+  "status": "completed",
+  "errorMessage": null,
+  "createdAt": "2026-11-04 03:30:00"
+ },
+ "list_frame_batches": [
+  {
+   "id": 401,
+   "status": "open",
+   "updatedAt": "2026-11-04 09:01:50",
+   "lastError": null
+  }
+ ],
+ "list_app_jobs": [
+  {
+   "id": 9,
+   "kind": "frame_batch_combine",
+   "status": "running",
+   "updatedAt": "2026-11-04 09:01:40"
+  }
+ ],
+ "get_capture_health": {
+  "recording": false,
+  "startedAtMs": null,
+  "screen": {
+   "requested": true,
+   "state": "off",
+   "reason": null,
+   "levelDb": null,
+   "idleMs": null,
+   "deviceName": null
+  },
+  "microphone": {
+   "requested": true,
+   "state": "off",
+   "reason": null,
+   "levelDb": null,
+   "idleMs": null,
+   "deviceName": null
+  },
+  "systemAudio": {
+   "requested": true,
+   "state": "off",
+   "reason": null,
+   "levelDb": null,
+   "idleMs": null,
+   "deviceName": null
+  },
+  "suspension": null,
+  "systemAudioTap": null,
+  "disk": {
+   "freeBytes": 195421011968,
+   "reserveFloorBytes": 5368709120,
+   "pauseThresholdBytes": 5368709120,
+   "resumeThresholdBytes": 7516192768
+  }
+ },
+ "get_storage_usage": {
+  "screenBytes": 33715493273,
+  "microphoneBytes": 2254857830,
+  "systemAudioBytes": 1395864371,
+  "indexBytes": 644245094,
+  "modelsBytes": 1181116006,
+  "freeBytes": 195421011968
+ },
+ "get_ai_runtime_status": {
+  "enabled": true,
+  "hasProviders": true,
+  "available": true,
+  "reason": null,
+  "defaultProviderKind": "anthropic",
+  "defaultModel": {
+   "provider": "anthropic",
+   "model": "claude-sonnet-4-5"
+  }
+ },
+ "get_ask_ai_last_turn_usage": {
+  "inputTokens": 18240,
+  "outputTokens": 912,
+  "toolCalls": 4,
+  "durationMs": 7400,
+  "startedAtMs": 1793782680000
+ },
+ "list_user_context_derivation_runs": [
+  {
+   "id": 3,
+   "kind": "activity",
+   "status": "completed",
+   "windowStartMs": 1793780760000,
+   "windowEndMs": 1793782560000,
+   "activitiesDerived": 3,
+   "conclusionsDerived": 0,
+   "ungrounded": 0,
+   "guardrailSuppressed": 0,
+   "belowFormationBar": 0,
+   "resurfaceBlocked": 0,
+   "inputTokens": 2800,
+   "outputTokens": 310,
+   "createdAtMs": 1793782560000,
+   "error": null
+  },
+  {
+   "id": 2,
+   "kind": "conclusion",
+   "status": "completed",
+   "windowStartMs": null,
+   "windowEndMs": null,
+   "activitiesDerived": 0,
+   "conclusionsDerived": 1,
+   "ungrounded": 0,
+   "guardrailSuppressed": 0,
+   "belowFormationBar": 1,
+   "resurfaceBlocked": 0,
+   "inputTokens": 4100,
+   "outputTokens": 520,
+   "createdAtMs": 1793780760000,
+   "error": null
+  }
+ ],
+ "list_cli_access_history": {
+  "events": [
+   {
+    "toolIdentity": "Codex",
+    "commandType": "timeline",
+    "outcome": "success",
+    "timestampUnixMs": 1793781600000
+   },
+   {
+    "toolIdentity": "Claude Code",
+    "commandType": "search",
+    "outcome": "success",
+    "timestampUnixMs": 1793782380000
+   }
+  ]
+ },
+ "list_cli_access_grants": {
+  "grants": [
+   {
+    "id": "g1",
+    "clientLabel": "Claude Code",
+    "scope": "last7Days",
+    "blocked": false
+   },
+   {
+    "id": "g2",
+    "clientLabel": "Codex",
+    "scope": "lastDay",
+    "blocked": false
+   }
+  ]
+ },
+ "get_user_context_status": {
+  "enabled": true,
+  "reason": null,
+  "lastDayDigest": {
+   "rangeEndMs": 1793782920000,
+   "generatedAtMs": 1793778000000
+  }
+ },
+ "tail_app_log": {
+  "path": "/Users/ana/Library/Logs/day.mnema/rust.log",
+  "exists": true,
+  "lines": [
+   "[2026-11-04][08:58:02][mnema_lib::native_capture::lifecycle][INFO] [capture] recording started (screen, mic, system audio)",
+   "[2026-11-04][08:59:40][app_infra::processing][INFO] [app-infra] worker started: ocr",
+   "[2026-11-04][09:00:12][capture_system_audio::rebuild][WARN] system-audio-tap: rebuilding after sample rate change 48000 → 16000 Hz",
+   "[2026-11-04][09:00:13][capture_system_audio::rebuild][INFO] system-audio-tap: tap rebuilt, new segment opened",
+   "[2026-11-04][09:01:05][app_infra::transcription::deepgram][WARN] [transcription] deepgram unreachable, job requeued without using a try",
+   "[2026-11-04][09:01:44][app_infra::processing::ocr][ERROR] [ocr] frame 88412 failed: image decode error",
+   "    at app_infra::processing::ocr::run (ocr.rs:212)",
+   "[2026-11-04][09:01:58][mnema_lib::semantic_search_worker][INFO] [semantic] backfill pass: 16 anchors embedded"
+  ]
+ },
+ "get_debug_health": [
+  {
+   "feature": "screen",
+   "severity": "off",
+   "reason": "Not recording",
+   "metric": "off",
+   "metricAtMs": null
+  },
+  {
+   "feature": "microphone",
+   "severity": "off",
+   "reason": "Not recording",
+   "metric": "off",
+   "metricAtMs": null
+  },
+  {
+   "feature": "systemAudio",
+   "severity": "off",
+   "reason": "Not recording",
+   "metric": "off",
+   "metricAtMs": null
+  },
+  {
+   "feature": "reading",
+   "severity": "info",
+   "reason": "Finishing the last recording",
+   "metric": "38 waiting",
+   "metricAtMs": null
+  },
+  {
+   "feature": "transcription",
+   "severity": "info",
+   "reason": "Finishing the last 4 minutes",
+   "metric": "2 waiting",
+   "metricAtMs": null
+  },
+  {
+   "feature": "speakers",
+   "severity": "ok",
+   "reason": "Up to date",
+   "metric": "0 waiting",
+   "metricAtMs": null
+  },
+  {
+   "feature": "meaningIndex",
+   "severity": "info",
+   "reason": "Indexing what was just read",
+   "metric": "212 behind",
+   "metricAtMs": null
+  },
+  {
+   "feature": "aiEngine",
+   "severity": "ok",
+   "reason": "Anthropic, reachable",
+   "metric": null,
+   "metricAtMs": 1793782680000
+  },
+  {
+   "feature": "userContext",
+   "severity": "ok",
+   "reason": "Derived 6 min ago, digest fresh",
+   "metric": "14:25",
+   "metricAtMs": null
+  },
+  {
+   "feature": "disk",
+   "severity": "ok",
+   "reason": "Plenty of room, pauses below 5 GB",
+   "metric": "182 GB",
+   "metricAtMs": null
+  },
+  {
+   "feature": "cliAccess",
+   "severity": "ok",
+   "reason": "2 tools allowed, none blocked",
+   "metric": "14 today",
+   "metricAtMs": null
+  },
+  {
+   "feature": "startup",
+   "severity": "ok",
+   "reason": "Nothing needed repair",
+   "metric": "1.8 s",
+   "metricAtMs": null
+  }
+ ]
+}

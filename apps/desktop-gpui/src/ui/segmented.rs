@@ -50,6 +50,7 @@ pub struct Segmented {
     selected: usize,
     md: bool,
     mono: bool,
+    fill: bool,
     disabled: bool,
     force: Option<(usize, Force)>,
     on_change: Option<OnChange>,
@@ -69,6 +70,7 @@ impl Segmented {
             selected,
             md: false,
             mono: false,
+            fill: false,
             disabled: false,
             force: None,
             on_change: None,
@@ -80,6 +82,11 @@ impl Segmented {
     }
     pub fn mono(mut self) -> Self {
         self.mono = true;
+        self
+    }
+    /// Fill the parent's width with equal options (`.dv-tabs .mx-seg button { flex: 1 }`).
+    pub fn fill(mut self) -> Self {
+        self.fill = true;
         self
     }
     pub fn disabled(mut self, on: bool) -> Self {
@@ -141,7 +148,43 @@ impl RenderOnce for Segmented {
             .rounded(radius::SM)
             .bg(p.surface_raised)
             .shadow(vec![spread(p.border_strong, px(1.))]);
-        let thumb = if gen == 0 {
+        let n = self.options.len().max(1) as f32;
+        let (from_f, to_f) = (
+            prev.min(n as usize - 1) as f32 / n,
+            self.selected as f32 / n,
+        );
+        let thumb = if self.fill {
+            // Equal options: the thumb is a fraction of the inset track.
+            let t = div()
+                .id("seg-thumb")
+                .test_support()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(gpui_kit::relative(to_f))
+                .w(gpui_kit::relative(1. / n))
+                .rounded(radius::SM)
+                .bg(p.surface_raised)
+                .shadow(vec![spread(p.border_strong, px(1.))]);
+            let t = if gen == 0 {
+                t.into_any_element()
+            } else {
+                t.with_animation(
+                    nid(&format!("{base}-thumb"), gen),
+                    Animation::new(motion::SLOW).with_easing(motion::expo),
+                    move |el, k| el.left(gpui_kit::relative(from_f + (to_f - from_f) * k)),
+                )
+                .into_any_element()
+            };
+            div()
+                .absolute()
+                .top(INSET)
+                .bottom(INSET)
+                .left(INSET)
+                .right(INSET)
+                .child(t)
+                .into_any_element()
+        } else if gen == 0 {
             thumb.into_any_element()
         } else {
             thumb
@@ -179,11 +222,11 @@ impl RenderOnce for Segmented {
                 .when(!self.disabled, |el| el.track_focus(&handle))
                 .relative()
                 .flex()
-                .flex_none()
                 .items_center()
                 .justify_center()
                 .gap(ICON_GAP)
-                .w(widths[ix])
+                .when(self.fill, |el| el.flex_1())
+                .when(!self.fill, |el| el.flex_none().w(widths[ix]))
                 .h_full()
                 .rounded(radius::SM)
                 .text_color(fg)
@@ -212,7 +255,8 @@ impl RenderOnce for Segmented {
             .aria_label(self.aria.clone())
             .relative()
             .flex()
-            .flex_none()
+            .when(self.fill, |el| el.w_full())
+            .when(!self.fill, |el| el.flex_none())
             .h(h)
             .p(INSET)
             .bg(p.wash)

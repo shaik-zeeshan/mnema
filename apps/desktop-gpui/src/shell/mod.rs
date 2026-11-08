@@ -24,6 +24,17 @@ use crate::theme::{self, text, FONT_UI};
 use command_field::{CommandField, CommandFieldEvent, Mode};
 pub use model::{ShellModel, Surface};
 
+/// The last loaded developer-options switch, for windows outside the shell
+/// (the small windows' sharingType, the developer window's gate).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DeveloperOptions(pub bool);
+
+impl gpui_kit::Global for DeveloperOptions {}
+
+pub fn developer_options(cx: &gpui_kit::App) -> bool {
+    cx.try_global::<DeveloperOptions>().is_some_and(|d| d.0)
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Overlay {
     Notifications,
@@ -114,6 +125,7 @@ impl Shell {
             screen: s.selected[0],
         };
         let developer = self.model.developer_options;
+        cx.set_global(DeveloperOptions(developer));
         let status = self.model.status.clone();
         self.settings.update(cx, |s, cx| {
             s.status = status;
@@ -313,9 +325,11 @@ impl Shell {
                 this.toggle_source(2, cx)
             }),
         )
-        // shortcut: the developer window is S15.
-        .on_action(cx.listener(|_, _: &keymap::OpenDebug, _, _| {
-            log::debug!("open debug: developer window lands in S15")
+        // Gated on developer options, like `+layout.svelte`'s /debug gate.
+        .on_action(cx.listener(|this, _: &keymap::OpenDebug, _, cx| {
+            if this.model.developer_options {
+                crate::small::debug::open(cx);
+            }
         }))
     }
 }

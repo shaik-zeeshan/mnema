@@ -7,7 +7,9 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, App, ClickEvent, ElementId, Hsla, Pixels, SharedString, Window};
+use gpui_kit::{
+    div, px, App, ClickEvent, ElementId, FocusHandle, Hsla, Pixels, SharedString, Window,
+};
 
 use super::{focus_handle, focus_visible, icon, mix, outline, progress, tooltip, Force};
 use crate::theme::{self, size, text, Palette};
@@ -23,6 +25,8 @@ pub enum Variant {
     Ghost,
     /// Neutral surface, danger ink; tints on hover.
     Danger,
+    /// Text only in danger ink (`.mx-btn--ghost.mx-btn--danger`).
+    GhostDanger,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -57,6 +61,7 @@ pub struct Button {
     force: Force,
     tip: Option<SharedString>,
     block: bool,
+    focus: Option<FocusHandle>,
     on_click: Option<ClickHandler>,
 }
 
@@ -95,6 +100,7 @@ impl Button {
             force: Force::None,
             tip: None,
             block: false,
+            focus: None,
             on_click: None,
         }
     }
@@ -117,6 +123,9 @@ impl Button {
     }
     pub fn danger(self) -> Self {
         self.variant(Variant::Danger)
+    }
+    pub fn ghost_danger(self) -> Self {
+        self.variant(Variant::GhostDanger)
     }
     pub fn sm(mut self) -> Self {
         self.size = ButtonSize::Sm;
@@ -172,6 +181,11 @@ impl Button {
         self.force = f;
         self
     }
+    /// Use the owner's focus handle (a view that moves focus here itself).
+    pub fn focus_handle(mut self, h: &FocusHandle) -> Self {
+        self.focus = Some(h.clone());
+        self
+    }
     pub fn tip(mut self, t: impl Into<SharedString>) -> Self {
         self.tip = Some(t.into());
         self
@@ -219,6 +233,14 @@ fn skin(v: Variant, pressed: bool, p: &Palette) -> Skin {
             press: p.wash_strong,
             ring: p.accent,
         },
+        Variant::GhostDanger => Skin {
+            bg: none,
+            bd: none,
+            fg: p.danger_text,
+            hover: (p.danger_bg, none, p.danger_text),
+            press: p.danger_bg,
+            ring: p.danger,
+        },
         Variant::Danger => Skin {
             bg: p.surface_raised,
             bd: p.border_strong,
@@ -257,7 +279,10 @@ impl RenderOnce for Button {
         let s = skin(self.variant, self.pressed, &p);
         let blocked = self.disabled || self.soft_disabled || self.busy;
         let live = !blocked;
-        let handle = focus_handle(self.id.clone(), window, cx);
+        let handle = match &self.focus {
+            Some(h) => h.clone(),
+            None => focus_handle(self.id.clone(), window, cx),
+        };
         let ring = focus_visible(&handle, self.force, window);
         let (bg, bd, fg) = match self.force {
             Force::Hover if live => s.hover,

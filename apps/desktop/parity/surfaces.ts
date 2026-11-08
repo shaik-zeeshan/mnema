@@ -274,10 +274,16 @@ export const SURFACES: Record<string, Surface> = {
     page: "access.html",
     mockViewport: MAIN,
     selector: WIN,
-    states: q(
-      "view",
-      "request unnamed widen submitting submit-failed expired blocked loading load-failed no-request manage manage-loading manage-error empty cli-missing",
-    ),
+    // S15: fixtures/access/<state>.json; `granted` = the request + Allow (the receipt; the
+    // mockup draws none, so its column shows the request).
+    stateClick: { granted: ['button:has-text("Allow access")'] },
+    states: {
+      ...q(
+        "view",
+        "request unnamed widen submitting submit-failed expired blocked loading load-failed no-request manage manage-loading manage-error empty cli-missing",
+      ),
+      granted: "view=request",
+    },
   },
   update: {
     route: "/update",
@@ -299,7 +305,8 @@ export const SURFACES: Record<string, Surface> = {
     page: "timeline.html",
     selector: "#tl-helper",
     mockViewport: MAIN,
-    states: { waiting: "state=permission-helper" },
+    // `granted`: the fixture's screen permission is on; the mockup draws only the wait.
+    states: { waiting: "state=permission-helper", granted: "state=permission-helper" },
   },
   // Developer window (gated on developerOptionsEnabled); `mini` is the 300x120 always-on-top mode.
   debug: {
@@ -309,6 +316,10 @@ export const SURFACES: Record<string, Surface> = {
     page: "developer.html",
     selector: "#dv-win",
     mockViewport: MAIN,
+    // Fixtures: debug/default.json (the issues scenario), overview-ok.json, not-recording.json.
+    stateClick: Object.fromEntries(
+      ["Pipeline", "Capture", "AI", "Logs"].map((t) => [t.toLowerCase(), [`.dv-tabs button:has-text("${t}")`]]),
+    ),
     states: q("state", "overview-ok overview-issues pipeline processor job capture capture-asleep ai logs not-recording"),
   },
   "debug-mini": {

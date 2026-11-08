@@ -1,0 +1,23 @@
+{
+ "get_app_update_status": {
+  "app": {
+   "productName": "Mnema",
+   "version": "0.1.24",
+   "identifier": "day.mnema",
+   "platform": "macos",
+   "arch": "aarch64"
+  },
+  "channel": "stable",
+  "state": "available",
+  "update": {
+   "version": "0.1.25",
+   "date": "2026-11-03T10:00:00Z",
+   "notes": "## What's Changed\n- Quick Recall answers cite the frames they used\n- System audio recovers after AirPods switch to call quality\n- Insights: the Journal opens on today\n\n**Full Changelog**: https://github.com/shaik-zeeshan/mnema/compare/v0.1.24...v0.1.25",
+   "channel": "stable",
+   "sizeBytes": 41900000
+  },
+  "progress": null,
+  "error": null,
+  "lastCheckedAtUnixMs": 1793782200000
+ }
+}

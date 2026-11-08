@@ -7108,6 +7108,8 @@ dependencies = [
  "app-infra",
  "async-channel",
  "block2 0.6.2",
+ "capture-microphone",
+ "capture-screen",
  "capture-types",
  "gpui-kit",
  "gpui-pre-util",

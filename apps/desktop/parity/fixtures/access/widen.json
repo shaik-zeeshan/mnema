@@ -1,0 +1,14 @@
+{
+ "get_pending_cli_access_request": {
+  "requestId": "req-codex-1",
+  "client": {
+   "label": "Codex",
+   "source": "inferred"
+  },
+  "command": "timeline --from 2026-10-04 --to 2026-10-10",
+  "minimumScope": "last7Days",
+  "preferredScope": "last7Days",
+  "currentScope": "lastDay",
+  "createdAt": "2026-11-04T09:01:30Z"
+ }
+}
