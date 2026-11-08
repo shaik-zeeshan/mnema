@@ -65,6 +65,7 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 ## Building
 - Agent worktrees are created from `main`: first `git merge --ff-only new-gpui-desktop-app` (or the base commit in your brief).
 - Your brief gives you a build slot N (1-3). Run `export CARGO_TARGET_DIR=$HOME/.cargo/worktree-targets/gpui-slot-$N`. Never share a slot with a live agent: a shared target dir gives phantom errors, and each one costs ~20 GB.
+- `export CARGO_INCREMENTAL=0`: incremental caches doubled slot sizes and filled the disk twice on 2026-11-08 (~25 GB free with 3 slots).
 - `. scripts/openblas-build-env.sh` before any build linking speakrs. `bash scripts/prepare-mnema-cli-sidecar.sh debug` before any `apps/desktop/src-tauri` cargo command.
 - `rustfmt` on touched files only. Never a bare `cargo fmt`, which churns ~17 unrelated files.
 - The four `resume_screen_from_inactivity_*` failures and the known flakes already exist. Don't chase them, and don't add to them.
