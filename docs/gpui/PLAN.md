@@ -93,6 +93,14 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
   - `Host::open_url` now returns `Result` and opens absolute paths with `open_path`. This fixes a B2 regression where "open log" lost its error toast.
   - app-core now depends on `global-hotkey 0.7` (the Tauri plugin's version) for shortcut validation, while the GPUI app pins 0.9. Reconcile in S7: app-core validates strings, and each host converts.
 
+### Next up (orchestrator queue; keep current)
+1. **Running** (2026-11-08): S2 B3a (model downloads, slot 3), S2 B3b (semantic search, slot 1), S6 (shared controls, slot 2). Their patches land in the session scratchpad as `S2-B3a.patch`, `S2-B3b.patch`, `S6.patch`.
+2. **Then:**
+   - S2 B4 (ai_runtime + user_context, privacy_redaction_sources, sensitive_capture_recommendations);
+   - then S2 B6 (app_infra + frame_preview + quick_recall, cli_access, broker channel with the ruled seams).
+3. **After S6:** wave A UI slices S8 / S11 / S13, at most 3 slots at once alongside the backend work.
+4. **After B6:** S3 (capture + ask_ai), then S4, then S7.
+
 ## T0 · Tooling (orchestrator, before S0)
 
 **Goal:** the repo has the plan, subagents, skill and hooks that every later slice relies on.
