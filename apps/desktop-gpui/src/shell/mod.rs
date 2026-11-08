@@ -44,6 +44,7 @@ pub struct Shell {
     /// The question handed to Chat (`/chat?q=`).
     pub chat_query: Option<String>,
     pub command: Entity<CommandField>,
+    pub timeline: Entity<crate::timeline::TimelineView>,
     focus: FocusHandle,
     _subscriptions: [Subscription; 2],
     tick: Option<Task<()>>,
@@ -51,7 +52,19 @@ pub struct Shell {
 
 impl Shell {
     pub fn new(model: ShellModel, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let source = std::sync::Arc::new(crate::timeline::data::CoreSource);
+        Self::with_timeline_source(model, source, window, cx)
+    }
+
+    /// The shell over a given Timeline source (goldens and tests pass the parity fixture).
+    pub fn with_timeline_source(
+        model: ShellModel,
+        source: std::sync::Arc<dyn crate::timeline::data::Source>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let command = cx.new(|cx| CommandField::new(window, cx));
+        let timeline = cx.new(|cx| crate::timeline::TimelineView::new(source, cx));
         let subscriptions = [
             cx.subscribe_in(&command, window, Self::on_command),
             // System appearance follows the OS (theme::set_system ignores it when pinned).
@@ -70,6 +83,7 @@ impl Shell {
             bindings: Bindings::default(),
             chat_query: None,
             command,
+            timeline,
             focus,
             _subscriptions: subscriptions,
             tick: None,
@@ -80,6 +94,17 @@ impl Shell {
 
     pub fn set_model(&mut self, model: ShellModel, cx: &mut Context<Self>) {
         self.model = model;
+        let s = &self.model.status;
+        let hint = crate::timeline::CaptureHint {
+            capturing: s.running,
+            screen: s.selected[0],
+        };
+        let developer = self.model.developer_options;
+        self.timeline.update(cx, |t, cx| {
+            t.capture = hint;
+            t.developer = developer;
+            cx.notify();
+        });
         // The REC clock ticks once a second while it shows.
         // shortcut: no render-idle gate yet (hidden window still ticks); S7's
         // window visibility tracking pauses it.
@@ -198,6 +223,9 @@ impl Shell {
                 cx.notify();
             } else if this.surface == Surface::Settings {
                 this.go(this.last_main, cx);
+            } else if this.surface == Surface::Timeline
+                && this.timeline.update(cx, |t, cx| t.close_top(cx))
+            {
             } else {
                 cx.propagate();
             }
@@ -241,11 +269,16 @@ impl Render for Shell {
             .text_color(p.fg)
             .font_family(FONT_UI)
             .text_size(text::MD);
+        let timeline = (self.surface == Surface::Timeline).then(|| self.timeline.clone());
         self.register_actions(root, cx)
+            .when_some(timeline, |el, t| crate::timeline::register_actions(el, &t))
             .when(chrome, |el| {
                 el.child(titlebar::render(self, &p, window, cx))
             })
-            .child(placeholder::render(self, &p, cx))
+            .map(|el| match self.surface {
+                Surface::Timeline => el.child(self.timeline.clone()),
+                _ => el.child(placeholder::render(self, &p, cx)),
+            })
             .when(chrome, |el| {
                 el.child(status_bar::render(self, &p, window, cx))
             })

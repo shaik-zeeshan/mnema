@@ -33,6 +33,11 @@ fn is_app_target(target: &str) -> bool {
 }
 
 fn allowed(metadata: &Metadata) -> bool {
+    // The feel lines are Debug; a `feel-metrics` release build (the §5 budget
+    // run) must still write them.
+    if cfg!(feature = "feel-metrics") && metadata.target() == "mnema_gpui::feel" {
+        return true;
+    }
     let app_max = if cfg!(debug_assertions) {
         Level::Debug
     } else {

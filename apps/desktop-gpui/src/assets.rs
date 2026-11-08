@@ -23,6 +23,10 @@ icon_assets!(
         Feather,
         CircleOff,
         RotateCcw,
+        ArrowRightToLine,
+        ScanText,
+        Monitor,
+        Headphones,
     ]
 );
 

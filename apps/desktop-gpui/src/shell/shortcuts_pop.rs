@@ -39,8 +39,11 @@ fn group(g: &HelpGroup, p: &Palette) -> impl IntoElement {
         }))
 }
 
-pub fn render(shell: &Shell, p: &Palette, _cx: &mut Context<Shell>) -> impl IntoElement {
-    let groups = keymap::help_groups(&shell.bindings, shell.help_state(), Vec::new());
+pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoElement {
+    let extra = (shell.surface == super::Surface::Timeline)
+        .then(|| shell.timeline.read(cx).help_group())
+        .flatten();
+    let groups = keymap::help_groups(&shell.bindings, shell.help_state(), extra.into_iter().collect());
     // Two columns, groups flowing left then right (CSS grid 1fr 1fr).
     let (left, right): (Vec<_>, Vec<_>) = groups.iter().enumerate().partition(|(i, _)| i % 2 == 0);
     let column = |gs: Vec<(usize, &HelpGroup)>| {

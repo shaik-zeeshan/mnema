@@ -14,6 +14,7 @@ pub mod logging;
 pub mod native;
 pub mod shell;
 pub mod theme;
+pub mod timeline;
 pub mod ui;
 pub mod window;
 

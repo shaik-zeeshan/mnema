@@ -31,6 +31,11 @@ serde_json = "1"
 time = { version = "0.3", features = ["formatting", "local-offset", "macros", "parsing"] }
 tokio = { version = "1", features = ["rt-multi-thread", "time"] }
 
+[[bin]]
+name = "scrub-bench"
+path = "src/bin/scrub_bench.rs"
+required-features = ["fixtures", "feel-metrics"]
+
 [[test]]
 name = "visual"
 harness = false

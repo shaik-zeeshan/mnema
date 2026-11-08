@@ -11,6 +11,8 @@
 mod compare;
 #[path = "visual/gallery.rs"]
 mod gallery;
+#[path = "visual/timeline.rs"]
+mod timeline;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -23,6 +25,7 @@ use gpui_kit::{px, size, AppContext, VisualTestAppContext, WindowAppearance};
 use mnema_gpui::assets::MnemaAssets;
 use mnema_gpui::host::GpuiHost;
 use mnema_gpui::shell::{data, fixture, Overlay, Shell, ShellModel};
+use mnema_gpui::timeline::fixture::FixtureSource;
 use mnema_gpui::theme::{self, fonts};
 use mnema_gpui::{keymap, ui::clock};
 
@@ -107,20 +110,28 @@ fn render(
 ) -> anyhow::Result<image::RgbaImage> {
     cx.update(|cx| theme::set_setting(setting, cx));
     let overlay = state.overlay;
+    // The Timeline under the shell shows the same parity data the Tauri shot does.
+    let fixture = if state.fixture == FixtureId::Populated { "default" } else { "first-run" };
+    let source = Arc::new(FixtureSource::load(fixture)?);
+    let mut timeline = None;
     let window = cx.open_offscreen_window(
         size(px(state.viewport.0), px(state.viewport.1)),
         |window, cx| {
             let shell = cx.new(|cx| {
-                let mut shell = Shell::new(model, window, cx);
+                let mut shell = Shell::with_timeline_source(model, source, window, cx);
                 shell.overlay = overlay;
                 shell
             });
+            timeline = Some(shell.read(cx).timeline.clone());
             cx.new(|cx| Root::new(shell, window, cx))
         },
     )?;
-    cx.run_until_parked();
-    cx.update_window(window.into(), |_, window, _| window.refresh())?;
-    cx.run_until_parked();
+    let timeline = timeline.expect("timeline");
+    for _ in 0..3 {
+        timeline::settle(cx, &timeline);
+        cx.update_window(window.into(), |_, window, _| window.refresh())?;
+    }
+    timeline::settle(cx, &timeline);
     let shot = cx.capture_screenshot(window.into())?;
     cx.update_window(window.into(), |_, window, _| window.remove_window())?;
     Ok(shot)
@@ -170,6 +181,16 @@ fn run() -> anyhow::Result<()> {
                 .find(|(t, _)| *t == theme_name)
                 .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
             return gallery::parity(&mut cx, &dir, &state, setting.clone());
+        }
+        if !filters.is_empty() && filters.iter().all(|f| "timeline".contains(f.as_str())) {
+            let state = std::env::var("PARITY_STATE")?;
+            let theme_name = std::env::var("PARITY_THEME")?;
+            let (_, setting) = THEMES
+                .iter()
+                .find(|(t, _)| *t == theme_name)
+                .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
+            let shell_for = |name: &str| model_for(FixtureId::from_name(name).unwrap()).unwrap();
+            return timeline::parity(&mut cx, &dir, &state, setting.clone(), &shell_for);
         }
         if !filters.iter().all(|f| "shell".contains(f.as_str())) {
             return Ok(()); // another surface's parity run
@@ -221,6 +242,8 @@ fn run() -> anyhow::Result<()> {
         }
     }
     failures.extend(gallery::goldens(&mut cx, &filters, &THEMES)?);
+    let shell_for = |name: &str| model_for(FixtureId::from_name(name).unwrap()).unwrap();
+    failures.extend(timeline::goldens(&mut cx, &filters, &THEMES, &shell_for)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

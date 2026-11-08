@@ -240,6 +240,7 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
             cx,
         ),
     ];
+    crate::timeline::bind_keys(cx);
     cx.bind_keys(
         [
             KeyBinding::new("cmd-k", FocusRecall, shell),

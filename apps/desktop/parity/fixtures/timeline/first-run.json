@@ -1,0 +1,184 @@
+{
+  "system_uses_24_hour_time": false,
+  "get_keyboard_bindings_settings": {
+    "schemaVersion": 1,
+    "globalShortcuts": {
+      "enabled": true,
+      "bindings": {
+        "toggleRecording": "CommandOrControl+Alt+R",
+        "pauseResumeRecording": "CommandOrControl+Alt+P",
+        "toggleMainWindow": "CommandOrControl+Alt+M",
+        "quickRecall": "CommandOrControl+Alt+Space"
+      }
+    },
+    "appShortcuts": {
+      "openSettings": "CommandOrControl+,",
+      "openDebug": "CommandOrControl+D",
+      "toggleSourceScreen": "1",
+      "toggleSourceMicrophone": "2",
+      "toggleSourceSystemAudio": "3",
+      "toggleShortcutsHelp": "/"
+    },
+    "dashboardShortcuts": {
+      "openJumpPicker": "J",
+      "jumpLatest": "L",
+      "toggleOcr": "O",
+      "refreshTimeline": "R",
+      "copyFrame": "C",
+      "downloadFrame": "D"
+    },
+    "audioDrawerShortcuts": {
+      "playPause": "Space",
+      "seekBack": "ArrowLeft",
+      "seekForward": "ArrowRight",
+      "seekBackFast": "Shift+ArrowLeft",
+      "seekForwardFast": "Shift+ArrowRight"
+    }
+  },
+  "get_license_status": {
+    "kind": "licensed",
+    "updateThroughMs": 1819702920000.0,
+    "inWindow": true,
+    "email": "ana@example.com",
+    "name": "Ana",
+    "activation": {
+      "state": "activated"
+    }
+  },
+  "take_pending_license_deep_link": null,
+  "user_context_stamp_local_offset": null,
+  "get_storage_usage": {
+    "screenBytes": 0,
+    "microphoneBytes": 0,
+    "systemAudioBytes": 0,
+    "indexBytes": 0,
+    "modelsBytes": 1100000000,
+    "captureDays": 0,
+    "freeBytes": 312000000000
+  },
+  "get_recording_settings": {
+    "captureScreen": true,
+    "captureMicrophone": true,
+    "captureSystemAudio": true,
+    "segmentDurationSeconds": 300,
+    "screenFrameRate": 1.0,
+    "screenResolution": {
+      "mode": "preset",
+      "preset": "original"
+    },
+    "videoBitrate": {
+      "mode": "preset",
+      "preset": "medium",
+      "customMbps": null
+    },
+    "saveDirectory": "/Users/ana/.mnema",
+    "autoStart": false,
+    "developerOptionsEnabled": false,
+    "previewCacheTtlSeconds": 3600,
+    "followTimelineLive": false,
+    "retentionPolicy": "never",
+    "appearance": "system",
+    "timeFormat": "system",
+    "ocr": {
+      "enabled": true,
+      "provider": "apple_vision",
+      "modelId": null,
+      "language": null,
+      "recognitionMode": "fast",
+      "languageCorrection": false,
+      "tesseractPageSegmentationMode": "single_block",
+      "tesseractPreprocessMode": "grayscale",
+      "tesseractUpscaleFactor": 1,
+      "tesseractCharWhitelist": null
+    },
+    "transcription": {
+      "enabled": true,
+      "microphoneEnabled": true,
+      "systemAudioEnabled": false,
+      "provider": "local_whisper",
+      "modelId": "base",
+      "language": "auto",
+      "memoryMode": "balanced",
+      "idleUnloadSeconds": 300,
+      "chunkSeconds": 30
+    },
+    "speakerAnalysis": {
+      "separateSpeakers": false,
+      "recognizeSavedPeople": false,
+      "autoLabelOwner": true,
+      "provider": "speakrs",
+      "modelId": "pyannote-community-1-wespeaker",
+      "timeoutSeconds": 600
+    },
+    "audioSpeechDetection": {
+      "detector": "silero"
+    },
+    "metadata": {
+      "enabled": true,
+      "browserUrlMode": "sanitized"
+    },
+    "privacy": {
+      "excludedApps": [],
+      "filterSystemAudio": true
+    },
+    "access": {
+      "askAiEnabled": false,
+      "askAiMaxToolCalls": 12,
+      "askAiWebFetchEnabled": false,
+      "askAiModel": null,
+      "askAiModelProvider": null,
+      "quickRecallAutoAnswer": "localOnly"
+    },
+    "aiRuntime": {
+      "enabled": false,
+      "providers": [],
+      "defaultModel": null,
+      "mcpServers": [],
+      "favoriteModels": [],
+      "recentModels": []
+    },
+    "userContext": {
+      "enabled": false,
+      "derivationBudgetTier": "balanced",
+      "backfillWindowDays": 30,
+      "backfillGoDeeper": false
+    },
+    "semanticSearch": {
+      "enabled": true,
+      "provider": "local",
+      "modelId": "nomic-embed-text-v1.5"
+    },
+    "pauseCaptureOnInactivity": true,
+    "idleTimeoutSeconds": 10,
+    "microphoneActivitySensitivity": 50,
+    "systemAudioActivitySensitivity": 50,
+    "activityMode": "system_input_or_screen"
+  },
+  "get_capture_permissions": {
+    "permissions": {
+      "screen": "granted",
+      "microphone": "granted",
+      "systemAudio": "assumed_working"
+    },
+    "session": null
+  },
+  "get_app_notifications": [],
+  "get_ai_runtime_status": {
+    "enabled": false,
+    "hasProviders": false,
+    "configured": false,
+    "available": false,
+    "defaultModel": null,
+    "defaultProviderKind": null,
+    "reason": "disabled"
+  },
+  "get_usage_charts": {
+    "rangeStartMs": 1793730600000,
+    "rangeEndMs": 1793782920000,
+    "timePerApp": [],
+    "timePerSite": [],
+    "appTransitions": [],
+    "activityHeatmap": []
+  },
+  "list_frames": []
+}

@@ -63,6 +63,13 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **Gallery:** `cargo run -p mnema-gpui --bin gallery [group]` (⌘T flips theme). Goldens `gallery-<group>-<theme>.png` for `gallery::Group::ALL`; keep a group's viewport ≤1000 px tall or the offscreen window gets clamped to the display. Parity: `bash scripts/parity.sh gallery components|feedback` (no Tauri side).
 - **Known gaps:** no in-window blur (`theme::POP_SURFACE_ALPHA`, one line), no CSS colour transitions on hover/focus (instant), no `scale()` press on tiles, hover tooltips sit at the pointer, DateInput has no drag-scrub, no range mode/presets, no week-row/month-grid calendars (S8/S12 own them).
 
+## Timeline *(set by S8)*
+- **Data:** surfaces read through a `Source`-style trait (`timeline::data::Source`), sync, called on the background executor. `CoreSource` answers empty until a command moves into app-core; `timeline::fixture::FixtureSource::load(<state>)` serves `apps/desktop/parity/fixtures/<surface>/<state>.json`, records calls (`calls()`) and can be told to fail, for timing tests. View models live in `model.rs` until the DTOs move.
+- **State machines:** pure, over explicit `Instant`s from `cx.background_executor().now()` (the test clock), returning effects the view runs; the view arms one timer task for `next_deadline()`. That's how `advance_clock` reaches them.
+- **Images:** `timeline::image_cache::FrameImages` is the `ImageCache` (LRU 192, failures 5 s, `drop_image` on evict). Load in `render` (it needs the draw phase), keep the last decoded image painted until the next one is ready.
+- **Goldens with async work:** `VisualTestAppContext` runs a *simulated* clock: pump with `advance_clock` + `run_until_parked` until the view settles (`tests/visual/timeline.rs::settle`). Shell goldens now show the Timeline over the parity fixture.
+- **GPUI:** the scroll sign is the content's motion (a browser's `deltaY` is the viewport's: negate it). Key actions for a surface register on the shell root (the focus path), not the surface div. `.test_support()` changes the type: call it last.
+
 ## Tests
 - **Behaviour:**
   - `#[gpui::test]` with `TestAppContext` / `VisualTestContext`;
