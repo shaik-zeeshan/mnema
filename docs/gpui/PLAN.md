@@ -94,7 +94,7 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
   - app-core now depends on `global-hotkey 0.7` (the Tauri plugin's version) for shortcut validation, while the GPUI app pins 0.9. Reconcile in S7: app-core validates strings, and each host converts.
 
 ### Next up (orchestrator queue; keep current)
-1. **Running** (2026-11-08): S2 B3a (model downloads, slot 3), S2 B3b (semantic search, slot 1), S6 (shared controls, slot 2). Their patches land in the session scratchpad as `S2-B3a.patch`, `S2-B3b.patch`, `S6.patch`.
+1. **Running:** S2 B3b (semantic search, slot 1), S6 (shared controls, slot 2), S16a (the updater install gate only, pulled forward; slot 3). Patches land as `S2-B3b.patch`, `S6.patch`, `S16a.patch`. Done: B3a f83ea6ea (voice_enrollment waits for S3).
 2. **Then:**
    - S2 B4 (ai_runtime + user_context, privacy_redaction_sources, sensitive_capture_recommendations);
    - then S2 B6 (app_infra + frame_preview + quick_recall, cli_access, broker channel with the ruled seams).
