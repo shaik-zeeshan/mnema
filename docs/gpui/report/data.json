@@ -1,6 +1,6 @@
 {
   "updated": "2026-11-08 19:30",
-  "verdict": "About 30% done. The groundwork is proven, the main window and every shared control are built and approved, and about half the backend has moved into the shared crate. Timeline, Chat and the frame-preview move are running now; the recording engine is next.",
+  "verdict": "About 30% done. The groundwork is proven, the main window and every shared control are built and approved, and about 45% of the backend has moved into the shared crate. Timeline, Chat and the frame-preview move are running now; the recording engine is next.",
   "metrics": [
     {
       "label": "Overall",
@@ -9,8 +9,8 @@
     },
     {
       "label": "Backend moved",
-      "value": "~50%",
-      "note": "≈52k of ~104k Rust lines"
+      "value": "~45%",
+      "note": "≈45k of ~104k Rust lines left the Tauri app"
     },
     {
       "label": "Screens done",
@@ -35,7 +35,7 @@
     },
     {
       "label": "Backend move (S1–S4)",
-      "pct": 50
+      "pct": 45
     },
     {
       "label": "Native layer (S7)",
