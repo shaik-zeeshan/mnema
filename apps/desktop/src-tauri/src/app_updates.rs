@@ -16,7 +16,7 @@ use app_core::updates::{
 };
 use app_core::AppCore;
 
-use crate::{native_capture, windows};
+use crate::windows;
 
 const APP_UPDATE_AVAILABLE_NOTIFICATION_ID: &str = "app-update-available";
 
@@ -554,14 +554,14 @@ pub async fn set_app_update_channel(
 }
 
 async fn stop_capture_before_install(app_handle: &tauri::AppHandle) {
-    let session = native_capture::current_native_capture_session(app_handle);
+    let session = app_core::native_capture::control::current_native_capture_session(&app_handle.state::<std::sync::Arc<app_core::AppCore>>());
     if !capture_session_needs_stop_before_install(&session) {
         return;
     }
     app_core::debug_log::log_info("stopping capture to install an app update");
     let stop_app_handle = app_handle.clone();
     match tauri::async_runtime::spawn_blocking(move || {
-        native_capture::stop_native_capture_from_app_handle(&stop_app_handle)
+        app_core::native_capture::control::stop_native_capture_from_core(&stop_app_handle.state::<std::sync::Arc<app_core::AppCore>>())
     })
     .await
     {

@@ -205,6 +205,14 @@ pub fn get_sensitive_capture_recommendations(
     }
 }
 
+/// The command's whole body: today's app list, then the recommendations.
+pub async fn sensitive_capture_recommendations_now(
+    core: &AppCore,
+) -> Result<SensitiveCaptureRecommendationsResponse, String> {
+    let candidates = crate::native_capture::app_candidates::list_privacy_app_candidates().await?;
+    Ok(get_sensitive_capture_recommendations(core, &candidates))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

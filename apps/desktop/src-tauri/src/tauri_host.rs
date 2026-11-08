@@ -72,7 +72,7 @@ fn json(payload: impl serde::Serialize) -> Value {
 fn tauri_event(event: CoreEvent) -> (&'static str, Value) {
     use CoreEvent::*;
     match event {
-        AskAiUpdate(p) => ("ask_ai_update", p),
+        AskAiUpdate(p) => ("ask_ai_update", json(p)),
         AudioTranscriptionModelDownloadProgress(p) => {
             ("audio_transcription_model_download_progress", json(p))
         }
@@ -252,6 +252,18 @@ impl Host for TauriHost {
                     ));
                 }
             }
+            // `refresh_all` hops to the main thread itself.
+            WindowSignal::RefreshParkedViews => windows::parked_view::refresh_all(app),
+            #[cfg(target_os = "macos")]
+            WindowSignal::NotRecordingReminder { post } => {
+                if post {
+                    crate::native_capture::macos_notification::post(app);
+                } else {
+                    crate::native_capture::macos_notification::remove();
+                }
+            }
+            #[cfg(not(target_os = "macos"))]
+            WindowSignal::NotRecordingReminder { .. } => {}
         }
     }
 
@@ -361,6 +373,15 @@ mod tests {
         }
     }
 
+    fn ask_ai_update() -> app_core::ask_ai::AskAiUpdateEvent {
+        app_core::ask_ai::AskAiUpdateEvent {
+            conversation_id: "c1".into(),
+            version: 3,
+            turn_index: 0,
+            update: capture_types::TurnUpdate::Done,
+        }
+    }
+
     fn microphone_transition_failed(
     ) -> app_core::native_capture::microphone::MicrophoneAutoDisconnectTransitionFailedEvent {
         app_core::native_capture::microphone::microphone_auto_disconnect_transition_failed_event(
@@ -377,7 +398,7 @@ mod tests {
         use CoreEvent::*;
         let p = || json!({ "k": 1 });
         vec![
-            AskAiUpdate(p()),
+            AskAiUpdate(ask_ai_update()),
             AudioTranscriptionModelDownloadProgress(audio_progress()),
             SpeakerAnalysisModelDownloadProgress(speaker_progress()),
             OcrModelDownloadProgress(ocr_progress()),
@@ -466,24 +487,24 @@ mod tests {
             app_core::app_infra::TIMELINE_DATA_CHANGED_EVENT,
             app_core::app_infra::frame_preview::SCRUB_PREVIEW_CACHE_CHANGED_EVENT,
             app_core::audio_transcription_models::AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
-            conversation::commands::CONVERSATION_CHANGED_EVENT,
+            app_core::conversation::CONVERSATION_CHANGED_EVENT,
             app_core::licensing::LICENSE_DEEP_LINK_DONE_EVENT,
             app_core::licensing::LICENSE_STATUS_EVENT,
             app_core::native_capture::app_notifications::APP_NOTIFICATIONS_CHANGED_EVENT,
             app_core::native_capture::microphone::MICROPHONE_CONTROLLER_CHANGED_EVENT,
             app_core::native_capture::microphone::MICROPHONE_AUTO_DISCONNECT_TRANSITION_FAILED_EVENT,
             app_core::native_capture::AUDIO_SEGMENTS_CHANGED_EVENT,
-            native_capture::NATIVE_CAPTURE_SESSION_CHANGED_EVENT,
-            native_capture::RECORDING_SETTINGS_CHANGED_EVENT,
-            native_capture::RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT,
-            native_capture::SCREENS_DID_SLEEP_EVENT,
-            native_capture::SCREENS_DID_WAKE_EVENT,
-            native_capture::SYSTEM_DID_WAKE_EVENT,
+            app_core::native_capture::NATIVE_CAPTURE_SESSION_CHANGED_EVENT,
+            app_core::native_capture::RECORDING_SETTINGS_CHANGED_EVENT,
+            app_core::native_capture::RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT,
+            app_core::native_capture::SCREENS_DID_SLEEP_EVENT,
+            app_core::native_capture::SCREENS_DID_WAKE_EVENT,
+            app_core::native_capture::SYSTEM_DID_WAKE_EVENT,
             app_core::ocr_models::OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
             app_core::semantic_search_models::SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
             app_core::speaker_analysis_models::SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
             app_core::user_context::worker::USER_CONTEXT_CHANGED_EVENT,
-            ask_ai::mcp::oauth_flow::MCP_AUTHORIZATION_CHANGED_EVENT,
+            app_core::ask_ai::mcp::oauth_flow::MCP_AUTHORIZATION_CHANGED_EVENT,
             BROKER_OPEN_CAPTURE_RESULT_EVENT,
             INSIGHTS_OPEN_CONVERSATION_EVENT,
             LICENSE_DEEP_LINK_EVENT,
@@ -565,10 +586,17 @@ mod tests {
 
     #[test]
     fn payloads_pass_through_and_unit_events_emit_null() {
-        let payload = json!({ "conversationId": "c1", "version": 3 });
         assert_eq!(
-            tauri_event(CoreEvent::AskAiUpdate(payload.clone())),
-            ("ask_ai_update", payload)
+            tauri_event(CoreEvent::AskAiUpdate(ask_ai_update())),
+            (
+                "ask_ai_update",
+                json!({
+                    "conversationId": "c1",
+                    "version": 3,
+                    "turnIndex": 0,
+                    "update": serde_json::to_value(capture_types::TurnUpdate::Done).unwrap(),
+                })
+            )
         );
         assert_eq!(
             serde_json::to_value(()).unwrap(),

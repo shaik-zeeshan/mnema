@@ -32,10 +32,11 @@ pub fn show_permission_helper(app: tauri::AppHandle, kind: String) -> Result<(),
 
     // Pane first: System Settings activates on top of everything at normal
     // level; the helper's floating level keeps it above that.
+    let core = app.state::<std::sync::Arc<app_core::AppCore>>();
     if kind == "accessibility" {
-        crate::native_capture::open_browser_url_accessibility_settings(app.clone())?;
+        app_core::native_capture::permissions::open_browser_url_accessibility_settings(&core)?;
     } else {
-        crate::native_capture::open_capture_privacy_settings(kind.clone(), app.clone())?;
+        app_core::native_capture::permissions::open_capture_privacy_settings(kind.clone(), &core)?;
     }
 
     let config = AppWindow::PermissionHelper.config();

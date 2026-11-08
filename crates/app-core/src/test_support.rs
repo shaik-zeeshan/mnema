@@ -86,3 +86,13 @@ pub(crate) fn install_shared_test_secret_vault() {
         ));
     });
 }
+
+/// Runs `future` to completion on one shared multi-thread runtime, the way the
+/// desktop tests' `tauri::async_runtime::block_on` did (Tauri lazily builds one
+/// global runtime for it).
+pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    static RUNTIME: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| tokio::runtime::Runtime::new().expect("test runtime starts"))
+        .block_on(future)
+}

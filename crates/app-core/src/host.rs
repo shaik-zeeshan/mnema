@@ -83,6 +83,13 @@ pub enum WindowSignal {
         path: std::path::PathBuf,
         recursive: bool,
     },
+    /// A display was reconfigured: re-decide every window's parked
+    /// (offscreen-hidden) view. The host hops to its main thread itself.
+    RefreshParkedViews,
+    /// Post (`post: true`) or withdraw the native "Mnema isn't recording"
+    /// banner. The in-app row is app-core's; a host without native
+    /// notifications ignores this.
+    NotRecordingReminder { post: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

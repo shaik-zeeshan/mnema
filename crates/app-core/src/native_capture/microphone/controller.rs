@@ -154,3 +154,38 @@ pub fn current_capture_microphone_device_id(core: &AppCore) -> Option<Option<Str
         microphone_capture::microphone_controller_state(preference, disconnect_policy).ok()?;
     Some(resolve_capture_microphone_device_id(&state))
 }
+
+pub fn get_microphone_controller_state(
+    core: &AppCore,
+) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
+    let state = core.state::<MicrophoneControllerPreferencesState>();
+    let runtime = state
+        .lock()
+        .expect("microphone controller preferences state poisoned");
+    microphone_capture::microphone_controller_state(
+        runtime.preference.clone(),
+        runtime.disconnect_policy.clone(),
+    )
+}
+
+/// Off the main thread: settling a waited-for device takes the capture lock
+/// (held for seconds while frame artifacts flush) and can start an
+/// AVCaptureSession.
+pub async fn update_microphone_controller_async(
+    request: UpdateMicrophoneControllerRequest,
+    core: &Arc<AppCore>,
+) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
+    let task_core = core.clone();
+    core.spawn_blocking(move || {
+        update_microphone_controller(
+            request,
+            &task_core,
+            &task_core.state::<MicrophoneControllerPreferencesState>(),
+        )
+    })
+    .await
+    .map_err(|error| CaptureErrorResponse {
+        code: "microphone_controller_update_task_failed".to_string(),
+        message: format!("Microphone preference update task failed: {error}"),
+    })?
+}

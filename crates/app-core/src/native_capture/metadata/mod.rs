@@ -67,6 +67,30 @@ impl CaptureMetadataRuntime {
 
 pub type CaptureMetadataState = Mutex<CaptureMetadataRuntime>;
 
+/// The host's NSWorkspace observer registrations that request a privacy-filter
+/// refresh on focus/app changes; held so dropping them deregisters.
+#[cfg(target_os = "macos")]
+#[derive(Default)]
+pub struct MetadataNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>);
+
+#[cfg(not(target_os = "macos"))]
+#[derive(Default)]
+pub struct MetadataNotifierState(std::sync::Mutex<Vec<()>>);
+
+#[cfg(target_os = "macos")]
+impl MetadataNotifierState {
+    pub fn replace(&self, guards: Vec<cidre::ns::NotificationGuard>) {
+        *self.0.lock().expect("metadata notifier state poisoned") = guards;
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+impl MetadataNotifierState {
+    pub fn replace(&self, guards: Vec<()>) {
+        *self.0.lock().expect("metadata notifier state poisoned") = guards;
+    }
+}
+
 /// Whether a metadata refresh may issue a *live* active-tab browser-URL read.
 ///
 /// The Gecko (Firefox/Zen) URL is read via the Accessibility API

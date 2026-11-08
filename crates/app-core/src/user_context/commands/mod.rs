@@ -25,7 +25,9 @@ use super::worker::{
 };
 
 mod edits;
+mod wipe;
 pub use edits::*;
+pub use wipe::wipe_user_context;
 
 /// Result of a manual one-window derivation pass (the "Derive latest now"
 /// button). camelCase to match the rest of the wire DTOs.

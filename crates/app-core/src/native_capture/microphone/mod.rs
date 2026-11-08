@@ -203,6 +203,7 @@ pub fn resolve_capture_microphone_device_id(state: &MicrophoneControllerState) -
     })
 }
 
+pub mod bounded_clip;
 pub mod controller;
 
 #[cfg(test)]

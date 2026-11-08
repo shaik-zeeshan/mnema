@@ -289,9 +289,13 @@ fn apply_read_only_status(
 }
 
 fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
-    let settings = crate::native_capture::current_recording_settings_from_app_handle(app);
-    let support = crate::native_capture::get_capture_support().supported_sources;
-    let session = crate::native_capture::current_native_capture_session(app);
+    let settings = app_core::native_capture::control::current_recording_settings_from_core(
+        &app.state::<std::sync::Arc<app_core::AppCore>>(),
+    );
+    let support = app_core::native_capture::permissions::get_capture_support().supported_sources;
+    let session = app_core::native_capture::control::current_native_capture_session(
+        &app.state::<std::sync::Arc<app_core::AppCore>>(),
+    );
     let recording = session.is_running;
     let mut model = build_menu_model(
         crate::windows::is_onboarding_complete(app),
@@ -500,7 +504,10 @@ fn handle_recording_toggle(app: &tauri::AppHandle) {
     if operation(app) != StatusBarOperation::Idle {
         return;
     }
-    let recording = crate::native_capture::current_native_capture_session(app).is_running;
+    let recording = app_core::native_capture::control::current_native_capture_session(
+        &app.state::<std::sync::Arc<app_core::AppCore>>(),
+    )
+    .is_running;
     let next_operation = if recording {
         StatusBarOperation::Stopping
     } else {
@@ -512,13 +519,18 @@ fn handle_recording_toggle(app: &tauri::AppHandle) {
     let app_handle = app.clone();
     std::thread::spawn(move || {
         let result = if recording {
-            crate::native_capture::stop_native_capture_from_app_handle(&app_handle)
-                .map(|_| ())
-                .map_err(|error| ("Recording could not stop", error))
+            app_core::native_capture::control::stop_native_capture_from_core(
+                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
+            .map(|_| ())
+            .map_err(|error| ("Recording could not stop", error))
         } else {
-            crate::native_capture::start_native_capture_from_app_handle("status-bar", &app_handle)
-                .map(|_| ())
-                .map_err(|error| ("Recording could not start", error))
+            app_core::native_capture::control::start_native_capture_from_core(
+                "status-bar",
+                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
+            .map(|_| ())
+            .map_err(|error| ("Recording could not start", error))
         };
 
         set_operation(&app_handle, StatusBarOperation::Idle);
@@ -546,7 +558,9 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
         return;
     }
 
-    let settings = crate::native_capture::current_recording_settings_from_app_handle(app);
+    let settings = app_core::native_capture::control::current_recording_settings_from_core(
+        &app.state::<std::sync::Arc<app_core::AppCore>>(),
+    );
     let current = CaptureSources {
         screen: settings.capture_screen,
         microphone: settings.capture_microphone,
@@ -557,7 +571,12 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
         return;
     };
 
-    if let Err(error) = crate::native_capture::update_recording_sources_from_app_handle(app, next) {
+    if let Err(error) =
+        app_core::native_capture::settings_update::update_recording_sources_from_core(
+            &app.state::<std::sync::Arc<app_core::AppCore>>(),
+            next,
+        )
+    {
         app_core::debug_log::log_warn(format!(
             "failed to update recording sources from status bar: [{}] {}",
             error.code, error.message
@@ -567,18 +586,24 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
 }
 
 fn handle_pause_toggle(app: &tauri::AppHandle) {
-    let session = crate::native_capture::current_native_capture_session(app);
+    let session = app_core::native_capture::control::current_native_capture_session(
+        &app.state::<std::sync::Arc<app_core::AppCore>>(),
+    );
     if !session.is_running {
         return;
     }
     let result = if session.is_user_paused {
-        crate::native_capture::resume_native_capture_from_app_handle(app)
-            .map(|_| ())
-            .map_err(|error| ("Recording could not resume", error))
+        app_core::native_capture::control::resume_native_capture_from_core(
+            &app.state::<std::sync::Arc<app_core::AppCore>>(),
+        )
+        .map(|_| ())
+        .map_err(|error| ("Recording could not resume", error))
     } else {
-        crate::native_capture::pause_native_capture_from_app_handle(app)
-            .map(|_| ())
-            .map_err(|error| ("Recording could not pause", error))
+        app_core::native_capture::control::pause_native_capture_from_core(
+            &app.state::<std::sync::Arc<app_core::AppCore>>(),
+        )
+        .map(|_| ())
+        .map_err(|error| ("Recording could not pause", error))
     };
     if let Err((title, error)) = result {
         show_capture_error(app, title, error);
@@ -606,8 +631,8 @@ fn confirm_delete_recent(app: &tauri::AppHandle, seconds: i64) {
         .show(move |confirmed| {
             if confirmed {
                 tauri::async_runtime::spawn(async move {
-                    match crate::app_infra::delete_recent_capture_from_app_handle(
-                        &app_handle,
+                    match app_core::app_infra::delete_recent_capture_from_core(
+                        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
                         seconds,
                     )
                     .await
@@ -668,8 +693,8 @@ fn handle_exclude_current_app(app: &tauri::AppHandle) {
                 if !confirmed {
                     return;
                 }
-                if let Err(error) = crate::privacy_redaction_sources::add_or_enable_privacy_excluded_app_from_app_handle(
-                    app_handle.clone(),
+                if let Err(error) = app_core::privacy_redaction_sources::apply::add_or_enable_privacy_excluded_app_from_core(
+                    &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
                     bundle_id,
                     display_name,
                 ) {

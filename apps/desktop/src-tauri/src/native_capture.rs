@@ -1,1327 +1,116 @@
-pub(crate) mod not_recording_reminder;
-#[path = "native_capture_settings.rs"]
-pub(crate) mod settings;
-#[cfg(test)]
-mod tests;
+//! The Tauri adapters over `app_core::native_capture`: one-line commands, plus
+//! the native notifier registrations (NSWorkspace sleep/wake, screens
+//! sleep/wake, focus/app changes, the Core Graphics display-reconfiguration
+//! callback) that call app-core's handlers. The macOS banner for the
+//! not-recording reminder is host-side too (`macos_notification`).
 
-use app_core::debug_log;
 #[cfg(target_os = "macos")]
-use app_core::native_capture::{browser_url_ax, system_audio};
-use app_core::native_capture::metadata::{self, CaptureMetadataState};
-use app_core::native_capture::runtime;
+pub(crate) mod macos_notification;
+
+use std::sync::Arc;
+
+use app_core::native_capture::app_candidates::{
+    self, AppIconResolution, BrowserUrlSupportResponse, CheckBrowserUrlSupportRequest,
+    ResolveAppIconsRequest,
+};
+use app_core::native_capture::app_notifications::{self, AppNotification};
+use app_core::native_capture::lifecycle::NativeCaptureState;
+use app_core::native_capture::microphone::{bounded_clip, controller};
+use app_core::native_capture::permissions::{
+    self, BrowserUrlAccessibilityStatus, SystemAudioAccessHint,
+};
+use app_core::native_capture::{control, not_recording_reminder, settings_update};
 use app_core::privacy_redaction_sources::PrivacyAppCandidate;
-use capture_microphone as microphone_capture;
+use app_core::AppCore;
 use capture_types::{
-    AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse,
-    CaptureOutputFiles, CapturePermissionState, CapturePermissions, CapturePermissionsResponse,
-    CaptureSources, CaptureSupportResponse, InactivityActivityMode, MicrophoneControllerState,
-    NativeCaptureSessionResponse, OcrProvider, OcrSettings, RecordingSettings,
-    RecordingSettingsDomainUpdateResponse, ScreenResolution, ScreenResolutionPreset,
-    SettingsOwnershipDomain, StartNativeCaptureRequest,
-    UpdateAccessSettingsRequest, UpdateAiRuntimeSettingsRequest,
-    UpdateCaptureSourceSettingsRequest, UpdateCaptureTimingSettingsRequest,
-    UpdateDeveloperSettingsRequest,
+    CaptureErrorResponse, CapturePermissionsResponse, CaptureSupportResponse, IdleDebugInfo,
+    MicrophoneControllerState, NativeCaptureSessionResponse, RecordingSettings,
+    RecordingSettingsDomainUpdateResponse, StartNativeCaptureRequest, UpdateAccessSettingsRequest,
+    UpdateAiRuntimeSettingsRequest, UpdateCaptureSourceSettingsRequest,
+    UpdateCaptureTimingSettingsRequest, UpdateDeveloperSettingsRequest,
     UpdateDisplaySettingsRequest, UpdateInactivitySettingsRequest, UpdateMetadataSettingsRequest,
     UpdateMicrophoneControllerRequest, UpdateProcessingSettingsRequest,
-    UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest,
-    UpdateUserContextSettingsRequest, UpdateVideoSettingsRequest,
-    VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
+    UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest, UpdateUserContextSettingsRequest,
+    UpdateVideoSettingsRequest,
 };
-use capture_vad::configured_adapter_as_str;
-use app_core::recording_settings::{
-    current_auto_start, current_recording_settings, initialize_recording_settings_state_from_disk,
-    RecordingSettingsDomainPatch, RecordingSettingsState,
-};
-use settings::{
-    apply_recording_settings_domain_mutation, apply_recording_settings_domain_patch,
-    apply_recording_settings_update,
-};
-use std::collections::{BTreeMap, BTreeSet};
-#[cfg(target_os = "macos")]
-use std::path::Path;
-use std::path::PathBuf;
-#[cfg(target_os = "macos")]
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, OnceLock};
-#[cfg(target_os = "macos")]
-use std::time::Duration;
-use tauri::{path::BaseDirectory, Emitter, Manager};
+use tauri::{Manager, State};
 
-pub use capture_types::IdleDebugInfo;
-use app_core::native_capture::app_notifications::{
-    emit_app_notifications_changed, push_app_notification, AppNotification,
-    AppNotificationAction, AppNotificationsState,
-};
-use app_core::native_capture::lifecycle::{NativeCaptureState, StartRecordingLifecycleOutcome};
-use app_core::AppCore;
-use std::sync::Arc;
-use app_core::native_capture::microphone::{
-    resolve_capture_microphone_device_id, should_wait_for_same_microphone_device,
-    MicrophoneControllerPreferencesState,
-};
-use app_core::native_capture::microphone::controller::update_microphone_controller as update_microphone_controller_impl;
-use runtime::validate_start_request;
-
-#[cfg(target_os = "macos")]
-#[derive(Default)]
-pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>);
-
-#[cfg(not(target_os = "macos"))]
-#[derive(Default)]
-pub struct SystemWakeNotifierState(std::sync::Mutex<Vec<()>>);
-
-// Holds the registration for the Core Graphics display-reconfiguration callback
-// used as the primary, polling-free wake-recovery signal (dark/deep-idle wakes
-// and monitor reconnects power the panel back on without posting
-// `NSWorkspaceDidWake`). The guard removes the callback on drop for symmetry.
-#[cfg(target_os = "macos")]
-#[derive(Default)]
-pub struct DisplayReconfigurationNotifierState(
-    // The guard is held only so its `Drop` deregisters the callback on teardown.
-    #[allow(dead_code)] std::sync::Mutex<Option<DisplayReconfigurationCallbackGuard>>,
-);
-
-#[cfg(not(target_os = "macos"))]
-#[derive(Default)]
-pub struct DisplayReconfigurationNotifierState(std::sync::Mutex<Option<()>>);
-
-#[cfg(target_os = "macos")]
-#[derive(Default)]
-pub struct MetadataNotifierState(std::sync::Mutex<Vec<cidre::ns::NotificationGuard>>);
-
-#[cfg(not(target_os = "macos"))]
-#[derive(Default)]
-pub struct MetadataNotifierState(std::sync::Mutex<Vec<()>>);
-
-#[cfg(target_os = "macos")]
-impl MetadataNotifierState {
-    pub(crate) fn replace(&self, guards: Vec<cidre::ns::NotificationGuard>) {
-        *self.0.lock().expect("metadata notifier state poisoned") = guards;
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-impl MetadataNotifierState {
-    pub(crate) fn replace(&self, guards: Vec<()>) {
-        *self.0.lock().expect("metadata notifier state poisoned") = guards;
-    }
-}
+type Core<'a> = State<'a, Arc<AppCore>>;
 
 #[cfg(target_os = "macos")]
 pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
+    use app_core::native_capture::privacy::PrivacyRefreshReason;
     use cidre::ns;
 
+    let core = app_handle.state::<Arc<AppCore>>().inner().clone();
     let mut center = ns::Workspace::shared().notification_center();
     let mut guards = Vec::new();
     for (notification, reason) in [
         (
             ns::workspace::notification::did_activate_app(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+            PrivacyRefreshReason::WorkspaceFocusChanged,
         ),
         (
             ns::workspace::notification::did_deactivate_app(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+            PrivacyRefreshReason::WorkspaceFocusChanged,
         ),
         (
             ns::workspace::notification::active_space_did_change(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+            PrivacyRefreshReason::WorkspaceFocusChanged,
         ),
         (
             ns::workspace::notification::did_launch_app(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+            PrivacyRefreshReason::WorkspaceAppChanged,
         ),
         (
             ns::workspace::notification::did_terminate_app(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+            PrivacyRefreshReason::WorkspaceAppChanged,
         ),
         (
             ns::workspace::notification::did_hide_app(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+            PrivacyRefreshReason::WorkspaceAppChanged,
         ),
         (
             ns::workspace::notification::did_unhide_app(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+            PrivacyRefreshReason::WorkspaceAppChanged,
         ),
     ] {
         guards.push(center.add_observer_guard(notification, None, None, {
-            let app_handle = app_handle.clone();
+            let core = core.clone();
             move |_notification| {
                 app_core::native_capture::privacy::refresh::request_privacy_filter_refresh(
-                    &app_handle.state::<Arc<AppCore>>(),
-                    reason,
+                    &core, reason,
                 );
             }
         }));
     }
 
-    replace_metadata_notifier_guards(
-        app_handle
-            .state::<crate::native_capture::MetadataNotifierState>()
-            .inner(),
-        guards,
-    );
+    core.state::<app_core::native_capture::metadata::MetadataNotifierState>()
+        .replace(guards);
 }
 
 #[cfg(not(target_os = "macos"))]
 pub fn start_metadata_notifier(_app_handle: tauri::AppHandle) {}
 
 #[cfg(target_os = "macos")]
-fn replace_metadata_notifier_guards(
-    slot: &crate::native_capture::MetadataNotifierState,
-    guards: Vec<cidre::ns::NotificationGuard>,
-) {
-    slot.replace(guards);
-}
-
-pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
-// Screens-asleep is a render-idle signal for the frontend: WebKit strands a
-// non-purgeable IOSurface for every layer repaint that happens while the
-// window isn't composited to a lit display (FB16462982), so the frontend
-// pauses its periodic DOM updates between these two events.
-pub const SCREENS_DID_SLEEP_EVENT: &str = "screens_did_sleep";
-pub const SCREENS_DID_WAKE_EVENT: &str = "screens_did_wake";
-#[cfg(target_os = "macos")]
-// ScreenCaptureKit can report no displays for several seconds after macOS
-// wake; keep recovery alive long enough that the backend does not depend on a
-// later frontend permissions poll to restart capture.
-const SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS: &[u64] = &[
-    500, 1_500, 3_000, 5_000, 10_000, 10_000, 10_000, 10_000, 10_000,
-];
-pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
-pub const RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT: &str = "recording_settings_domain_changed";
-pub const NATIVE_CAPTURE_SESSION_CHANGED_EVENT: &str = "native_capture_session_changed";
-const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcription-unavailable";
-const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
-const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
-const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
-const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
-const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
-const SPEAKER_SETTINGS_TAB_ID: &str = "speakers";
-#[cfg(target_os = "macos")]
-const APP_ICON_CACHE_DIR: &str = "app-icons";
-// Point size we render cached app icons at. Displayed at 20–24 CSS px, so a
-// larger source keeps the icon crisp on Retina (2x → ~48 device px) by always
-// downscaling instead of upscaling a small bitmap. Baked into the cache
-// filename so bumping this size supersedes previously cached lower-res PNGs.
-#[cfg(target_os = "macos")]
-const APP_ICON_RENDER_POINT_SIZE: u32 = 128;
-
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ResolveAppIconsRequest {
-    pub bundle_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppIconResolution {
-    pub bundle_id: String,
-    pub icon_path: Option<String>,
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CheckBrowserUrlSupportRequest {
-    pub bundle_id: String,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BrowserUrlSupportResponse {
-    pub bundle_id: String,
-    pub supported: bool,
-    pub warning: Option<String>,
-}
-
-#[tauri::command]
-pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
-    let mut candidates = BTreeMap::new();
-    insert_privacy_app_candidate(
-        &mut candidates,
-        PrivacyAppCandidate {
-            bundle_id: "day.mnema".to_string(),
-            display_name: "Mnema".to_string(),
-            running: true,
-            icon_path: None,
-            #[cfg(target_os = "macos")]
-            bundle_path: main_bundle_path(),
-            #[cfg(not(target_os = "macos"))]
-            bundle_path: None,
-        },
-    );
-
-    #[cfg(target_os = "macos")]
-    {
-        let running_candidates = running_privacy_app_candidates();
-        add_installed_privacy_app_candidates(&mut candidates);
-        merge_running_privacy_app_candidates(&mut candidates, running_candidates);
-    }
-
-    let mut candidates: Vec<_> = candidates.into_values().collect();
-    candidates.sort_by(|left, right| {
-        left.display_name
-            .to_ascii_lowercase()
-            .cmp(&right.display_name.to_ascii_lowercase())
-            .then_with(|| left.bundle_id.cmp(&right.bundle_id))
-    });
-    Ok(candidates)
-}
-
-#[tauri::command]
-pub async fn resolve_app_icons(
-    app_handle: tauri::AppHandle,
-    request: ResolveAppIconsRequest,
-) -> Result<Vec<AppIconResolution>, String> {
-    let requested_bundle_ids: BTreeSet<String> = request
-        .bundle_ids
-        .into_iter()
-        .map(|bundle_id| bundle_id.trim().to_string())
-        .filter(|bundle_id| !bundle_id.is_empty())
-        .collect();
-
-    if requested_bundle_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        // Each requested identifier resolves to an app bundle path. They are
-        // usually bundle ids, but some callers (e.g. the Ask-AI timeline chip)
-        // pass a human display name like "Zen Browser"; when the bundle-id
-        // lookup misses, fall back to a case-insensitive match against the
-        // installed/running app catalog so those chips still get a real icon.
-        // Non-app labels (e.g. a website name) stay unresolved, and the frontend
-        // renders its letter fallback.
-        let mut bundle_paths: BTreeMap<String, Option<PathBuf>> = requested_bundle_ids
-            .iter()
-            .map(|identifier| (identifier.clone(), app_icon_bundle_path(identifier)))
-            .collect();
-        if bundle_paths.values().any(Option::is_none) {
-            let catalog = app_display_name_bundle_path_catalog();
-            for (identifier, path) in bundle_paths.iter_mut() {
-                if path.is_none() {
-                    *path = catalog.get(&canonical_app_display_name(identifier)).cloned();
-                }
-            }
-        }
-
-        let mut candidates = BTreeMap::new();
-        for identifier in &requested_bundle_ids {
-            insert_privacy_app_candidate(
-                &mut candidates,
-                PrivacyAppCandidate {
-                    bundle_id: identifier.clone(),
-                    display_name: identifier.clone(),
-                    running: false,
-                    icon_path: None,
-                    bundle_path: bundle_paths.get(identifier).cloned().flatten(),
-                },
-            );
-        }
-        materialize_app_candidate_icons(&app_handle, &mut candidates);
-
-        let icons = requested_bundle_ids
-            .into_iter()
-            .map(|bundle_id| AppIconResolution {
-                icon_path: candidates
-                    .get(&bundle_id)
-                    .and_then(|candidate| candidate.icon_path.clone()),
-                bundle_id,
-            })
-            .collect();
-        Ok(icons)
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = app_handle;
-        Ok(requested_bundle_ids
-            .into_iter()
-            .map(|bundle_id| AppIconResolution {
-                bundle_id,
-                icon_path: None,
-            })
-            .collect())
-    }
-}
-
-fn insert_privacy_app_candidate(
-    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
-    candidate: PrivacyAppCandidate,
-) {
-    let bundle_id = candidate.bundle_id.trim();
-    if bundle_id.is_empty() {
-        return;
-    }
-
-    let display_name = candidate.display_name.trim();
-    let candidate = PrivacyAppCandidate {
-        bundle_id: bundle_id.to_string(),
-        display_name: if display_name.is_empty() {
-            bundle_id.to_string()
-        } else {
-            display_name.to_string()
-        },
-        running: candidate.running,
-        icon_path: candidate.icon_path,
-        bundle_path: candidate.bundle_path,
-    };
-
-    if let Some(existing) = candidates.get_mut(&candidate.bundle_id) {
-        existing.running |= candidate.running;
-        if candidate.running || existing.display_name == existing.bundle_id {
-            existing.display_name = candidate.display_name;
-        }
-        if existing.icon_path.is_none() {
-            existing.icon_path = candidate.icon_path;
-        }
-        if existing.bundle_path.is_none() {
-            existing.bundle_path = candidate.bundle_path;
-        }
-        return;
-    }
-
-    candidates.insert(candidate.bundle_id.clone(), candidate);
-}
-
-#[cfg(target_os = "macos")]
-fn running_privacy_app_candidates() -> Vec<PrivacyAppCandidate> {
-    let mut candidates = Vec::new();
-    let running_apps = cidre::ns::Workspace::shared().running_apps();
-    for app in running_apps.iter() {
-        let Some(bundle_id) = app.bundle_id().map(|value| value.to_string()) else {
-            continue;
-        };
-        let Some(bundle_path) = app
-            .bundle_url()
-            .and_then(|url| url.path())
-            .map(|path| PathBuf::from(path.to_string()))
-            .filter(|path| path_has_app_extension(path))
-        else {
-            continue;
-        };
-        let display_name = app
-            .localized_name()
-            .map(|name| name.to_string())
-            .filter(|name| !name.trim().is_empty())
-            .or_else(|| {
-                bundle_path
-                    .file_stem()
-                    .and_then(|name| name.to_str())
-                    .filter(|name| !name.trim().is_empty())
-                    .map(str::to_string)
-            })
-            .unwrap_or_else(|| bundle_id.clone());
-        candidates.push(PrivacyAppCandidate {
-            bundle_id,
-            display_name,
-            running: true,
-            icon_path: None,
-            bundle_path: Some(bundle_path),
-        });
-    }
-    candidates
-}
-
-fn mark_running_privacy_app_candidates(
-    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
-    running_bundle_ids: &BTreeSet<String>,
-) {
-    for bundle_id in running_bundle_ids {
-        if let Some(candidate) = candidates.get_mut(bundle_id) {
-            candidate.running = true;
-        }
-    }
-}
-
-fn merge_running_privacy_app_candidates(
-    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
-    running_candidates: impl IntoIterator<Item = PrivacyAppCandidate>,
-) {
-    let running_bundle_ids = running_candidates
-        .into_iter()
-        .map(|candidate| {
-            let bundle_id = candidate.bundle_id.clone();
-            insert_privacy_app_candidate(candidates, candidate);
-            bundle_id
-        })
-        .collect::<BTreeSet<_>>();
-    mark_running_privacy_app_candidates(candidates, &running_bundle_ids);
-}
-
-#[cfg(target_os = "macos")]
-fn add_installed_privacy_app_candidates(candidates: &mut BTreeMap<String, PrivacyAppCandidate>) {
-    for root in privacy_app_search_roots() {
-        collect_privacy_apps_from_dir(&root, 0, candidates);
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn privacy_app_search_roots() -> Vec<PathBuf> {
-    let mut roots = vec![
-        PathBuf::from("/Applications"),
-        PathBuf::from("/System/Applications"),
-    ];
-    if let Some(home) = std::env::home_dir() {
-        roots.push(home.join("Applications"));
-    }
-    roots
-}
-
-#[cfg(target_os = "macos")]
-fn collect_privacy_apps_from_dir(
-    dir: &Path,
-    depth: usize,
-    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
-) {
-    const MAX_DEPTH: usize = 4;
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-
-    for entry in entries.flatten() {
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-
-        let path = entry.path();
-        if path_has_app_extension(&path) {
-            if let Some(candidate) = privacy_app_candidate_from_bundle_path(&path) {
-                insert_privacy_app_candidate(candidates, candidate);
-            }
-            continue;
-        }
-
-        if depth < MAX_DEPTH {
-            collect_privacy_apps_from_dir(&path, depth + 1, candidates);
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn privacy_app_candidate_from_bundle_path(path: &Path) -> Option<PrivacyAppCandidate> {
-    let path = path.to_str()?;
-    let ns_path = cidre::ns::String::with_str(path);
-    let bundle = cidre::ns::Bundle::with_path(&ns_path)?;
-    let bundle_id = bundle.bundle_id()?.to_string();
-    let display_name = Path::new(path)
-        .file_stem()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or(&bundle_id)
-        .to_string();
-
-    Some(PrivacyAppCandidate {
-        bundle_id,
-        display_name,
-        running: false,
-        icon_path: None,
-        bundle_path: Some(PathBuf::from(path)),
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn path_has_app_extension(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("app"))
-}
-
-#[cfg(target_os = "macos")]
-fn main_bundle_path() -> Option<PathBuf> {
-    let bundle_path = cidre::ns::Bundle::main().bundle_path().to_string();
-    (!bundle_path.trim().is_empty()).then(|| PathBuf::from(bundle_path))
-}
-
-#[cfg(target_os = "macos")]
-fn app_icon_bundle_path(bundle_id: &str) -> Option<PathBuf> {
-    macos_application_bundle_path_for_bundle_id(bundle_id).or_else(|| {
-        (bundle_id == "day.mnema")
-            .then(main_bundle_path)
-            .flatten()
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn canonical_app_display_name(value: &str) -> String {
-    value.trim().to_lowercase()
-}
-
-/// Index installed/running apps by canonical display name → bundle path, so an
-/// icon request that carries a human name (e.g. "Zen Browser") rather than a
-/// bundle id can still resolve to a real app icon. Built lazily and only when a
-/// bundle-id lookup has already missed, since it scans the application folders.
-#[cfg(target_os = "macos")]
-fn app_display_name_bundle_path_catalog() -> std::collections::HashMap<String, PathBuf> {
-    let mut candidates = BTreeMap::new();
-    add_installed_privacy_app_candidates(&mut candidates);
-    merge_running_privacy_app_candidates(&mut candidates, running_privacy_app_candidates());
-
-    let mut by_name = std::collections::HashMap::new();
-    for candidate in candidates.into_values() {
-        let Some(bundle_path) = candidate.bundle_path else {
-            continue;
-        };
-        let key = canonical_app_display_name(&candidate.display_name);
-        if key.is_empty() {
-            continue;
-        }
-        // First match wins; a display-name collision across two installed apps is
-        // rare and any matching real icon is acceptable for a decorative chip.
-        by_name.entry(key).or_insert(bundle_path);
-    }
-    by_name
-}
-
-#[cfg(target_os = "macos")]
-#[allow(deprecated, unexpected_cfgs)]
-fn macos_application_bundle_path_for_bundle_id(bundle_id: &str) -> Option<PathBuf> {
-    use cocoa::base::{id, nil};
-    use cocoa::foundation::NSString;
-    use objc::{class, msg_send, sel, sel_impl};
-    use std::ffi::CStr;
-    use std::os::raw::c_char;
-
-    if bundle_id.trim().is_empty() {
-        return None;
-    }
-
-    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
-    cidre::ns::try_catch(|| unsafe {
-        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
-        if workspace == nil {
-            return None;
-        }
-
-        let ns_bundle_id = NSString::alloc(nil).init_str(bundle_id);
-        let app_url: id = msg_send![workspace, URLForApplicationWithBundleIdentifier: ns_bundle_id];
-        if app_url == nil {
-            return None;
-        }
-
-        let path: id = msg_send![app_url, path];
-        if path == nil {
-            return None;
-        }
-
-        let raw_path: *const c_char = msg_send![path, UTF8String];
-        if raw_path.is_null() {
-            return None;
-        }
-
-        let path = CStr::from_ptr(raw_path).to_string_lossy().into_owned();
-        (!path.trim().is_empty()).then(|| PathBuf::from(path))
-    })
-    .ok()
-    .flatten()
-}
-
-#[cfg(target_os = "macos")]
-fn ensure_app_icon_cache_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let cache_dir = app_handle
-        .path()
-        .resolve(APP_ICON_CACHE_DIR, BaseDirectory::AppCache)
-        .map_err(|error| format!("failed to resolve app icon cache directory: {error}"))?;
-    std::fs::create_dir_all(&cache_dir).map_err(|error| {
-        format!(
-            "failed to create app icon cache directory {}: {error}",
-            cache_dir.display()
-        )
-    })?;
-    app_handle
-        .asset_protocol_scope()
-        .allow_directory(&cache_dir, true)
-        .map_err(|error| {
-            format!(
-                "failed to allow app icon cache directory {} in asset scope: {error}",
-                cache_dir.display()
-            )
-        })?;
-    Ok(cache_dir)
-}
-
-#[cfg(target_os = "macos")]
-fn materialize_app_candidate_icons(
-    app_handle: &tauri::AppHandle,
-    candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
-) {
-    let Ok(cache_dir) = ensure_app_icon_cache_dir(app_handle) else {
-        return;
-    };
-
-    for candidate in candidates.values_mut() {
-        let Some(bundle_path) = candidate.bundle_path.as_deref() else {
-            continue;
-        };
-        let Some(icon_path) = app_icon_cache_path(&cache_dir, &candidate.bundle_id) else {
-            continue;
-        };
-        let cached_icon_available = icon_path
-            .metadata()
-            .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0);
-        if cached_icon_available || write_macos_app_icon_png(bundle_path, &icon_path).is_ok() {
-            candidate.icon_path = Some(icon_path.to_string_lossy().to_string());
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn app_icon_cache_path(cache_dir: &Path, bundle_id: &str) -> Option<PathBuf> {
-    let file_stem = sanitize_app_icon_file_stem(bundle_id);
-    if file_stem.is_empty() {
-        return None;
-    }
-    // Size suffix invalidates older lower-res caches when the render size bumps.
-    Some(cache_dir.join(format!("{file_stem}@{APP_ICON_RENDER_POINT_SIZE}.png")))
-}
-
-#[cfg(target_os = "macos")]
-fn sanitize_app_icon_file_stem(bundle_id: &str) -> String {
-    bundle_id
-        .trim()
-        .chars()
-        .filter_map(|ch| {
-            if ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-' | '_') {
-                Some(ch)
-            } else if ch.is_whitespace() || matches!(ch, '/' | ':' | '\\') {
-                Some('_')
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
-#[cfg(target_os = "macos")]
-#[allow(deprecated, unexpected_cfgs)]
-fn write_macos_app_icon_png(bundle_path: &Path, output_path: &Path) -> Result<(), String> {
-    use cocoa::base::{id, nil};
-    use cocoa::foundation::{NSData, NSDictionary, NSSize, NSString, NSUInteger};
-    use objc::{class, msg_send, sel, sel_impl};
-
-    const NS_PNG_FILE_TYPE: NSUInteger = 4;
-    let icon_point_size = f64::from(APP_ICON_RENDER_POINT_SIZE);
-
-    let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
-    let bundle_path = bundle_path.to_string_lossy();
-
-    let png_bytes = match cidre::ns::try_catch(|| unsafe {
-        let workspace: id = msg_send![class!(NSWorkspace), sharedWorkspace];
-        if workspace == nil {
-            return Err("failed to access NSWorkspace while loading app icon".to_string());
-        }
-
-        let ns_bundle_path = NSString::alloc(nil).init_str(&bundle_path);
-        let icon: id = msg_send![workspace, iconForFile: ns_bundle_path];
-        if icon == nil {
-            return Err(format!("failed to load app icon for {}", bundle_path));
-        }
-
-        let _: () = msg_send![icon, setSize: NSSize::new(icon_point_size, icon_point_size)];
-        let tiff_data: id = msg_send![icon, TIFFRepresentation];
-        if tiff_data == nil {
-            return Err(format!(
-                "failed to render app icon TIFF for {}",
-                bundle_path
-            ));
-        }
-
-        let bitmap_rep: id = msg_send![class!(NSBitmapImageRep), imageRepWithData: tiff_data];
-        if bitmap_rep == nil {
-            return Err(format!(
-                "failed to decode app icon bitmap for {}",
-                bundle_path
-            ));
-        }
-
-        let properties = NSDictionary::dictionary(nil);
-        let png_data: id = msg_send![
-            bitmap_rep,
-            representationUsingType: NS_PNG_FILE_TYPE
-            properties: properties
-        ];
-        if png_data == nil {
-            return Err(format!("failed to encode app icon PNG for {}", bundle_path));
-        }
-
-        let len = png_data.length();
-        let bytes = png_data.bytes();
-        if bytes.is_null() || len == 0 {
-            return Err(format!("app icon PNG was empty for {}", bundle_path));
-        }
-        Ok(std::slice::from_raw_parts(bytes.cast::<u8>(), len as usize).to_vec())
-    }) {
-        Ok(result) => result?,
-        Err(exception) => {
-            let name = format!("{}", &**exception.name());
-            let reason = exception
-                .reason()
-                .map(|reason| format!("{}", reason.as_ref()))
-                .unwrap_or_else(|| "unknown reason".to_string());
-            return Err(format!(
-                "ObjC exception while loading app icon for {}: {} - {}",
-                bundle_path, name, reason
-            ));
-        }
-    };
-
-    std::fs::write(output_path, png_bytes).map_err(|error| {
-        format!(
-            "failed to write app icon {}: {error}",
-            output_path.display()
-        )
-    })
-}
-
-#[tauri::command]
-pub async fn check_browser_url_support(
-    request: CheckBrowserUrlSupportRequest,
-) -> Result<BrowserUrlSupportResponse, String> {
-    let supported = capture_metadata::browser_url_metadata_supported(&request.bundle_id);
-    Ok(BrowserUrlSupportResponse {
-        bundle_id: request.bundle_id,
-        supported,
-        warning: (!supported).then(|| {
-            "URL metadata support is unknown for this browser. When website privacy rules are enabled, this browser may be redacted because its URL cannot be checked."
-                .to_string()
-        }),
-    })
-}
-
-fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
-    // Every wake path funnels through here, so this is where hidden webviews
-    // come back — a missed `screens_did_wake` must never leave the app blank.
-    crate::windows::set_all_webview_views_hidden(app_handle, false);
-    let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
-}
-
-pub(crate) fn emit_recording_settings_changed(
-    app_handle: &tauri::AppHandle,
-    settings: &RecordingSettings,
-) {
-    let _ = app_handle.emit(RECORDING_SETTINGS_CHANGED_EVENT, settings);
-}
-
-pub(crate) fn emit_recording_settings_domain_changed(
-    app_handle: &tauri::AppHandle,
-    response: &RecordingSettingsDomainUpdateResponse,
-) {
-    let _ = app_handle.emit(RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT, response);
-}
-
-pub(crate) fn emit_native_capture_session_changed(
-    app_handle: &tauri::AppHandle,
-    session: &capture_types::NativeCaptureSession,
-) {
-    let _ = app_handle.emit(NATIVE_CAPTURE_SESSION_CHANGED_EVENT, session);
-}
-
-fn should_warn_audio_transcription_unavailable_at_start(settings: &RecordingSettings) -> bool {
-    settings.transcription.enabled
-        && ((settings.capture_microphone && settings.transcription.microphone_enabled)
-            || (settings.capture_system_audio && settings.transcription.system_audio_enabled))
-}
-
-fn should_warn_audio_transcription_unavailable_at_startup(settings: &RecordingSettings) -> bool {
-    should_warn_audio_transcription_unavailable_at_start(settings)
-}
-
-fn audio_transcription_provider_label(provider: AudioTranscriptionProvider) -> &'static str {
-    match provider {
-        AudioTranscriptionProvider::LocalWhisper => "Local Whisper",
-        AudioTranscriptionProvider::AppleSpeechOnDevice => "Apple Speech on-device recognition",
-        AudioTranscriptionProvider::Parakeet => "Parakeet",
-        AudioTranscriptionProvider::Deepgram => "Deepgram (cloud)",
-    }
-}
-
-fn audio_transcription_selection_label(settings: &AudioTranscriptionSettings) -> String {
-    let provider = audio_transcription_provider_label(settings.provider);
-    match settings.model_id.as_deref() {
-        Some(model_id) if !model_id.is_empty() => format!("{provider} `{model_id}`"),
-        _ => provider.to_string(),
-    }
-}
-
-fn audio_transcription_unavailable_notification(
-    settings: &RecordingSettings,
-    created_at_unix_ms: u64,
-) -> AppNotification {
-    let selection = audio_transcription_selection_label(&settings.transcription);
-    AppNotification {
-        id: AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID.to_string(),
-        severity: "warning".to_string(),
-        title: "Transcription model unavailable".to_string(),
-        message: format!(
-            "{selection} is not available. Requested audio will not be transcribed until you install or choose an available model."
-        ),
-        created_at_unix_ms,
-        action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
-        }),
-    }
-}
-
-fn speech_detector_unavailable_notification(created_at_unix_ms: u64) -> AppNotification {
-    AppNotification {
-        id: SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID.to_string(),
-        severity: "warning".to_string(),
-        title: "Speech detector unavailable".to_string(),
-        message: "The selected speech detector is unavailable. Choose an available detector before starting this recording.".to_string(),
-        created_at_unix_ms,
-        action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),
-        }),
-    }
-}
-
-fn speaker_analysis_unavailable_notification(created_at_unix_ms: u64) -> AppNotification {
-    AppNotification {
-        id: SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID.to_string(),
-        severity: "warning".to_string(),
-        title: "Speaker analysis model unavailable".to_string(),
-        message: "The selected speaker analysis model is unavailable. Install or choose an available model before starting this recording.".to_string(),
-        created_at_unix_ms,
-        action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: SPEAKER_SETTINGS_TAB_ID.to_string(),
-        }),
-    }
-}
-
-fn maybe_push_audio_transcription_unavailable_warning(
-    app_handle: &tauri::AppHandle,
-    app_notifications_state: &AppNotificationsState,
-    settings: &RecordingSettings,
-    context: &str,
-) {
-    let app_data_dir = match app_handle.path().app_data_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            debug_log::log_warn(format!(
-                "failed to resolve app data directory for {context} audio transcription warning: {error}"
-            ));
-            return;
-        }
-    };
-
-    match app_core::audio_transcription_models::selected_audio_transcription_model_available(
-        &app_data_dir,
-        &settings.transcription,
-    ) {
-        Ok(true) => {}
-        Ok(false) => {
-            let selection = audio_transcription_selection_label(&settings.transcription);
-            debug_log::log_warn(format!(
-                "audio transcription unavailable at {context} (selection={selection})"
-            ));
-            push_app_notification(
-                &app_handle.state::<Arc<AppCore>>(),
-                app_notifications_state,
-                audio_transcription_unavailable_notification(settings, runtime::now_unix_ms()),
-            );
-        }
-        Err(error) => {
-            let selection = audio_transcription_selection_label(&settings.transcription);
-            debug_log::log_warn(format!(
-                "failed to inspect selected audio transcription model at {context} (selection={selection}): {error}"
-            ));
-            push_app_notification(
-                &app_handle.state::<Arc<AppCore>>(),
-                app_notifications_state,
-                audio_transcription_unavailable_notification(settings, runtime::now_unix_ms()),
-            );
-        }
-    }
-}
-
-fn maybe_push_audio_transcription_unavailable_start_warning(
-    app_handle: &tauri::AppHandle,
-    app_notifications_state: &AppNotificationsState,
-    settings: &RecordingSettings,
-) {
-    if !should_warn_audio_transcription_unavailable_at_start(settings) {
-        return;
-    }
-
-    maybe_push_audio_transcription_unavailable_warning(
-        app_handle,
-        app_notifications_state,
-        settings,
-        "recording start",
-    );
-}
-
-fn recording_requires_speech_detector(settings: &RecordingSettings) -> bool {
-    settings.audio_speech_detection.detector != capture_types::AudioSpeechDetector::Off
-        && settings.capture_system_audio
-        && settings.transcription.enabled
-        && settings.transcription.system_audio_enabled
-}
-
-fn selected_speech_detector_available(settings: &RecordingSettings) -> Result<bool, String> {
-    if settings.audio_speech_detection.detector == capture_types::AudioSpeechDetector::Off {
-        return Ok(false);
-    }
-    capture_vad::AudioSpeechDetectorRuntime::new(settings.audio_speech_detection.detector)
-        .map(|_| true)
-        .map_err(|error| error.to_string())
-}
-
-fn recording_requires_transcription_model(settings: &RecordingSettings) -> bool {
-    settings.transcription.enabled
-        && ((settings.capture_microphone && settings.transcription.microphone_enabled)
-            || (settings.capture_system_audio && settings.transcription.system_audio_enabled))
-}
-
-fn recording_requires_speaker_analysis_model(settings: &RecordingSettings) -> bool {
-    settings.speaker_analysis.separate_speakers && recording_requires_transcription_model(settings)
-}
-
-fn selected_speaker_analysis_model_available(
-    app_data_dir: &std::path::Path,
-    settings: &RecordingSettings,
-) -> Result<bool, String> {
-    let models_dir = speaker_analysis::speaker_analysis_models_dir(app_data_dir);
-    let manifest = speaker_analysis::builtin_model_manifest();
-    let Some(descriptor) = speaker_analysis::find_model_descriptor(
-        &manifest,
-        &settings.speaker_analysis.provider,
-        settings.speaker_analysis.model_id.as_deref(),
-    ) else {
-        return Ok(false);
-    };
-    speaker_analysis::detect_model_status(&models_dir, descriptor)
-        .map(|status| status.status == speaker_analysis::ModelStatusKind::Installed)
-        .map_err(|error| error.to_string())
-}
-
-fn should_warn_ocr_unavailable_at_start(settings: &RecordingSettings) -> bool {
-    settings.capture_screen && settings.ocr.enabled
-}
-
-fn should_warn_ocr_unavailable_at_startup(settings: &RecordingSettings) -> bool {
-    should_warn_ocr_unavailable_at_start(settings)
-}
-
-fn ocr_provider_label(provider: OcrProvider) -> &'static str {
-    match provider {
-        OcrProvider::AppleVision => "Apple Vision",
-        OcrProvider::Tesseract => "Tesseract",
-        OcrProvider::PaddleOcr => "PaddleOCR",
-    }
-}
-
-fn ocr_selection_label(settings: &OcrSettings) -> String {
-    let provider = ocr_provider_label(settings.provider);
-    match settings
-        .model_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        Some(model_id) => format!("{provider} `{model_id}`"),
-        None => provider.to_string(),
-    }
-}
-
-fn ocr_unavailable_notification(
-    settings: &RecordingSettings,
-    created_at_unix_ms: u64,
-) -> AppNotification {
-    let selection = ocr_selection_label(&settings.ocr);
-    AppNotification {
-        id: OCR_UNAVAILABLE_NOTIFICATION_ID.to_string(),
-        severity: "warning".to_string(),
-        title: "OCR engine unavailable".to_string(),
-        message: format!(
-            "{selection} is not available. Screen recording is blocked until you install or choose an available OCR engine."
-        ),
-        created_at_unix_ms,
-        action: Some(AppNotificationAction::OpenSettingsTab {
-            tab: PROCESSING_SETTINGS_TAB_ID.to_string(),
-        }),
-    }
-}
-
-fn maybe_push_ocr_unavailable_warning(
-    app_handle: &tauri::AppHandle,
-    app_notifications_state: &AppNotificationsState,
-    settings: &RecordingSettings,
-    context: &str,
-) {
-    let app_data_dir = match app_handle.path().app_data_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            debug_log::log_warn(format!(
-                "failed to resolve app data directory for {context} OCR warning: {error}"
-            ));
-            return;
-        }
-    };
-
-    match app_core::ocr_models::selected_ocr_model_available(&app_data_dir, &settings.ocr) {
-        Ok(true) => {}
-        Ok(false) => {
-            let selection = ocr_selection_label(&settings.ocr);
-            debug_log::log_warn(format!(
-                "ocr unavailable at {context} (selection={selection})"
-            ));
-            push_app_notification(
-                &app_handle.state::<Arc<AppCore>>(),
-                app_notifications_state,
-                ocr_unavailable_notification(settings, runtime::now_unix_ms()),
-            );
-        }
-        Err(error) => {
-            let selection = ocr_selection_label(&settings.ocr);
-            debug_log::log_warn(format!(
-                "failed to inspect selected OCR model at {context} (selection={selection}): {error}"
-            ));
-            push_app_notification(
-                &app_handle.state::<Arc<AppCore>>(),
-                app_notifications_state,
-                ocr_unavailable_notification(settings, runtime::now_unix_ms()),
-            );
-        }
-    }
-}
-
-fn maybe_push_ocr_unavailable_start_warning(
-    app_handle: &tauri::AppHandle,
-    app_notifications_state: &AppNotificationsState,
-    settings: &RecordingSettings,
-) {
-    if !should_warn_ocr_unavailable_at_start(settings) {
-        return;
-    }
-
-    maybe_push_ocr_unavailable_warning(
-        app_handle,
-        app_notifications_state,
-        settings,
-        "recording start",
-    );
-}
-
-pub fn maybe_push_audio_transcription_unavailable_startup_warning(app_handle: &tauri::AppHandle) {
-    let settings_state = app_handle.state::<RecordingSettingsState>();
-    let settings = current_recording_settings(settings_state.inner());
-    if !should_warn_audio_transcription_unavailable_at_startup(&settings) {
-        return;
-    }
-
-    maybe_push_audio_transcription_unavailable_warning(
-        app_handle,
-        app_handle.state::<AppNotificationsState>().inner(),
-        &settings,
-        "app startup",
-    );
-}
-
-pub fn maybe_push_ocr_unavailable_startup_warning(app_handle: &tauri::AppHandle) {
-    let settings_state = app_handle.state::<RecordingSettingsState>();
-    let settings = current_recording_settings(settings_state.inner());
-    if !should_warn_ocr_unavailable_at_startup(&settings) {
-        return;
-    }
-
-    maybe_push_ocr_unavailable_warning(
-        app_handle,
-        app_handle.state::<AppNotificationsState>().inner(),
-        &settings,
-        "app startup",
-    );
-}
-
-#[cfg(target_os = "macos")]
-fn handle_system_will_sleep(app_handle: &tauri::AppHandle) {
-    let state = app_handle.state::<NativeCaptureState>();
-    let mut runtime = match state.lock() {
-        Ok(runtime) => runtime,
-        Err(_) => return,
-    };
-
-    if runtime.handle_system_will_sleep() {
-        let runtime_state = runtime.runtime();
-        debug_log::log_info(format!(
-            "marked screen capture inactive for system sleep (session_id='{}', requested_sources={})",
-            runtime_log_session_id(runtime_state),
-            format_optional_capture_source_flags(runtime_state.requested_sources.as_ref())
-        ));
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn recover_screen_capture_after_system_wake_once(
-    app_handle: &tauri::AppHandle,
-) -> Result<bool, CaptureErrorResponse> {
-    let state = app_handle.state::<NativeCaptureState>();
-    let mut runtime = state.lock().map_err(|_| CaptureErrorResponse {
-        code: "native_capture_state_poisoned".to_string(),
-        message: "Native capture state is unavailable while recovering after system wake"
-            .to_string(),
-    })?;
-
-    let outcome = runtime.recover_after_wake(Some(&app_handle.state::<Arc<AppCore>>()));
-    let runtime_state = runtime.runtime();
-    match &outcome {
-        Ok(true) => {
-            debug_log::log_info(format!(
-                "recovered screen capture after system wake (session_id='{}', requested_sources={})",
-                runtime_log_session_id(runtime_state),
-                format_optional_capture_source_flags(runtime_state.requested_sources.as_ref())
-            ));
-        }
-        Ok(false) => {}
-        Err(error) => {
-            debug_log::log_error(format!(
-                "failed to recover screen capture after system wake (session_id='{}', requested_sources={}): [{}] {}",
-                runtime_log_session_id(runtime_state),
-                format_optional_capture_source_flags(runtime_state.requested_sources.as_ref()),
-                error.code,
-                error.message
-            ));
-        }
-    }
-
-    outcome
-}
-
-#[cfg(target_os = "macos")]
-fn is_recover_after_wake_retryable_error(error: &CaptureErrorResponse) -> bool {
-    matches!(
-        error.code.as_str(),
-        "capture_stream_start_failed"
-            | "capture_stream_start_timeout"
-            | "capture_shareable_content_failed"
-            | "capture_shareable_content_timeout"
-            | "capture_shareable_content_unavailable"
-            | "capture_display_unavailable"
-    ) || error
-        .message
-        .contains("Failed to find any displays or windows")
-        || error.message.contains("code: -3815")
-}
-
-#[cfg(target_os = "macos")]
-fn log_scheduled_system_wake_recovery_retry(error: &CaptureErrorResponse, delay_ms: u64) {
-    debug_log::log_warn(format!(
-        "screen capture wake recovery hit a transient ScreenCaptureKit error; retrying in {}ms: [{}] {}",
-        delay_ms, error.code, error.message
-    ));
-}
-
-#[cfg(target_os = "macos")]
-fn system_wake_recovery_in_progress() -> &'static AtomicBool {
-    static IN_PROGRESS: OnceLock<AtomicBool> = OnceLock::new();
-    IN_PROGRESS.get_or_init(|| AtomicBool::new(false))
-}
-
-#[cfg(target_os = "macos")]
-fn begin_system_wake_recovery() -> bool {
-    system_wake_recovery_in_progress()
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-}
-
-#[cfg(target_os = "macos")]
-fn finish_system_wake_recovery() {
-    system_wake_recovery_in_progress().store(false, Ordering::Release);
-}
-
-#[cfg(target_os = "macos")]
-fn retry_screen_capture_recovery_after_system_wake(
-    app_handle: tauri::AppHandle,
-    mut last_error: CaptureErrorResponse,
-) {
-    std::thread::spawn(move || {
-        for delay_ms in SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS {
-            log_scheduled_system_wake_recovery_retry(&last_error, *delay_ms);
-            std::thread::sleep(Duration::from_millis(*delay_ms));
-
-            match recover_screen_capture_after_system_wake_once(&app_handle) {
-                Ok(_) => {
-                    finish_system_wake_recovery();
-                    emit_system_did_wake(&app_handle);
-                    return;
-                }
-                Err(error) if is_recover_after_wake_retryable_error(&error) => {
-                    last_error = error;
-                }
-                Err(_) => {
-                    finish_system_wake_recovery();
-                    emit_system_did_wake(&app_handle);
-                    return;
-                }
-            }
-        }
-
-        finish_system_wake_recovery();
-        emit_system_did_wake(&app_handle);
-    });
-}
-
-#[cfg(target_os = "macos")]
-fn recover_screen_capture_after_system_wake(app_handle: tauri::AppHandle) {
-    if !begin_system_wake_recovery() {
-        return;
-    }
-
-    match recover_screen_capture_after_system_wake_once(&app_handle) {
-        Ok(_) => {
-            finish_system_wake_recovery();
-            emit_system_did_wake(&app_handle);
-        }
-        Err(error) if is_recover_after_wake_retryable_error(&error) => {
-            retry_screen_capture_recovery_after_system_wake(app_handle, error);
-        }
-        Err(_) => {
-            finish_system_wake_recovery();
-            emit_system_did_wake(&app_handle);
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn recover_screen_capture_after_possible_missed_wake(app_handle: tauri::AppHandle) {
-    let state = app_handle.state::<NativeCaptureState>();
-    let should_recover = state
-        .lock()
-        .map(|runtime| runtime.should_attempt_recovery_after_possible_wake())
-        .unwrap_or(false);
-
-    if !should_recover {
-        return;
-    }
-
-    debug_log::log_info(
-        "attempting screen capture recovery during session resync after possible missed system wake notification"
-            .to_string(),
-    );
-    recover_screen_capture_after_system_wake(app_handle);
-}
-
-#[cfg(target_os = "macos")]
 pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
+    use app_core::native_capture::system_wake::{self, SystemWakeNotifierState};
     use cidre::ns;
 
+    let core = app_handle.state::<Arc<AppCore>>().inner().clone();
     let mut center = ns::Workspace::shared().notification_center();
     let will_sleep_guard =
         center.add_observer_guard(ns::workspace::notification::will_sleep(), None, None, {
-            let app_handle = app_handle.clone();
+            let core = core.clone();
             move |_notification| {
-                handle_system_will_sleep(&app_handle);
+                system_wake::handle_system_will_sleep(&core);
             }
         });
     let did_wake_guard =
         center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
-            let app_handle = app_handle.clone();
+            let core = core.clone();
             move |_notification| {
-                recover_screen_capture_after_system_wake(app_handle.clone());
+                system_wake::recover_screen_capture_after_system_wake(core.clone());
             }
         });
     let screens_did_sleep_guard = center.add_observer_guard(
@@ -1329,15 +118,9 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
         None,
         None,
         {
-            let app_handle = app_handle.clone();
+            let core = core.clone();
             move |_notification| {
-                // Hide the webview VIEWS (not windows) while no display is lit:
-                // the lock/sleep-entry transition otherwise repaints the whole
-                // layer tree into permanently stranded IOSurfaces, and a hidden
-                // view is the one state whose backing stores WebKit marks
-                // volatile. See `set_all_webview_views_hidden`.
-                crate::windows::set_all_webview_views_hidden(&app_handle, true);
-                let _ = app_handle.emit(SCREENS_DID_SLEEP_EVENT, ());
+                system_wake::handle_screens_did_sleep(&core);
             }
         },
     );
@@ -1346,15 +129,14 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
         None,
         None,
         {
-            let app_handle = app_handle.clone();
+            let core = core.clone();
             move |_notification| {
-                crate::windows::set_all_webview_views_hidden(&app_handle, false);
-                let _ = app_handle.emit(SCREENS_DID_WAKE_EVENT, ());
+                system_wake::handle_screens_did_wake(&core);
             }
         },
     );
 
-    let notifier_state = app_handle.state::<SystemWakeNotifierState>();
+    let notifier_state = core.state::<SystemWakeNotifierState>();
     let mut notifier_slot = notifier_state
         .0
         .lock()
@@ -1370,107 +152,20 @@ pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
 pub fn start_system_wake_notifier(_app_handle: tauri::AppHandle) {}
 
 // `NSWorkspaceDidWake` is only posted on a *full* wake; dark wakes, Power Nap,
-// and "Wake from Deep Idle" never post it, so capture would silently stay
-// paused until the next frontend permissions poll. The display panel powering
-// back up *does* drive a Core Graphics display reconfiguration, which we listen
-// on as the definitive, polling-free re-arm signal. This also covers external
-// monitor disconnect/reconnect — the other half of ADR 0021's
-// "display-unavailable as transient liveness".
-#[cfg(target_os = "macos")]
-fn display_reconfiguration_recovery_app_handle() -> &'static Mutex<Option<tauri::AppHandle>> {
-    static APP_HANDLE: OnceLock<Mutex<Option<tauri::AppHandle>>> = OnceLock::new();
-    APP_HANDLE.get_or_init(|| Mutex::new(None))
-}
-
-// Decide whether a reconfiguration callback's flags represent a display coming
-// (back) online at the *end* of a configuration pass — the moment recovery
-// should fire. We deliberately ignore the begin-configuration notification (the
-// pre-change half of every begin/end pair) and pure offline transitions
-// (remove/disable with nothing bringing a display online), so recovery runs
-// exactly once per reconfiguration and never on a display going away.
-#[cfg(target_os = "macos")]
-fn display_reconfiguration_flags_indicate_display_online(flags: u32) -> bool {
-    use core_graphics::display::CGDisplayChangeSummaryFlags as F;
-
-    let flags = F::from_bits_retain(flags);
-
-    // The begin-configuration notification is the "about to change" half; wait
-    // for the matching end notification (begin flag clear) before re-arming.
-    if flags.contains(F::kCGDisplayBeginConfigurationFlag) {
-        return false;
-    }
-
-    // A display is now present/active if it was added, enabled, became main, or
-    // (re)acquired a mode. A reconfiguration that only removes/disables a
-    // display is a display going away, not a wake — skip it.
-    flags.intersects(
-        F::kCGDisplayAddFlag
-            | F::kCGDisplayEnabledFlag
-            | F::kCGDisplaySetMainFlag
-            | F::kCGDisplaySetModeFlag,
-    )
-}
-
-#[cfg(target_os = "macos")]
-unsafe extern "C" fn display_reconfiguration_callback(
-    _display: core_graphics::display::CGDirectDisplayID,
-    flags: u32,
-    _user_info: *const std::ffi::c_void,
-) {
-    use core_graphics::display::CGDisplayChangeSummaryFlags as F;
-
-    // Only act on the end-configuration half of each begin/end pair.
-    if F::from_bits_retain(flags).contains(F::kCGDisplayBeginConfigurationFlag) {
-        return;
-    }
-
-    let app_handle = display_reconfiguration_recovery_app_handle()
-        .lock()
-        .ok()
-        .and_then(|guard| guard.clone());
-    let Some(app_handle) = app_handle else {
-        return;
-    };
-
-    // Every end-of-configuration re-decides every window's parked view: a
-    // display coming back must reveal the windows on it even when the wake
-    // recovery below is already running (it returns early) and no window event
-    // fires, and one going away hides the windows it stranded right away.
-    // `refresh_all` hops to the main thread itself.
-    crate::windows::parked_view::refresh_all(&app_handle);
-
-    if display_reconfiguration_flags_indicate_display_online(flags) {
-        // Funnel through the shared recovery path: it is atomic-guarded
-        // (`begin/finish_system_wake_recovery`) and re-checks `!session_is_live`,
-        // so firing alongside the `NSWorkspaceDidWake` fallback is idempotent.
-        recover_screen_capture_after_system_wake(app_handle);
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct DisplayReconfigurationCallbackGuard;
-
-#[cfg(target_os = "macos")]
-impl Drop for DisplayReconfigurationCallbackGuard {
-    fn drop(&mut self) {
-        unsafe {
-            core_graphics::display::CGDisplayRemoveReconfigurationCallback(
-                display_reconfiguration_callback,
-                std::ptr::null(),
-            );
-        }
-    }
-}
-
+// and "Wake from Deep Idle" never post it. The display reconfiguration callback
+// is the polling-free re-arm signal (`app_core::native_capture::system_wake`).
 #[cfg(target_os = "macos")]
 pub fn start_display_reconfiguration_notifier(app_handle: tauri::AppHandle) {
+    use app_core::native_capture::system_wake::{
+        display_reconfiguration_callback, set_display_reconfiguration_recovery_core,
+        DisplayReconfigurationCallbackGuard, DisplayReconfigurationNotifierState,
+    };
     use core_graphics::base::{kCGErrorSuccess, CGError};
 
-    // The C callback can't capture state, so stash the handle where it can reach
-    // it. Set before registering so no early callback races a missing handle.
-    if let Ok(mut slot) = display_reconfiguration_recovery_app_handle().lock() {
-        *slot = Some(app_handle.clone());
-    }
+    let core = app_handle.state::<Arc<AppCore>>().inner().clone();
+    // The C callback can't capture state, so stash the core where it can reach
+    // it. Set before registering so no early callback races a missing core.
+    set_display_reconfiguration_recovery_core(&core);
 
     let error: CGError = unsafe {
         core_graphics::display::CGDisplayRegisterReconfigurationCallback(
@@ -1479,14 +174,14 @@ pub fn start_display_reconfiguration_notifier(app_handle: tauri::AppHandle) {
         )
     };
     if error != kCGErrorSuccess {
-        debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "failed to register display reconfiguration callback for wake recovery (CGError {error}); \
              relying on NSWorkspaceDidWake fallback"
         ));
         return;
     }
 
-    let notifier_state = app_handle.state::<DisplayReconfigurationNotifierState>();
+    let notifier_state = core.state::<DisplayReconfigurationNotifierState>();
     let mut slot = notifier_state
         .0
         .lock()
@@ -1497,2043 +192,288 @@ pub fn start_display_reconfiguration_notifier(app_handle: tauri::AppHandle) {
 #[cfg(not(target_os = "macos"))]
 pub fn start_display_reconfiguration_notifier(_app_handle: tauri::AppHandle) {}
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CaptureSupportSnapshot {
-    platform: String,
-    native_capture_supported: bool,
-    supported_sources: CaptureSources,
+#[tauri::command]
+pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
+    app_candidates::list_privacy_app_candidates().await
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct CapturePermissionsSnapshot {
-    screen: &'static str,
-    microphone: &'static str,
-    system_audio: &'static str,
+#[tauri::command]
+pub async fn resolve_app_icons(
+    core: Core<'_>,
+    request: ResolveAppIconsRequest,
+) -> Result<Vec<AppIconResolution>, String> {
+    app_candidates::resolve_app_icons(&core, request).await
 }
 
-fn capture_support_log_snapshot_state() -> &'static std::sync::Mutex<Option<CaptureSupportSnapshot>>
-{
-    static LAST_CAPTURE_SUPPORT_SNAPSHOT: OnceLock<
-        std::sync::Mutex<Option<CaptureSupportSnapshot>>,
-    > = OnceLock::new();
-
-    LAST_CAPTURE_SUPPORT_SNAPSHOT.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-fn capture_permissions_log_snapshot_state(
-) -> &'static std::sync::Mutex<Option<CapturePermissionsSnapshot>> {
-    static LAST_CAPTURE_PERMISSIONS_SNAPSHOT: OnceLock<
-        std::sync::Mutex<Option<CapturePermissionsSnapshot>>,
-    > = OnceLock::new();
-
-    LAST_CAPTURE_PERMISSIONS_SNAPSHOT.get_or_init(|| std::sync::Mutex::new(None))
-}
-
-fn reset_capture_log_snapshots() {
-    *capture_support_log_snapshot_state()
-        .lock()
-        .expect("capture support log snapshot poisoned") = None;
-    *capture_permissions_log_snapshot_state()
-        .lock()
-        .expect("capture permissions log snapshot poisoned") = None;
-}
-
-fn capture_sources_from_settings(settings: &RecordingSettings) -> CaptureSources {
-    CaptureSources {
-        screen: settings.capture_screen,
-        microphone: settings.capture_microphone,
-        system_audio: settings.capture_system_audio,
-    }
-}
-
-fn capture_sources_from_start_request(request: &StartNativeCaptureRequest) -> CaptureSources {
-    CaptureSources {
-        screen: request.capture_screen,
-        microphone: request.capture_microphone,
-        system_audio: request.capture_system_audio,
-    }
-}
-
-fn format_capture_source_flags(sources: &CaptureSources) -> String {
-    format!(
-        "screen={}, microphone={}, system_audio={}",
-        sources.screen, sources.microphone, sources.system_audio
-    )
-}
-
-fn format_optional_capture_source_flags(sources: Option<&CaptureSources>) -> String {
-    sources
-        .map(format_capture_source_flags)
-        .unwrap_or_else(|| "screen=unknown, microphone=unknown, system_audio=unknown".to_string())
-}
-
-fn runtime_log_session_id(runtime: &runtime::NativeCaptureRuntime) -> &str {
-    runtime
-        .source_sessions
-        .as_ref()
-        .and_then(|sessions| sessions.screen.as_ref())
-        .map(|session| session.session_id.as_str())
-        .unwrap_or("unknown")
-}
-
-fn session_log_session_id(session: &capture_types::NativeCaptureSession) -> &str {
-    session
-        .source_sessions
-        .as_ref()
-        .and_then(|sessions| sessions.screen.as_ref())
-        .map(|source| source.session_id.as_str())
-        .unwrap_or("unknown")
-}
-
-fn permission_state_label(state: &CapturePermissionState) -> &'static str {
-    match state {
-        CapturePermissionState::Granted => "granted",
-        CapturePermissionState::Denied => "denied",
-        CapturePermissionState::NotDetermined => "not_determined",
-        CapturePermissionState::Unsupported => "unsupported",
-        CapturePermissionState::Unknown => "unknown",
-        CapturePermissionState::AssumedWorking => "assumed_working",
-        CapturePermissionState::PossiblyBlocked => "possibly_blocked",
-    }
-}
-
-fn format_screen_resolution(resolution: &ScreenResolution) -> String {
-    match resolution {
-        ScreenResolution::Preset { preset } => match preset {
-            ScreenResolutionPreset::Original => "original".to_string(),
-            ScreenResolutionPreset::P1080 => "1080p".to_string(),
-            ScreenResolutionPreset::P720 => "720p".to_string(),
-            ScreenResolutionPreset::P540 => "540p".to_string(),
-        },
-        ScreenResolution::Custom { width, height } => format!("{width}x{height}"),
-    }
-}
-
-fn format_video_bitrate(settings: &VideoBitrateSettings) -> String {
-    match settings.mode {
-        VideoBitrateMode::Preset => {
-            let preset = settings
-                .preset
-                .clone()
-                .unwrap_or(VideoBitratePreset::Medium);
-            let label = match preset {
-                VideoBitratePreset::Low => "low",
-                VideoBitratePreset::Medium => "medium",
-                VideoBitratePreset::High => "high",
-            };
-
-            format!("preset:{label}")
-        }
-        VideoBitrateMode::Custom => format!("custom:{}mbps", settings.custom_mbps.unwrap_or(0)),
-    }
-}
-
-fn inactivity_activity_mode_label(mode: &InactivityActivityMode) -> &'static str {
-    match mode {
-        InactivityActivityMode::SystemInputOnly => "system_input_only",
-        InactivityActivityMode::SystemInputOrScreen => "system_input_or_screen",
-        InactivityActivityMode::SystemInputOrScreenOrAudio => "system_input_or_screen_or_audio",
-    }
-}
-
-fn recording_settings_overview(settings: &RecordingSettings) -> String {
-    format!(
-        "sources={}, auto_start={}, save_directory='{}', preview_cache_ttl_seconds={}, follow_timeline_live={}, segment_duration_seconds={}, screen_frame_rate={}, screen_resolution={}, video_bitrate={}, pause_on_inactivity={}, idle_timeout_seconds={}, microphone_activity_sensitivity={}, system_audio_activity_sensitivity={}, activity_mode={}",
-        format_capture_source_flags(&capture_sources_from_settings(settings)),
-        settings.auto_start,
-        settings.save_directory,
-        settings.preview_cache_ttl_seconds,
-        settings.follow_timeline_live,
-        settings.segment_duration_seconds,
-        settings.screen_frame_rate,
-        format_screen_resolution(&settings.screen_resolution),
-        format_video_bitrate(&settings.video_bitrate),
-        settings.pause_capture_on_inactivity,
-        settings.idle_timeout_seconds,
-        settings.microphone_activity_sensitivity,
-        settings.system_audio_activity_sensitivity,
-        inactivity_activity_mode_label(&settings.inactivity_activity_mode)
-    )
-}
-
-fn describe_recording_settings_changes(
-    previous: &RecordingSettings,
-    next: &RecordingSettings,
-) -> Vec<String> {
-    let mut changes = Vec::new();
-    let previous_sources = capture_sources_from_settings(previous);
-    let next_sources = capture_sources_from_settings(next);
-
-    if previous_sources != next_sources {
-        changes.push(format!(
-            "sources {} -> {}",
-            format_capture_source_flags(&previous_sources),
-            format_capture_source_flags(&next_sources)
-        ));
-    }
-
-    if previous.auto_start != next.auto_start {
-        changes.push(format!(
-            "auto_start {} -> {}",
-            previous.auto_start, next.auto_start
-        ));
-    }
-
-    if previous.preview_cache_ttl_seconds != next.preview_cache_ttl_seconds {
-        changes.push(format!(
-            "preview_cache_ttl_seconds {} -> {}",
-            previous.preview_cache_ttl_seconds, next.preview_cache_ttl_seconds
-        ));
-    }
-
-    if previous.follow_timeline_live != next.follow_timeline_live {
-        changes.push(format!(
-            "follow_timeline_live {} -> {}",
-            previous.follow_timeline_live, next.follow_timeline_live
-        ));
-    }
-
-    if previous.segment_duration_seconds != next.segment_duration_seconds {
-        changes.push(format!(
-            "segment_duration_seconds {} -> {}",
-            previous.segment_duration_seconds, next.segment_duration_seconds
-        ));
-    }
-
-    if previous.screen_frame_rate != next.screen_frame_rate {
-        changes.push(format!(
-            "screen_frame_rate {} -> {}",
-            previous.screen_frame_rate, next.screen_frame_rate
-        ));
-    }
-
-    if previous.screen_resolution != next.screen_resolution {
-        changes.push(format!(
-            "screen_resolution {} -> {}",
-            format_screen_resolution(&previous.screen_resolution),
-            format_screen_resolution(&next.screen_resolution)
-        ));
-    }
-
-    if previous.video_bitrate != next.video_bitrate {
-        changes.push(format!(
-            "video_bitrate {} -> {}",
-            format_video_bitrate(&previous.video_bitrate),
-            format_video_bitrate(&next.video_bitrate)
-        ));
-    }
-
-    if previous.pause_capture_on_inactivity != next.pause_capture_on_inactivity {
-        changes.push(format!(
-            "pause_on_inactivity {} -> {}",
-            previous.pause_capture_on_inactivity, next.pause_capture_on_inactivity
-        ));
-    }
-
-    if previous.idle_timeout_seconds != next.idle_timeout_seconds {
-        changes.push(format!(
-            "idle_timeout_seconds {} -> {}",
-            previous.idle_timeout_seconds, next.idle_timeout_seconds
-        ));
-    }
-
-    if previous.inactivity_activity_mode != next.inactivity_activity_mode {
-        changes.push(format!(
-            "activity_mode {} -> {}",
-            inactivity_activity_mode_label(&previous.inactivity_activity_mode),
-            inactivity_activity_mode_label(&next.inactivity_activity_mode)
-        ));
-    }
-
-    if previous.microphone_activity_sensitivity != next.microphone_activity_sensitivity {
-        changes.push(format!(
-            "microphone_activity_sensitivity {} -> {}",
-            previous.microphone_activity_sensitivity, next.microphone_activity_sensitivity
-        ));
-    }
-
-    if previous.system_audio_activity_sensitivity != next.system_audio_activity_sensitivity {
-        changes.push(format!(
-            "system_audio_activity_sensitivity {} -> {}",
-            previous.system_audio_activity_sensitivity, next.system_audio_activity_sensitivity
-        ));
-    }
-
-    changes
-}
-
-fn format_output_file_counts(output_files: Option<&CaptureOutputFiles>) -> String {
-    output_files
-        .map(|output_files| {
-            format!(
-                "screen_files={}, microphone_files={}, system_audio_files={}",
-                output_files.screen_files.len(),
-                output_files.microphone_files.len(),
-                output_files.system_audio_files.len()
-            )
-        })
-        .unwrap_or_else(|| "screen_files=0, microphone_files=0, system_audio_files=0".to_string())
-}
-
-fn log_capture_support_if_changed(response: &CaptureSupportResponse) {
-    let snapshot = CaptureSupportSnapshot {
-        platform: response.platform.clone(),
-        native_capture_supported: response.native_capture_supported,
-        supported_sources: response.supported_sources.clone(),
-    };
-    let mut last_snapshot = capture_support_log_snapshot_state()
-        .lock()
-        .expect("capture support log snapshot poisoned");
-
-    if last_snapshot.as_ref() == Some(&snapshot) {
-        return;
-    }
-
-    *last_snapshot = Some(snapshot.clone());
-
-    debug_log::log_info(format!(
-        "observed native capture support (platform='{}', native_supported={}, supported_sources={})",
-        snapshot.platform,
-        snapshot.native_capture_supported,
-        format_capture_source_flags(&snapshot.supported_sources)
-    ));
-}
-
-fn log_capture_permissions_if_changed(permissions: &CapturePermissions) {
-    let snapshot = CapturePermissionsSnapshot {
-        screen: permission_state_label(&permissions.screen),
-        microphone: permission_state_label(&permissions.microphone),
-        system_audio: permission_state_label(&permissions.system_audio),
-    };
-    let mut last_snapshot = capture_permissions_log_snapshot_state()
-        .lock()
-        .expect("capture permissions log snapshot poisoned");
-
-    if last_snapshot.as_ref() == Some(&snapshot) {
-        return;
-    }
-
-    *last_snapshot = Some(snapshot.clone());
-
-    debug_log::log_info(format!(
-        "observed native capture permissions (screen={}, microphone={}, system_audio={})",
-        snapshot.screen, snapshot.microphone, snapshot.system_audio
-    ));
-}
-
-fn log_loaded_recording_settings(source: &str, settings: &RecordingSettings) {
-    debug_log::log_info(format!(
-        "loaded recording settings from {source} ({})",
-        recording_settings_overview(settings)
-    ));
-}
-
-fn log_recording_settings_changes(previous: &RecordingSettings, next: &RecordingSettings) {
-    let changes = describe_recording_settings_changes(previous, next);
-
-    if changes.is_empty() {
-        return;
-    }
-
-    debug_log::log_info(format!(
-        "updated recording settings ({})",
-        changes.join(", ")
-    ));
-}
-
-fn start_native_capture_inner(
-    origin: &str,
-    request: StartNativeCaptureRequest,
-    state: tauri::State<'_, NativeCaptureState>,
-    microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
-    recording_settings_state: tauri::State<'_, RecordingSettingsState>,
-    app_notifications_state: tauri::State<'_, AppNotificationsState>,
-    app_handle: tauri::AppHandle,
-) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let incoming_sources = capture_sources_from_start_request(&request);
-    // Held to the end of the start, so a sources save racing it is refused.
-    let (settings, _sources_read) =
-        settings::recording_settings_for_start(recording_settings_state.inner());
-
-    let resolved_request = StartNativeCaptureRequest {
-        capture_screen: settings.capture_screen,
-        capture_microphone: settings.capture_microphone,
-        capture_system_audio: settings.capture_system_audio,
-    };
-    let resolved_sources = capture_sources_from_start_request(&resolved_request);
-
-    debug_log::log_info(format!(
-        "attempting native capture {origin} start (incoming_sources={}, resolved_sources={}, save_directory='{}')",
-        format_capture_source_flags(&incoming_sources),
-        format_capture_source_flags(&resolved_sources),
-        settings.save_directory
-    ));
-
-    let support = get_capture_support();
-    let sources = match validate_start_request(&resolved_request, &support) {
-        Ok(sources) => sources,
-        Err(error) => {
-            debug_log::log_warn(format!(
-                "rejected native capture {origin} start during source validation (resolved_sources={}, supported_sources={}): [{}] {}",
-                format_capture_source_flags(&resolved_sources),
-                format_capture_source_flags(&support.supported_sources),
-                error.code,
-                error.message
-            ));
-            return Err(error);
-        }
-    };
-
-    if resolved_request.capture_screen && settings.ocr.enabled {
-        let app_data_dir =
-            app_handle
-                .path()
-                .app_data_dir()
-                .map_err(|error| CaptureErrorResponse {
-                    code: "ocr_model_unavailable".to_string(),
-                    message: format!(
-                        "failed to resolve app data directory for OCR preflight: {error}"
-                    ),
-                })?;
-        match app_core::ocr_models::selected_ocr_model_available(&app_data_dir, &settings.ocr) {
-            Ok(true) => {}
-            Ok(false) => {
-                maybe_push_ocr_unavailable_start_warning(
-                    &app_handle,
-                    app_notifications_state.inner(),
-                    &settings,
-                );
-                let error = CaptureErrorResponse {
-                    code: "ocr_model_unavailable".to_string(),
-                    message: format!(
-                        "{} is unavailable. Install or choose an available OCR engine before recording screen capture.",
-                        ocr_selection_label(&settings.ocr)
-                    ),
-                };
-                debug_log::log_warn(format!(
-                    "rejected native capture {origin} start because OCR is unavailable: [{}] {}",
-                    error.code, error.message
-                ));
-                return Err(error);
-            }
-            Err(status_error) => {
-                maybe_push_ocr_unavailable_start_warning(
-                    &app_handle,
-                    app_notifications_state.inner(),
-                    &settings,
-                );
-                let error = CaptureErrorResponse {
-                    code: "ocr_model_unavailable".to_string(),
-                    message: format!(
-                        "failed to verify OCR availability for {}: {status_error}",
-                        ocr_selection_label(&settings.ocr)
-                    ),
-                };
-                debug_log::log_warn(format!(
-                    "rejected native capture {origin} start because OCR availability check failed: [{}] {}",
-                    error.code, error.message
-                ));
-                return Err(error);
-            }
-        }
-    }
-
-    if recording_requires_speech_detector(&settings) {
-        match selected_speech_detector_available(&settings) {
-            Ok(true) => {}
-            Ok(false) => {
-                push_app_notification(
-                    &app_handle.state::<Arc<AppCore>>(),
-                    app_notifications_state.inner(),
-                    speech_detector_unavailable_notification(runtime::now_unix_ms()),
-                );
-                return Err(CaptureErrorResponse {
-                    code: "speech_detector_unavailable".to_string(),
-                    message: "Selected speech detector is unavailable for the requested recording sources.".to_string(),
-                });
-            }
-            Err(error) => {
-                push_app_notification(
-                    &app_handle.state::<Arc<AppCore>>(),
-                    app_notifications_state.inner(),
-                    speech_detector_unavailable_notification(runtime::now_unix_ms()),
-                );
-                return Err(CaptureErrorResponse {
-                    code: "speech_detector_unavailable".to_string(),
-                    message: format!("Failed to verify selected speech detector: {error}"),
-                });
-            }
-        }
-    }
-
-    let app_data_dir_for_processing = if recording_requires_transcription_model(&settings)
-        || recording_requires_speaker_analysis_model(&settings)
-    {
-        Some(
-            app_handle
-                .path()
-                .app_data_dir()
-                .map_err(|error| CaptureErrorResponse {
-                    code: "processing_model_unavailable".to_string(),
-                    message: format!(
-                        "failed to resolve app data directory for processing preflight: {error}"
-                    ),
-                })?,
-        )
-    } else {
-        None
-    };
-
-    if recording_requires_transcription_model(&settings) {
-        let app_data_dir = app_data_dir_for_processing
-            .as_deref()
-            .expect("processing dir should exist");
-        match app_core::audio_transcription_models::selected_audio_transcription_model_available(
-            app_data_dir,
-            &settings.transcription,
-        ) {
-            Ok(true) => {}
-            Ok(false) => {
-                maybe_push_audio_transcription_unavailable_start_warning(
-                    &app_handle,
-                    app_notifications_state.inner(),
-                    &settings,
-                );
-                return Err(CaptureErrorResponse {
-                    code: "audio_transcription_model_unavailable".to_string(),
-                    message: format!(
-                        "{} is unavailable. Install or choose an available transcription model before recording requested audio.",
-                        audio_transcription_selection_label(&settings.transcription)
-                    ),
-                });
-            }
-            Err(error) => {
-                maybe_push_audio_transcription_unavailable_start_warning(
-                    &app_handle,
-                    app_notifications_state.inner(),
-                    &settings,
-                );
-                return Err(CaptureErrorResponse {
-                    code: "audio_transcription_model_unavailable".to_string(),
-                    message: format!("failed to verify transcription model availability: {error}"),
-                });
-            }
-        }
-    }
-
-    if recording_requires_speaker_analysis_model(&settings) {
-        let app_data_dir = app_data_dir_for_processing
-            .as_deref()
-            .expect("processing dir should exist");
-        match selected_speaker_analysis_model_available(app_data_dir, &settings) {
-            Ok(true) => {}
-            Ok(false) => {
-                push_app_notification(
-                    &app_handle.state::<Arc<AppCore>>(),
-                    app_notifications_state.inner(),
-                    speaker_analysis_unavailable_notification(runtime::now_unix_ms()),
-                );
-                return Err(CaptureErrorResponse {
-                    code: "speaker_analysis_model_unavailable".to_string(),
-                    message: "Selected speaker analysis model is unavailable. Install or choose an available model before recording requested audio.".to_string(),
-                });
-            }
-            Err(error) => {
-                push_app_notification(
-                    &app_handle.state::<Arc<AppCore>>(),
-                    app_notifications_state.inner(),
-                    speaker_analysis_unavailable_notification(runtime::now_unix_ms()),
-                );
-                return Err(CaptureErrorResponse {
-                    code: "speaker_analysis_model_unavailable".to_string(),
-                    message: format!(
-                        "failed to verify speaker analysis model availability: {error}"
-                    ),
-                });
-            }
-        }
-    }
-
-    let microphone_device_id_for_capture = if resolved_request.capture_microphone {
-        let preferences_runtime = microphone_controller_preferences_state
-            .lock()
-            .expect("microphone controller preferences state poisoned");
-        let controller_state = match microphone_capture::microphone_controller_state(
-            preferences_runtime.preference.clone(),
-            preferences_runtime.disconnect_policy.clone(),
-        ) {
-            Ok(state) => state,
-            Err(error) => {
-                debug_log::log_error(format!(
-                    "failed to resolve microphone controller state for native capture {origin} start: [{}] {}",
-                    error.code, error.message
-                ));
-                return Err(error);
-            }
-        };
-
-        if should_wait_for_same_microphone_device(&controller_state) {
-            let error = CaptureErrorResponse {
-                code: "microphone_device_unavailable_waiting_for_selected_device".to_string(),
-                message: "The selected microphone is unavailable. Reconnect the same device or change microphone preference."
-                    .to_string(),
-            };
-            debug_log::log_warn(format!(
-                "rejected native capture {origin} start because the selected microphone is unavailable and wait-for-same-device is active: [{}] {}",
-                error.code, error.message
-            ));
-            return Err(error);
-        }
-
-        resolve_capture_microphone_device_id(&controller_state)
-    } else {
-        None
-    };
-
-    let mut runtime = state.lock().expect("native capture state poisoned");
-    if runtime.runtime().is_running {
-        let existing_sources =
-            format_optional_capture_source_flags(runtime.runtime().requested_sources.as_ref());
-        let session_id = runtime_log_session_id(runtime.runtime());
-
-        if runtime.runtime().requested_sources.as_ref() != Some(&sources) {
-            let error = CaptureErrorResponse {
-                code: "capture_session_already_running".to_string(),
-                message: "A native capture session is already running with different sources"
-                    .to_string(),
-            };
-            debug_log::log_warn(format!(
-                "rejected native capture {origin} start because another session is already running (session_id='{}', existing_sources={}, requested_sources={}): [{}] {}",
-                session_id,
-                existing_sources,
-                format_capture_source_flags(&sources),
-                error.code,
-                error.message
-            ));
-            return Err(error);
-        }
-
-        debug_log::log_info(format!(
-            "native capture {origin} start requested while session is already running; returning existing session (session_id='{}', requested_sources={})",
-            session_id, existing_sources
-        ));
-
-        return Ok(NativeCaptureSessionResponse {
-            session: runtime.session(),
-        });
-    }
-
-    let requested_sources_for_log = sources.clone();
-    let started_session = match runtime.start(
-        app_handle.state::<Arc<AppCore>>().inner().clone(),
-        &settings,
-        sources,
-        microphone_device_id_for_capture,
-    ) {
-        Ok(StartRecordingLifecycleOutcome::Started(session)) => session,
-        Ok(StartRecordingLifecycleOutcome::AlreadyRunning(session)) => {
-            debug_log::log_info(format!(
-                "native capture {origin} start requested while session is already running; returning existing session (session_id='{}', requested_sources={})",
-                session_log_session_id(&session),
-                format_optional_capture_source_flags(session.requested_sources.as_ref())
-            ));
-
-            return Ok(NativeCaptureSessionResponse { session });
-        }
-        Err(error) => {
-            debug_log::log_error(format!(
-                "failed to start native capture ({origin}, requested_sources={}): [{}] {}",
-                format_capture_source_flags(&requested_sources_for_log),
-                error.code,
-                error.message
-            ));
-            return Err(error);
-        }
-    };
-
-    debug_log::log_info(format!(
-        "started native capture successfully ({origin}, session_id='{}', requested_sources={}, segment_index={}, save_directory='{}')",
-        runtime_log_session_id(runtime.runtime()),
-        format_optional_capture_source_flags(runtime.runtime().requested_sources.as_ref()),
-        runtime.runtime().current_segment_index,
-        settings.save_directory
-    ));
-
-    // Slice 6a: the Trial clock starts at first *successful* Capture, not launch.
-    // `ensure_trial_started` writes once (idempotent), so firing it on every
-    // successful start is safe; skip the async hop when already Licensed —
-    // there is nothing to stamp. Fire-and-forget off the DB pool, matching the
-    // spawn pattern used elsewhere in this file.
-    if !matches!(
-        app_core::licensing::cached_status(&app_handle.state::<std::sync::Arc<app_core::AppCore>>()),
-        Some(capture_types::LicenseStatus::Licensed { .. })
-    ) {
-        if let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() {
-            let infra = std::sync::Arc::clone(&*infra);
-            let trial_core = app_handle
-                .state::<std::sync::Arc<app_core::AppCore>>()
-                .inner()
-                .clone();
-            tauri::async_runtime::spawn(async move {
-                app_core::licensing::ensure_trial_started(
-                    infra.pool(),
-                    &trial_core,
-                    runtime::now_unix_ms() as i64,
-                )
-                .await;
-            });
-        }
-    }
-
-    maybe_push_audio_transcription_unavailable_start_warning(
-        &app_handle,
-        app_notifications_state.inner(),
-        &settings,
-    );
-    if let Some(notice) = runtime.take_microphone_vad_fallback_notification() {
-        let message = format!(
-            "Configured microphone VAD '{}' could not run. Using '{}' for this recording session.",
-            configured_adapter_as_str(notice.configured_adapter),
-            notice.effective_adapter.as_str(),
-        );
-        debug_log::log_warn(format!(
-            "microphone VAD fallback active: configured_adapter={}, effective_adapter={}, reason={}",
-            configured_adapter_as_str(notice.configured_adapter),
-            notice.effective_adapter.as_str(),
-            notice.reason
-        ));
-        push_app_notification(
-            &app_handle.state::<Arc<AppCore>>(),
-            app_notifications_state.inner(),
-            AppNotification {
-                id: format!(
-                    "microphone-vad-fallback-{}",
-                    configured_adapter_as_str(notice.configured_adapter)
-                ),
-                severity: "warning".to_string(),
-                title: "Microphone VAD fallback".to_string(),
-                message,
-                created_at_unix_ms: runtime::now_unix_ms(),
-                action: None,
-            },
-        );
-    }
-
-    Ok(NativeCaptureSessionResponse {
-        session: started_session,
-    })
+#[tauri::command]
+pub async fn check_browser_url_support(
+    request: CheckBrowserUrlSupportRequest,
+) -> Result<BrowserUrlSupportResponse, String> {
+    app_candidates::check_browser_url_support(request).await
 }
 
 #[tauri::command]
 pub fn get_capture_support() -> CaptureSupportResponse {
-    let screen_support = capture_screen::support_for_current_platform();
-    let microphone_supported = !matches!(
-        microphone_capture::microphone_permission_state(),
-        CapturePermissionState::Unsupported
-    );
-
-    let response = CaptureSupportResponse {
-        platform: screen_support.platform,
-        native_capture_supported: screen_support.native_capture_supported,
-        supported_sources: CaptureSources {
-            screen: screen_support.screen,
-            microphone: microphone_supported,
-            system_audio: capture_system_audio::supports_system_audio_capture(),
-        },
-    };
-
-    log_capture_support_if_changed(&response);
-    response
-}
-
-/// System audio's permission is inferred from what its taps have delivered
-/// (ADR 0052) — it is no longer an alias of the screen grant, which it never
-/// shared a TCC category with in the first place.
-#[cfg(target_os = "macos")]
-fn system_audio_permission_state() -> CapturePermissionState {
-    system_audio::permission_state()
-}
-
-#[cfg(not(target_os = "macos"))]
-fn system_audio_permission_state() -> CapturePermissionState {
-    CapturePermissionState::Unsupported
-}
-
-/// Loads the persisted denial evidence into the permission cache, on the
-/// deferred-startup thread (ADR 0052).
-#[cfg(target_os = "macos")]
-pub(crate) async fn hydrate_system_audio_permission_evidence(infra: &::app_infra::AppInfra) {
-    system_audio::hydrate_evidence(infra).await;
-}
-
-/// The prompt id for the "system audio may be blocked" hint. Versioned like the
-/// recommended-exclusions prompt: bumping it re-shows the hint to users who
-/// dismissed the previous wording.
-pub const SYSTEM_AUDIO_BLOCKED_PROMPT_ID: &str = "system-audio-blocked/v1";
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SystemAudioAccessHint {
-    pub prompt_id: String,
-    pub should_show: bool,
-}
-
-/// Whether to warn that system audio may be blocked (ADR 0052).
-///
-/// Every half of the decision lives here, mirroring
-/// `get_sensitive_capture_recommendations`: system audio is switched on, every
-/// tap so far has delivered only silence, and the user has not already waved the
-/// hint away. A denied tap produces no OS-level signal at all, so this is the
-/// only thing standing between a denial and hours of silent recordings — and
-/// because a genuinely quiet Mac is indistinguishable from a denied one, it is
-/// dismissible rather than blocking.
-#[tauri::command]
-pub fn get_system_audio_access_hint(app_handle: tauri::AppHandle) -> SystemAudioAccessHint {
-    let dismissed = app_core::one_time_prompts::current_state(
-        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-    )
-    .prompts
-    .get(SYSTEM_AUDIO_BLOCKED_PROMPT_ID)
-    .is_some_and(|record| record.dismissed_at.is_some());
-    // Evidence outlives the switch: a user who turned system audio off after a
-    // silent session must not keep being warned about a source they no longer
-    // record.
-    let enabled = current_recording_settings_from_app_handle(&app_handle).capture_system_audio;
-
-    SystemAudioAccessHint {
-        prompt_id: SYSTEM_AUDIO_BLOCKED_PROMPT_ID.to_string(),
-        should_show: enabled
-            && !dismissed
-            && system_audio_permission_state() == CapturePermissionState::PossiblyBlocked,
-    }
-}
-
-/// Raises the "Screen & System Audio Recording" prompt by running a throwaway
-/// tap. A failure to *build* the tap is worth reporting; the prompt's answer is
-/// not knowable here either way.
-#[cfg(target_os = "macos")]
-async fn request_system_audio_permission() -> Result<(), String> {
-    if !capture_system_audio::supports_system_audio_capture() {
-        return Ok(());
-    }
-
-    tauri::async_runtime::spawn_blocking(capture_system_audio::prompt_for_system_audio_permission)
-        .await
-        .map_err(|error| format!("system audio permission request failed: {error}"))?
-        .map_err(|error| format!("system audio permission request failed: {}", error.message))
-}
-
-#[cfg(not(target_os = "macos"))]
-async fn request_system_audio_permission() -> Result<(), String> {
-    Ok(())
+    permissions::get_capture_support()
 }
 
 #[tauri::command]
-pub fn get_capture_permissions(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, NativeCaptureState>,
-) -> CapturePermissionsResponse {
-    #[cfg(target_os = "macos")]
-    recover_screen_capture_after_possible_missed_wake(app_handle);
-
-    let runtime = state.lock().expect("native capture state poisoned");
-    let permissions = CapturePermissions {
-        screen: capture_screen::screen_permission_state(),
-        microphone: microphone_capture::microphone_permission_state(),
-        // Inferred, not read: a process tap has its own TCC category and no
-        // authorization query at all (ADR 0052).
-        system_audio: system_audio_permission_state(),
-    };
-
-    log_capture_permissions_if_changed(&permissions);
-
-    CapturePermissionsResponse {
-        permissions,
-        session: runtime.session(),
-    }
+pub fn get_system_audio_access_hint(core: Core<'_>) -> SystemAudioAccessHint {
+    permissions::get_system_audio_access_hint(&core)
 }
 
-/// Trigger the native macOS permission prompt for a capture source, then return
-/// the refreshed permission state. `kind` is "screen", "microphone", or
-/// "systemAudio". The underlying request blocks (microphone waits on a system
-/// callback, system audio runs a throwaway tap), so it runs on a blocking thread
-/// to keep the UI responsive.
+#[tauri::command]
+pub fn get_capture_permissions(core: Core<'_>) -> CapturePermissionsResponse {
+    permissions::get_capture_permissions(&core)
+}
+
 #[tauri::command]
 pub async fn request_capture_permission(
     kind: String,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, NativeCaptureState>,
+    core: Core<'_>,
 ) -> Result<CapturePermissionsResponse, String> {
-    match kind.as_str() {
-        "screen" => {
-            tauri::async_runtime::spawn_blocking(|| {
-                capture_screen::ensure_screen_permission();
-            })
-            .await
-            .map_err(|error| format!("screen permission request failed: {error}"))?;
-        }
-        // System audio has its own TCC category and no authorization query, so
-        // the only way to raise its prompt is to build a tap and read it — the
-        // grant is never reported back, only inferred later (ADR 0052).
-        "systemAudio" => {
-            request_system_audio_permission().await?;
-        }
-        "microphone" => {
-            tauri::async_runtime::spawn_blocking(|| {
-                microphone_capture::ensure_microphone_permission();
-            })
-            .await
-            .map_err(|error| format!("microphone permission request failed: {error}"))?;
-        }
-        other => return Err(format!("unknown permission kind: {other}")),
-    }
-
-    Ok(get_capture_permissions(app_handle, state))
+    permissions::request_capture_permission(kind, &core).await
 }
 
-/// Open the macOS Privacy & Security pane for a capture source so the user can
-/// flip a permission that was already denied (macOS will not re-prompt once
-/// denied).
 #[tauri::command]
-pub fn open_capture_privacy_settings(
-    kind: String,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-
-    let url = match kind.as_str() {
-        "screen" | "systemAudio" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-        }
-        "microphone" => {
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-        }
-        other => return Err(format!("unknown permission kind: {other}")),
-    };
-
-    app_handle
-        .opener()
-        .open_url(url, None::<String>)
-        .map_err(|error| format!("failed to open privacy settings: {error}"))
+pub fn open_capture_privacy_settings(kind: String, core: Core<'_>) -> Result<(), String> {
+    permissions::open_capture_privacy_settings(kind, &core)
 }
 
-/// One Gecko browser Mnema knows about (reads its active-tab URL via the macOS
-/// Accessibility API) and whether it is installed on this machine.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GeckoBrowserInstall {
-    pub bundle_id: String,
-    pub display_name: String,
-    pub installed: bool,
-}
-
-/// Whether Mnema holds the macOS Accessibility permission plus the Gecko
-/// browsers whose active-tab URL capture depends on it. Drives the onboarding
-/// and settings surfaces that gate Gecko URL capture behind the permission.
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BrowserUrlAccessibilityStatus {
-    /// Whether Mnema currently holds the macOS Accessibility permission.
-    pub trusted: bool,
-    /// The Gecko browsers Mnema knows about and whether each is installed.
-    pub gecko_browsers: Vec<GeckoBrowserInstall>,
-}
-
-/// Builds the current Accessibility-permission + installed-Gecko status. The
-/// Gecko list is exactly the `KNOWN_BROWSER_APPS` whose URL strategy is the
-/// Accessibility API; `trusted`/`installed` are environment-dependent (always
-/// `false` off macOS).
-fn browser_url_accessibility_status() -> BrowserUrlAccessibilityStatus {
-    use capture_metadata::BrowserUrlStrategy;
-
-    #[cfg(target_os = "macos")]
-    let trusted = browser_url_ax::accessibility_trusted();
-    #[cfg(not(target_os = "macos"))]
-    let trusted = false;
-
-    let gecko_browsers = capture_metadata::KNOWN_BROWSER_APPS
-        .iter()
-        .filter(|app| matches!(app.url_strategy, Some(BrowserUrlStrategy::Accessibility)))
-        .map(|app| {
-            #[cfg(target_os = "macos")]
-            let installed = macos_application_bundle_path_for_bundle_id(app.bundle_id).is_some();
-            #[cfg(not(target_os = "macos"))]
-            let installed = false;
-            GeckoBrowserInstall {
-                bundle_id: app.bundle_id.to_string(),
-                display_name: app.display_name.to_string(),
-                installed,
-            }
-        })
-        .collect();
-
-    BrowserUrlAccessibilityStatus {
-        trusted,
-        gecko_browsers,
-    }
-}
-
-/// Current macOS Accessibility-permission state plus the known Gecko browsers
-/// and whether each is installed. Gecko active-tab URL capture is gated on this
-/// permission.
 #[tauri::command]
 pub fn get_browser_url_accessibility_status() -> BrowserUrlAccessibilityStatus {
-    browser_url_accessibility_status()
+    permissions::get_browser_url_accessibility_status()
 }
 
-/// Raise the macOS Accessibility permission prompt (adds Mnema to the
-/// Accessibility list and points the user at System Settings), then return the
-/// refreshed status. The grant itself is asynchronous — the user flips the
-/// toggle in System Settings, so `trusted` may still be `false` right after.
 #[tauri::command]
 pub fn request_browser_url_accessibility() -> BrowserUrlAccessibilityStatus {
-    #[cfg(target_os = "macos")]
-    {
-        let _ = browser_url_ax::request_accessibility_with_prompt();
-    }
-    browser_url_accessibility_status()
+    permissions::request_browser_url_accessibility()
 }
 
-/// Open the macOS Privacy & Security → Accessibility pane so the user can grant
-/// (or re-grant) Mnema the Accessibility permission.
 #[tauri::command]
-pub fn open_browser_url_accessibility_settings(app_handle: tauri::AppHandle) -> Result<(), String> {
-    use tauri_plugin_opener::OpenerExt;
-
-    app_handle
-        .opener()
-        .open_url(
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-            None::<String>,
-        )
-        .map_err(|error| format!("failed to open accessibility settings: {error}"))
+pub fn open_browser_url_accessibility_settings(core: Core<'_>) -> Result<(), String> {
+    permissions::open_browser_url_accessibility_settings(&core)
 }
 
-/// The developer window's Capture tab and health rollup. `(async)`: the
-/// free-space read can block on a slow volume, so keep it off the main thread.
+/// `(async)`: the free-space read can block on a slow volume, so keep it off
+/// the main thread.
 #[tauri::command(async)]
 pub fn get_capture_health(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, NativeCaptureState>,
+    core: Core<'_>,
 ) -> app_core::native_capture::capture_health::CaptureHealthDto {
     app_core::native_capture::capture_health::capture_health_snapshot(
-        &state,
-        &app_handle.state::<Arc<AppCore>>(),
+        &core.state::<NativeCaptureState>(),
+        &core,
     )
 }
 
 #[tauri::command]
-pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
-    app_core::native_capture::activity::get_idle_debug(&state)
+pub fn get_idle_debug(core: Core<'_>) -> IdleDebugInfo {
+    app_core::native_capture::activity::get_idle_debug(&core.state::<NativeCaptureState>())
 }
 
 #[tauri::command]
-pub fn get_app_notifications(
-    state: tauri::State<'_, AppNotificationsState>,
-) -> Vec<AppNotification> {
-    state
-        .lock()
-        .expect("app notifications state poisoned")
-        .list()
+pub fn get_app_notifications(core: Core<'_>) -> Vec<AppNotification> {
+    app_notifications::get_app_notifications(&core)
 }
 
 #[tauri::command]
-pub fn clear_app_notification(
-    id: String,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, AppNotificationsState>,
-) -> Vec<AppNotification> {
-    let notifications = {
-        let mut runtime = state.lock().expect("app notifications state poisoned");
-        runtime.clear_one(&id)
-    };
-    emit_app_notifications_changed(&app_handle.state::<Arc<AppCore>>(), &notifications);
-    notifications
+pub fn clear_app_notification(id: String, core: Core<'_>) -> Vec<AppNotification> {
+    app_notifications::clear_app_notification(id, &core)
 }
 
 #[tauri::command]
-pub fn clear_app_notifications(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, AppNotificationsState>,
-) -> Vec<AppNotification> {
-    let notifications = {
-        let mut runtime = state.lock().expect("app notifications state poisoned");
-        runtime.clear_all()
-    };
-    emit_app_notifications_changed(&app_handle.state::<Arc<AppCore>>(), &notifications);
-    notifications
+pub fn clear_app_notifications(core: Core<'_>) -> Vec<AppNotification> {
+    app_notifications::clear_app_notifications(&core)
+}
+
+#[tauri::command]
+pub fn snooze_not_recording_reminder(until_unix_ms: u64, core: Core<'_>) {
+    not_recording_reminder::snooze_not_recording_reminder(until_unix_ms, &core)
 }
 
 #[tauri::command]
 pub fn get_microphone_controller_state(
-    state: tauri::State<'_, MicrophoneControllerPreferencesState>,
+    core: Core<'_>,
 ) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
-    let runtime = state
-        .lock()
-        .expect("microphone controller preferences state poisoned");
-    microphone_capture::microphone_controller_state(
-        runtime.preference.clone(),
-        runtime.disconnect_policy.clone(),
-    )
+    controller::get_microphone_controller_state(&core)
 }
 
-/// Off the main thread: settling a waited-for device takes the capture lock
-/// (held for seconds while frame artifacts flush) and can start an
-/// AVCaptureSession.
 #[tauri::command]
 pub async fn update_microphone_controller(
     request: UpdateMicrophoneControllerRequest,
-    app_handle: tauri::AppHandle,
+    core: Core<'_>,
 ) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
-    tauri::async_runtime::spawn_blocking(move || {
-        update_microphone_controller_impl(
-            request,
-            &app_handle.state::<Arc<AppCore>>(),
-            &app_handle.state::<MicrophoneControllerPreferencesState>(),
-        )
-    })
-    .await
-    .map_err(|error| CaptureErrorResponse {
-        code: "microphone_controller_update_task_failed".to_string(),
-        message: format!("Microphone preference update task failed: {error}"),
-    })?
+    controller::update_microphone_controller_async(request, &core).await
 }
 
-/// Longest clip the bounded recorder will take. The caller picks the length
-/// (the Voice screen asks for ~15 s); this only stops a runaway request from
-/// holding the microphone open indefinitely. No other judgment lives here —
-/// whether a clip is usable is the enrollment embedder's call, not this
-/// adapter's.
-#[cfg(target_os = "macos")]
-const MAX_BOUNDED_MICROPHONE_CLIP_MS: u64 = 60_000;
-#[cfg(target_os = "macos")]
-const MIN_BOUNDED_MICROPHONE_CLIP_MS: u64 = 500;
-
-// ponytail: one process-wide flag instead of a queue — the microphone is a
-// single device and there is exactly one enrollment surface. If a second caller
-// ever needs to wait rather than be refused, make it a mutex.
-#[cfg(target_os = "macos")]
-static BOUNDED_MICROPHONE_CLIP_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
-
-/// Latest normalized microphone level (0.0–1.0), or `None` when no microphone
-/// session has produced a sample. Read off the one activity probe every
-/// microphone session already feeds — the level meter costs nothing beyond this
-/// poll and never opens a second audio tap.
 #[tauri::command]
 pub fn get_microphone_activity_level() -> Option<f32> {
-    microphone_capture::microphone_activity_level()
+    bounded_clip::get_microphone_activity_level()
 }
 
-/// Start listening for system audio so a level meter has something true to show.
-///
-/// The microphone's meter rides the recording session's own probe; system audio
-/// has no session to ride outside of capture, and its permission state is sticky
-/// evidence rather than a live reading (ADR 0052) — so proving "sound is
-/// arriving" needs a tap of its own. Building it raises the TCC prompt, the same
-/// way `request_capture_permission("systemAudio")` does. Self-stopping a few
-/// seconds after the last poll.
-#[cfg(target_os = "macos")]
 #[tauri::command]
-pub async fn start_system_audio_level_probe() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(capture_system_audio::start_system_audio_level_probe)
-        .await
-        .map_err(|error| format!("system audio level probe failed to start: {error}"))?
-        .map_err(|error| format!("system audio level probe failed to start: {}", error.message))
+pub async fn start_system_audio_level_probe(core: Core<'_>) -> Result<(), String> {
+    bounded_clip::start_system_audio_level_probe(&core).await
 }
 
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-pub async fn start_system_audio_level_probe() -> Result<(), String> {
-    Ok(())
-}
-
-/// Peak system-audio level (0.0–1.0) since the previous poll, or `None` when no
-/// probe is running. Polling is the probe's keepalive.
-#[cfg(target_os = "macos")]
 #[tauri::command]
 pub fn get_system_audio_probe_level() -> Option<f32> {
-    capture_system_audio::take_system_audio_probe_level()
+    bounded_clip::get_system_audio_probe_level()
 }
 
-#[cfg(not(target_os = "macos"))]
-#[tauri::command]
-pub fn get_system_audio_probe_level() -> Option<f32> {
-    None
-}
-
-#[cfg(target_os = "macos")]
-fn microphone_device_id_for_bounded_clip(
-    preferences: &MicrophoneControllerPreferencesState,
-) -> Option<String> {
-    let runtime = preferences.lock().ok()?;
-    let controller_state = microphone_capture::microphone_controller_state(
-        runtime.preference.clone(),
-        runtime.disconnect_policy.clone(),
-    )
-    .ok()?;
-    resolve_capture_microphone_device_id(&controller_state)
-}
-
-/// Record a fixed-length microphone clip to a temp file and return its path.
-///
-/// A hardware adapter with no judgment: it does not inspect, score, or reject
-/// what it recorded. The live-capture guard (pause the microphone, record,
-/// resume) is owned by `native_capture::lifecycle`, so this runs anywhere —
-/// onboarding, or Settings re-enroll during a live session.
 #[tauri::command]
 pub async fn record_bounded_microphone_clip(
     duration_ms: u64,
-    app_handle: tauri::AppHandle,
+    core: Core<'_>,
 ) -> Result<String, CaptureErrorResponse> {
-    #[cfg(target_os = "macos")]
-    {
-        // The take blocks for its whole duration; keep it off the UI thread and,
-        // more importantly, off the `NativeCaptureState` mutex the segment loop
-        // ticks on.
-        tauri::async_runtime::spawn_blocking(move || {
-            record_bounded_microphone_clip_blocking(&app_handle, duration_ms)
-        })
-        .await
-        .map_err(|error| CaptureErrorResponse {
-            code: "microphone_clip_task_failed".to_string(),
-            message: format!("Bounded microphone recording task failed: {error}"),
-        })?
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = (duration_ms, app_handle);
-        Err(CaptureErrorResponse {
-            code: "unsupported_platform".to_string(),
-            message: "Bounded microphone recording is only implemented on macOS".to_string(),
-        })
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn record_bounded_microphone_clip_blocking(
-    app_handle: &tauri::AppHandle,
-    duration_ms: u64,
-) -> Result<String, CaptureErrorResponse> {
-    if BOUNDED_MICROPHONE_CLIP_IN_FLIGHT.swap(true, Ordering::SeqCst) {
-        return Err(CaptureErrorResponse {
-            code: "microphone_clip_already_recording".to_string(),
-            message: "A bounded microphone recording is already in progress".to_string(),
-        });
-    }
-    let _in_flight = BoundedMicrophoneClipGuard;
-
-    let device_id = microphone_device_id_for_bounded_clip(
-        &app_handle.state::<MicrophoneControllerPreferencesState>(),
-    );
-
-    let capture_state = app_handle.state::<NativeCaptureState>();
-    let released = {
-        let mut lifecycle = capture_state.lock().expect("native capture state poisoned");
-        lifecycle.release_microphone_for_out_of_band_recording()?
-    };
-    // Hands the microphone back when the take ends, however it ends.
-    let lend = released.then(|| MicrophoneLend(capture_state.inner()));
-
-    let clip = take_bounded_microphone_clip(
-        duration_ms.clamp(MIN_BOUNDED_MICROPHONE_CLIP_MS, MAX_BOUNDED_MICROPHONE_CLIP_MS),
-        device_id.as_deref(),
-    );
-    drop(lend);
-
-    // The enrollment surface plays the take back before committing to it, and
-    // the asset protocol serves only explicitly-allowed paths (empty default
-    // scope). Grant this one clip; without it `convertFileSrc` 403s and the
-    // playback confirmation is a dead button.
-    if let Ok(path) = &clip {
-        if let Err(error) = app_handle.asset_protocol_scope().allow_file(path) {
-            debug_log::log_error(format!(
-                "failed to allow bounded microphone clip {path} in asset scope: {error}"
-            ));
-        }
-    }
-
-    clip
-}
-
-/// A microphone lent to a bounded recording, handed back on drop — a take that
-/// panics included, or `microphone_lent_out` would keep the live session's
-/// microphone down for good.
-#[cfg(target_os = "macos")]
-struct MicrophoneLend<'a>(&'a NativeCaptureState);
-
-#[cfg(target_os = "macos")]
-impl Drop for MicrophoneLend<'_> {
-    fn drop(&mut self) {
-        let mut lifecycle = self
-            .0
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(error) = lifecycle.restore_microphone_after_out_of_band_recording() {
-            // The clip itself is fine, so this only logs. The tick reopens a
-            // microphone left with no session once nothing holds it
-            // (`microphone_away::reopen_unwakeable_microphone`).
-            debug_log::log_error(format!(
-                "failed to restart microphone capture after a bounded enrollment recording: [{}] {}",
-                error.code, error.message
-            ));
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-struct BoundedMicrophoneClipGuard;
-
-#[cfg(target_os = "macos")]
-impl Drop for BoundedMicrophoneClipGuard {
-    fn drop(&mut self) {
-        BOUNDED_MICROPHONE_CLIP_IN_FLIGHT.store(false, Ordering::SeqCst);
-    }
-}
-
-/// Filename prefix every bounded enrollment take carries. It is what makes the
-/// clips this recorder wrote identifiable in a shared OS temp dir, and what the
-/// enrollment door checks before it opens (and destroys) a caller-named path.
-#[cfg(target_os = "macos")]
-pub(crate) const ENROLLMENT_CLIP_PREFIX: &str = "mnema-voice-enrollment-";
-
-/// Delete enrollment clips left behind in `dir` by an earlier take.
-///
-/// `voice_enrollment` destroys a clip when it judges it — but only then. A
-/// retake, a discarded review, a closed window, or a crash abandons the take,
-/// and a raw recording of the user's voice then sits in the OS temp dir
-/// indefinitely: outside the encrypted capture store, outside retention, and
-/// outside Delete Recent Capture. Sweeping before the next take is the one place
-/// every one of those paths passes through.
-///
-/// ponytail: swept at the start of the next take rather than tracked per clip.
-/// A discarded take survives until the user records again; closing that fully
-/// would need a delete-on-discard command, i.e. a new arbitrary-path-delete
-/// surface — worse than the gap.
-#[cfg(target_os = "macos")]
-pub(crate) fn remove_abandoned_bounded_microphone_clips(dir: &std::path::Path) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let file_name = entry.file_name();
-        let Some(file_name) = file_name.to_str() else {
-            continue;
-        };
-        if file_name.starts_with(ENROLLMENT_CLIP_PREFIX) && file_name.ends_with(".m4a") {
-            let _ = std::fs::remove_file(entry.path());
-        }
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn take_bounded_microphone_clip(
-    duration_ms: u64,
-    device_id: Option<&str>,
-) -> Result<String, CaptureErrorResponse> {
-    let temp_dir = std::env::temp_dir();
-    remove_abandoned_bounded_microphone_clips(&temp_dir);
-    let output_file = temp_dir
-        .join(format!(
-            "{ENROLLMENT_CLIP_PREFIX}{}.m4a",
-            runtime::now_unix_ms()
-        ))
-        .to_string_lossy()
-        .to_string();
-
-    let mut session =
-        microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
-            &output_file,
-            device_id,
-        )?;
-    std::thread::sleep(Duration::from_millis(duration_ms));
-    session.stop()?;
-
-    Ok(output_file)
-}
-
-pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
-    reset_capture_log_snapshots();
-    let settings_state = app_handle.state::<RecordingSettingsState>();
-    let loaded = initialize_recording_settings_state_from_disk(&app_handle.state::<std::sync::Arc<app_core::AppCore>>(), settings_state.inner());
-
-    debug_log::set_app_debug_logging_enabled(loaded.settings.developer_options_enabled);
-    log_loaded_recording_settings(loaded.source, &loaded.settings);
-}
-
-pub fn maybe_auto_start_native_capture(app_handle: &tauri::AppHandle) {
-    let settings_state = app_handle.state::<RecordingSettingsState>();
-    let auto_start_enabled = current_auto_start(settings_state.inner());
-
-    if !auto_start_enabled {
-        return;
-    }
-
-    let _ = start_native_capture_from_app_handle("auto-start", app_handle);
-}
-
-pub(crate) fn current_native_capture_session(
-    app_handle: &tauri::AppHandle,
-) -> capture_types::NativeCaptureSession {
-    let state = app_handle.state::<NativeCaptureState>();
-    let runtime = state.lock().expect("native capture state poisoned");
-    runtime.session()
-}
-
-pub(crate) fn current_recording_settings_from_app_handle(
-    app_handle: &tauri::AppHandle,
-) -> RecordingSettings {
-    let state = app_handle.state::<RecordingSettingsState>();
-    current_recording_settings(state.inner())
-}
-
-/// Whether this save moved any model-backed subsystem's provider or model id.
-/// Those are exactly the fields the absent-model lock keys off, so a change here
-/// means the locks must be re-derived from what is on disk.
-pub(crate) fn model_selection_changed(
-    previous: &RecordingSettings,
-    next: &RecordingSettings,
-) -> bool {
-    previous.ocr.provider != next.ocr.provider
-        || previous.ocr.model_id != next.ocr.model_id
-        || previous.transcription.provider != next.transcription.provider
-        || previous.transcription.model_id != next.transcription.model_id
-        || previous.speaker_analysis.provider != next.speaker_analysis.provider
-        || previous.speaker_analysis.model_id != next.speaker_analysis.model_id
-}
-
-fn finish_recording_settings_update(
-    app_handle: &tauri::AppHandle,
-    update: app_core::recording_settings::AppliedRecordingSettingsUpdate,
-    domain: Option<SettingsOwnershipDomain>,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let settings = update.settings;
-    let previous_settings = update.previous_settings;
-    let previous_save_directory = update.previous_save_directory;
-    let save_directory_changed = update.save_directory_changed;
-
-    debug_log::set_app_debug_logging_enabled(settings.developer_options_enabled);
-    if previous_settings.developer_options_enabled != settings.developer_options_enabled {
-        crate::windows::refresh_capture_exclusion(app_handle);
-    }
-    log_recording_settings_changes(&previous_settings, &settings);
-
-    if save_directory_changed {
-        debug_log::log_info(format!(
-            "recording save directory changed from '{}' to '{}'; app infrastructure database location will update on next app start",
-            previous_save_directory, settings.save_directory
-        ));
-    }
-
-    if previous_settings.ocr.enabled && !settings.ocr.enabled {
-        if let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() {
-            // Fire-and-forget off the main thread: this only marks already-queued
-            // OCR jobs failed now that OCR is disabled (cleanup whose result is
-            // merely logged). Settings commands run on the main thread, so we must
-            // not block the UI awaiting this capture-index write.
-            let infra = std::sync::Arc::clone(&*infra);
-            tauri::async_runtime::spawn(async move {
-                match infra.fail_queued_ocr_jobs_because_disabled().await {
-                    Ok(failed_count) => debug_log::log_info(format!(
-                        "marked queued OCR jobs failed because OCR was disabled (count={failed_count})"
-                    )),
-                    Err(error) => debug_log::log_error(format!(
-                        "failed to mark queued OCR jobs failed after disabling OCR: {error}"
-                    )),
-                }
-            });
-        } else {
-            debug_log::log_warn(
-                "app infrastructure state unavailable while disabling OCR; queued OCR jobs were not updated",
-            );
-        }
-    }
-
-    // A model SELECTION change can make the selected model absent without any
-    // download or deletion running, and neither of the absent lane's two owners
-    // (startup, download-settle) fires here. Without this, every job admitted
-    // against the newly selected but not-yet-installed model is claimed and burns
-    // its three failure attempts — the exact loss claim-time gating exists to
-    // prevent, and the non-blocking setup flow makes "selected but not installed"
-    // the normal case. Fire-and-forget for the same reason as the OCR pass above:
-    // settings commands run on the main thread.
-    if model_selection_changed(&previous_settings, &settings) {
-        let app_handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            app_core::model_download_lock::reconcile_absent_model_locks(
-                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
-            )
-            .await;
-        });
-    }
-
-    // Local Whisper contexts have no idle-unload (unlike Parakeet) and otherwise
-    // live cached until app quit, so switching away from Whisper stranded ~1GB of
-    // model weights in memory. Free them at the save that lands the switch.
-    let whisper_was_active = previous_settings.transcription.enabled
-        && previous_settings.transcription.provider == AudioTranscriptionProvider::LocalWhisper;
-    let whisper_now_active = settings.transcription.enabled
-        && settings.transcription.provider == AudioTranscriptionProvider::LocalWhisper;
-    if whisper_was_active && !whisper_now_active {
-        match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
-            Ok(unloaded) => debug_log::log_info(format!(
-                "unloaded {unloaded} cached Local Whisper context(s) after switching transcription away from Whisper"
-            )),
-            Err(error) => debug_log::log_warn(format!(
-                "failed to unload cached Local Whisper contexts after switching away from Whisper: {error}"
-            )),
-        }
-    }
-
-    // An MCP connector whose auth mode flipped (Bearer↔OAuth) leaves the OLD
-    // mode's payload in its polymorphic keychain slot — worst case the OAuth
-    // Token Set JSON attached verbatim as an `Authorization: Bearer` header.
-    // Clear the slot at the save that lands the flip, so neither path can read
-    // the other mode's leftover (ADR 0051; the transport also refuses a
-    // mismatched payload as a backstop).
-    for id in crate::ask_ai::mcp::auth_mode_flipped_ids(
-        &previous_settings.ai_runtime.mcp_servers,
-        &settings.ai_runtime.mcp_servers,
-    ) {
-        match app_infra::delete_mcp_server_secret(&id) {
-            Ok(()) => debug_log::log_info(format!(
-                "cleared the keychain secret for MCP connector \"{id}\" after its auth mode changed"
-            )),
-            Err(error) => debug_log::log_error(format!(
-                "failed to clear the keychain secret for MCP connector \"{id}\" after its auth mode changed: {error}"
-            )),
-        }
-    }
-
-    if previous_settings.retention_policy != settings.retention_policy {
-        if let Some(background_workers) =
-            app_handle.try_state::<app_core::app_infra::BackgroundWorkersState>()
-        {
-            background_workers.notify_retention_schedule_changed();
-        } else {
-            debug_log::log_warn(
-                "background workers state unavailable while updating retention policy; retention cleanup schedule was not woken",
-            );
-        }
-    }
-
-    emit_recording_settings_changed(app_handle, &settings);
-    if let Some(domain) = domain {
-        emit_recording_settings_domain_changed(
-            app_handle,
-            &RecordingSettingsDomainUpdateResponse {
-                domain,
-                settings: settings.clone(),
-            },
-        );
-    }
-    let privacy_changed = previous_settings.privacy != settings.privacy;
-    let metadata_changed = previous_settings.metadata != settings.metadata;
-    if metadata_changed {
-        app_core::native_capture::privacy::refresh::request_privacy_filter_refresh(
-            &app_handle.state::<Arc<AppCore>>(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::MetadataSettingsMutation,
-        );
-    } else if privacy_changed {
-        app_core::native_capture::privacy::refresh::request_privacy_filter_refresh(
-            &app_handle.state::<Arc<AppCore>>(),
-            app_core::native_capture::privacy::PrivacyRefreshReason::StaticAppRuleMutation,
-        );
-    }
-    crate::status_bar::refresh(app_handle);
-
-    Ok(settings)
-}
-
-fn finish_recording_settings_domain_update(
-    app_handle: &tauri::AppHandle,
-    domain: SettingsOwnershipDomain,
-    update: app_core::recording_settings::AppliedRecordingSettingsUpdate,
-) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    let settings = finish_recording_settings_update(app_handle, update, Some(domain))?;
-    Ok(RecordingSettingsDomainUpdateResponse { domain, settings })
-}
-
-pub(crate) fn apply_recording_settings_domain_mutation_from_app_handle(
-    app_handle: &tauri::AppHandle,
-    domain: SettingsOwnershipDomain,
-    mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), CaptureErrorResponse>,
-) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    let state = app_handle.state::<RecordingSettingsState>();
-    let update =
-        apply_recording_settings_domain_mutation(app_handle, state.inner(), domain, mutate)?;
-    finish_recording_settings_domain_update(app_handle, domain, update)
-}
-
-pub(crate) fn update_recording_sources_from_app_handle(
-    app_handle: &tauri::AppHandle,
-    sources: CaptureSources,
-) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let state = app_handle.state::<RecordingSettingsState>();
-    let response = update_recording_settings_domain(
-        app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::CaptureSources(UpdateCaptureSourceSettingsRequest {
-            capture_screen: Some(sources.screen),
-            capture_microphone: Some(sources.microphone),
-            capture_system_audio: Some(sources.system_audio),
-        }),
-    )?;
-    Ok(response.settings)
-}
-
-pub(crate) fn start_native_capture_from_app_handle(
-    origin: &str,
-    app_handle: &tauri::AppHandle,
-) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let response = start_native_capture_inner(
-        origin,
-        StartNativeCaptureRequest {
-            capture_screen: false,
-            capture_microphone: false,
-            capture_system_audio: false,
-        },
-        app_handle.state::<NativeCaptureState>(),
-        app_handle.state::<MicrophoneControllerPreferencesState>(),
-        app_handle.state::<RecordingSettingsState>(),
-        app_handle.state::<AppNotificationsState>(),
-        app_handle.clone(),
-    )?;
-    emit_native_capture_session_changed(app_handle, &response.session);
-    crate::status_bar::refresh(app_handle);
-    Ok(response)
-}
-
-pub(crate) fn stop_native_capture_from_app_handle(
-    app_handle: &tauri::AppHandle,
-) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let response =
-        stop_native_capture_with_state(app_handle.state::<NativeCaptureState>(), app_handle)?;
-    emit_native_capture_session_changed(app_handle, &response.session);
-    crate::status_bar::refresh(app_handle);
-    Ok(response)
-}
-
-pub(crate) fn pause_native_capture_from_app_handle(
-    app_handle: &tauri::AppHandle,
-) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let state = app_handle.state::<NativeCaptureState>();
-    let mut runtime = state.lock().expect("native capture state poisoned");
-    let session = runtime.pause_user_capture(&app_handle.state::<Arc<AppCore>>())?;
-    drop(runtime);
-    emit_native_capture_session_changed(app_handle, &session);
-    crate::status_bar::refresh(app_handle);
-    Ok(NativeCaptureSessionResponse { session })
-}
-
-pub(crate) fn resume_native_capture_from_app_handle(
-    app_handle: &tauri::AppHandle,
-) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let state = app_handle.state::<NativeCaptureState>();
-    let mut runtime = state.lock().expect("native capture state poisoned");
-    let session = runtime.resume_user_capture(&app_handle.state::<Arc<AppCore>>())?;
-    drop(runtime);
-    emit_native_capture_session_changed(app_handle, &session);
-    crate::status_bar::refresh(app_handle);
-    Ok(NativeCaptureSessionResponse { session })
+    bounded_clip::record_bounded_microphone_clip(duration_ms, &core).await
 }
 
 #[tauri::command]
-pub fn get_recording_settings(
-    state: tauri::State<'_, RecordingSettingsState>,
-) -> RecordingSettings {
-    current_recording_settings(state.inner())
+pub fn get_recording_settings(core: Core<'_>) -> RecordingSettings {
+    settings_update::get_recording_settings(&core)
 }
 
 #[tauri::command]
 pub fn update_recording_settings(
     request: UpdateRecordingSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
-    let update = apply_recording_settings_update(&app_handle, state.inner(), request)?;
-    finish_recording_settings_update(&app_handle, update, None)
+    settings_update::update_recording_settings(request, &core)
 }
 
-fn update_recording_settings_domain(
-    app_handle: &tauri::AppHandle,
-    state: &RecordingSettingsState,
-    patch: RecordingSettingsDomainPatch,
-) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    let (domain, update) = apply_recording_settings_domain_patch(app_handle, state, patch)?;
-    finish_recording_settings_domain_update(app_handle, domain, update)
-}
-
-/// Off the main thread: a sources change asks the capture lock, which a stop
-/// can hold for seconds while frame artifacts flush.
 #[tauri::command]
 pub async fn update_capture_source_settings(
     request: UpdateCaptureSourceSettingsRequest,
-    app_handle: tauri::AppHandle,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    tauri::async_runtime::spawn_blocking(move || {
-        update_recording_settings_domain(
-            &app_handle,
-            app_handle.state::<RecordingSettingsState>().inner(),
-            RecordingSettingsDomainPatch::CaptureSources(request),
-        )
-    })
-    .await
-    .map_err(|error| CaptureErrorResponse {
-        code: "capture_source_settings_update_task_failed".to_string(),
-        message: format!("Capture source settings update task failed: {error}"),
-    })?
+    settings_update::update_capture_source_settings(request, &core).await
 }
 
 #[tauri::command]
 pub fn update_capture_timing_settings(
     request: UpdateCaptureTimingSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::CaptureTiming(request),
-    )
+    settings_update::update_capture_timing_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_video_settings(
     request: UpdateVideoSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::Video(request),
-    )
+    settings_update::update_video_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_storage_settings(
     request: UpdateStorageSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::Storage(request),
-    )
+    settings_update::update_storage_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_display_settings(
     request: UpdateDisplaySettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::Display(request),
-    )
+    settings_update::update_display_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_metadata_settings(
     request: UpdateMetadataSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::Metadata(request),
-    )
+    settings_update::update_metadata_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_inactivity_settings(
     request: UpdateInactivitySettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::Inactivity(request),
-    )
+    settings_update::update_inactivity_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_processing_settings(
     request: UpdateProcessingSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::Processing(request),
-    )
+    settings_update::update_processing_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_developer_settings(
     request: UpdateDeveloperSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::Developer(request),
-    )
+    settings_update::update_developer_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_access_settings(
     request: UpdateAccessSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::Access(request),
-    )
+    settings_update::update_access_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_ai_runtime_settings(
     request: UpdateAiRuntimeSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    let response = update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::AiRuntime(request),
-    )?;
-    // MCP teardown (ADR 0048): reconcile the connection cache against the
-    // just-saved settings so removed/disabled connectors' handles — and their
-    // child processes — are dropped. Fire-and-forget: teardown never blocks the
-    // save, and an EDITED connector is reaped lazily on next use.
-    if let Some(manager) = app_handle.try_state::<crate::ask_ai::mcp::McpManager>() {
-        let manager = (*manager).clone();
-        let app_handle = app_handle.clone();
-        tauri::async_runtime::spawn(async move {
-            manager.reconcile(&app_handle).await;
-        });
-    }
-    Ok(response)
+    settings_update::update_ai_runtime_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn update_user_context_settings(
     request: UpdateUserContextSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::UserContext(request),
-    )
+    settings_update::update_user_context_settings(request, &core)
 }
 
-/// Update the **Semantic Search** settings that do NOT change the active vector
-/// dimension: the enabled toggle (issue #125). A model *switch* goes through the
-/// atomic `select_semantic_search_model` command instead — it rebuilds the `vec0`
-/// table at the new model's dimension and persists the selection together, so the
-/// persisted model and the live table dimension can never disagree. The
-/// **Semantic Index Backfill** worker reloads the embedder on its next pass when
-/// the provider/model id changes.
 #[tauri::command]
 pub fn update_semantic_search_settings(
     request: capture_types::UpdateSemanticSearchSettingsRequest,
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, RecordingSettingsState>,
+    core: Core<'_>,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    update_recording_settings_domain(
-        &app_handle,
-        state.inner(),
-        RecordingSettingsDomainPatch::SemanticSearch(request),
-    )
-}
-
-/// Persist a **Semantic Search Model Tier** patch from outside the command layer
-/// (the atomic `select_semantic_search_model` switch, which rebuilds the `vec0`
-/// table *before* persisting so the persisted `model_id` and the live table
-/// dimension never disagree). Reuses the same domain-update path as
-/// [`update_semantic_search_settings`].
-pub(crate) fn persist_semantic_search_settings(
-    app_handle: &tauri::AppHandle,
-    state: &RecordingSettingsState,
-    request: capture_types::UpdateSemanticSearchSettingsRequest,
-) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
-    // Trusted path: the atomic switch has already rebuilt the `vec0` table to the
-    // new model's dimension before this persist, so use the trusted variant that
-    // honors `model_id`/`provider`. The generic IPC command
-    // (`update_semantic_search_settings`) uses `SemanticSearch`, which ignores
-    // those dimension-affecting fields. See review finding low #4 (PR #126).
-    update_recording_settings_domain(
-        app_handle,
-        state,
-        RecordingSettingsDomainPatch::SemanticSearchModelSwitch(request),
-    )
+    settings_update::update_semantic_search_settings(request, &core)
 }
 
 #[tauri::command]
 pub fn start_native_capture(
     request: StartNativeCaptureRequest,
-    state: tauri::State<'_, NativeCaptureState>,
-    microphone_controller_preferences_state: tauri::State<'_, MicrophoneControllerPreferencesState>,
-    recording_settings_state: tauri::State<'_, RecordingSettingsState>,
-    app_notifications_state: tauri::State<'_, AppNotificationsState>,
-    app_handle: tauri::AppHandle,
+    core: Core<'_>,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let response = start_native_capture_inner(
-        "command",
-        request,
-        state,
-        microphone_controller_preferences_state,
-        recording_settings_state,
-        app_notifications_state,
-        app_handle.clone(),
-    )?;
-    emit_native_capture_session_changed(&app_handle, &response.session);
-    crate::status_bar::refresh(&app_handle);
-    Ok(response)
+    control::start_native_capture(request, &core)
 }
 
 #[tauri::command]
 pub fn pause_native_capture(
-    app_handle: tauri::AppHandle,
+    core: Core<'_>,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    pause_native_capture_from_app_handle(&app_handle)
+    control::pause_native_capture_from_core(&core)
 }
 
 #[tauri::command]
 pub fn resume_native_capture(
-    app_handle: tauri::AppHandle,
+    core: Core<'_>,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    resume_native_capture_from_app_handle(&app_handle)
+    control::resume_native_capture_from_core(&core)
 }
 
-fn stop_native_capture_with_state(
-    state: tauri::State<'_, NativeCaptureState>,
-    app_handle: &tauri::AppHandle,
-) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    let mut runtime = state.lock().expect("native capture state poisoned");
-    let session_id = runtime_log_session_id(runtime.runtime()).to_string();
-    let requested_sources = runtime.runtime().requested_sources.clone();
-    let output_files_before_stop = runtime.runtime().output_files.clone();
-    let source_session_ids_before_stop = runtime
-        .runtime()
-        .source_sessions
-        .clone()
-        .map(|source_sessions| {
-            [
-                source_sessions.screen,
-                source_sessions.microphone,
-                source_sessions.system_audio,
-            ]
-            .into_iter()
-            .flatten()
-            .map(|source_session| source_session.session_id)
-            .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    debug_log::log_info(format!(
-        "received native capture stop request (is_running={}, session_id='{}', requested_sources={}, output_files_before_stop={})",
-        runtime.runtime().is_running,
-        session_id,
-        format_optional_capture_source_flags(requested_sources.as_ref()),
-        format_output_file_counts(output_files_before_stop.as_ref())
-    ));
-
-    let session = match runtime.stop(&app_handle.state::<Arc<AppCore>>()) {
-        Ok(session) => session,
-        Err(error) => {
-            if capture_screen::should_preserve_runtime_on_stop_error(&error) {
-                debug_log::log_error(format!(
-                    "failed to stop native capture but preserved runtime for recovery (session_id='{}'): [{}] {}",
-                    session_id,
-                    error.code,
-                    error.message
-                ));
-            } else {
-                debug_log::log_error(format!(
-                    "failed to stop native capture; runtime marked stopped (session_id='{}'): [{}] {}",
-                    session_id, error.code, error.message
-                ));
-            }
-
-            return Err(error);
-        }
-    };
-    if let Some(metadata_state) = app_handle
-        .state::<std::sync::Arc<app_core::AppCore>>()
-        .try_state::<CaptureMetadataState>()
-    {
-        metadata::reset_recording_session_privacy_state(&metadata_state);
-    }
-
-    debug_log::log_info(format!(
-        "stopped native capture successfully (session_id='{}', requested_sources={}, finalized_outputs={})",
-        session_log_session_id(&session),
-        format_optional_capture_source_flags(session.requested_sources.as_ref()),
-        format_output_file_counts(session.output_files.as_ref())
-    ));
-
-    if !source_session_ids_before_stop.is_empty() {
-        if let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() {
-            let stopped_at = time::OffsetDateTime::now_utc()
-                .format(&time::format_description::well_known::Rfc3339)
-                .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
-            let source_session_ids = source_session_ids_before_stop;
-            app_core::ocr_budget::clear_sessions_for_base_dir(infra.base_dir(), &source_session_ids);
-            let infra = std::sync::Arc::clone(&*infra);
-            if let Err(error) = tauri::async_runtime::block_on(async move {
-                infra
-                    .capture_retention()
-                    .complete_capture_sessions_for_source_session_ids(
-                        &source_session_ids,
-                        &stopped_at,
-                        "completed",
-                    )
-                    .await
-            }) {
-                debug_log::log_error(format!(
-                    "failed to mark capture session completed after stop: {error}"
-                ));
-            }
-        }
-    }
-
-    Ok(NativeCaptureSessionResponse { session })
-}
-
+/// Stopping does a synchronous capture-index write; app-core runs it on the
+/// blocking pool so this main-thread command stays responsive.
 #[tauri::command]
 pub async fn stop_native_capture(
-    app_handle: tauri::AppHandle,
+    core: Core<'_>,
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
-    // Stopping does a synchronous capture-index write (marking sessions
-    // completed). This command runs on the main thread, so run the stop on the
-    // blocking pool and await it — keeping the UI responsive while preserving
-    // ordering (the completion write finishes before we emit the change event).
-    // The tray/relaunch/shortcut entry points keep calling the sync helper
-    // directly so they still complete in-line.
-    let handle = app_handle.clone();
-    let response = tauri::async_runtime::spawn_blocking(move || {
-        stop_native_capture_with_state(handle.state::<NativeCaptureState>(), &handle)
-    })
-    .await
-    .map_err(|error| CaptureErrorResponse {
-        code: "stop_native_capture_join".to_string(),
-        message: format!("stop native capture task failed: {error}"),
-    })??;
-    emit_native_capture_session_changed(&app_handle, &response.session);
-    crate::status_bar::refresh(&app_handle);
-    Ok(response)
+    control::stop_native_capture(&core).await
 }

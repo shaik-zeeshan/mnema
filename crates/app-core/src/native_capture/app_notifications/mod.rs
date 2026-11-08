@@ -199,5 +199,32 @@ pub fn push_error_app_notification(
     );
 }
 
+pub fn get_app_notifications(core: &AppCore) -> Vec<AppNotification> {
+    core.state::<AppNotificationsState>()
+        .lock()
+        .expect("app notifications state poisoned")
+        .list()
+}
+
+pub fn clear_app_notification(id: String, core: &AppCore) -> Vec<AppNotification> {
+    let state = core.state::<AppNotificationsState>();
+    let notifications = {
+        let mut runtime = state.lock().expect("app notifications state poisoned");
+        runtime.clear_one(&id)
+    };
+    emit_app_notifications_changed(core, &notifications);
+    notifications
+}
+
+pub fn clear_app_notifications(core: &AppCore) -> Vec<AppNotification> {
+    let state = core.state::<AppNotificationsState>();
+    let notifications = {
+        let mut runtime = state.lock().expect("app notifications state poisoned");
+        runtime.clear_all()
+    };
+    emit_app_notifications_changed(core, &notifications);
+    notifications
+}
+
 #[cfg(test)]
 mod tests;

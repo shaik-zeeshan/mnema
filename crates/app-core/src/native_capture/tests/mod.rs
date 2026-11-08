@@ -677,6 +677,7 @@ mod low_disk;
 mod microphone_away;
 mod planners;
 mod resume_failures;
+mod root;
 mod screen_pause;
 mod settings;
 mod soft_pause;

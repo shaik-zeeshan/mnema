@@ -9,6 +9,7 @@
 use serde_json::Value;
 
 use crate::app_infra::frame_preview::ScrubPreviewCacheChangedPayload;
+use crate::ask_ai::AskAiUpdateEvent;
 use crate::app_infra::TimelineDataChangedPayload;
 use crate::audio_transcription_models::AudioTranscriptionModelDownloadProgressDto;
 use crate::native_capture::microphone::MicrophoneAutoDisconnectTransitionFailedEvent;
@@ -21,7 +22,7 @@ use capture_types::MicrophoneControllerState;
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
     // Streams.
-    AskAiUpdate(Value),
+    AskAiUpdate(AskAiUpdateEvent),
     AudioTranscriptionModelDownloadProgress(AudioTranscriptionModelDownloadProgressDto),
     SpeakerAnalysisModelDownloadProgress(SpeakerAnalysisModelDownloadProgressDto),
     OcrModelDownloadProgress(OcrModelDownloadProgressDto),

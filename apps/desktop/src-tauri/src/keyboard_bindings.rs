@@ -243,14 +243,19 @@ pub(crate) fn handle_global_shortcut(
 fn handle_toggle_recording(app: &tauri::AppHandle) {
     let app_handle = app.clone();
     std::thread::spawn(move || {
-        let recording =
-            crate::native_capture::current_native_capture_session(&app_handle).is_running;
+        let recording = app_core::native_capture::control::current_native_capture_session(
+            &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+        )
+        .is_running;
         let result = if recording {
-            crate::native_capture::stop_native_capture_from_app_handle(&app_handle).map(|_| ())
+            app_core::native_capture::control::stop_native_capture_from_core(
+                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
+            .map(|_| ())
         } else {
-            crate::native_capture::start_native_capture_from_app_handle(
+            app_core::native_capture::control::start_native_capture_from_core(
                 "global-shortcut",
-                &app_handle,
+                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
             )
             .map(|_| ())
         };
@@ -267,14 +272,22 @@ fn handle_toggle_recording(app: &tauri::AppHandle) {
 fn handle_pause_resume_recording(app: &tauri::AppHandle) {
     let app_handle = app.clone();
     std::thread::spawn(move || {
-        let session = crate::native_capture::current_native_capture_session(&app_handle);
+        let session = app_core::native_capture::control::current_native_capture_session(
+            &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+        );
         if !session.is_running {
             return;
         }
         let result = if session.is_user_paused {
-            crate::native_capture::resume_native_capture_from_app_handle(&app_handle).map(|_| ())
+            app_core::native_capture::control::resume_native_capture_from_core(
+                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
+            .map(|_| ())
         } else {
-            crate::native_capture::pause_native_capture_from_app_handle(&app_handle).map(|_| ())
+            app_core::native_capture::control::pause_native_capture_from_core(
+                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
+            .map(|_| ())
         };
 
         if let Err(error) = result {

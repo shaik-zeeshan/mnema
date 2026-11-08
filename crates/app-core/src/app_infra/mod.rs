@@ -33,6 +33,7 @@ use tokio::{sync::watch, task::JoinHandle};
 
 use crate::{AppCore, AppInfraState};
 
+mod capture_retention;
 mod commands;
 mod delete_recent;
 mod dto;
@@ -42,10 +43,15 @@ pub mod quick_recall;
 mod requests;
 mod retention;
 mod speakers;
+pub mod startup;
 #[cfg(test)]
 mod test_helpers;
+mod worker_spawn;
+#[cfg(test)]
+mod worker_spawn_tests;
 mod workers;
 
+pub use capture_retention::*;
 pub use commands::*;
 pub use delete_recent::*;
 pub use dto::*;

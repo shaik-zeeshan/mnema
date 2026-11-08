@@ -69,16 +69,10 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 reload_shell(&shell, cx);
             }
         }
-        HostMsg::Event(CoreEvent::AskAiUpdate(payload)) => {
-            match serde_json::from_value::<crate::chat::AskAiUpdateEvent>(payload) {
-                Ok(ev) => {
-                    if let Some(shell) = shell.upgrade() {
-                        let chat = shell.read(cx).chat.clone();
-                        chat.update(cx, |chat, cx| chat.on_update(ev, cx));
-                    }
-                }
-                // The serde message can quote answer text: never log it.
-                Err(_) => log::warn!("chat: unreadable ask_ai_update payload"),
+        HostMsg::Event(CoreEvent::AskAiUpdate(ev)) => {
+            if let Some(shell) = shell.upgrade() {
+                let chat = shell.read(cx).chat.clone();
+                chat.update(cx, |chat, cx| chat.on_update(ev, cx));
             }
         }
         HostMsg::Event(CoreEvent::ConversationChanged) => {

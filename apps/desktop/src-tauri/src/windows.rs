@@ -967,9 +967,8 @@ fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_e
 
         let stop_app_handle = app_handle.clone();
         match tauri::async_runtime::spawn_blocking(move || {
-            if crate::native_capture::current_native_capture_session(&stop_app_handle).is_running {
-                Some(crate::native_capture::stop_native_capture_from_app_handle(
-                    &stop_app_handle,
+            if app_core::native_capture::control::current_native_capture_session(&stop_app_handle.state::<std::sync::Arc<app_core::AppCore>>()).is_running {
+                Some(app_core::native_capture::control::stop_native_capture_from_core(&stop_app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
                 ))
             } else {
                 None

@@ -11,14 +11,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 /// The `ask_ai_update` payload (`CoreEvent::AskAiUpdate`).
-#[derive(Clone, Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AskAiUpdateEvent {
-    pub conversation_id: String,
-    pub version: u64,
-    pub turn_index: i64,
-    pub update: TurnUpdate,
-}
+pub use app_core::ask_ai::AskAiUpdateEvent;
 
 /// `ask_ai_availability`.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq)]

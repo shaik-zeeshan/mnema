@@ -19,8 +19,6 @@ mod one_time_prompts;
 mod privacy_redaction_sources;
 mod semantic_search_models;
 mod sensitive_capture_recommendations;
-#[cfg(test)]
-mod secret_vault_test_support;
 mod speaker_analysis_models;
 mod status_bar;
 mod tauri_host;
@@ -356,9 +354,9 @@ fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
             .await;
         });
     } else if is_oauth_callback_url(url) {
-        app_handle
-            .state::<ask_ai::mcp::McpManager>()
-            .complete_oauth_callback(app_handle, url);
+        let core = app_handle.state::<std::sync::Arc<app_core::AppCore>>();
+        core.state::<app_core::ask_ai::mcp::McpManager>()
+            .complete_oauth_callback(&core, url);
     } else {
         enqueue_broker_open_result(app_handle, url);
     }
@@ -447,12 +445,14 @@ fn exit_request_action_for_exit_request(
 
 /// Startup work that runs after the main window is shown, off the window-open
 /// critical path: app-infra maintenance + background workers (see
-/// [`app_infra::run_deferred_startup_blocking`]) and, once onboarding is
+/// [`app_core::app_infra::startup::run_deferred_startup_blocking`]) and, once onboarding is
 /// complete, capture auto-start and the update-check timer. Auto-start runs
 /// only after the maintenance/repair passes complete so it preserves the
 /// ordering the previous synchronous startup path guaranteed.
 fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool) {
-    app_infra::run_deferred_startup_blocking(app_handle);
+    app_core::app_infra::startup::run_deferred_startup_blocking(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+    );
     reap_stale_system_audio_aggregate_devices();
     hydrate_system_audio_permission_evidence(app_handle);
     // If the user quit while the (now background) startup work was running,
@@ -476,9 +476,11 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
     app_core::crl_refresh::start_daily_crl_timer(core.inner().clone());
     app_core::licensing::receipt_refresh::start_receipt_refresh_timer(core.inner().clone());
     // Checks onboarding itself each tick, so it also covers a same-session finish.
-    native_capture::not_recording_reminder::spawn_not_recording_reminder(app_handle.clone());
+    app_core::native_capture::not_recording_reminder::spawn_not_recording_reminder(
+        core.inner().clone(),
+    );
     if onboarding_complete {
-        native_capture::maybe_auto_start_native_capture(app_handle);
+        app_core::native_capture::control::maybe_auto_start_native_capture(&core);
         app_updates::start_update_check_timer(app_handle);
     }
 }
@@ -513,9 +515,9 @@ fn hydrate_system_audio_permission_evidence(app_handle: &tauri::AppHandle) {
         return;
     };
     let infra = infra.inner().clone();
-    tauri::async_runtime::block_on(native_capture::hydrate_system_audio_permission_evidence(
-        &infra,
-    ));
+    tauri::async_runtime::block_on(
+        app_core::native_capture::permissions::hydrate_system_audio_permission_evidence(&infra),
+    );
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -562,13 +564,18 @@ pub fn run() {
         app_core::native_capture::microphone::MicrophoneControllerPreferencesState::default();
     core.manage(microphone_preferences.clone());
     core.manage(app_core::native_capture::microphone::MicrophoneDeviceChangeNotifierState::default());
+    core.manage(app_core::native_capture::system_wake::SystemWakeNotifierState::default());
+    core.manage(
+        app_core::native_capture::system_wake::DisplayReconfigurationNotifierState::default(),
+    );
+    core.manage(app_core::native_capture::metadata::MetadataNotifierState::default());
+    // MCP tool connectors (Workstream C, ADR 0048): persistent connection
+    // manager. Lazy — nothing connects here at launch; it dials on first use.
+    core.manage(app_core::ask_ai::mcp::McpManager::default());
     tauri::Builder::default()
         .manage(core)
         .manage(native_capture_state)
         .manage(microphone_preferences)
-        .manage(native_capture::SystemWakeNotifierState::default())
-        .manage(native_capture::DisplayReconfigurationNotifierState::default())
-        .manage(native_capture::MetadataNotifierState::default())
         .manage(recording_settings)
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
@@ -580,9 +587,6 @@ pub fn run() {
         .manage(LicenseDeepLinkState::default())
         .manage(app_core::semantic_search_query::SemanticQueryEmbedderState::new())
         .manage(semantic_worker_health)
-        // MCP tool connectors (Workstream C, ADR 0048): persistent connection
-        // manager. Lazy — nothing connects here at launch; it dials on first use.
-        .manage(ask_ai::mcp::McpManager::default())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             let _ = windows::open_main_window(app);
         }))
@@ -687,12 +691,12 @@ pub fn run() {
             ask_ai::ask_ai_followup,
             ask_ai::ask_ai_cancel,
             ask_ai::ask_ai_snapshot,
-            ask_ai::mcp::manager::mcp_warm_connectors,
-            ask_ai::mcp::manager::mcp_list_server_tools,
-            ask_ai::mcp::oauth_flow::mcp_oauth_begin,
-            ask_ai::mcp::oauth_flow::mcp_oauth_disconnect,
-            ask_ai::mcp::oauth_flow::mcp_oauth_statuses,
-            ask_ai::mcp::node_check::mcp_check_node,
+            ask_ai::mcp_commands::mcp_warm_connectors,
+            ask_ai::mcp_commands::mcp_list_server_tools,
+            ask_ai::mcp_commands::mcp_oauth_begin,
+            ask_ai::mcp_commands::mcp_oauth_disconnect,
+            ask_ai::mcp_commands::mcp_oauth_statuses,
+            ask_ai::mcp_commands::mcp_check_node,
             broker_authorization_channel::get_pending_cli_access_request,
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::block_pending_cli_access_request,
@@ -793,7 +797,7 @@ pub fn run() {
             native_capture::get_app_notifications,
             native_capture::clear_app_notification,
             native_capture::clear_app_notifications,
-            native_capture::not_recording_reminder::snooze_not_recording_reminder,
+            native_capture::snooze_not_recording_reminder,
             native_capture::list_privacy_app_candidates,
             native_capture::resolve_app_icons,
             native_capture::check_browser_url_support,
@@ -851,14 +855,14 @@ pub fn run() {
             user_context::commands::user_context_delete_authored,
             user_context::commands::wipe_user_context,
             user_context::commands::user_context_stamp_local_offset,
-            conversation::commands::list_conversations,
-            conversation::commands::get_conversation,
-            conversation::commands::search_conversations,
-            conversation::commands::set_conversation_engine,
-            conversation::commands::set_conversation_title,
-            conversation::commands::set_conversation_pinned,
-            conversation::commands::delete_conversation,
-            conversation::commands::delete_last_turn,
+            conversation::list_conversations,
+            conversation::get_conversation,
+            conversation::search_conversations,
+            conversation::set_conversation_engine,
+            conversation::set_conversation_title,
+            conversation::set_conversation_pinned,
+            conversation::delete_conversation,
+            conversation::delete_last_turn,
             usage_charts::get_usage_charts,
             usage_charts::capture_presence,
             usage_charts::get_capture_hours,
@@ -916,7 +920,9 @@ pub fn run() {
             }
             let _ = app.deep_link().register_all();
             windows::install_macos_terminate_handler(app.handle());
-            native_capture::initialize_recording_settings_from_disk(app.handle());
+            app_core::native_capture::control::initialize_recording_settings_from_disk(
+                &app.state::<std::sync::Arc<app_core::AppCore>>(),
+            );
             app_updates::initialize(app.handle());
             app_core::one_time_prompts::initialize(
                 &app.state::<std::sync::Arc<app_core::AppCore>>(),
@@ -944,10 +950,12 @@ pub fn run() {
                 &app.state::<std::sync::Arc<app_core::AppCore>>(),
             )
             .map_err(std::io::Error::other)?;
-            native_capture::maybe_push_audio_transcription_unavailable_startup_warning(
-                app.handle(),
-            );
-            native_capture::maybe_push_ocr_unavailable_startup_warning(app.handle());
+            {
+                use app_core::native_capture::model_warnings as warnings;
+                let core = app.state::<std::sync::Arc<app_core::AppCore>>();
+                warnings::maybe_push_audio_transcription_unavailable_startup_warning(&core);
+                warnings::maybe_push_ocr_unavailable_startup_warning(&core);
+            }
             app_core::native_capture::microphone::controller::start_microphone_device_change_notifier(
                 app.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
             );

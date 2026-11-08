@@ -4,14 +4,17 @@
 
 pub mod ai_runtime;
 pub mod app_infra;
+pub mod ask_ai;
 pub mod audio_transcription_backfill;
 pub mod audio_transcription_models;
 pub mod broker_authorization_channel;
 pub mod chatgpt_auth;
 pub mod cli_access;
 pub mod clock_format;
+pub mod conversation;
 mod core;
 pub mod crl_refresh;
+pub mod debug_health;
 pub mod debug_log;
 pub mod debug_pipeline;
 pub mod debug_status;
@@ -50,6 +53,7 @@ pub mod transcription_deepgram;
 pub mod updates;
 pub mod usage_charts;
 pub mod user_context;
+pub mod voice_enrollment;
 
 pub use crate::core::AppCore;
 pub use event::CoreEvent;

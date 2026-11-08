@@ -31,6 +31,7 @@ use crate::{AppCore, CoreEvent};
 
 mod download;
 mod integrity;
+mod select;
 mod status;
 mod task;
 #[cfg(test)]
@@ -40,6 +41,7 @@ pub use download::{
     build_download_plan, claim_model_download, download_and_install_model, emit_download_progress,
 };
 use integrity::*;
+pub use select::select_semantic_search_model;
 use status::*;
 pub use task::start_semantic_search_model_download;
 

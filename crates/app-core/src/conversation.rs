@@ -1,0 +1,295 @@
+//! Persistent conversations (issue #102, ADR 0031).
+//!
+//! ONE shared store backs both Quick Recall and Chat. These are thin adapters
+//! over `app_infra::ConversationStore`; after a save/delete they emit
+//! [`CONVERSATION_CHANGED_EVENT`] so any open conversation surface refreshes
+//! (mirrors `user_context_changed`).
+
+use capture_types::{Conversation, ConversationSummary};
+use serde::Deserialize;
+
+use crate::{AppCore, AppInfraState, CoreEvent};
+
+/// Frontend refresh event emitted after a conversation is saved or deleted.
+pub const CONVERSATION_CHANGED_EVENT: &str = "conversation_changed";
+
+/// "Now" in unix milliseconds (UTC), stamped Rust-side on save so the store
+/// stays deterministic. Mirrors the User Context worker's `now_ms`.
+fn now_ms() -> i64 {
+    (time::OffsetDateTime::now_utc().unix_timestamp_nanos() / 1_000_000) as i64
+}
+
+/// List conversations newest-first (by last update), each as a lightweight
+/// summary (turn count + first-question preview). Default limit 50.
+pub async fn list_conversations(
+    infra: &AppInfraState,
+    limit: Option<i64>,
+    offset: Option<i64>,
+) -> Result<Vec<ConversationSummary>, String> {
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    let offset = offset.unwrap_or(0).max(0);
+    infra
+        .conversation()
+        .list_conversations(limit, offset)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Hydrate one conversation (with its turns in order) by its frontend UUID.
+///
+/// Cold-reattach legacy backfill: a LEGACY turn (persisted before the `blocks`
+/// column existed, so `blocks == None`) carries no render-ready blocks. Here —
+/// in app-core, which CAN reach the [`AnswerView`] parser (app-infra is
+/// a pure store) — we parse such a turn's `answer` into blocks ONCE on read, the
+/// same parse the live stream produced. New turns already carry their persisted
+/// blocks, so this only touches legacy rows. The result: the frontend receives
+/// populated `blocks` for EVERY turn and never re-parses fenced JSON.
+pub async fn get_conversation(
+    infra: &AppInfraState,
+    conversation_id: String,
+) -> Result<Option<Conversation>, String> {
+    let mut conversation = infra
+        .conversation()
+        .get_conversation(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    if let Some(conversation) = conversation.as_mut() {
+        for turn in conversation.turns.iter_mut() {
+            if turn.blocks.is_none() && !turn.answer.trim().is_empty() {
+                turn.blocks = Some(crate::ask_ai::answer_view::parse_answer_to_blocks(
+                    &turn.answer,
+                ));
+            }
+        }
+    }
+
+    Ok(conversation)
+}
+
+/// Case-insensitive search across conversation titles and turn
+/// questions/answers. Newest-first, deduped per conversation. Default limit 50.
+pub async fn search_conversations(
+    infra: &AppInfraState,
+    query: String,
+    limit: Option<i64>,
+) -> Result<Vec<ConversationSummary>, String> {
+    let limit = limit.unwrap_or(50).clamp(1, 500);
+    infra
+        .conversation()
+        .search_conversations(&query, limit)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Pin (or clear) the Reasoning Engine identity for a conversation. `provider` /
+/// `model` both absent/`null` clears the pin → unpinned (use the global default
+/// engine). The conversation row is ensured first (a pin may be set before the
+/// first turn). Emits [`CONVERSATION_CHANGED_EVENT`].
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationEngineRequest {
+    /// Frontend-generated UUID (the stable cross-restart identity).
+    pub conversation_id: String,
+    /// The calling door (`"chat"`), stored only if this call creates the row.
+    pub origin: String,
+    /// The engine provider id to pin, or `None` to clear.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// The model id within `provider` to pin, or `None` to clear.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// Pin (or clear) the engine identity for a conversation. Emits
+/// [`CONVERSATION_CHANGED_EVENT`].
+pub async fn set_conversation_engine(
+    core: &AppCore,
+    infra: &AppInfraState,
+    request: SetConversationEngineRequest,
+) -> Result<(), String> {
+    infra
+        .conversation()
+        .set_conversation_engine(
+            &request.conversation_id,
+            &request.origin,
+            request.provider.as_deref(),
+            request.model.as_deref(),
+            now_ms(),
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+
+    core.host().emit(CoreEvent::ConversationChanged);
+    Ok(())
+}
+
+/// Rename a conversation: persist an explicit USER-SET title. A user-set title
+/// permanently wins over the background title generator (the generator's write
+/// is conditional on `user_title` still being absent), so a rename — even one
+/// racing an in-flight generation — sticks.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetConversationTitleRequest {
+    /// Frontend-generated UUID (the stable cross-restart identity).
+    pub conversation_id: String,
+    /// The new title. Trimmed; an empty/whitespace-only title is rejected.
+    pub title: String,
+    /// The calling door. When set, a missing row is created first (Chat's
+    /// header can rename before the first save lands); when absent, a missing
+    /// conversation is an error.
+    #[serde(default)]
+    pub origin: Option<String>,
+}
+
+/// Persist the user-set title for a conversation. Rejects an empty
+/// (post-trim) title and, unless `origin` is given, a missing conversation.
+/// Emits [`CONVERSATION_CHANGED_EVENT`].
+pub async fn set_conversation_title(
+    core: &AppCore,
+    infra: &AppInfraState,
+    request: SetConversationTitleRequest,
+) -> Result<(), String> {
+    let title = request.title.trim();
+    if title.is_empty() {
+        return Err("conversation title must not be empty".to_string());
+    }
+
+    if let Some(origin) = request.origin.as_deref() {
+        infra
+            .conversation()
+            .ensure_conversation(&request.conversation_id, origin, now_ms())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let renamed = infra
+        .conversation()
+        .set_user_title(&request.conversation_id, title, now_ms())
+        .await
+        .map_err(|e| e.to_string())?;
+    if !renamed {
+        return Err(format!(
+            "conversation {} not found",
+            request.conversation_id
+        ));
+    }
+
+    core.host().emit(CoreEvent::ConversationChanged);
+    Ok(())
+}
+
+/// Pin (or unpin) a chat to the top of the history list. Touches no
+/// timestamp (pinning is not activity). A missing row is created only when
+/// `origin` is given (Chat's header, before the first save lands), otherwise
+/// it is an error. Not the per-chat engine pin — that is
+/// [`set_conversation_engine`]. Emits [`CONVERSATION_CHANGED_EVENT`].
+pub async fn set_conversation_pinned(
+    core: &AppCore,
+    infra: &AppInfraState,
+    conversation_id: String,
+    pinned: bool,
+    origin: Option<String>,
+) -> Result<(), String> {
+    if let Some(origin) = origin.as_deref() {
+        infra
+            .conversation()
+            .ensure_conversation(&conversation_id, origin, now_ms())
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    let found = infra
+        .conversation()
+        .set_pinned(&conversation_id, pinned)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !found {
+        return Err(format!("conversation {conversation_id} not found"));
+    }
+
+    core.host().emit(CoreEvent::ConversationChanged);
+    Ok(())
+}
+
+/// Delete a conversation's trailing turn so Regenerate / Retry can re-send
+/// the same question into the same `turn_index`. Errors (deleting nothing)
+/// when `turn_index` is not the last turn, or while a turn is still running —
+/// its next save would re-insert the deleted row. The phase check lives here,
+/// not in the store, so a crash-orphaned `streaming` row stays retryable.
+/// Emits [`CONVERSATION_CHANGED_EVENT`].
+pub async fn delete_last_turn(
+    core: &AppCore,
+    infra: &AppInfraState,
+    conversation_id: String,
+    turn_index: i64,
+) -> Result<(), String> {
+    if crate::ask_ai::turn_in_flight(&conversation_id) {
+        return Err(
+            "an answer is still being written. Wait for it to finish, then try again.".to_string(),
+        );
+    }
+    let deleted = infra
+        .conversation()
+        .delete_last_turn(&conversation_id, turn_index)
+        .await
+        .map_err(|e| e.to_string())?;
+    if !deleted {
+        // Shown verbatim in the Regenerate alert: plain words, no ids.
+        return Err(
+            "this answer isn't the latest one in the chat any more. Reopen the chat and try again."
+                .to_string(),
+        );
+    }
+
+    core.host().emit(CoreEvent::ConversationChanged);
+    Ok(())
+}
+
+/// Delete a conversation (its turns cascade). Emits
+/// [`CONVERSATION_CHANGED_EVENT`].
+pub async fn delete_conversation(
+    core: &AppCore,
+    infra: &AppInfraState,
+    conversation_id: String,
+) -> Result<(), String> {
+    infra
+        .conversation()
+        .delete_conversation(&conversation_id)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    core.host().emit(CoreEvent::ConversationChanged);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::test_support::{core_in, FakeHost};
+
+    #[test]
+    fn a_conversation_edit_tells_the_host_its_list_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let host = Arc::new(FakeHost::default());
+        let core = core_in(host.clone(), dir.path());
+        let infra: AppInfraState = Arc::new(
+            core.block_on(::app_infra::AppInfra::initialize(dir.path()))
+                .expect("infra"),
+        );
+
+        core.block_on(set_conversation_pinned(
+            &core,
+            &infra,
+            "c1".to_string(),
+            true,
+            Some("chat".to_string()),
+        ))
+        .expect("pin");
+
+        assert_eq!(
+            *host.events.lock().unwrap(),
+            vec![CoreEvent::ConversationChanged]
+        );
+    }
+}

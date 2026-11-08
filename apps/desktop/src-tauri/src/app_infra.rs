@@ -1,7 +1,6 @@
 //! The Tauri side of `app_core::app_infra`: `initialize` (which also hands the
-//! shared states to Tauri's state for the code still reading them there), the
-//! command wrappers, and the startup and retention pieces that read the live
-//! capture session.
+//! shared states to Tauri's state, for the commands that take them as `State`)
+//! and the command wrappers.
 
 use std::sync::Arc;
 
@@ -11,18 +10,9 @@ use tauri::{Manager, State};
 
 pub mod quick_recall;
 pub mod retention;
-mod startup;
-#[cfg(test)]
-mod tests;
-mod workers;
-
-pub(crate) use retention::delete_recent_capture_from_app_handle;
-pub(crate) use startup::{
-    run_deferred_startup_blocking, startup_panicked, startup_report, StartupReport,
-};
 
 /// Opens app-infra on the core, then registers the same states with Tauri for
-/// the commands and capture code that still read them there (S3).
+/// the commands that take them as `State`.
 pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
     let core = app.state::<Arc<AppCore>>().inner().clone();
     core_infra::initialize(&core)?;
