@@ -8,9 +8,10 @@ publish = false
 # Parity JSON -> shell models, plus app-core's fixture seed. Tests turn it on
 # through the self dev-dependency below; the shipped binary leaves it off.
 fixtures = ["app-core/fixtures"]
-# Frame time, keystroke->paint, summon latency and startup milestones on the
-# Debug target `mnema_gpui::feel` (scripts/gpui-feel-report.sh reads them).
-feel-metrics = []
+# Per-frame work + dropped frames (from GPUI's frame profiler), keystroke->paint,
+# summon latency and startup milestones on the Debug target `mnema_gpui::feel`
+# (scripts/gpui-feel-report.sh reads them).
+feel-metrics = ["gpui-kit/profiler"]
 
 [dependencies]
 anyhow = "1"
@@ -38,9 +39,9 @@ tray-icon = { version = "=0.26.1", default-features = false }
 url = "2"
 uuid = { version = "1", features = ["v4"] }
 
-[[bin]]
+[[example]]
 name = "scrub-bench"
-path = "src/bin/scrub_bench.rs"
+path = "examples/scrub_bench.rs"
 required-features = ["fixtures", "feel-metrics"]
 
 [[test]]

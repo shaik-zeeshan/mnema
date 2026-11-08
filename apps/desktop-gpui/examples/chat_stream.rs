@@ -73,6 +73,7 @@ fn main() {
                 cx.background_executor()
                     .timer(Duration::from_millis(500))
                     .await;
+                feel::section(true);
                 for i in 1..=UPDATES {
                     cx.background_executor().timer(EVERY).await;
                     let update = if i == UPDATES {
@@ -90,6 +91,7 @@ fn main() {
                     };
                     let _ = chat.update(cx, |c, cx| c.on_update(ev, cx));
                 }
+                feel::section(false);
                 cx.background_executor()
                     .timer(Duration::from_millis(500))
                     .await;

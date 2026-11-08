@@ -366,7 +366,9 @@ impl TimelineView {
         }));
     }
 
-    /// Audio bars, band colours and app icons for the loaded window.
+    /// Audio bars, band colours and app icons for the loaded window: one
+    /// background fetch and one view update per frame-list change (a fast scrub
+    /// pages every ~200 frames; three separate answers meant three re-renders).
     fn refresh_side_data(&mut self, cx: &mut Context<Self>) {
         let now = crate::ui::clock::now_ms(cx);
         let frames = &self.paging.frames;
@@ -378,18 +380,28 @@ impl TimelineView {
         let empty = frames.is_empty();
         let mut missing: Vec<String> = frames
             .iter()
-            .filter_map(|f| f.app_bundle_id.clone())
-            .filter(|b| !self.icons.contains_key(b))
+            .filter_map(|f| f.app_bundle_id.as_ref())
+            .filter(|b| !self.icons.contains_key(*b))
+            .cloned()
             .collect();
         missing.sort();
         missing.dedup();
         self.audio_loading = true;
         self.fetch(
             cx,
-            move |s| s.audio_segments(oldest - AUDIO_PADDING_MS, newest + AUDIO_PADDING_MS),
-            |view, res, _| {
+            move |s| {
+                let audio = s.audio_segments(oldest - AUDIO_PADDING_MS, newest + AUDIO_PADDING_MS);
+                let episodes = (!empty).then(|| s.episodes(oldest, newest + EPISODE_EDGE_PAD_MS));
+                let icons = if missing.is_empty() {
+                    Vec::new()
+                } else {
+                    s.app_icons(&missing)
+                };
+                (audio, episodes, icons)
+            },
+            |view, (audio, episodes, icons), _| {
                 view.audio_loading = false;
-                match res {
+                match audio {
                     Ok(mut segs) => {
                         segs.sort_by_key(|s| s.start_ms);
                         view.audio = segs;
@@ -397,28 +409,13 @@ impl TimelineView {
                     }
                     Err(e) => view.audio_error = Some(e),
                 }
-            },
-        );
-        if empty {
-            return;
-        }
-        self.fetch(
-            cx,
-            move |s| s.episodes(oldest, newest + EPISODE_EDGE_PAD_MS),
-            |view, res, _| {
                 // A failure keeps the bands neutral (never a guessed colour).
-                if let Ok(e) = res {
+                if let Some(Ok(e)) = episodes {
                     view.episodes = e;
                 }
+                view.icons.extend(icons);
             },
         );
-        if !missing.is_empty() {
-            self.fetch(
-                cx,
-                move |s| s.app_icons(&missing),
-                |view, icons, _| view.icons.extend(icons),
-            );
-        }
     }
 
     fn load_match_boxes(&mut self, cx: &mut Context<Self>) {

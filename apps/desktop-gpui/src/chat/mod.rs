@@ -456,8 +456,6 @@ impl Chat {
 
 impl Render for Chat {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // A streamed update re-renders only this view, so it counts its own frames.
-        crate::feel::frame_rendered(window);
         let p = theme::tokens(cx);
         let docked = !self.is_new() && self.pane == Pane::Thread;
         if docked != self.docked_placeholder {

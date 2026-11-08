@@ -244,11 +244,8 @@ pub fn render(
         .filter(|r| r.end >= range.start && r.start < range.end)
         .map(|r| (r.start, r.end, bands::run_color(v, r, p)))
         .collect();
-    let majors: Vec<i64> = runs.iter().filter_map(|r| r.boundary_frame_id).collect();
-    let ticks: Vec<(usize, bool)> = range
-        .clone()
-        .map(|i| (i, majors.contains(&frames[i].id)))
-        .collect();
+    let tick_runs = runs.clone();
+    let ticks = range.clone();
     let hovered = v.hovered.map(|h| h.0);
     let advance = v.advance_px;
     let rail_w = v.rail_w.clone();
@@ -269,65 +266,78 @@ pub fn render(
                 window.refresh();
             }
         },
+        // One layer: every primitive shares its z-order, so ~300 tick quads skip
+        // the scene's per-primitive overlap search (same pixels, painted in order).
         move |b, _, window, _| {
-            let c = f32::from(b.left()) + f32::from(b.size.width) / 2.;
-            let track = Bounds::new(
-                point(b.left(), b.top() + px(1.)),
-                size(b.size.width, px(RAIL_H - 2.)),
-            );
-            bands::paint_bands(track, c, advance, &visible_runs, window);
-            let mid = f32::from(b.top()) + 1. + 8. + 9.;
-            for &(i, major) in &ticks {
-                let x = slot_x(c, advance, i);
-                let (tw, th, color) = if i == active {
-                    (2., 22., accent)
-                } else if hovered == Some(i) {
-                    (1., 12., muted)
-                } else if major {
-                    (1., 16., subtle)
-                } else {
-                    (1., 8., border_strong)
-                };
-                if i == active {
-                    // `0 0 0 1px glow, 0 0 10px glow`: a ring plus a soft halo.
-                    for (pad, a) in [(5., 0.35), (1., 1.)] {
-                        window.paint_quad(
-                            fill(
-                                Bounds::new(
-                                    point(px(x - tw / 2. - pad), px(mid - th / 2. - pad)),
-                                    size(px(tw + pad * 2.), px(th + pad * 2.)),
-                                ),
-                                alpha(glow, a * glow.a),
-                            )
-                            .corner_radii(px(pad)),
-                        );
-                    }
-                }
-                window.paint_quad(
-                    fill(
-                        Bounds::new(
-                            point(px(x - tw / 2.), px(mid - th / 2.)),
-                            size(px(tw), px(th)),
-                        ),
-                        color,
-                    )
-                    .corner_radii(px(0.5)),
+            window.paint_layer(b, |window| {
+                let c = f32::from(b.left()) + f32::from(b.size.width) / 2.;
+                let track = Bounds::new(
+                    point(b.left(), b.top() + px(1.)),
+                    size(b.size.width, px(RAIL_H - 2.)),
                 );
-            }
-            // The CSS mask fades 5% at each end to the page behind.
-            let edge = f32::from(b.size.width) * 0.05;
-            for (x, from, to) in [(b.left(), 0., 1.), (b.right() - px(edge), 1., 0.)] {
-                window.paint_quad(fill(
-                    Bounds::new(point(x, b.top()), size(px(edge), b.size.height)),
-                    linear_gradient(
-                        90.,
-                        linear_color_stop(alpha(bg, 1. - from), 0.),
-                        linear_color_stop(alpha(bg, 1. - to), 1.),
-                    ),
-                ));
-            }
-            caret(true, c, f32::from(b.top()) - 1., subtle, window);
-            caret(false, c, f32::from(b.top()) + 30., subtle, window);
+                bands::paint_bands(track, c, advance, &visible_runs, window);
+                let mid = f32::from(b.top()) + 1. + 8. + 9.;
+                // The buffer slots past each edge are clipped anyway: don't paint them.
+                let (lo, hi) = (f32::from(b.left()) - SLOT_W, f32::from(b.right()) + SLOT_W);
+                for i in ticks.clone() {
+                    let x = slot_x(c, advance, i);
+                    if x < lo || x > hi {
+                        continue;
+                    }
+                    // A major tick sits at the oldest frame of a run an older run follows.
+                    let major = tick_runs
+                        .binary_search_by_key(&i, |r| r.end)
+                        .is_ok_and(|k| tick_runs[k].boundary_frame_id.is_some());
+                    let (tw, th, color) = if i == active {
+                        (2., 22., accent)
+                    } else if hovered == Some(i) {
+                        (1., 12., muted)
+                    } else if major {
+                        (1., 16., subtle)
+                    } else {
+                        (1., 8., border_strong)
+                    };
+                    if i == active {
+                        // `0 0 0 1px glow, 0 0 10px glow`: a ring plus a soft halo.
+                        for (pad, a) in [(5., 0.35), (1., 1.)] {
+                            window.paint_quad(
+                                fill(
+                                    Bounds::new(
+                                        point(px(x - tw / 2. - pad), px(mid - th / 2. - pad)),
+                                        size(px(tw + pad * 2.), px(th + pad * 2.)),
+                                    ),
+                                    alpha(glow, a * glow.a),
+                                )
+                                .corner_radii(px(pad)),
+                            );
+                        }
+                    }
+                    window.paint_quad(
+                        fill(
+                            Bounds::new(
+                                point(px(x - tw / 2.), px(mid - th / 2.)),
+                                size(px(tw), px(th)),
+                            ),
+                            color,
+                        )
+                        .corner_radii(px(0.5)),
+                    );
+                }
+                // The CSS mask fades 5% at each end to the page behind.
+                let edge = f32::from(b.size.width) * 0.05;
+                for (x, from, to) in [(b.left(), 0., 1.), (b.right() - px(edge), 1., 0.)] {
+                    window.paint_quad(fill(
+                        Bounds::new(point(x, b.top()), size(px(edge), b.size.height)),
+                        linear_gradient(
+                            90.,
+                            linear_color_stop(alpha(bg, 1. - from), 0.),
+                            linear_color_stop(alpha(bg, 1. - to), 1.),
+                        ),
+                    ));
+                }
+                caret(true, c, f32::from(b.top()) - 1., subtle, window);
+                caret(false, c, f32::from(b.top()) + 30., subtle, window);
+            })
         },
     )
     .absolute()

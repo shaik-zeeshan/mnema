@@ -81,10 +81,14 @@ pub(super) fn render(_: &mut Gallery, _: &mut Window, cx: &mut Context<Gallery>)
             cell("hover", st("hover").force(Force::Hover), &p),
             cell("focus", st("focus").force(Force::Focus), &p),
             cell("press", st("press").force(Force::Press), &p),
-            cell("pressed", st("pressed").pressed(true), &p),
+        ];
+        // The app never uses a primary toggle, so the gallery doesn't show one.
+        let pressed =
+            (v != Variant::Primary).then(|| cell("pressed", st("pressed").pressed(true), &p));
+        let items = items.into_iter().chain(pressed).chain([
             cell("disabled", st("disabled").disabled(true), &p),
             cell("busy", st("busy").busy(true), &p),
-        ];
+        ]);
         row(name, items, &p).into_any_element()
     });
     let actions = vec![

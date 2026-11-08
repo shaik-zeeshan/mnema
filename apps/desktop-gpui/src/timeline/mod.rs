@@ -304,7 +304,6 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
 
 impl Render for TimelineView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::feel::frame_rendered(window);
         let p = theme::tokens(cx);
         self.settle_painted(window, cx);
         div()

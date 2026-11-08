@@ -5,7 +5,10 @@
 //! of atlas; WebKit's equivalent leak is why the Svelte stage paints blob URLs).
 //!
 //! Loads go through GPUI's `ImageCacheItem`, which reads and decodes on the
-//! background executor and swaps RGBA to BGRA, so the main thread never decodes.
+//! background executor and swaps RGBA to BGRA, so the main thread never decodes;
+//! an evicted image's pixels are freed there too. The GPU upload happens when the
+//! stage first paints an image: one per stage swap, which the scrub engine's
+//! display throttle keeps ≥ 80 ms apart while scrubbing.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -155,7 +158,11 @@ impl ImageCache for FrameImages {
             },
         ) {
             if let Some(Ok(image)) = evicted.item.get() {
+                // The last reference frees ~10 MB of pixels: do that off the main thread.
+                let last = image.clone();
                 cx.drop_image(image, Some(window));
+                drop(evicted);
+                cx.background_spawn(async move { drop(last) }).detach();
             }
         }
         result
