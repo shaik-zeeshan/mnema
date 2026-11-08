@@ -62,6 +62,18 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
 
 ---
 
+## Status log
+
+- **2026-11-08 T0 done** (2c315085). **P0 done** (0abcfa90).
+- **S0 done:** all 11 items pass.
+  - Cold start ~160 ms release (to first paint).
+  - Idle CPU 0.0% with every window hidden.
+  - The Tauri app still builds with the shared lock.
+  - Fonts need static cuts.
+  - Needs Rust ≥1.93 (founder ruling pending).
+  - Quit swizzle → AppKit's original `terminate:` still fires GPUI's `on_app_quit`.
+  - Open for S7: a real tray click (founder), and an unexplained off-screen 500×500 window with sharingState 1.
+
 ## T0 · Tooling (orchestrator, before S0)
 
 **Goal:** the repo has the plan, subagents, skill and hooks that every later slice relies on.

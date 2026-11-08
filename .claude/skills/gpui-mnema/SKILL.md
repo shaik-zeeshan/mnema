@@ -19,7 +19,13 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **`on_open_urls` has no `&mut App`.** Send the URLs into an `async_channel` and handle them in a `cx.spawn` loop.
 - **`reduce_motion()` is read once at init.** Our observer updates it.
 - **`RenderImage` is BGRA.** Swap channels when decoding RGBA. Free GPU memory with `drop_image` when evicting.
-- **Fonts:** embedded TTF from `apps/desktop-gpui/assets/fonts` via `cx.text_system().add_fonts`. UI font is Hanken Grotesk; data/mono is Spline Sans Mono.
+- **Fonts:** GPUI loads one face per file and ignores a variable font's weight axis. So we embed **static** 400/500/600 TTFs (`apps/desktop-gpui/assets/fonts/*-{400,500,600}.ttf`, cut with `varLib.instancer`; decompress woff2 with `uvx --from fonttools --with brotli`) via `cx.text_system().add_fonts`. UI font is Hanken Grotesk; data/mono is Spline Sans Mono.
+- **Toolchain:** `gpui-pre-util` needs Rust ≥1.93 and the local default is 1.92. Use `cargo +stable …` until the founder rules on a `rust-toolchain.toml`.
+- **Transparent windows:** the gpui-component root paints the theme background, so use `Root::new(..).bg(transparent_black())`.
+- **Never run a nested modal loop** (NSMenu popUp, `runModal`) inside `cx.update`: GPUI re-borrows app state and panics with "RefCell already borrowed". Defer it outside the update.
+- **NSWindow access:** call `HasWindowHandle::window_handle(window)` explicitly. `window.window_handle()` is GPUI's own method.
+- **Golden test binaries** use `harness = false` with their own `main`, because AppKit needs the main thread.
+- **Tray icon checks:** on macOS 26 the tray icon lives in Control Centre's window list. Menu-bar managers (Ice) may hide it.
 - **OS event threads** (tray, hotkey, notifications): std thread on the receiver → `async_channel::send_blocking` → `cx.spawn(async move |cx| while let Ok(e) = rx.recv().await { cx.update(..) })`.
 
 ## Architecture rules

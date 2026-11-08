@@ -1,0 +1,28 @@
+[package]
+name = "mnema-gpui"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+anyhow = "1"
+async-channel = "2"
+futures = "0.3"
+global-hotkey = "=0.9.0"
+gpui-kit = "=0.9.0"
+gpui-pre-util = "=0.3.11"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSResponder", "NSWindow", "NSGraphics", "NSView"] }
+objc2-foundation = "0.3"
+raw-window-handle = "0.6"
+sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time"] }
+tray-icon = { version = "=0.26.1", default-features = false }
+
+[[test]]
+name = "visual_spike"
+harness = false
+
+[dev-dependencies]
+gpui-kit = { version = "=0.9.0", features = ["test-support"] }
+image = "0.25"
