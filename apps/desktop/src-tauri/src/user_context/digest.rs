@@ -44,13 +44,15 @@ use super::worker::{model_label_for, now_ms, provider_label_for};
 /// the engine never sees this bare: [`digest_preamble`] prepends the soft
 /// Sensitive Category Guardrail instruction first.
 const DIGEST_PREAMBLE_BASE: &str = "You write a short narrative digest of a single user's derived \
-Activity episodes over one calendar range (a day, a week, or a month). Write 2 to 4 sentences of \
-plain prose addressed to the user in the second person — for example \"Most of this week went into \
-the billing migration…\". Mention the dominant work, the shape it took across the days, and any \
-notable shift in focus or topic. Do NOT use markdown, lists, bullet points, headers, or quotes — \
-only sentences. Ground every claim in the listed Activities; do not invent work that is not shown. \
-Each Activity line carries its local clock times; cite them when they help (\"before the late-morning \
-call\"). Weigh the range by time: lead with what took the most of it (the time-by-category line \
+Activity episodes over one calendar range (a day, a week, or a month). Write at most 2 short \
+sentences, 40 words in total at most, of plain prose addressed to the user in the second person — \
+for example \"Most of this week went into the billing migration, in long morning stretches \
+in the editor.\". Say what took most of the time and one detail about how it went. What changed the \
+shape of the range is the headline's turn, not the narrative's: do not restate it here. The page already shows the day-by-day breakdown, the stats, and every Activity, so do \
+not recount the days or walk through episodes. Do NOT use markdown, lists, bullet points, headers, \
+or quotes — only sentences. Ground every claim in the listed Activities; do not invent work that is \
+not shown. Each Activity line carries its local clock times; mention one only when it is the point \
+(\"after the late-morning call\"). Weigh the range by time: lead with what took the most of it (the time-by-category line \
 shows the real shape), and never call an episode of a few seconds focus, work or a session. Keep \
 watching or listening (videos, podcasts, streams) apart from doing (building, writing, calls): \
 say \"you watched a video about X\", never \"you built X\" or \"a conversation about X\", unless \
@@ -232,7 +234,7 @@ const ROLLUP_SAMPLE_TITLES: usize = 2;
 /// the reference-free guard test below keeps it that way.
 #[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
 pub struct DigestNarrative {
-    /// 2–4 sentences of second-person plain prose.
+    /// At most 2 short sentences of second-person plain prose.
     pub narrative: String,
     /// Full-sentence headline above the prose, with no dash in it. Defaulted
     /// (same stance as `derivation.rs`'s optional fields) so an engine that
@@ -671,8 +673,8 @@ fn build_digest_prompt(
     prompt.push_str(&format!(
         "Below are the user's Activity episodes for one {range_kind}, in chronological order \
 (oldest first). Each line carries the local day, the local start–end clock time, the episode \
-duration, optional category and focus labels, the title, and a short summary. Write the 2-4 \
-sentence second-person narrative digest, the headline, and the optional turn described in the \
+duration, optional category and focus labels, the title, and a short summary. Write the short \
+(at most 2 sentences) second-person narrative digest, the headline, and the optional turn described in the \
 instructions and return DigestNarrative.\n\n"
     ));
     prompt.push_str(&format!(
@@ -731,15 +733,48 @@ fn category_totals_line(activities: &[Activity]) -> String {
     format!("Time by category: {}\n", parts.join(", "))
 }
 
+/// Char cap on the stored narrative: the prompt asks for ≤ 40 words (~240
+/// chars, 2–3 lines in the lede), so this only catches an engine that ignores it.
+const NARRATIVE_CHAR_CAP: usize = 320;
+
 /// Trim + validate an engine-returned narrative. `None` = generation failure
-/// (the engine returned an empty/whitespace narrative).
+/// (the engine returned an empty/whitespace narrative). An over-long one keeps
+/// its whole sentences that fit under [`NARRATIVE_CHAR_CAP`]; with no sentence
+/// end inside the cap it falls back to a word cut ending in "…".
 fn normalize_narrative(raw: &str) -> Option<String> {
     let narrative = raw.trim();
     if narrative.is_empty() {
-        None
-    } else {
-        Some(narrative.to_string())
+        return None;
     }
+    if narrative.chars().count() <= NARRATIVE_CHAR_CAP {
+        return Some(narrative.to_string());
+    }
+    // A sentence end is '.', '!' or '?' + whitespace, not before a lowercase word
+    // and not with nothing before it, so "v0.1", "3.5h", "e.g. the" and a bare
+    // "..." never count. Its whitespace may be the char just past the cap.
+    let chars: Vec<(usize, char)> = narrative.char_indices().collect();
+    let sentence_end = (0..NARRATIVE_CHAR_CAP)
+        .map(|i| (chars[i], chars[i + 1].1))
+        .filter(|&((_, c), next)| matches!(c, '.' | '!' | '?') && next.is_whitespace())
+        .map(|((at, _), _)| at)
+        .filter(|&at| !narrative[at + 1..].trim_start().starts_with(char::is_lowercase))
+        .filter(|&at| narrative[..at].chars().any(char::is_alphanumeric))
+        .last();
+    Some(match sentence_end {
+        Some(at) => narrative[..=at].to_string(),
+        None => word_cut(narrative, NARRATIVE_CHAR_CAP),
+    })
+}
+
+/// Cut `text` to at most `cap` chars at the last word boundary, ending in "…"
+/// (a hard char cut when one word fills the cap).
+fn word_cut(text: &str, cap: usize) -> String {
+    let capped: String = text.chars().take(cap - 1).collect();
+    let cut = match capped.rfind(char::is_whitespace) {
+        Some(at) if at > 0 => capped[..at].trim_end(),
+        _ => capped.as_str(),
+    };
+    format!("{cut}…")
 }
 
 /// Char cap on the stored `headline — turn` string. An engine answer running
@@ -784,12 +819,7 @@ fn normalize_headline(raw: &str) -> Option<String> {
     if headline.chars().count() <= HEADLINE_CHAR_CAP {
         return Some(headline.to_string());
     }
-    let capped: String = headline.chars().take(HEADLINE_CHAR_CAP - 1).collect();
-    let cut = match capped.rfind(char::is_whitespace) {
-        Some(at) if at > 0 => capped[..at].trim_end(),
-        _ => capped.as_str(),
-    };
-    Some(format!("{cut}…"))
+    Some(word_cut(headline, HEADLINE_CHAR_CAP))
 }
 
 /// Map a [`app_infra::StoredDigest`]-shaped row onto the wire DTO.
@@ -972,6 +1002,8 @@ pub async fn get_or_generate_digest(
 
             if stored.input_fingerprint == fingerprint
                 || (!corrected_since_generated
+                    // A shape-version bump (`vN:`) is not churn: never floor-serve old prose.
+                    && stored.input_fingerprint.split(':').next() == fingerprint.split(':').next()
                     && within_freshness_floor(range_kind, stored.generated_at_ms, now_ms()))
             {
                 return Ok(present(digest_dto(
@@ -1200,3 +1232,11 @@ pub async fn get_or_generate_digest(
 #[cfg(test)]
 #[path = "digest_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "digest_cache_tests.rs"]
+mod cache_tests;
+
+#[cfg(test)]
+#[path = "digest_narrative_tests.rs"]
+mod narrative_tests;

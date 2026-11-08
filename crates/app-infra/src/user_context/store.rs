@@ -2839,9 +2839,11 @@ pub fn digest_input_fingerprint(activities: &[Activity]) -> String {
     // every cached digest regenerates on next view. `v2` added the headline
     // (migration 0030) — pre-headline narratives regenerate WITH one instead of
     // sitting cached forever. `v3`: the headline became a full sentence with an
-    // optional ` — turn`, and activity lines gained clock times. Bump it again
-    // whenever the generated shape changes.
-    format!("v3:{count}:{max_id}:{max_created_at_ms}:{accumulator:016x}")
+    // optional ` — turn`, and activity lines gained clock times. `v4`: the
+    // narrative shrank to at most 2 short sentences. `v5`: the turn moved back
+    // out of the narrative into the headline. Bump it again whenever the
+    // generated shape changes.
+    format!("v5:{count}:{max_id}:{max_created_at_ms}:{accumulator:016x}")
 }
 
 /// One Activity's order-independent accumulator term for
@@ -6521,10 +6523,10 @@ mod tests {
         // Membership changes move it: added, removed, empty.
         assert_ne!(baseline, digest_input_fingerprint(&[a.clone(), b.clone(), c]));
         assert_ne!(baseline, digest_input_fingerprint(&[a.clone()]));
-        // The `v3:` shape-version tag leads every fingerprint (see the body
+        // The `v5:` shape-version tag leads every fingerprint (see the body
         // comment): bumping it invalidates every cached digest at once.
-        assert_eq!(digest_input_fingerprint(&[]), "v3:0:0:0:0000000000000000");
-        assert!(baseline.starts_with("v3:"), "version tag leads: {baseline}");
+        assert_eq!(digest_input_fingerprint(&[]), "v5:0:0:0:0000000000000000");
+        assert!(baseline.starts_with("v5:"), "version tag leads: {baseline}");
 
         // A timestamp shift on one Activity moves it.
         let shifted = digest_activity(2, 300, 450);

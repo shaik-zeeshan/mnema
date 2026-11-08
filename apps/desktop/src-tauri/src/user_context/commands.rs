@@ -528,7 +528,7 @@ fn withheld_summary(drops: app_infra::DistillationGateDrops) -> String {
     )
 }
 
-/// The **User Context Digest** (#89): the engine-written 2–4 sentence narrative
+/// The **User Context Digest** (#89): the engine-written short (at most 2 sentences) narrative
 /// lede the Insights Overview shows for one local-calendar range. Lazy +
 /// fingerprint-cached: an unchanged range returns the stored narrative with no
 /// engine call. Returns `{ digest }`, or `{ reason }` — `derivation_off` (User
