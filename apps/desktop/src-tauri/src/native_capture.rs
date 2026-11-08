@@ -1055,7 +1055,7 @@ fn maybe_push_audio_transcription_unavailable_warning(
         }
     };
 
-    match crate::audio_transcription_models::selected_audio_transcription_model_available(
+    match app_core::audio_transcription_models::selected_audio_transcription_model_available(
         &app_data_dir,
         &settings.transcription,
     ) {
@@ -1210,7 +1210,7 @@ fn maybe_push_ocr_unavailable_warning(
         }
     };
 
-    match crate::ocr_models::selected_ocr_model_available(&app_data_dir, &settings.ocr) {
+    match app_core::ocr_models::selected_ocr_model_available(&app_data_dir, &settings.ocr) {
         Ok(true) => {}
         Ok(false) => {
             let selection = ocr_selection_label(&settings.ocr);
@@ -2042,7 +2042,7 @@ fn start_native_capture_inner(
                         "failed to resolve app data directory for OCR preflight: {error}"
                     ),
                 })?;
-        match crate::ocr_models::selected_ocr_model_available(&app_data_dir, &settings.ocr) {
+        match app_core::ocr_models::selected_ocr_model_available(&app_data_dir, &settings.ocr) {
             Ok(true) => {}
             Ok(false) => {
                 maybe_push_ocr_unavailable_start_warning(
@@ -2135,7 +2135,7 @@ fn start_native_capture_inner(
         let app_data_dir = app_data_dir_for_processing
             .as_deref()
             .expect("processing dir should exist");
-        match crate::audio_transcription_models::selected_audio_transcription_model_available(
+        match app_core::audio_transcription_models::selected_audio_transcription_model_available(
             app_data_dir,
             &settings.transcription,
         ) {
@@ -3104,7 +3104,10 @@ fn finish_recording_settings_update(
     if model_selection_changed(&previous_settings, &settings) {
         let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
-            crate::app_infra::reconcile_absent_model_locks(&app_handle).await;
+            app_core::model_download_lock::reconcile_absent_model_locks(
+                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
+            .await;
         });
     }
 

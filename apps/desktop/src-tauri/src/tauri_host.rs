@@ -63,16 +63,23 @@ pub(crate) fn start_core(bundle_id: &str) -> (Arc<TauriHost>, Arc<AppCore>) {
     (host, Arc::new(core))
 }
 
+/// A typed payload as the JSON the old `emit` serialized it to.
+fn json(payload: impl serde::Serialize) -> Value {
+    serde_json::to_value(payload).unwrap_or(Value::Null)
+}
+
 /// The frontend's event name and payload for a core event (PLAN appendix A).
 fn tauri_event(event: CoreEvent) -> (&'static str, Value) {
     use CoreEvent::*;
     match event {
         AskAiUpdate(p) => ("ask_ai_update", p),
         AudioTranscriptionModelDownloadProgress(p) => {
-            ("audio_transcription_model_download_progress", p)
+            ("audio_transcription_model_download_progress", json(p))
         }
-        SpeakerAnalysisModelDownloadProgress(p) => ("speaker_analysis_model_download_progress", p),
-        OcrModelDownloadProgress(p) => ("ocr_model_download_progress", p),
+        SpeakerAnalysisModelDownloadProgress(p) => {
+            ("speaker_analysis_model_download_progress", json(p))
+        }
+        OcrModelDownloadProgress(p) => ("ocr_model_download_progress", json(p)),
         SemanticSearchModelDownloadProgress(p) => ("semantic_search_model_download_progress", p),
         NativeCaptureSessionChanged(p) => ("native_capture_session_changed", p),
         AppUpdateStatusChanged(p) => ("app_update_status_changed", p),
@@ -221,7 +228,47 @@ impl Host for TauriHost {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app_core::audio_transcription_models::{
+        AudioTranscriptionModelDownloadProgressDto, AudioTranscriptionModelDownloadStatusDto,
+    };
+    use app_core::ocr_models::{OcrModelDownloadProgressDto, OcrModelDownloadStatusDto};
+    use app_core::speaker_analysis_models::{
+        SpeakerAnalysisModelDownloadProgressDto, SpeakerAnalysisModelDownloadStatusDto,
+    };
     use serde_json::json;
+
+    fn audio_progress() -> AudioTranscriptionModelDownloadProgressDto {
+        AudioTranscriptionModelDownloadProgressDto {
+            provider: "parakeet".into(),
+            model_id: "m".into(),
+            status: AudioTranscriptionModelDownloadStatusDto::Downloading,
+            downloaded_bytes: 5,
+            total_bytes: Some(10),
+            message: None,
+        }
+    }
+
+    fn speaker_progress() -> SpeakerAnalysisModelDownloadProgressDto {
+        SpeakerAnalysisModelDownloadProgressDto {
+            provider: "speakrs".into(),
+            model_id: "m".into(),
+            status: SpeakerAnalysisModelDownloadStatusDto::Installing,
+            downloaded_bytes: 5,
+            total_bytes: None,
+            message: Some("validating".into()),
+        }
+    }
+
+    fn ocr_progress() -> OcrModelDownloadProgressDto {
+        OcrModelDownloadProgressDto {
+            provider: "tesseract".into(),
+            model_id: "m".into(),
+            status: OcrModelDownloadStatusDto::Completed,
+            downloaded_bytes: 10,
+            total_bytes: Some(10),
+            message: None,
+        }
+    }
 
     /// One of each variant. `tauri_event`'s exhaustive match breaks the build on a
     /// new variant; add it here and to `APPENDIX_A` too.
@@ -230,9 +277,9 @@ mod tests {
         let p = || json!({ "k": 1 });
         vec![
             AskAiUpdate(p()),
-            AudioTranscriptionModelDownloadProgress(p()),
-            SpeakerAnalysisModelDownloadProgress(p()),
-            OcrModelDownloadProgress(p()),
+            AudioTranscriptionModelDownloadProgress(audio_progress()),
+            SpeakerAnalysisModelDownloadProgress(speaker_progress()),
+            OcrModelDownloadProgress(ocr_progress()),
             SemanticSearchModelDownloadProgress(p()),
             NativeCaptureSessionChanged(p()),
             AppUpdateStatusChanged(p()),
@@ -310,7 +357,7 @@ mod tests {
             app_updates::APP_UPDATE_STATUS_CHANGED_EVENT,
             app_infra::TIMELINE_DATA_CHANGED_EVENT,
             app_infra::frame_preview::SCRUB_PREVIEW_CACHE_CHANGED_EVENT,
-            audio_transcription_models::AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
+            app_core::audio_transcription_models::AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
             conversation::commands::CONVERSATION_CHANGED_EVENT,
             app_core::licensing::LICENSE_DEEP_LINK_DONE_EVENT,
             app_core::licensing::LICENSE_STATUS_EVENT,
@@ -322,9 +369,9 @@ mod tests {
             native_capture::SCREENS_DID_SLEEP_EVENT,
             native_capture::SCREENS_DID_WAKE_EVENT,
             native_capture::SYSTEM_DID_WAKE_EVENT,
-            ocr_models::OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
+            app_core::ocr_models::OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
             semantic_search_models::SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
-            speaker_analysis_models::SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
+            app_core::speaker_analysis_models::SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
             user_context::worker::USER_CONTEXT_CHANGED_EVENT,
             ask_ai::mcp::oauth_flow::MCP_AUTHORIZATION_CHANGED_EVENT,
             BROKER_OPEN_CAPTURE_RESULT_EVENT,
@@ -337,6 +384,38 @@ mod tests {
                 "{constant} has no CoreEvent"
             );
         }
+    }
+
+    #[test]
+    fn typed_model_progress_payloads_emit_the_old_camel_case_json() {
+        assert_eq!(
+            tauri_event(CoreEvent::OcrModelDownloadProgress(ocr_progress())),
+            (
+                "ocr_model_download_progress",
+                json!({
+                    "provider": "tesseract",
+                    "modelId": "m",
+                    "status": "completed",
+                    "downloadedBytes": 10,
+                    "totalBytes": 10,
+                    "message": null,
+                })
+            )
+        );
+        assert_eq!(
+            tauri_event(CoreEvent::SpeakerAnalysisModelDownloadProgress(
+                speaker_progress()
+            ))
+            .1,
+            serde_json::to_value(speaker_progress()).unwrap()
+        );
+        assert_eq!(
+            tauri_event(CoreEvent::AudioTranscriptionModelDownloadProgress(
+                audio_progress()
+            ))
+            .1,
+            serde_json::to_value(audio_progress()).unwrap()
+        );
     }
 
     #[test]

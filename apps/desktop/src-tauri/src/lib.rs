@@ -528,6 +528,16 @@ pub fn run() {
     core.manage(app_core::one_time_prompts::OneTimePromptStateStore::default());
     core.manage(app_core::licensing::LicenseGate(Mutex::new(None)));
     core.manage(app_core::licensing::ActivationHint(Mutex::new(None)));
+    core.manage(
+        app_core::audio_transcription_models::AudioTranscriptionModelDownloadState::default(),
+    );
+    core.manage(
+        app_core::speaker_analysis_models::SpeakerAnalysisModelDownloadState::default(),
+    );
+    core.manage(app_core::ocr_models::OcrModelDownloadState::default());
+    // One settings state, shared by the Tauri builder and app-core.
+    let recording_settings = app_core::recording_settings::RecordingSettingsState::default();
+    core.manage(recording_settings.clone());
     tauri::Builder::default()
         .manage(core)
         .manage(native_capture::NativeCaptureState::default())
@@ -537,16 +547,13 @@ pub fn run() {
         .manage(native_capture::DisplayReconfigurationNotifierState::default())
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::PrivacyFilterRefreshState::default())
-        .manage(app_core::recording_settings::RecordingSettingsState::default())
+        .manage(recording_settings)
         .manage(native_capture::CaptureMetadataState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())
         .manage(app_updates::AppUpdateSettingsState::default())
         .manage(app_updates::AppUpdateRuntimeState::default())
-        .manage(audio_transcription_models::AudioTranscriptionModelDownloadState::default())
-        .manage(speaker_analysis_models::SpeakerAnalysisModelDownloadState::default())
-        .manage(ocr_models::OcrModelDownloadState::default())
         .manage(semantic_search_models::SemanticSearchModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())

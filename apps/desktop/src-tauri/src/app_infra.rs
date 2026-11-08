@@ -14,7 +14,7 @@ use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use capture_screen::ScreenFrameArtifact;
 use capture_types::{
     AudioSpeechDetector, AudioTranscriptionSettings, CaptureSources, NativeCaptureSession,
-    OcrProvider, OcrSettings, RetentionPolicy as SettingsRetentionPolicy, SpeakerAnalysisSettings,
+    OcrProvider, OcrSettings, RetentionPolicy as SettingsRetentionPolicy,
 };
 use fs2::FileExt;
 use futures_util::{
@@ -1838,7 +1838,9 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
         // workers, so any pass ahead of this one that panics would leave the absent locks cleared,
         // never re-taken, and the workers running — every job frozen onto a missing model burning
         // its three attempts for the whole session. It depends on none of the passes below.
-        tauri::async_runtime::block_on(reconcile_absent_model_locks(app_handle));
+        tauri::async_runtime::block_on(app_core::model_download_lock::reconcile_absent_model_locks(
+            &app_handle.state::<Arc<app_core::AppCore>>(),
+        ));
         run_generated_frame_preview_cache_startup_pass(app_handle);
         report.workspaces_removed =
             run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
@@ -2020,321 +2022,17 @@ pub(crate) async fn shutdown_background_workers_for_app_exit(app_handle: &tauri:
     }
 }
 
-pub(crate) async fn run_audio_transcription_backfill_after_model_install(
-    infra: &::app_infra::AppInfra,
-    app_handle: &tauri::AppHandle,
-) {
-    run_audio_transcription_backfill_pass(infra, app_handle, "post-download").await;
-}
-
-/// Releases a [`app_core::model_download_lock::acquire_model_download_lock`] lock and re-derives the absent-model locks, so a
-/// download that failed or was cancelled leaves the (now missing) model locked rather than letting
-/// its jobs run against nothing.
-pub(crate) async fn release_model_download_lock(
-    app_handle: &tauri::AppHandle,
-    lock: Option<::app_infra::ProcessingModelLock>,
-) {
-    // The re-derive runs FIRST and the release second, so the two locks overlap instead of
-    // leaving a gap. A failed or cancelled download left the install directory wiped, and
-    // releasing before re-deriving would unlock a model that is not on disk for as long as the
-    // re-derive takes (a settings read plus a status stat per subsystem) — long enough for a
-    // worker to claim its jobs and spend their failure attempts against nothing. The absent sync
-    // takes the row over from the download lock, so the model is never unlocked in between.
-    reconcile_absent_model_locks(app_handle).await;
-    if let (Some(lock), Some(infra)) = (lock, app_handle.try_state::<AppInfraState>()) {
-        if let Err(error) = infra.release_processing_model_locks(&lock).await {
-            app_core::debug_log::log_warn(format!(
-                "failed to release model download lock: {error}"
-            ));
-        }
-    }
-}
-
-/// Locks every selected model that is not installed, and unlocks the ones that are. A locked model
-/// is skipped by the claim predicate, so its jobs sit `queued` — not running, not failing, not
-/// burning an attempt — until the model arrives. Recomputed rather than tracked, because nothing
-/// owns an absent model's lifetime: run it at startup and whenever a download settles.
-///
-/// ponytail: only the *selected* model per subsystem is checked, because that is the model jobs are
-/// frozen onto at admission. A job frozen onto some other model that later vanishes is not parked;
-/// widen to the distinct model keys of queued jobs if that ever shows up in practice.
-pub(crate) async fn reconcile_absent_model_locks(app_handle: &tauri::AppHandle) {
-    let Some(infra) = app_handle.try_state::<AppInfraState>() else {
-        return;
-    };
-    let app_data_dir = match app_handle.path().app_data_dir() {
-        Ok(app_data_dir) => app_data_dir,
-        Err(error) => {
-            app_core::debug_log::log_warn(format!(
-                "failed to resolve app data directory for absent-model lock reconciliation: {error}"
-            ));
-            return;
-        }
-    };
-    let Some(settings_state) = app_handle.try_state::<app_core::recording_settings::RecordingSettingsState>()
-    else {
-        return;
-    };
-    let settings = app_core::recording_settings::current_recording_settings(settings_state.inner());
-
-    let absent = [
-        (
-            ::app_infra::OCR_PROCESSOR,
-            crate::ocr_models::absent_selected_ocr_model_key(&app_data_dir, &settings.ocr),
-        ),
-        (
-            ::app_infra::AUDIO_TRANSCRIPTION_PROCESSOR,
-            crate::audio_transcription_models::absent_selected_audio_transcription_model_key(
-                &app_data_dir,
-                &settings.transcription,
-            ),
-        ),
-        (
-            ::app_infra::SPEAKER_ANALYSIS_PROCESSOR,
-            crate::speaker_analysis_models::absent_selected_speaker_analysis_model_key(
-                &app_data_dir,
-                &settings.speaker_analysis,
-            ),
-        ),
-    ];
-
-    for (processor, absent_model_key) in absent {
-        let model_keys: BTreeSet<String> = absent_model_key.into_iter().collect();
-        if let Err(error) = infra
-            .sync_absent_processing_model_locks(processor, &model_keys)
-            .await
-        {
-            app_core::debug_log::log_warn(format!(
-                "failed to reconcile absent-model locks for {processor}: {error}"
-            ));
-        }
-    }
-}
-
 fn run_audio_transcription_backfill_startup_pass(
     infra: &::app_infra::AppInfra,
     app_handle: &tauri::AppHandle,
 ) {
-    tauri::async_runtime::block_on(run_audio_transcription_backfill_pass(
-        infra, app_handle, "startup",
-    ));
-}
-
-async fn run_audio_transcription_backfill_pass(
-    infra: &::app_infra::AppInfra,
-    app_handle: &tauri::AppHandle,
-    reason: &str,
-) {
-    let admission = audio_transcription_admission_for_current_settings(app_handle);
-    if !admission.enabled || !admission.provider_available || admission.payload_json.is_none() {
-        app_core::debug_log::log(
-            format!(
-                "{reason} audio transcription backfill skipped because transcription is disabled or the selected model is unavailable"
-            ),
-        );
-        return;
-    }
-
-    match infra
-        .backfill_missing_audio_transcription_jobs(&admission)
-        .await
-    {
-        Ok(enqueued_count) => {
-            app_core::debug_log::log_info(format!(
-                "{reason} audio transcription backfill completed (enqueued={enqueued_count})"
-            ));
-        }
-        Err(error) => {
-            app_core::debug_log::log_warn(format!(
-                "{reason} audio transcription backfill failed: {error}"
-            ));
-        }
-    }
-
-    let speaker_admission = speaker_analysis_admission_for_current_settings(app_handle);
-    if speaker_admission.enabled
-        && speaker_admission.provider_available
-        && speaker_admission.payload_json.is_some()
-    {
-        match infra
-            .backfill_missing_speaker_analysis_jobs(&speaker_admission)
-            .await
-        {
-            Ok(enqueued_count) => {
-                app_core::debug_log::log_info(format!(
-                    "{reason} speaker analysis backfill completed (enqueued={enqueued_count})"
-                ));
-            }
-            Err(error) => {
-                app_core::debug_log::log_warn(format!(
-                    "{reason} speaker analysis backfill failed: {error}"
-                ));
-            }
-        }
-    }
-}
-
-fn audio_transcription_admission_for_current_settings(
-    app_handle: &tauri::AppHandle,
-) -> ::app_infra::AudioSegmentTranscriptionAdmission {
-    let (transcription_settings, speaker_settings) = match app_handle
-        .state::<app_core::recording_settings::RecordingSettingsState>()
-        .lock()
-    {
-        Ok(settings) => (
-            settings.settings.transcription.clone(),
-            settings.settings.speaker_analysis.clone(),
+    tauri::async_runtime::block_on(
+        app_core::audio_transcription_backfill::run_audio_transcription_backfill_pass(
+            infra,
+            &app_handle.state::<Arc<app_core::AppCore>>(),
+            "startup",
         ),
-        Err(_) => {
-            app_core::debug_log::log_error(
-                "failed to read recording settings for audio transcription backfill admission",
-            );
-            return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
-        }
-    };
-
-    if !transcription_settings.enabled || !transcription_settings.microphone_enabled {
-        return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
-    }
-
-    let app_data_dir = match app_handle.path().app_data_dir() {
-        Ok(app_data_dir) => app_data_dir,
-        Err(error) => {
-            app_core::debug_log::log_error(format!(
-                "failed to resolve app data directory for audio transcription backfill admission: {error}"
-            ));
-            return ::app_infra::AudioSegmentTranscriptionAdmission::unavailable();
-        }
-    };
-
-    audio_transcription_admission_for_settings(
-        &app_data_dir,
-        &transcription_settings,
-        Some(&speaker_settings),
-    )
-}
-
-fn speaker_analysis_admission_for_current_settings(
-    app_handle: &tauri::AppHandle,
-) -> ::app_infra::AudioSegmentSpeakerAnalysisAdmission {
-    let speaker_settings = match app_handle
-        .state::<app_core::recording_settings::RecordingSettingsState>()
-        .lock()
-    {
-        Ok(settings) => settings.settings.speaker_analysis.clone(),
-        Err(_) => {
-            app_core::debug_log::log_error(
-                "failed to read recording settings for speaker analysis admission",
-            );
-            return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
-        }
-    };
-    speaker_analysis_admission_for_settings(app_handle, &speaker_settings)
-}
-
-fn speaker_analysis_admission_for_settings(
-    app_handle: &tauri::AppHandle,
-    speaker_settings: &SpeakerAnalysisSettings,
-) -> ::app_infra::AudioSegmentSpeakerAnalysisAdmission {
-    if !speaker_settings.separate_speakers {
-        return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
-    }
-
-    let app_data_dir = match app_handle.path().app_data_dir() {
-        Ok(app_data_dir) => app_data_dir,
-        Err(error) => {
-            app_core::debug_log::log_error(format!(
-                "failed to resolve app data directory for speaker analysis admission: {error}"
-            ));
-            return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable();
-        }
-    };
-    let models_dir = speaker_analysis::speaker_analysis_models_dir(&app_data_dir);
-    let provider = speaker_settings.provider.clone();
-    let model_id = speaker_settings.model_id.clone();
-    let manifest = speaker_analysis::builtin_model_manifest();
-    let Some(descriptor) =
-        speaker_analysis::find_model_descriptor(&manifest, &provider, model_id.as_deref())
-    else {
-        return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable();
-    };
-    match speaker_analysis::detect_model_status(&models_dir, descriptor) {
-        Ok(status) if status.status == speaker_analysis::ModelStatusKind::Installed => {
-            let mut payload =
-                ::app_infra::SpeakerAnalysisJobPayload::new(provider, model_id.clone());
-            payload.normalize_model_selection();
-            payload.recognize_people = speaker_settings.recognize_saved_people;
-            payload.auto_label_owner = speaker_settings.auto_label_owner;
-            insert_speaker_analysis_timeout_option(&mut payload, speaker_settings.timeout_seconds);
-            match serde_json::to_string(&payload) {
-                Ok(payload_json) => {
-                    ::app_infra::AudioSegmentSpeakerAnalysisAdmission::available(payload_json)
-                }
-                Err(error) => {
-                    app_core::debug_log::log_error(format!(
-                        "failed to serialize speaker analysis payload: {error}"
-                    ));
-                    ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable()
-                }
-            }
-        }
-        Ok(_) => ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable(),
-        Err(error) => {
-            app_core::debug_log::log_error(format!(
-                "failed to inspect selected speaker analysis model: {error}"
-            ));
-            ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable()
-        }
-    }
-}
-
-fn audio_transcription_admission_for_settings(
-    app_data_dir: &Path,
-    transcription_settings: &AudioTranscriptionSettings,
-    speaker_settings: Option<&SpeakerAnalysisSettings>,
-) -> ::app_infra::AudioSegmentTranscriptionAdmission {
-    if !transcription_settings.enabled || !transcription_settings.microphone_enabled {
-        return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
-    }
-
-    match crate::audio_transcription_models::selected_audio_transcription_model_available(
-        app_data_dir,
-        transcription_settings,
-    ) {
-        Ok(true) => {
-            let provider = crate::audio_transcription_models::provider_id_for_settings(
-                transcription_settings.provider,
-            );
-            let mut payload = ::app_infra::AudioTranscriptionJobPayload::new(
-                provider,
-                transcription_settings.model_id.clone(),
-                transcription_settings.language.clone(),
-            );
-            payload.options =
-                crate::audio_transcription_models::transcription_request_options_for_settings(
-                    transcription_settings,
-                );
-            attach_speaker_analysis_payload(&mut payload, app_data_dir, speaker_settings);
-            match serde_json::to_string(&payload) {
-                Ok(payload_json) => {
-                    ::app_infra::AudioSegmentTranscriptionAdmission::available(payload_json)
-                }
-                Err(error) => {
-                    app_core::debug_log::log_error(format!(
-                        "failed to serialize audio transcription backfill payload: {error}"
-                    ));
-                    ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
-                }
-            }
-        }
-        Ok(false) => ::app_infra::AudioSegmentTranscriptionAdmission::unavailable(),
-        Err(error) => {
-            app_core::debug_log::log_error(format!(
-                "failed to inspect selected audio transcription model for backfill: {error}"
-            ));
-            ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
-        }
-    }
+    );
 }
 
 fn system_audio_speech_admission_for_current_settings(
@@ -2370,7 +2068,7 @@ fn system_audio_speech_admission_for_current_settings(
         }
     };
 
-    let transcription_admission = audio_transcription_admission_for_settings(
+    let transcription_admission = app_core::audio_transcription_backfill::audio_transcription_admission_for_settings(
         &app_data_dir,
         &AudioTranscriptionSettings {
             microphone_enabled: true,
@@ -2385,7 +2083,9 @@ fn system_audio_speech_admission_for_current_settings(
     let Some(transcription_payload) = transcription_admission.payload_json else {
         return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
     };
-    let speaker_admission = speaker_analysis_admission_for_current_settings(app_handle);
+    let speaker_admission = app_core::audio_transcription_backfill::speaker_analysis_admission_for_current_settings(
+        &app_handle.state::<Arc<app_core::AppCore>>(),
+    );
     let payload = ::app_infra::SystemAudioSpeechActivityJobPayload {
         detector: settings.audio_speech_detection.detector,
         transcription_payload,
@@ -2403,63 +2103,6 @@ fn system_audio_speech_admission_for_current_settings(
             ::app_infra::SystemAudioSpeechActivityAdmission::unavailable()
         }
     }
-}
-
-fn attach_speaker_analysis_payload(
-    payload: &mut ::app_infra::AudioTranscriptionJobPayload,
-    app_data_dir: &Path,
-    speaker_settings: Option<&SpeakerAnalysisSettings>,
-) {
-    let Some(speaker_settings) = speaker_settings else {
-        return;
-    };
-    if !speaker_settings.separate_speakers {
-        return;
-    }
-    let models_dir = speaker_analysis::speaker_analysis_models_dir(app_data_dir);
-    let manifest = speaker_analysis::builtin_model_manifest();
-    let Some(descriptor) = speaker_analysis::find_model_descriptor(
-        &manifest,
-        &speaker_settings.provider,
-        speaker_settings.model_id.as_deref(),
-    ) else {
-        return;
-    };
-    match speaker_analysis::detect_model_status(&models_dir, descriptor) {
-        Ok(status) if status.status == speaker_analysis::ModelStatusKind::Installed => {}
-        Ok(_) => return,
-        Err(error) => {
-            app_core::debug_log::log_error(format!(
-                "failed to inspect selected speaker analysis model for transcription payload: {error}"
-            ));
-            return;
-        }
-    }
-    let mut speaker_payload = ::app_infra::SpeakerAnalysisJobPayload::new(
-        speaker_settings.provider.clone(),
-        speaker_settings.model_id.clone(),
-    );
-    speaker_payload.normalize_model_selection();
-    speaker_payload.recognize_people = speaker_settings.recognize_saved_people;
-    speaker_payload.auto_label_owner = speaker_settings.auto_label_owner;
-    insert_speaker_analysis_timeout_option(&mut speaker_payload, speaker_settings.timeout_seconds);
-    if let Ok(value) = serde_json::to_value(speaker_payload) {
-        payload.options.insert(
-            ::app_infra::SPEAKER_ANALYSIS_PAYLOAD_OPTION_KEY.to_string(),
-            value,
-        );
-    }
-}
-
-fn insert_speaker_analysis_timeout_option(
-    payload: &mut ::app_infra::SpeakerAnalysisJobPayload,
-    timeout_seconds: u64,
-) {
-    let timeout_seconds = timeout_seconds.clamp(60, 3600);
-    payload.options.insert(
-        ::app_infra::HELPER_TIMEOUT_SECONDS_OPTION.to_string(),
-        serde_json::json!(timeout_seconds),
-    );
 }
 
 fn run_hidden_segment_workspace_repair_startup_pass(
@@ -3241,7 +2884,9 @@ async fn reprocess_audio_segment_transcription_inner(
     request: ReprocessAudioSegmentTranscriptionRequest,
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::Result<AudioSegmentTranscriptionReprocessingResultDto> {
-    let admission = audio_transcription_admission_for_current_settings(app_handle);
+    let admission = app_core::audio_transcription_backfill::audio_transcription_admission_for_current_settings(
+        &app_handle.state::<Arc<app_core::AppCore>>(),
+    );
 
     infra
         .reprocess_audio_segment_transcription(request.audio_segment_id, &admission)
@@ -3254,7 +2899,9 @@ async fn reprocess_audio_segment_speaker_analysis_inner(
     request: ReprocessAudioSegmentTranscriptionRequest,
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::Result<AudioSegmentSpeakerAnalysisReprocessingResultDto> {
-    let admission = speaker_analysis_admission_for_current_settings(app_handle);
+    let admission = app_core::audio_transcription_backfill::speaker_analysis_admission_for_current_settings(
+        &app_handle.state::<Arc<app_core::AppCore>>(),
+    );
 
     infra
         .reprocess_audio_segment_speaker_analysis(request.audio_segment_id, &admission)
@@ -6403,52 +6050,6 @@ mod tests {
         assert_eq!(request.1, "custom-processor");
         assert_eq!(request.2, None);
     }
-
-    #[test]
-    fn audio_transcription_admission_for_settings_reflects_selected_model_availability() {
-        let dir = TestDir::new("audio-transcription-backfill-admission");
-        let settings = AudioTranscriptionSettings::default();
-
-        let missing = audio_transcription_admission_for_settings(dir.path(), &settings, None);
-        assert!(missing.enabled);
-        assert!(!missing.provider_available);
-        assert_eq!(missing.payload_json, None);
-
-        let models_dir = audio_transcription::audio_transcription_models_dir(dir.path());
-        let install_dir = audio_transcription::model_install_dir(
-            &models_dir,
-            audio_transcription::LOCAL_WHISPER_PROVIDER_ID,
-            "base",
-        )
-        .expect("model install directory");
-        fs::create_dir_all(&install_dir).expect("model install directory should be created");
-        fs::write(install_dir.join("ggml-base.bin"), b"model")
-            .expect("model artifact should be written");
-        audio_transcription::write_installed_marker(
-            &models_dir,
-            audio_transcription::LOCAL_WHISPER_PROVIDER_ID,
-            "base",
-        )
-        .expect("installed marker should be written");
-
-        let available = audio_transcription_admission_for_settings(dir.path(), &settings, None);
-        assert!(available.enabled);
-        assert!(available.provider_available);
-        let payload: ::app_infra::AudioTranscriptionJobPayload = serde_json::from_str(
-            available
-                .payload_json
-                .as_deref()
-                .expect("available model should freeze payload"),
-        )
-        .expect("payload should deserialize");
-        assert_eq!(
-            payload.provider,
-            audio_transcription::LOCAL_WHISPER_PROVIDER_ID
-        );
-        assert_eq!(payload.model_id.as_deref(), Some("base"));
-        assert_eq!(payload.language, "auto");
-    }
-
     #[test]
     fn debug_insert_frame_ocr_request_wraps_generic_processing_request() {
         let request = DebugInsertFrameAndEnqueueProcessingJobRequest::from(

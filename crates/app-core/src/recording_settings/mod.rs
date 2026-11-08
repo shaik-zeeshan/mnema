@@ -20,7 +20,7 @@ use capture_types::{
     ScreenResolutionPreset, UpdateRecordingSettingsRequest, UserContextSettings,
 };
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::AppCore;
 
@@ -55,7 +55,9 @@ impl Default for RecordingSettingsRuntime {
     }
 }
 
-pub type RecordingSettingsState = Mutex<RecordingSettingsRuntime>;
+/// Shared (`Arc`) so the Tauri builder and the `AppCore` state map hold the same
+/// settings, like [`crate::AppInfraState`].
+pub type RecordingSettingsState = Arc<Mutex<RecordingSettingsRuntime>>;
 
 pub struct LoadedRecordingSettings {
     pub settings: RecordingSettings,

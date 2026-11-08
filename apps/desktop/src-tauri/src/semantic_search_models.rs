@@ -1334,7 +1334,11 @@ async fn run_model_download_task(
     .await;
     let result =
         download_and_install_model(&app_handle, &plan, &cancel_requested, &cancel_notify).await;
-    crate::app_infra::release_model_download_lock(&app_handle, download_lock).await;
+    app_core::model_download_lock::release_model_download_lock(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+        download_lock,
+    )
+    .await;
     clear_active_download(&app_handle, &plan.provider, &plan.model_id);
 
     match result {

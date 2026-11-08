@@ -2464,7 +2464,7 @@ fn transcription_admission_for_app_handle(
 
     let available = match app_handle.path().app_data_dir() {
         Ok(app_data_dir) => {
-            crate::audio_transcription_models::selected_audio_transcription_model_available(
+            app_core::audio_transcription_models::selected_audio_transcription_model_available(
                 &app_data_dir,
                 &transcription_settings,
             )
@@ -2479,7 +2479,7 @@ fn transcription_admission_for_app_handle(
 
     match available {
         Ok(true) => {
-            let provider = crate::audio_transcription_models::provider_id_for_settings(
+            let provider = app_core::audio_transcription_models::provider_id_for_settings(
                 transcription_settings.provider,
             );
             let mut payload = ::app_infra::AudioTranscriptionJobPayload::new(
@@ -2488,7 +2488,7 @@ fn transcription_admission_for_app_handle(
                 transcription_settings.language.clone(),
             );
             payload.options =
-                crate::audio_transcription_models::transcription_request_options_for_settings(
+                app_core::audio_transcription_models::transcription_request_options_for_settings(
                     &transcription_settings,
                 );
             let speaker_admission = speaker_analysis_admission_for_app_handle(app_handle);
@@ -2551,7 +2551,7 @@ fn system_audio_speech_admission_for_app_handle(
     let transcription_admission = {
         let available = match app_handle.path().app_data_dir() {
             Ok(app_data_dir) => {
-                crate::audio_transcription_models::selected_audio_transcription_model_available(
+                app_core::audio_transcription_models::selected_audio_transcription_model_available(
                     &app_data_dir,
                     &settings.transcription,
                 )
@@ -2565,7 +2565,7 @@ fn system_audio_speech_admission_for_app_handle(
         };
         match available {
             Ok(true) => {
-                let provider = crate::audio_transcription_models::provider_id_for_settings(
+                let provider = app_core::audio_transcription_models::provider_id_for_settings(
                     settings.transcription.provider,
                 );
                 let mut payload = ::app_infra::AudioTranscriptionJobPayload::new(
@@ -2574,7 +2574,7 @@ fn system_audio_speech_admission_for_app_handle(
                     settings.transcription.language.clone(),
                 );
                 payload.options =
-                    crate::audio_transcription_models::transcription_request_options_for_settings(
+                    app_core::audio_transcription_models::transcription_request_options_for_settings(
                         &settings.transcription,
                     );
                 let speaker_admission = speaker_analysis_admission_for_app_handle(app_handle);

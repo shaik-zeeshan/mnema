@@ -2,6 +2,8 @@
 //! host seam, paths, events, the runtime/state container and the fixtures. The
 //! modules move in from `apps/desktop/src-tauri` in S2/S3.
 
+pub mod audio_transcription_backfill;
+pub mod audio_transcription_models;
 pub mod chatgpt_auth;
 pub mod clock_format;
 mod core;
@@ -23,9 +25,11 @@ pub mod native_capture_inactivity;
 pub mod native_capture_output;
 pub mod native_capture_system_idle;
 pub mod ocr_budget;
+pub mod ocr_models;
 pub mod one_time_prompts;
 mod paths;
 pub mod recording_settings;
+pub mod speaker_analysis_models;
 pub mod speaker_analysis_runtime;
 #[cfg(test)]
 mod test_support;

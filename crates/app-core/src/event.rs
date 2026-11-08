@@ -8,13 +8,17 @@
 
 use serde_json::Value;
 
+use crate::audio_transcription_models::AudioTranscriptionModelDownloadProgressDto;
+use crate::ocr_models::OcrModelDownloadProgressDto;
+use crate::speaker_analysis_models::SpeakerAnalysisModelDownloadProgressDto;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
     // Streams.
     AskAiUpdate(Value),
-    AudioTranscriptionModelDownloadProgress(Value),
-    SpeakerAnalysisModelDownloadProgress(Value),
-    OcrModelDownloadProgress(Value),
+    AudioTranscriptionModelDownloadProgress(AudioTranscriptionModelDownloadProgressDto),
+    SpeakerAnalysisModelDownloadProgress(SpeakerAnalysisModelDownloadProgressDto),
+    OcrModelDownloadProgress(OcrModelDownloadProgressDto),
     SemanticSearchModelDownloadProgress(Value),
     NativeCaptureSessionChanged(Value),
     AppUpdateStatusChanged(Value),
