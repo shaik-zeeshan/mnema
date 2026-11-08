@@ -7,6 +7,8 @@
 //! `PARITY_STATE` / `PARITY_THEME` set (scripts/parity.sh), it renders that one
 //! state at the Tauri shot's size and writes `$PARITY_DIR/gpui.png` instead.
 
+#[path = "visual/chat.rs"]
+mod chat;
 #[path = "visual/compare.rs"]
 mod compare;
 #[path = "visual/gallery.rs"]
@@ -192,6 +194,16 @@ fn run() -> anyhow::Result<()> {
             let shell_for = |name: &str| model_for(FixtureId::from_name(name).unwrap()).unwrap();
             return timeline::parity(&mut cx, &dir, &state, setting.clone(), &shell_for);
         }
+        if !filters.is_empty() && filters.iter().all(|f| "chat".contains(f.as_str())) {
+            let state = std::env::var("PARITY_STATE")?;
+            let theme_name = std::env::var("PARITY_THEME")?;
+            let (_, setting) = THEMES
+                .iter()
+                .find(|(t, _)| *t == theme_name)
+                .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
+            let model = model_for(FixtureId::Populated).unwrap();
+            return chat::parity(&mut cx, &dir, &state, setting.clone(), model);
+        }
         if !filters.iter().all(|f| "shell".contains(f.as_str())) {
             return Ok(()); // another surface's parity run
         }
@@ -244,6 +256,8 @@ fn run() -> anyhow::Result<()> {
     failures.extend(gallery::goldens(&mut cx, &filters, &THEMES)?);
     let shell_for = |name: &str| model_for(FixtureId::from_name(name).unwrap()).unwrap();
     failures.extend(timeline::goldens(&mut cx, &filters, &THEMES, &shell_for)?);
+    let populated = model_for(FixtureId::Populated).unwrap();
+    failures.extend(chat::goldens(&mut cx, &filters, &THEMES, &populated)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

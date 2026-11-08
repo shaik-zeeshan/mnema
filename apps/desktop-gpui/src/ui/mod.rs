@@ -16,6 +16,7 @@ pub mod empty;
 pub mod input;
 pub mod kbd;
 pub mod menu;
+pub mod model_picker;
 pub mod notice;
 pub mod popover;
 pub mod progress;

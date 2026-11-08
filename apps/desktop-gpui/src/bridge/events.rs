@@ -20,6 +20,8 @@ pub fn reload_shell(shell: &Entity<Shell>, cx: &mut App) {
     let Some(core) = cx.try_global::<Core>().map(|c| c.0.clone()) else {
         return;
     };
+    let chat = shell.read(cx).chat.clone();
+    chat.update(cx, |chat, cx| chat.reload(cx));
     let task = Tokio::spawn(cx, async move { data::load(&core).await });
     let shell = shell.downgrade();
     cx.spawn(async move |cx| {
@@ -65,6 +67,24 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
         HostMsg::Event(event) if touches_shell(&event) => {
             if let Some(shell) = shell.upgrade() {
                 reload_shell(&shell, cx);
+            }
+        }
+        HostMsg::Event(CoreEvent::AskAiUpdate(payload)) => {
+            match serde_json::from_value::<crate::chat::AskAiUpdateEvent>(payload) {
+                Ok(ev) => {
+                    if let Some(shell) = shell.upgrade() {
+                        let chat = shell.read(cx).chat.clone();
+                        chat.update(cx, |chat, cx| chat.on_update(ev, cx));
+                    }
+                }
+                // The serde message can quote answer text: never log it.
+                Err(_) => log::warn!("chat: unreadable ask_ai_update payload"),
+            }
+        }
+        HostMsg::Event(CoreEvent::ConversationChanged) => {
+            if let Some(shell) = shell.upgrade() {
+                let chat = shell.read(cx).chat.clone();
+                chat.update(cx, |chat, cx| chat.reload(cx));
             }
         }
         // Surface entities subscribe to theirs as S8+ land.

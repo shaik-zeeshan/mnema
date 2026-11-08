@@ -119,6 +119,13 @@ pub mod size {
     pub const DATE_RULER_H: Pixels = px(22.);
     pub const SELECT_MAX_H: Pixels = px(220.);
     pub const TIP_MAX_W: Pixels = px(260.);
+    /// Chat (`routes/chat/+page.svelte`): list 276, 240 below 1180 px wide.
+    pub const CHAT_LIST_W: Pixels = px(276.);
+    pub const CHAT_LIST_W_NARROW: Pixels = px(240.);
+    pub const CHAT_LIST_BREAKPOINT: Pixels = px(1180.);
+    pub const CHAT_THREAD_MAX_W: Pixels = px(760.);
+    pub const CHAT_COMPOSER_DOCKED_MAX_W: Pixels = px(696.);
+    pub const CHAT_HEAD_H: Pixels = px(48.);
 }
 
 /// Popovers: CSS `backdrop-filter: blur(22px) saturate(1.4)` over a 96% raised

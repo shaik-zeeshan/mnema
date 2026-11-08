@@ -27,12 +27,20 @@ icon_assets!(
         ScanText,
         Monitor,
         Headphones,
+        Pin,
+        Pencil,
+        Laptop,
+        Volume2,
+        Clock,
     ]
 );
 
 /// Path for an icon this source serves outside `IconName` (use with `svg().path(..)`).
 pub const TIMELINE_GLYPH: &str = "icons/mnema-timeline.svg";
 pub const INSIGHTS_GLYPH: &str = "icons/mnema-insights.svg";
+/// Lucide `square`, filled: the composer's Stop (`.ch-send--stop rect { fill: currentColor }`).
+pub const STOP_SQUARE: &str = "icons/mnema-stop-square.svg";
+const STOP_SQUARE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" fill="currentColor"/></svg>"#;
 
 // Exact paths from `lib/shell/Titlebar.svelte` (not in Lucide).
 const TIMELINE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></svg>"#;
@@ -64,6 +72,7 @@ impl AssetSource for MnemaAssets {
         match path {
             TIMELINE_GLYPH => return Ok(Some(Cow::Borrowed(TIMELINE_SVG.as_bytes()))),
             INSIGHTS_GLYPH => return Ok(Some(Cow::Borrowed(INSIGHTS_SVG.as_bytes()))),
+            STOP_SQUARE => return Ok(Some(Cow::Borrowed(STOP_SQUARE_SVG.as_bytes()))),
             SPIN_ARC_SM => return Ok(Some(Cow::Owned(spin_arc(1.5, 10.).into_bytes()))),
             SPIN_ARC => return Ok(Some(Cow::Owned(spin_arc(1.5, 14.).into_bytes()))),
             SPIN_ARC_LG => return Ok(Some(Cow::Owned(spin_arc(2., 20.).into_bytes()))),
@@ -89,6 +98,7 @@ impl AssetSource for MnemaAssets {
             [
                 TIMELINE_GLYPH,
                 INSIGHTS_GLYPH,
+                STOP_SQUARE,
                 SPIN_ARC_SM,
                 SPIN_ARC,
                 SPIN_ARC_LG,

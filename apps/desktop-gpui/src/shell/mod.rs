@@ -45,6 +45,7 @@ pub struct Shell {
     pub chat_query: Option<String>,
     pub command: Entity<CommandField>,
     pub timeline: Entity<crate::timeline::TimelineView>,
+    pub chat: Entity<crate::chat::Chat>,
     focus: FocusHandle,
     _subscriptions: [Subscription; 2],
     tick: Option<Task<()>>,
@@ -65,6 +66,7 @@ impl Shell {
     ) -> Self {
         let command = cx.new(|cx| CommandField::new(window, cx));
         let timeline = cx.new(|cx| crate::timeline::TimelineView::new(source, cx));
+        let chat = cx.new(|cx| crate::chat::Chat::new(window, cx));
         let subscriptions = [
             cx.subscribe_in(&command, window, Self::on_command),
             // System appearance follows the OS (theme::set_system ignores it when pinned).
@@ -84,6 +86,7 @@ impl Shell {
             chat_query: None,
             command,
             timeline,
+            chat,
             focus,
             _subscriptions: subscriptions,
             tick: None,
@@ -153,12 +156,16 @@ impl Shell {
         &mut self,
         _: &Entity<CommandField>,
         event: &CommandFieldEvent,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             CommandFieldEvent::Ask(text) => {
                 self.chat_query = (!text.is_empty()).then(|| text.clone());
+                // `/chat?q=`: a new chat that sends once (if Ask AI can run).
+                let q = self.chat_query.clone();
+                self.chat
+                    .update(cx, |chat, cx| chat.new_chat(q, true, window, cx));
                 self.go(Surface::Chat, cx);
             }
             // shortcut: Quick Recall is S10; until then ↵ in recall keeps the text.
@@ -196,9 +203,15 @@ impl Shell {
                 this.focus_field(Mode::Recall, w, cx)
             }),
         )
-        .on_action(
-            cx.listener(|this, _: &keymap::FocusAsk, w, cx| this.focus_field(Mode::Ask, w, cx)),
-        )
+        .on_action(cx.listener(|this, _: &keymap::FocusAsk, w, cx| {
+            // ⌘J on Chat = a new chat in place; elsewhere it focuses Ask.
+            if this.surface == Surface::Chat {
+                this.chat
+                    .update(cx, |chat, cx| chat.new_chat(None, false, w, cx));
+            } else {
+                this.focus_field(Mode::Ask, w, cx)
+            }
+        }))
         .on_action(
             cx.listener(|this, _: &keymap::GoTimeline, _, cx| this.go(Surface::Timeline, cx)),
         )
@@ -277,6 +290,7 @@ impl Render for Shell {
             })
             .map(|el| match self.surface {
                 Surface::Timeline => el.child(self.timeline.clone()),
+                Surface::Chat => el.child(self.chat.clone()),
                 _ => el.child(placeholder::render(self, &p, cx)),
             })
             .when(chrome, |el| {

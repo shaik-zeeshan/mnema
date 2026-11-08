@@ -1,0 +1,493 @@
+//! The Chat surface (`routes/chat/+page.svelte` + `lib/chat/*`): the chat list
+//! beside one conversation. The backend owns every turn's render model and
+//! streams versioned `ask_ai_update` ops; this entity holds a copy and only
+//! renders (docs/agents/ask-ai-streaming.md). `data.rs` is the one backend door.
+
+mod actions;
+pub mod blocks;
+mod composer;
+pub mod data;
+#[cfg(feature = "fixtures")]
+pub mod fixture;
+pub mod format;
+mod list;
+pub mod model;
+pub mod prose;
+pub mod scope;
+mod sources;
+mod thread;
+mod turn;
+
+use std::collections::HashSet;
+use std::sync::Arc;
+use std::time::Duration;
+
+use app_core::AppCore;
+use capture_types::{Conversation, TurnSnapshot};
+use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
+use gpui_kit::prelude::*;
+use gpui_kit::{div, App, Context, Entity, ScrollHandle, Subscription, Task, Window};
+
+use crate::bridge::events::Core;
+use crate::theme::{self, size};
+use crate::ui::clock;
+use crate::ui::model_picker::{PoolModel, ProviderFailure};
+use crate::ui::toast::Toasts;
+pub use model::{AskAiUpdateEvent, ChatData, ChatTurn, History, Receive, Source};
+pub use scope::Scope;
+
+/// "Copied" on the answer's copy button reverts after this (AnswerProse:73-78).
+/// The answer copy button (ChatTurn.svelte:83); 1200 ms is the code-block button.
+pub const COPIED_REVERT: Duration = Duration::from_millis(1600);
+/// The "Chat deleted" toast (`+page.svelte` showDeleted).
+pub const DELETED_TOAST_TTL: Duration = Duration::from_secs(4);
+/// The failed pin/unpin toast with Retry.
+pub const PIN_FAIL_TOAST_TTL: Duration = Duration::from_secs(5);
+const COMPOSER_PLACEHOLDER: &str = "Ask about anything you've seen, heard, or worked on…";
+/// Titles are cut at this many chars (`TITLE_MAX`).
+pub const TITLE_MAX: usize = 80;
+/// Within this of the bottom counts as "at the bottom" (the pane follows the stream).
+const BOTTOM_SLACK: f32 = 40.;
+
+/// What the conversation pane shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pane {
+    New,
+    Loading,
+    LoadError(String),
+    /// `get_conversation` found nothing under the id.
+    Missing,
+    Thread,
+}
+
+/// An inline rename in progress.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Rename {
+    Header,
+    Row(String),
+}
+
+pub struct Chat {
+    pub data: ChatData,
+    pub active: Option<String>,
+    pub title: String,
+    pub created_at_ms: Option<i64>,
+    pub turns: Vec<ChatTurn>,
+    pub pane: Pane,
+    pub streaming: bool,
+    /// The per-chat engine pin.
+    pub pin: Option<(String, String)>,
+    /// The open chat's pinned flag when its list row is hidden.
+    pub pinned: Option<bool>,
+    pub scope: Scope,
+    /// The docked composer's context panel.
+    pub ctx_open: bool,
+    /// The turn whose copy button reads "Copied".
+    pub copied: Option<i64>,
+    copied_task: Option<Task<()>>,
+    pub pool: Vec<PoolModel>,
+    pub pool_failures: Vec<ProviderFailure>,
+    pub pool_loading: bool,
+    pub peek: Option<Source>,
+    pub steps_open: HashSet<i64>,
+    pub reason_open: HashSet<i64>,
+    pub renaming: Option<Rename>,
+    pub composer: Entity<TextareaState>,
+    pub search: Entity<InputState>,
+    pub rename_input: Entity<InputState>,
+    pub toasts: Entity<Toasts>,
+    pub scroll: ScrollHandle,
+    /// Goldens: render the model picker open.
+    pub force_picker: bool,
+    /// Which placeholder the composer shows (docked = "Ask a follow-up…").
+    docked_placeholder: bool,
+    _subscriptions: Vec<Subscription>,
+}
+
+/// Inline text runs in one wrapping paragraph (HTML `text <b>bold</b> text`);
+/// a run's `(weight, colour)` overrides the inherited style.
+pub(crate) fn inline_runs(
+    runs: &[(&str, Option<(gpui_kit::FontWeight, gpui_kit::Hsla)>)],
+) -> gpui_kit::StyledText {
+    let mut text = String::new();
+    let mut highlights = Vec::new();
+    for (s, style) in runs {
+        let start = text.len();
+        text.push_str(s);
+        if let Some((weight, color)) = style {
+            highlights.push((
+                start..text.len(),
+                gpui_kit::HighlightStyle {
+                    font_weight: Some(*weight),
+                    color: Some(*color),
+                    ..Default::default()
+                },
+            ));
+        }
+    }
+    gpui_kit::StyledText::new(text).with_highlights(highlights)
+}
+
+pub(crate) fn core(cx: &App) -> Option<Arc<AppCore>> {
+    cx.try_global::<Core>().map(|c| c.0.clone())
+}
+
+impl Chat {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let composer = cx.new(|cx| {
+            TextareaState::new(window, cx)
+                .auto_grow(2, 9)
+                .submit_on_enter(true)
+                .placeholder(COMPOSER_PLACEHOLDER)
+        });
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search chats"));
+        let rename_input = cx.new(|cx| InputState::new(window, cx));
+        let toasts = cx.new(|_| Toasts::default());
+        let subs = vec![
+            cx.subscribe_in(&composer, window, |this, _, e: &InputEvent, window, cx| {
+                if let InputEvent::PressEnter { shift: false, .. } = e {
+                    if this.streaming {
+                        this.stop(cx);
+                    } else {
+                        this.send(None, window, cx);
+                    }
+                }
+            }),
+            cx.subscribe_in(&search, window, |this, _, e: &InputEvent, _, cx| {
+                if matches!(e, InputEvent::Change) {
+                    // shortcut: search_conversations not in app-core until S3; the
+                    // list filters what it has locally until then.
+                    cx.notify();
+                }
+                let _ = this;
+            }),
+            cx.subscribe_in(
+                &rename_input,
+                window,
+                |this, _, e: &InputEvent, window, cx| match e {
+                    InputEvent::PressEnter { .. } | InputEvent::Blur => {
+                        this.commit_rename(window, cx)
+                    }
+                    _ => {}
+                },
+            ),
+        ];
+        Self {
+            data: ChatData::default(),
+            active: None,
+            title: String::new(),
+            created_at_ms: None,
+            turns: Vec::new(),
+            pane: Pane::New,
+            streaming: false,
+            pin: None,
+            pinned: None,
+            scope: Scope::default(),
+            ctx_open: false,
+            copied: None,
+            copied_task: None,
+            pool: Vec::new(),
+            pool_failures: Vec::new(),
+            pool_loading: false,
+            peek: None,
+            steps_open: HashSet::new(),
+            reason_open: HashSet::new(),
+            renaming: None,
+            composer,
+            search,
+            rename_input,
+            toasts,
+            scroll: ScrollHandle::new(),
+            force_picker: false,
+            docked_placeholder: false,
+            _subscriptions: subs,
+        }
+    }
+
+    pub fn set_data(&mut self, data: ChatData, cx: &mut Context<Self>) {
+        self.data = data;
+        cx.notify();
+    }
+
+    /// Refill the list + engine facts off-thread.
+    pub fn reload(&mut self, cx: &mut Context<Self>) {
+        let Some(core) = core(cx) else { return };
+        let task = crate::bridge::tokio::Tokio::spawn(cx, async move { data::load(&core).await });
+        cx.spawn(async move |this, cx| {
+            if let Ok(data) = task.await {
+                let _ = this.update(cx, |this, cx| this.set_data(data, cx));
+            }
+        })
+        .detach();
+    }
+
+    pub fn available(&self) -> Option<bool> {
+        self.data.availability.as_ref().map(|a| a.available)
+    }
+
+    /// The pane's layout mode (`mode` in Chat.svelte).
+    pub fn is_new(&self) -> bool {
+        self.pane == Pane::New || (self.pane == Pane::Thread && self.turns.is_empty())
+    }
+
+    fn reset(&mut self, id: Option<String>, cx: &mut Context<Self>) {
+        self.active = id;
+        self.title.clear();
+        self.created_at_ms = None;
+        self.turns.clear();
+        self.pane = Pane::New;
+        self.streaming = false;
+        self.pin = None;
+        self.pinned = None;
+        self.renaming = None;
+        self.peek = None;
+        self.copied = None;
+        self.steps_open.clear();
+        self.reason_open.clear();
+        cx.notify();
+    }
+
+    /// A fresh chat; `prefill` seeds the composer to review, and is sent only
+    /// when `send` (the titlebar's ask field). Suggestions never send.
+    pub fn new_chat(
+        &mut self,
+        prefill: Option<String>,
+        send: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.reset(Some(uuid::Uuid::new_v4().to_string()), cx);
+        let text = prefill.unwrap_or_default();
+        self.composer.update(cx, |s, cx| {
+            s.set_value(text.clone(), window, cx);
+            s.focus(window, cx);
+        });
+        if send && !text.trim().is_empty() && self.available() == Some(true) {
+            self.send(None, window, cx);
+        }
+    }
+
+    /// Show a loaded conversation, adopting the live snapshot when one runs.
+    pub fn show(
+        &mut self,
+        convo: &Conversation,
+        snap: Option<&TurnSnapshot>,
+        cx: &mut Context<Self>,
+    ) {
+        self.reset(Some(convo.conversation_id.clone()), cx);
+        self.title = convo.title.clone();
+        self.created_at_ms = Some(convo.created_at_ms);
+        self.pin = convo.provider.clone().zip(convo.model.clone());
+        self.pinned = Some(convo.pinned);
+        self.turns = convo.turns.iter().map(ChatTurn::hydrate).collect();
+        self.streaming = self
+            .turns
+            .last()
+            .is_some_and(|t| t.view.phase == "streaming");
+        if let Some(snap) = snap.filter(|s| s.conversation_id == convo.conversation_id) {
+            if let Some(t) = self
+                .turns
+                .iter_mut()
+                .find(|t| t.view.turn_index == snap.view.turn_index)
+            {
+                t.adopt(snap);
+                self.streaming = t.live();
+            }
+        }
+        self.pane = Pane::Thread;
+        self.scroll.scroll_to_bottom();
+        cx.notify();
+    }
+
+    /// Open `id` from the list (or a hand-off).
+    pub fn open(&mut self, id: String, cx: &mut Context<Self>) {
+        if self.active.as_deref() == Some(id.as_str()) && !self.turns.is_empty() {
+            return;
+        }
+        self.reset(Some(id.clone()), cx);
+        self.pane = Pane::Loading;
+        let Some(core) = core(cx) else { return };
+        let task = crate::bridge::tokio::Tokio::spawn(cx, async move {
+            let convo = data::open(&core, &id).await;
+            let snap = data::snapshot(&core, &id).await;
+            (id, convo, snap)
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok((id, convo, snap)) = task.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if this.active.as_deref() != Some(id.as_str()) {
+                    return;
+                }
+                match convo {
+                    Ok(Some(c)) => this.show(&c, snap.as_ref(), cx),
+                    Ok(None) => {
+                        this.pane = Pane::Missing;
+                        cx.notify();
+                    }
+                    Err(e) => {
+                        this.pane = Pane::LoadError(e);
+                        cx.notify();
+                    }
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn reconcile(&mut self, ix: i64) {
+        if let Some(last) = self.turns.last() {
+            if last.view.turn_index == ix {
+                self.streaming = last.live();
+            }
+        }
+    }
+
+    fn at_bottom(&self) -> bool {
+        let (off, max) = (self.scroll.offset().y, self.scroll.max_offset().y);
+        f32::from(max + off) <= BOTTOM_SLACK
+    }
+
+    /// One `ask_ai_update` (the SOLE stream listener): exactly-next applies,
+    /// a gap re-snapshots, stale/duplicate is ignored.
+    pub fn on_update(&mut self, ev: AskAiUpdateEvent, cx: &mut Context<Self>) -> Option<Receive> {
+        if self.active.as_deref() != Some(ev.conversation_id.as_str()) {
+            return None;
+        }
+        let now = clock::now_ms(cx);
+        let follow = self.at_bottom();
+        let trailing = self.turns.last().map(|t| t.view.turn_index) == Some(ev.turn_index);
+        let Some(turn) = self
+            .turns
+            .iter_mut()
+            .find(|t| t.view.turn_index == ev.turn_index)
+        else {
+            // A turn started on this chat from another window: hydrate from the snapshot.
+            self.resnapshot(ev.conversation_id, ev.turn_index, true, cx);
+            return Some(Receive::Gap);
+        };
+        let r = model::receive(turn, ev.version, &ev.update, now);
+        match r {
+            Receive::Applied => {
+                if matches!(ev.update, capture_types::TurnUpdate::Error { .. }) && trailing {
+                    let q = turn.view.question.clone();
+                    self.restore_question(q, cx);
+                }
+                self.reconcile(ev.turn_index);
+                if follow {
+                    self.scroll.scroll_to_bottom();
+                }
+                cx.notify();
+            }
+            Receive::Stale => {}
+            Receive::Gap => self.resnapshot(ev.conversation_id, ev.turn_index, false, cx),
+        }
+        Some(r)
+    }
+
+    fn resnapshot(&mut self, id: String, ix: i64, insert: bool, cx: &mut Context<Self>) {
+        let Some(core) = core(cx) else { return };
+        let task = crate::bridge::tokio::Tokio::spawn(cx, {
+            let id = id.clone();
+            async move { data::snapshot(&core, &id).await }
+        });
+        cx.spawn(async move |this, cx| {
+            let Ok(Some(snap)) = task.await else { return };
+            let _ = this.update(cx, |this, cx| {
+                if this.active.as_deref() != Some(id.as_str()) || snap.view.turn_index != ix {
+                    return;
+                }
+                match this.turns.iter_mut().find(|t| t.view.turn_index == ix) {
+                    Some(t) => t.adopt(&snap),
+                    None if insert => {
+                        let mut t = ChatTurn::new(ix, snap.view.question.clone(), "thinking");
+                        t.adopt(&snap);
+                        this.turns.push(t);
+                        this.turns.sort_by_key(|t| t.view.turn_index);
+                        if this.pane == Pane::Missing {
+                            this.pane = Pane::Thread;
+                        }
+                    }
+                    None => return,
+                }
+                this.reconcile(ix);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// Put a failed question back, unless something new was typed.
+    fn restore_question(&mut self, q: String, cx: &mut Context<Self>) {
+        let empty = self.composer.read(cx).value().trim().is_empty();
+        if empty {
+            if let Some(window) = cx.active_window() {
+                let composer = self.composer.clone();
+                let _ = window.update(cx, |_, window, cx| {
+                    composer.update(cx, |s, cx| s.set_value(q, window, cx))
+                });
+            }
+        }
+    }
+
+    /// "Copied" on `turn`'s copy button for [`COPIED_REVERT`].
+    pub fn copy_answer(&mut self, turn: i64, cx: &mut Context<Self>) {
+        let Some(text) = self
+            .turns
+            .iter()
+            .find(|t| t.view.turn_index == turn)
+            .map(ChatTurn::plain_text)
+        else {
+            return;
+        };
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        self.copied = Some(turn);
+        self.copied_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(COPIED_REVERT).await;
+            let _ = this.update(cx, |this, cx| {
+                this.copied = None;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+}
+
+impl Render for Chat {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // A streamed update re-renders only this view, so it counts its own frames.
+        crate::feel::frame_rendered(window);
+        let p = theme::tokens(cx);
+        let docked = !self.is_new() && self.pane == Pane::Thread;
+        if docked != self.docked_placeholder {
+            self.docked_placeholder = docked;
+            let text = if docked {
+                "Ask a follow-up…"
+            } else {
+                COMPOSER_PLACEHOLDER
+            };
+            self.composer
+                .update(cx, |s, cx| s.set_placeholder(text, window, cx));
+        }
+        let narrow = window.viewport_size().width < size::CHAT_LIST_BREAKPOINT;
+        div()
+            .id("surface-chat")
+            .role(gpui_kit::Role::Main)
+            .aria_label("Chat")
+            .relative()
+            .flex()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .bg(p.bg)
+            .child(list::render(self, narrow, &p, window, cx))
+            .child(thread::render(self, &p, window, cx))
+            .children(self.peek.clone().map(|s| sources::frame_modal(&s, &p, cx)))
+            .child(self.toasts.clone())
+    }
+}
+
+#[cfg(test)]
+#[path = "chat_tests.rs"]
+mod tests;

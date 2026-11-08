@@ -2,6 +2,7 @@
 //! view state, the theme, and the macOS glue. Conventions: the `gpui-mnema` skill.
 
 pub mod assets;
+pub mod chat;
 pub mod bridge {
     pub mod events;
     pub mod tokio;

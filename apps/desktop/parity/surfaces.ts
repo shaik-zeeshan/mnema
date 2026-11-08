@@ -21,6 +21,8 @@ export interface Surface {
   mockViewport?: { width: number; height: number };
   /** Optional click on the Tauri side after load, for views the route can't address by URL. */
   click?: string;
+  /** Per-state override of `route` (a state that opens a record by URL, e.g. `/chat?c=<id>`). */
+  stateRoute?: Record<string, string>;
   /** state -> mockup query string (without theme). */
   states: Record<string, string>;
 }
@@ -116,8 +118,15 @@ export const SURFACES: Record<string, Surface> = {
     viewport: MAIN,
     page: "chat.html",
     selector: WIN,
+    // The S11 parity set (fixtures/chat/<state>.json): history empty / listed, and a chat open
+    // mid-stream (served by ask_ai_snapshot), finished, and failed.
+    stateRoute: { "mid-stream": "/chat?c=c-stream", done: "/chat?c=c-done", error: "/chat?c=c-error" },
     states: {
       default: "",
+      empty: "state=history-empty",
+      list: "",
+      "mid-stream": "state=writing",
+      done: "state=thread",
       ...q(
         "state",
         `thread thinking tools writing reattach stopped interrupted regenerate copied source-gone error rate-limited

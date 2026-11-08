@@ -44,7 +44,7 @@ fn integral(v: &Value) -> Value {
     }
 }
 
-fn get<T: DeserializeOwned>(map: &Value, path: &[&str]) -> anyhow::Result<Option<T>> {
+pub(crate) fn get<T: DeserializeOwned>(map: &Value, path: &[&str]) -> anyhow::Result<Option<T>> {
     let mut v = map;
     for key in path {
         match v.get(key) {

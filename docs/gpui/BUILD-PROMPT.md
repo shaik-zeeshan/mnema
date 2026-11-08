@@ -282,7 +282,7 @@ Rules:
 | Quick Recall | search debounce 250ms, commit 700ms, auto-ask 750ms after typing pauses, blur grace 300ms, reset 5s after hide, body ≤640 | `searchStore.svelte.ts:47-49`, `AskPane.svelte:83`, `windows.rs:43-66` |
 | Tooltip | 350ms dwell, instant on keyboard focus | `components/tooltip.ts:16` |
 | Motion | 120 / 220 / 420ms, expo / quart, ease-out only; segmented + nav thumb 420ms expo; readout 9px / 190ms | `kit.css:29-49` |
-| Streaming answer | static 7×15 green caret (no blink); dangling `**` closed while streaming; highlight only after finish; "Copied" 1.2s | `AnswerProse.svelte` |
+| Streaming answer | static 7×15 green caret (no blink); dangling `**` closed while streaming; highlight only after finish; "Copied" 1.6s on an answer (`ChatTurn.svelte:83`), 1.2s on a code block | `ChatTurn.svelte`, `AnswerProse.svelte` |
 | Status pop | polls 2s while open, paused while render-idle | `StatusPop` |
 | Reload button | spins ≥500ms | `ReloadButton` |
 | Keyboard | Alt chords match physical key on macOS; app shortcuts suppressed in inputs/buttons; reserved Esc / Tab / ⇧Tab / frame arrows; help sheet built live per surface | `lib/keyboard*.ts` |

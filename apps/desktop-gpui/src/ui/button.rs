@@ -56,6 +56,7 @@ pub struct Button {
     spinner: bool,
     force: Force,
     tip: Option<SharedString>,
+    block: bool,
     on_click: Option<ClickHandler>,
 }
 
@@ -93,8 +94,15 @@ impl Button {
             spinner: false,
             force: Force::None,
             tip: None,
+            block: false,
             on_click: None,
         }
+    }
+
+    /// Full width, content at the start, the kbd pushed right (`.ch-side__tools .mx-btn`).
+    pub fn block(mut self) -> Self {
+        self.block = true;
+        self
     }
 
     pub fn variant(mut self, v: Variant) -> Self {
@@ -295,7 +303,8 @@ impl RenderOnce for Button {
             .flex()
             .flex_none()
             .items_center()
-            .justify_center()
+            .when(self.block, |el| el.w_full().justify_start())
+            .when(!self.block, |el| el.justify_center())
             .gap(gap)
             .h(h)
             .when(self.icon_only, |el| el.w(h))
@@ -327,6 +336,7 @@ impl RenderOnce for Button {
                 el.child(
                     div()
                         .ml(px(2.))
+                        .when(self.block, |d| d.ml_auto())
                         .font_family(theme::FONT_MONO)
                         .text_size(text::XS)
                         .text_color(kbd_fg)
