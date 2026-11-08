@@ -249,7 +249,7 @@ pub struct UserContextSummarizingFailure {
 }
 
 /// The engine-written narrative lede for one Insights Overview range (the
-/// **User Context Digest**, issue #89): 2–4 sentences of second-person prose
+/// **User Context Digest**, issue #89): at most 2 short sentences of second-person prose
 /// summarizing what the range's [`Activity`] episodes amount to. Generated
 /// lazily by the Tauri layer (`get_user_context_digest`) and cached per
 /// `(rangeKind, rangeStartMs)` keyed on a fingerprint of the in-range

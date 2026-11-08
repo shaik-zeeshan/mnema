@@ -519,31 +519,31 @@ fn normalize_narrative_trims_and_rejects_empty() {
     assert_eq!(normalize_narrative(""), None);
 }
 
-/// An engine that ignores the 40-word ask: whole sentences that fit the cap
-/// are kept; with no sentence end inside the cap, a word cut ending in "…".
+/// An engine that ignores the 40-word ask: whole sentences that fit the cap are
+/// kept; with no sentence end inside the cap, a word cut ending in "…".
 #[test]
 fn normalize_narrative_caps_long_answers_at_a_sentence_end() {
-    // At the cap exactly: untouched.
     let exact = "x".repeat(NARRATIVE_CHAR_CAP);
     assert_eq!(normalize_narrative(&exact), Some(exact.clone()));
-
-    // Two sentences fit, the third crosses the cap: kept up to the 2nd period.
-    // "v0.1" inside the first sentence is not taken for a sentence end.
-    let first = format!("You shipped v0.1 of the {}.", "pipeline ".repeat(10).trim_end());
-    let second = format!("Then {}.", "calls ".repeat(10).trim_end());
-    let third = format!("And {}.", "review ".repeat(40).trim_end());
-    let long = format!("{first} {second} {third}");
-    assert!(long.chars().count() > NARRATIVE_CHAR_CAP);
-    assert_eq!(
-        normalize_narrative(&long),
-        Some(format!("{first} {second}"))
-    );
-
-    // One run-on sentence past the cap: word cut + ellipsis, still under the cap.
-    let run_on = "word ".repeat(80);
-    let cut = normalize_narrative(&run_on).expect("narrative");
-    assert!(cut.chars().count() <= NARRATIVE_CHAR_CAP);
-    assert!(cut.ends_with("word…"), "{cut}");
+    let (a, filler) = ("You spent the day on the billing migration.", "word ".repeat(80));
+    // A sentence ending on the cap's last char is kept whole.
+    let at_cap = format!("{a} {}.", "x".repeat(NARRATIVE_CHAR_CAP - a.len() - 2));
+    let cases = [
+        // "3.5h" and "e.g. the" are not sentence ends; one before a newline is.
+        (format!("{a} Then 3.5h of review, e.g. the {filler}"), a.to_string()),
+        (format!("{a}\nThen {filler}"), a.to_string()),
+        (format!("One! Two? Then {filler}"), "One! Two?".to_string()),
+        (format!("{at_cap} More text."), at_cap.clone()),
+    ];
+    for (input, want) in cases {
+        assert_eq!(normalize_narrative(&input), Some(want), "{input}");
+    }
+    // No sentence end in the cap (a bare "..." is not one): a char-counted word cut.
+    let dotted = format!("... {}", "Wé ".repeat(120));
+    for (run_on, tail) in [(filler.clone(), "word…"), (dotted, "Wé…")] {
+        let cut = normalize_narrative(&run_on).expect("narrative");
+        assert!(cut.chars().count() <= NARRATIVE_CHAR_CAP && cut.ends_with(tail), "{cut}");
+    }
 }
 
 /// Headline post-validation: trim; empty/whitespace → `None` (NOT a

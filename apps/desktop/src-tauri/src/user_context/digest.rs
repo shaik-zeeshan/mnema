@@ -749,12 +749,20 @@ fn normalize_narrative(raw: &str) -> Option<String> {
     if narrative.chars().count() <= NARRATIVE_CHAR_CAP {
         return Some(narrative.to_string());
     }
-    let capped: String = narrative.chars().take(NARRATIVE_CHAR_CAP).collect();
-    // `". "` (not a bare '.') so "v0.1" or "3.5h" is never taken for a sentence end.
-    let sentence_end = [". ", "! ", "? "].iter().filter_map(|p| capped.rfind(p)).max();
+    // A sentence end is '.', '!' or '?' + whitespace, not before a lowercase word
+    // and not with nothing before it, so "v0.1", "3.5h", "e.g. the" and a bare
+    // "..." never count. Its whitespace may be the char just past the cap.
+    let chars: Vec<(usize, char)> = narrative.char_indices().collect();
+    let sentence_end = (0..NARRATIVE_CHAR_CAP)
+        .map(|i| (chars[i], chars[i + 1].1))
+        .filter(|&((_, c), next)| matches!(c, '.' | '!' | '?') && next.is_whitespace())
+        .map(|((at, _), _)| at)
+        .filter(|&at| !narrative[at + 1..].trim_start().starts_with(char::is_lowercase))
+        .filter(|&at| narrative[..at].chars().any(char::is_alphanumeric))
+        .last();
     Some(match sentence_end {
-        Some(at) => capped[..=at].to_string(),
-        None => word_cut(&capped, NARRATIVE_CHAR_CAP),
+        Some(at) => narrative[..=at].to_string(),
+        None => word_cut(narrative, NARRATIVE_CHAR_CAP),
     })
 }
 
