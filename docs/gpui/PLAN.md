@@ -106,7 +106,7 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
     - GPUI shadows don't follow radius+spread (use `ui::ring_box` for focus rings).
 
 ### Next up (orchestrator queue; keep current)
-1. **Running:** S2 B4 (slot 3), S16b updater core (slot 1), S8 Timeline (slot 2). Done: S6.
+1. **Running:** S2 B4 (slot 3), S8 Timeline (slot 2). Done: S16b 9d609663. **Held:** S11 Chat (slot 1 is idle on purpose: 15 GB free disk; start it once B4 ends and slot 3 is cleaned, or when ≥25 GB is free).
 2. **Then:** S2 B6 (app_infra + frame_preview + quick_recall, cli_access, broker channel with the ruled seams).
 3. **UI waves:** S11 Chat and S13 Settings start as soon as slots free up (S8 already running).
 4. **After B6:** S3 (capture + ask_ai), then S4, then S7.
