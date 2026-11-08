@@ -46,6 +46,7 @@ pub struct Shell {
     pub command: Entity<CommandField>,
     pub timeline: Entity<crate::timeline::TimelineView>,
     pub chat: Entity<crate::chat::Chat>,
+    pub settings: Entity<crate::settings::Settings>,
     focus: FocusHandle,
     _subscriptions: [Subscription; 2],
     tick: Option<Task<()>>,
@@ -67,6 +68,7 @@ impl Shell {
         let command = cx.new(|cx| CommandField::new(window, cx));
         let timeline = cx.new(|cx| crate::timeline::TimelineView::new(source, cx));
         let chat = cx.new(|cx| crate::chat::Chat::new(window, cx));
+        let settings = cx.new(|cx| crate::settings::Settings::new(window, cx));
         let subscriptions = [
             cx.subscribe_in(&command, window, Self::on_command),
             // System appearance follows the OS (theme::set_system ignores it when pinned).
@@ -87,6 +89,7 @@ impl Shell {
             command,
             timeline,
             chat,
+            settings,
             focus,
             _subscriptions: subscriptions,
             tick: None,
@@ -103,6 +106,11 @@ impl Shell {
             screen: s.selected[0],
         };
         let developer = self.model.developer_options;
+        let status = self.model.status.clone();
+        self.settings.update(cx, |s, cx| {
+            s.status = status;
+            cx.notify();
+        });
         self.timeline.update(cx, |t, cx| {
             t.capture = hint;
             t.developer = developer;
@@ -133,6 +141,9 @@ impl Shell {
         }
         self.surface = surface;
         self.overlay = None;
+        if surface == Surface::Settings {
+            self.settings.update(cx, |s, cx| s.reload_all(cx));
+        }
         cx.notify();
     }
 
@@ -227,8 +238,14 @@ impl Shell {
             };
             this.go(to, cx);
         }))
-        .on_action(cx.listener(|this, _: &keymap::ToggleShortcutsHelp, _, cx| {
-            this.toggle_overlay(Overlay::Shortcuts, cx)
+        .on_action(cx.listener(|this, _: &keymap::ToggleShortcutsHelp, w, cx| {
+            // `/` on Settings focuses its search instead.
+            if this.surface == Surface::Settings {
+                let search = this.settings.read(cx).inputs.search.clone();
+                search.update(cx, |i, cx| i.focus(w, cx));
+            } else {
+                this.toggle_overlay(Overlay::Shortcuts, cx)
+            }
         }))
         .on_action(cx.listener(|this, _: &keymap::CloseOverlay, _, cx| {
             if this.overlay.is_some() {
@@ -291,6 +308,7 @@ impl Render for Shell {
             .map(|el| match self.surface {
                 Surface::Timeline => el.child(self.timeline.clone()),
                 Surface::Chat => el.child(self.chat.clone()),
+                Surface::Settings => el.child(self.settings.clone()),
                 _ => el.child(placeholder::render(self, &p, cx)),
             })
             .when(chrome, |el| {

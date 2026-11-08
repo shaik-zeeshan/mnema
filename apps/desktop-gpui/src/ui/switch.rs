@@ -20,6 +20,8 @@ pub struct Switch {
     on: bool,
     disabled: bool,
     force: Force,
+    /// The checked track colour (a source row's family colour); accent when unset.
+    on_color: Option<gpui_kit::Hsla>,
     on_toggle: Option<OnToggle>,
 }
 
@@ -31,8 +33,14 @@ impl Switch {
             on,
             disabled: false,
             force: Force::None,
+            on_color: None,
             on_toggle: None,
         }
+    }
+    /// `.setting-row--src-*`: a checked switch takes the source family's colour.
+    pub fn on_color(mut self, c: gpui_kit::Hsla) -> Self {
+        self.on_color = Some(c);
+        self
     }
     pub fn disabled(mut self, on: bool) -> Self {
         self.disabled = on;
@@ -62,7 +70,8 @@ impl RenderOnce for Switch {
         let (prev, gen) = last_change(nid(&format!("{base}-on"), 0), self.on, window, cx);
         let knob_off = if light { p.surface } else { p.fg };
         let knob = |on: bool| if on { p.accent_contrast } else { knob_off };
-        let track = |on: bool| if on { p.accent } else { p.border_strong };
+        let on_track = self.on_color.unwrap_or(p.accent);
+        let track = |on: bool| if on { on_track } else { p.border_strong };
         let x = |on: bool| if on { TRAVEL } else { 0. };
 
         let knob_el = div()

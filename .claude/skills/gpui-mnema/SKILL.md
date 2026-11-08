@@ -70,6 +70,12 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **Goldens with async work:** `VisualTestAppContext` runs a *simulated* clock: pump with `advance_clock` + `run_until_parked` until the view settles (`tests/visual/timeline.rs::settle`). Shell goldens now show the Timeline over the parity fixture.
 - **GPUI:** the scroll sign is the content's motion (a browser's `deltaY` is the viewport's: negate it). Key actions for a surface register on the shell root (the focus path), not the surface div. `.test_support()` changes the type: call it last.
 
+## Settings *(set by S13)*
+- **Shape:** `settings::Settings` holds the drafts (`draft` vs a private `saved` `RecordingSettings`, plus keyboard JSON and the mic state); sections in `settings/sections/*` read `s.d()` and write through `s.edit(|d| …, cx)` / `edit_keyboard` / `edit_mic`. Build rows with `settings::row::{section, row(..).desc().control().below().full().build(p)}`; wire controls with `settings::on(cx, |s, v, cx| …)` / `settings::click(cx, …)`.
+- **Autosave:** `settings/autosave.rs` is pure over `Instant`s (450 ms recording, 0 ms sources, 250 ms mic; nothing saves while `privacy_in_flight`). Saves go through `data::Backend` on the background executor; `fixture::FixtureBackend` records them for tests. Recording-domain, mic and privacy saves fail honestly until S3 moves `native_capture_settings`; keyboard saves are live.
+- **Confirms** go through `settings::confirm` → `Host::confirm`; the GPUI host drops confirms (reads as Cancel) until S7.
+- **Goldens:** `settings-<state>-<theme>.png` for `settings::fixture::STATES` (group tops + deeper sections reached by `open_tab`), all from `parity/fixtures/settings/default.json`, shell not recording.
+
 ## Tests
 - **Behaviour:**
   - `#[gpui::test]` with `TestAppContext` / `VisualTestContext`;

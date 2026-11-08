@@ -13,6 +13,7 @@ pub mod host;
 pub mod keymap;
 pub mod logging;
 pub mod native;
+pub mod settings;
 pub mod shell;
 pub mod theme;
 pub mod timeline;

@@ -32,6 +32,14 @@ icon_assets!(
         Laptop,
         Volume2,
         Clock,
+        SlidersHorizontal,
+        Database,
+        Sparkles,
+        Terminal,
+        Plug,
+        Shield,
+        Link,
+        Speech,
     ]
 );
 

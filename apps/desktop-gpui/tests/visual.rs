@@ -13,6 +13,8 @@ mod chat;
 mod compare;
 #[path = "visual/gallery.rs"]
 mod gallery;
+#[path = "visual/settings.rs"]
+mod settings;
 #[path = "visual/timeline.rs"]
 mod timeline;
 
@@ -27,8 +29,8 @@ use gpui_kit::{px, size, AppContext, VisualTestAppContext, WindowAppearance};
 use mnema_gpui::assets::MnemaAssets;
 use mnema_gpui::host::GpuiHost;
 use mnema_gpui::shell::{data, fixture, Overlay, Shell, ShellModel};
-use mnema_gpui::timeline::fixture::FixtureSource;
 use mnema_gpui::theme::{self, fonts};
+use mnema_gpui::timeline::fixture::FixtureSource;
 use mnema_gpui::{keymap, ui::clock};
 
 /// The Tauri shot's viewport for the main window (`apps/desktop/parity/surfaces.ts`).
@@ -113,7 +115,11 @@ fn render(
     cx.update(|cx| theme::set_setting(setting, cx));
     let overlay = state.overlay;
     // The Timeline under the shell shows the same parity data the Tauri shot does.
-    let fixture = if state.fixture == FixtureId::Populated { "default" } else { "first-run" };
+    let fixture = if state.fixture == FixtureId::Populated {
+        "default"
+    } else {
+        "first-run"
+    };
     let source = Arc::new(FixtureSource::load(fixture)?);
     let mut timeline = None;
     let window = cx.open_offscreen_window(
@@ -204,6 +210,17 @@ fn run() -> anyhow::Result<()> {
             let model = model_for(FixtureId::Populated).unwrap();
             return chat::parity(&mut cx, &dir, &state, setting.clone(), model);
         }
+        if !filters.is_empty() && filters.iter().all(|f| "settings".contains(f.as_str())) {
+            let state = std::env::var("PARITY_STATE")?;
+            let theme_name = std::env::var("PARITY_THEME")?;
+            let (_, setting) = THEMES
+                .iter()
+                .find(|(t, _)| *t == theme_name)
+                .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
+            // Not recording, like the stubbed Tauri page (no capture session).
+            let model = model_for(FixtureId::Empty).unwrap();
+            return settings::parity(&mut cx, &dir, &state, setting.clone(), model);
+        }
         if !filters.iter().all(|f| "shell".contains(f.as_str())) {
             return Ok(()); // another surface's parity run
         }
@@ -258,6 +275,8 @@ fn run() -> anyhow::Result<()> {
     failures.extend(timeline::goldens(&mut cx, &filters, &THEMES, &shell_for)?);
     let populated = model_for(FixtureId::Populated).unwrap();
     failures.extend(chat::goldens(&mut cx, &filters, &THEMES, &populated)?);
+    let idle = model_for(FixtureId::Empty).unwrap();
+    failures.extend(settings::goldens(&mut cx, &filters, &THEMES, &idle)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

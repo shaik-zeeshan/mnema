@@ -1,0 +1,100 @@
+//! Settings goldens (`settings-<state>-<theme>.png`): the shell on the Settings
+//! surface, filled from `apps/desktop/parity/fixtures/settings/default.json`,
+//! one per group top plus the deeper sections of the tall groups (each a
+//! 1280x800 viewport, under the offscreen clamp), and the parity shot for
+//! `scripts/parity.sh settings <state>`.
+
+use std::path::Path;
+
+use capture_types::AppearanceSetting;
+use gpui_kit::base::Root;
+use gpui_kit::{px, size, AppContext, VisualTestAppContext};
+use mnema_gpui::settings::fixture::{settings_data, STATES};
+use mnema_gpui::shell::{Shell, ShellModel, Surface};
+use mnema_gpui::theme;
+
+use super::compare;
+
+pub const VIEWPORT: (f32, f32) = (1280., 800.);
+
+pub fn render(
+    cx: &mut VisualTestAppContext,
+    shell_model: ShellModel,
+    state: &str,
+    setting: AppearanceSetting,
+) -> anyhow::Result<image::RgbaImage> {
+    let tab = STATES
+        .iter()
+        .find(|(s, _)| *s == state)
+        .map(|(_, t)| *t)
+        .ok_or_else(|| anyhow::anyhow!("no settings state {state}"))?;
+    let data = settings_data()?;
+    cx.update(|cx| theme::set_setting(setting, cx));
+    let mut settings = None;
+    let window = cx.open_offscreen_window(size(px(VIEWPORT.0), px(VIEWPORT.1)), |window, cx| {
+        let shell = cx.new(|cx| {
+            let mut shell = Shell::new(shell_model, window, cx);
+            shell.go(Surface::Settings, cx);
+            shell
+        });
+        let s = shell.read(cx).settings.clone();
+        s.update(cx, |s, cx| s.set_data(data, cx));
+        settings = Some(s);
+        cx.new(|cx| Root::new(shell, window, cx))
+    })?;
+    let settings = settings.expect("settings");
+    // Lay out once, then deeplink (the scroll needs the sections' bounds), then settle.
+    for step in 0..4 {
+        cx.run_until_parked();
+        if step == 1 {
+            cx.update(|cx| settings.update(cx, |s, cx| s.open_tab(tab, cx)));
+        }
+        cx.update_window(window.into(), |_, window, _| window.refresh())?;
+    }
+    cx.run_until_parked();
+    let shot = cx.capture_screenshot(window.into())?;
+    cx.update_window(window.into(), |_, window, _| window.remove_window())?;
+    Ok(shot)
+}
+
+pub fn goldens(
+    cx: &mut VisualTestAppContext,
+    filters: &[String],
+    themes: &[(&str, AppearanceSetting)],
+    shell_model: &ShellModel,
+) -> anyhow::Result<Vec<String>> {
+    let mut failures = Vec::new();
+    for (state, _) in STATES {
+        for (theme_name, setting) in themes {
+            let name = format!("settings-{state}-{theme_name}");
+            if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {
+                continue;
+            }
+            let shot = render(cx, shell_model.clone(), state, setting.clone())?;
+            if let Err(e) = compare::check_golden(&name, &shot) {
+                failures.push(e.to_string());
+            }
+        }
+    }
+    Ok(failures)
+}
+
+/// Writes `<dir>/gpui.png` for one parity state, at the Tauri shot's 1x size.
+pub fn parity(
+    cx: &mut VisualTestAppContext,
+    dir: &Path,
+    state: &str,
+    setting: AppearanceSetting,
+    shell_model: ShellModel,
+) -> anyhow::Result<()> {
+    let shot = render(cx, shell_model, state, setting)?;
+    let shot = image::imageops::resize(
+        &shot,
+        VIEWPORT.0 as u32,
+        VIEWPORT.1 as u32,
+        image::imageops::FilterType::Triangle,
+    );
+    shot.save(dir.join("gpui.png"))?;
+    println!("  parity: wrote {}", dir.join("gpui.png").display());
+    Ok(())
+}

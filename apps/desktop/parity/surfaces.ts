@@ -23,6 +23,8 @@ export interface Surface {
   click?: string;
   /** Per-state override of `route` (a state that opens a record by URL, e.g. `/chat?c=<id>`). */
   stateRoute?: Record<string, string>;
+  /** Per-state mockup `#hash` (pages that pick a section by anchor, e.g. settings.html). */
+  stateHash?: Record<string, string>;
   /** state -> mockup query string (without theme). */
   states: Record<string, string>;
 }
@@ -44,6 +46,22 @@ const insights = (tab: string, label: string, ids: string): Surface => ({
   click: tab === "overview" ? undefined : `.in-bar button:has-text("${label}")`,
   states: { default: "", ...q("state", `${INSIGHTS_ANY} ${ids}`) },
 });
+
+/** Settings parity states: `[state, ?tab=, mockup anchor]` (mirrors `settings::fixture::STATES`). */
+const SETTINGS_SETS: [string, string, string][] = [
+  ["general", "appearance", "s-appearance"],
+  ["general-shortcuts", "shortcuts", "s-shortcuts"],
+  ["capture", "capture", "s-capture"],
+  ["capture-video", "video", "s-video"],
+  ["capture-privacy", "privacy", "s-privacy"],
+  ["intelligence", "intelligence", "s-providers"],
+  ["intelligence-askai", "user-context", "s-usercontext"],
+  ["intelligence-ocr", "ocr", "s-ocr"],
+  ["intelligence-speakers", "speakers", "s-speakers"],
+  ["data", "storage", "s-storage"],
+  ["data-access", "access", "s-access"],
+  ["about", "license", "s-license"],
+];
 
 export const SURFACES: Record<string, Surface> = {
   // Shared controls (S6): the GPUI gallery bin vs the kit gallery's left (current-theme) panes.
@@ -136,15 +154,20 @@ export const SURFACES: Record<string, Surface> = {
       ),
     },
   },
-  // The mockup opens on Capture; `?tab=capture` lands the route there too.
+  // The mockup opens on Capture; `?tab=capture` lands the route there too. The S13 set
+  // (fixtures/settings/default.json for every state): each group's top, then the deeper
+  // sections of the tall groups, reached by `?tab=` on the route and `#s-…` on the mockup.
   settings: {
     route: "/settings?tab=capture",
     label: "main",
     viewport: MAIN,
     page: "settings.html",
     selector: WIN,
+    stateRoute: Object.fromEntries(SETTINGS_SETS.map(([state, tab]) => [state, `/settings?tab=${tab}`])),
+    stateHash: Object.fromEntries(SETTINGS_SETS.map(([state, , anchor]) => [state, anchor])),
     states: {
       default: "",
+      ...Object.fromEntries(SETTINGS_SETS.map(([state]) => [state, ""])),
       ...q(
         "state",
         `save-failed validation shortcuts-loading shortcut-listening shortcut-conflict capture-loading
@@ -267,7 +290,8 @@ export const SURFACES: Record<string, Surface> = {
 
 /** Mockup URL for a surface state and theme. */
 export function mockupUrl(root: string, s: Surface, state: string, theme: string): string {
-  const [file, hash] = s.page.split("#");
+  const [file, pageAnchor] = s.page.split("#");
+  const hash = s.stateHash?.[state] ?? pageAnchor;
   const query = [s.states[state], `theme=${theme}`].filter(Boolean).join("&");
   return `file://${root}/docs/mockups/redesign/${file}?${query}${hash ? `#${hash}` : ""}`;
 }
