@@ -79,6 +79,15 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
   - `CoreEvent` payloads are `serde_json::Value` until S2/S3 move their types (shortcut);
   - new 1.99 warnings: `fetch_update` deprecated (`licensing.rs:129`), `__eh_frame` too large linker message, `block 0.1.6` future-incompat.
   - Incident: the S1 smoke ran against the real `~/.mnema-dev`, and its 7-day retention deleted 37 old segments. Rule added: agents launch only against copies.
+- **S2 B0 + B1 done** (d9820408, 630dab6f).
+- **S5 done:**
+  - 33 behaviour tests; 12 shell goldens (pending founder sign-off).
+  - Shell data is empty in the real app until S2/S3 move the commands (`shell/data.rs` shortcuts).
+  - **Open founder questions:**
+    - titlebar surface glyphs are the Svelte app's own SVGs, not Lucide;
+    - GPUI can't blur inside a window (titlebar 82% + blur 20);
+    - GPUI has no letter-spacing (kicker 0.12em).
+  - The `terminate:` swizzle lives at git f45ddec5 `apps/desktop-gpui/src/spike/native.rs`, for S7.
 
 ## T0 · Tooling (orchestrator, before S0)
 

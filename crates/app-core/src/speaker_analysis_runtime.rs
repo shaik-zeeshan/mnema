@@ -561,7 +561,8 @@ mod tests {
             .spawn()
             .expect("spawn helper");
 
-        for _ in 0..50 {
+        // Up to 5 s: spawning sh takes >500 ms while parallel cargo builds load the machine.
+        for _ in 0..500 {
             if started_path.exists() {
                 break;
             }

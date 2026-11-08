@@ -36,7 +36,7 @@ pub struct MicrophoneVadStatus {
     pub fallback_reason: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSourcesStatus {
     pub screen: RuntimeSourceStatus,
@@ -44,7 +44,7 @@ pub struct RuntimeSourcesStatus {
     pub system_audio: RuntimeSourceStatus,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeSourceStatus {
     pub requested: bool,
