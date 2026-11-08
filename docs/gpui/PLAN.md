@@ -81,7 +81,7 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
   - Incident: the S1 smoke ran against the real `~/.mnema-dev`, and its 7-day retention deleted 37 old segments. Rule added: agents launch only against copies.
 - **S2 B0 + B1 done** (d9820408, 630dab6f).
 - **S5 done:**
-  - 33 behaviour tests; 12 shell goldens (pending founder sign-off).
+  - 33 behaviour tests; 12 shell goldens (approved by the founder 2026-11-08).
   - Shell data is empty in the real app until S2/S3 move the commands (`shell/data.rs` shortcuts).
   - **Founder rulings, 2026-11-08:**
     - no in-window blur: titlebar and popovers use **solid tinted surfaces**, logged as native-by-design;
