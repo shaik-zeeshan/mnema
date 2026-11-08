@@ -1,21 +1,23 @@
 // bun parity/compose.ts <dir>
 // Lays <dir>/{gpui,tauri,mockup}.png side by side, labelled, into <dir>/composite.png.
 // Uses Playwright (already here for shoot.ts) because ImageMagick isn't installed on dev Macs.
-// A missing panel becomes a labelled grey box the size of the Tauri shot (e.g. "GPUI: not built").
+// A missing panel becomes a labelled grey box the size of the Tauri shot (e.g. "GPUI: not built"), or of the
+// mockup shot when the surface has no Tauri side ("Tauri: not applicable", the control gallery).
 import { chromium } from "@playwright/test";
 import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const dir = process.argv[2];
-if (!dir || !existsSync(join(dir, "tauri.png"))) {
-  console.error("usage: bun parity/compose.ts <dir containing tauri.png>");
+const sizer = existsSync(join(dir ?? "", "tauri.png")) ? "tauri.png" : "mockup.png";
+if (!dir || !existsSync(join(dir, sizer))) {
+  console.error("usage: bun parity/compose.ts <dir containing tauri.png or mockup.png>");
   process.exit(2);
 }
 
-const panel = (file: string, label: string) =>
+const panel = (file: string, label: string, missing = "not built") =>
   existsSync(join(dir, file))
     ? `<figure><figcaption>${label}</figcaption><img src="${file}"></figure>`
-    : `<figure><figcaption>${label}</figcaption><div class="missing">${label}: not built</div></figure>`;
+    : `<figure><figcaption>${label}</figcaption><div class="missing">${label}: ${missing}</div></figure>`;
 
 const html = `<!doctype html><meta charset="utf-8"><style>
   body { margin: 0; padding: 16px; background: #1b1b1f; display: inline-flex; gap: 16px; align-items: flex-start;
@@ -24,11 +26,11 @@ const html = `<!doctype html><meta charset="utf-8"><style>
   img { display: block; outline: 1px solid #3a3a40; }
   .missing { display: grid; place-items: center; background: #5a5a60; color: #f2f2f4; font-size: 20px;
              width: var(--w); height: var(--h); outline: 1px solid #3a3a40; }
-</style>${panel("gpui.png", "GPUI")}${panel("tauri.png", "Tauri")}${panel("mockup.png", "Mockup")}
+</style>${panel("gpui.png", "GPUI")}${panel("tauri.png", "Tauri", sizer === "tauri.png" ? "not built" : "not applicable")}${panel("mockup.png", "Mockup")}
 <script>
   const t = new Image();
   t.onload = () => { for (const m of document.querySelectorAll(".missing")) { m.style.setProperty("--w", t.naturalWidth + "px"); m.style.setProperty("--h", t.naturalHeight + "px"); } document.body.dataset.ready = "1"; };
-  t.src = "tauri.png";
+  t.src = "${sizer}";
 </script>`;
 
 const page = join(dir, "composite.html");

@@ -176,7 +176,8 @@ palette! {
     wash: a(0xe2e2e8, 0.04), a(0x14141a, 0.05);
     wash_strong: a(0xe2e2e8, 0.08), a(0x14141a, 0.09);
     titlebar_glass: a(0x08080c, 0.82), a(0xececea, 0.82);
-    pop_bg: a(0x13131a, 0.96), a(0xfbfbfa, 0.96);
+    // kit: raised 96% + blur 22; see `POP_SURFACE_ALPHA` (GPUI can't blur).
+    pop_bg: a(0x13131a, super::scale::POP_SURFACE_ALPHA), a(0xfbfbfa, super::scale::POP_SURFACE_ALPHA);
 }
 
 #[cfg(test)]

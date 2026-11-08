@@ -12,7 +12,7 @@ use gpui_kit::{
 
 use crate::keymap::{Dismiss, FlipMode, COMMAND_FIELD_CONTEXT};
 use crate::theme::{self, breakpoint, radius, size, space, text, FONT_MONO};
-use crate::ui::{icon, kbd};
+use crate::ui::{icon, kbd, ring};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -225,17 +225,6 @@ impl Render for CommandField {
                     ),
             )
             .children(hint)
-    }
-}
-
-/// The 3 px accent-glow focus ring (`--app-ring`).
-pub fn ring(color: gpui_kit::Hsla) -> gpui_kit::BoxShadow {
-    gpui_kit::BoxShadow {
-        color,
-        offset: gpui_kit::point(px(0.), px(0.)),
-        blur_radius: px(0.),
-        spread_radius: size::FOCUS_RING,
-        inset: false,
     }
 }
 

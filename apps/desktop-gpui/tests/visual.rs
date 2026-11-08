@@ -3,12 +3,14 @@
 //! `harness = false`: AppKit needs the process main thread, which libtest doesn't give.
 //!
 //! `cargo test -p mnema-gpui --test visual -- shell` runs the goldens whose name
-//! contains `shell`. With `PARITY_DIR` / `PARITY_STATE` / `PARITY_THEME` set
-//! (scripts/parity.sh), it renders that one state at the Tauri shot's size and
-//! writes `$PARITY_DIR/gpui.png` instead.
+//! contains `shell` (`-- gallery`: the control gallery's). With `PARITY_DIR` /
+//! `PARITY_STATE` / `PARITY_THEME` set (scripts/parity.sh), it renders that one
+//! state at the Tauri shot's size and writes `$PARITY_DIR/gpui.png` instead.
 
 #[path = "visual/compare.rs"]
 mod compare;
+#[path = "visual/gallery.rs"]
+mod gallery;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -160,6 +162,15 @@ fn run() -> anyhow::Result<()> {
     };
 
     if let Some(dir) = parity {
+        if !filters.is_empty() && filters.iter().all(|f| "gallery".contains(f.as_str())) {
+            let state = std::env::var("PARITY_STATE")?;
+            let theme_name = std::env::var("PARITY_THEME")?;
+            let (_, setting) = THEMES
+                .iter()
+                .find(|(t, _)| *t == theme_name)
+                .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
+            return gallery::parity(&mut cx, &dir, &state, setting.clone());
+        }
         if !filters.iter().all(|f| "shell".contains(f.as_str())) {
             return Ok(()); // another surface's parity run
         }
@@ -209,6 +220,7 @@ fn run() -> anyhow::Result<()> {
             }
         }
     }
+    failures.extend(gallery::goldens(&mut cx, &filters, &THEMES)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

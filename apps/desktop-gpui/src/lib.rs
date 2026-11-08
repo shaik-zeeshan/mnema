@@ -7,6 +7,7 @@ pub mod bridge {
     pub mod tokio;
 }
 pub mod feel;
+pub mod gallery;
 pub mod host;
 pub mod keymap;
 pub mod logging;

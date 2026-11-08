@@ -1,11 +1,11 @@
 // bun parity/shoot.ts <surface> <state> <theme>
 // Screenshots the Svelte route (Tauri IPC stubbed) and the mockup for one surface x state x theme into
 // target/parity/<surface>/<state>-<theme>/{tauri,mockup}.png, plus tauri-calls.json (what the page invoked).
-import { chromium, type Browser } from "@playwright/test";
+import { chromium, type Browser, type BrowserContext } from "@playwright/test";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { SURFACES, mockupUrl } from "./surfaces";
+import { SURFACES, mockupUrl, type Surface } from "./surfaces";
 import { installTauriStub, invokedCommands, type CommandMap } from "./tauri-stub";
 
 // The fixture's "now": every fixture timestamp is relative to it.
@@ -53,7 +53,30 @@ async function shoot(browser: Browser, surfaceId: string, state: string, theme: 
   mkdirSync(out, { recursive: true });
   const context = await browser.newContext({ viewport: s.viewport, colorScheme: theme, timezoneId: TIMEZONE });
 
-  // Tauri side: the real Svelte route on stubbed IPC.
+  // Tauri side: the real Svelte route on stubbed IPC (skipped for surfaces with no route).
+  if (s.route) await shootTauri(context, s, surfaceId, state, out);
+
+  // Mockup side: the window element only.
+  const mock = await context.newPage();
+  if (s.mockViewport) await mock.setViewportSize(s.mockViewport);
+  await mock.clock.setFixedTime(NOW);
+  await mock.goto(mockupUrl(ROOT, s, state, theme), { waitUntil: "load" });
+  await mock.evaluate(() => document.fonts.ready);
+  await mock.waitForTimeout(500);
+  const selector = s.stateSelector?.[state] ?? s.selector;
+  await mock.locator(selector).first().screenshot({ path: join(out, "mockup.png"), animations: "disabled" });
+
+  await context.close();
+  console.log(out);
+}
+
+async function shootTauri(
+  context: BrowserContext,
+  s: Surface,
+  surfaceId: string,
+  state: string,
+  out: string,
+): Promise<void> {
   const tauri = await context.newPage();
   const errors: string[] = [];
   tauri.on("pageerror", (e) => errors.push(e.message));
@@ -66,18 +89,6 @@ async function shoot(browser: Browser, surfaceId: string, state: string, theme: 
   await tauri.screenshot({ path: join(out, "tauri.png"), animations: "disabled" });
   writeFileSync(join(out, "tauri-calls.json"), JSON.stringify(await invokedCommands(tauri), null, 2));
   for (const e of errors) console.error(`[tauri page error] ${e}`);
-
-  // Mockup side: the window element only.
-  const mock = await context.newPage();
-  if (s.mockViewport) await mock.setViewportSize(s.mockViewport);
-  await mock.clock.setFixedTime(NOW);
-  await mock.goto(mockupUrl(ROOT, s, state, theme), { waitUntil: "load" });
-  await mock.evaluate(() => document.fonts.ready);
-  await mock.waitForTimeout(500);
-  await mock.locator(s.selector).first().screenshot({ path: join(out, "mockup.png"), animations: "disabled" });
-
-  await context.close();
-  console.log(out);
 }
 
 // State defaults to the surface's first; theme defaults to both. Prints one output dir per line.
@@ -91,7 +102,7 @@ if (import.meta.main) {
     console.error(s ? `states: ${Object.keys(s.states).join(" ")}` : `surfaces: ${Object.keys(SURFACES).join(" ")}`);
     process.exit(2);
   }
-  await ensureVite();
+  if (s.route) await ensureVite();
   const browser = await chromium.launch();
   try {
     for (const theme of themes) await shoot(browser, surfaceId, state, theme as "dark" | "light");

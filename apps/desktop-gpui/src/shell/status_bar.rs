@@ -95,9 +95,7 @@ fn rec_pill(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoEle
         .size(px(7.))
         .rounded_full()
         .bg(dot)
-        .when_some(glow, |d, glow| {
-            d.shadow(vec![super::command_field::ring(glow)])
-        });
+        .when_some(glow, |d, glow| d.shadow(vec![crate::ui::ring(glow)]));
     div()
         .id("status-rec")
         .role(Role::Button)

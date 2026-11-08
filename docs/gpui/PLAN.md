@@ -92,11 +92,23 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
   - B5 left `broker_authorization_channel` for B6 (see the B6 seams).
   - `Host::open_url` now returns `Result` and opens absolute paths with `open_path`. This fixes a B2 regression where "open log" lost its error toast.
   - app-core now depends on `global-hotkey 0.7` (the Tauri plugin's version) for shortcut validation, while the GPUI app pins 0.9. Reconcile in S7: app-core validates strings, and each host converts.
+- **S6 done:**
+  - 42 tests; 20 gallery goldens awaiting founder sign-off.
+  - Gaps logged for polish:
+    - hover/focus colour transitions are instant (spec 120–220 ms quart);
+    - no popover scale-in;
+    - the hover tooltip follows the pointer;
+    - the date input lacks drag-scrub and range/year modes (S8/S12 add them where needed);
+    - the light-theme modal scrim is faint without blur;
+    - the pressed primary button is unreadable (a kit.css bug reproduced faithfully: founder call).
+  - Facts:
+    - offscreen goldens taller than ~1040 px get clamped, so keep viewports ≤1000 px;
+    - GPUI shadows don't follow radius+spread (use `ui::ring_box` for focus rings).
 
 ### Next up (orchestrator queue; keep current)
-1. **Running:** S2 B4 (AI + user context + privacy sources + semantic download task, slot 3) and S6 (shared controls, slot 2). Done: B3a f83ea6ea, B3b 07df67e8, S16a install gate.
+1. **Running:** S2 B4 (slot 3), S16b updater core (slot 1), S8 Timeline (slot 2). Done: S6.
 2. **Then:** S2 B6 (app_infra + frame_preview + quick_recall, cli_access, broker channel with the ruled seams).
-3. **After S6:** wave A UI slices S8 / S11 / S13, at most 3 slots at once alongside the backend work.
+3. **UI waves:** S11 Chat and S13 Settings start as soon as slots free up (S8 already running).
 4. **After B6:** S3 (capture + ask_ai), then S4, then S7.
 
 ## T0 · Tooling (orchestrator, before S0)

@@ -23,6 +23,8 @@ pub mod text {
     pub const PROSE: Pixels = px(14.);
     pub const H1: Pixels = px(28.);
     pub const DISPLAY: Pixels = px(40.);
+    /// The date capsule's mono caption.
+    pub const MICRO: Pixels = px(9.5);
 }
 
 pub const W_REGULAR: FontWeight = FontWeight::NORMAL;
@@ -88,7 +90,44 @@ pub mod size {
     /// Popovers sit 8px off their trigger.
     pub const POP_GAP: Pixels = px(8.);
     pub const FOCUS_RING: Pixels = px(3.);
+    /// Button / tile / switch focus: `outline: 2px solid; outline-offset: 2px`.
+    pub const OUTLINE: Pixels = px(2.);
+    pub const OUTLINE_OFFSET: Pixels = px(2.);
+    /// Icon sizes inside md / sm buttons.
+    pub const BTN_ICON_MD: Pixels = px(15.);
+    pub const BTN_ICON_SM: Pixels = px(13.);
+    /// `.mx-chip`, `.mx-rec` and status pills.
+    pub const CHIP_H: Pixels = px(20.);
+    pub const SWITCH_W: Pixels = px(30.);
+    pub const SWITCH_H: Pixels = px(18.);
+    pub const SWITCH_KNOB: Pixels = px(14.);
+    pub const SLIDER_THUMB: Pixels = px(14.);
+    pub const PROGRESS_H: Pixels = px(4.);
+    pub const SPIN: Pixels = px(14.);
+    pub const SPIN_SM: Pixels = px(10.);
+    pub const SPIN_LG: Pixels = px(20.);
+    pub const TOAST_MIN_H: Pixels = px(38.);
+    pub const TOAST_MAX_W: Pixels = px(520.);
+    /// Toasts float above the 30 px status bar (`bottom: 42px`).
+    pub const TOAST_BOTTOM: Pixels = px(42.);
+    pub const BANNER_MIN_H: Pixels = px(38.);
+    pub const MODAL_MAX_W: Pixels = px(640.);
+    pub const STRIP_LIGHT: Pixels = px(12.);
+    pub const CAL_CELL_W: Pixels = px(34.);
+    pub const CAL_CELL_H: Pixels = px(32.);
+    pub const DATE_RULER_W: Pixels = px(84.);
+    pub const DATE_RULER_H: Pixels = px(22.);
+    pub const SELECT_MAX_H: Pixels = px(220.);
+    pub const TIP_MAX_W: Pixels = px(260.);
 }
+
+/// Popovers: CSS `backdrop-filter: blur(22px) saturate(1.4)` over a 96% raised
+/// surface. GPUI can't blur inside a window, so the popover surface (`pop_bg`)
+/// is this opaque instead; the founder's open question decides it (one line).
+pub const POP_SURFACE_ALPHA: f32 = 1.0;
+
+/// Toasts stay up this long (kit: 4-6 s); an Undo toast drains over it.
+pub const TOAST_TTL: Duration = Duration::from_secs(5);
 
 /// Breakpoints the Svelte shell uses: command hints vanish below 1000px, the
 /// status bar's wide readouts below 900px.
@@ -111,6 +150,8 @@ pub mod motion {
     pub const THEME_FADE: Duration = Duration::from_millis(180);
     /// Tooltip dwell; instant on keyboard focus.
     pub const TOOLTIP_DWELL: Duration = Duration::from_millis(350);
+    /// `.mx-spin`: one turn, linear, forever (the app's only looping motion).
+    pub const SPIN: Duration = Duration::from_millis(800);
 
     /// `cubic-bezier(.16, 1, .3, 1)`.
     pub fn expo(t: f32) -> f32 {

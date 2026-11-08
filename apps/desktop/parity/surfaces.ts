@@ -4,8 +4,9 @@
 // with `docs/mockups/redesign/<page>.html?state=<state>`.
 
 export interface Surface {
-  /** Svelte route the Tauri side loads (path, plus query when the route reads one). */
-  route: string;
+  /** Svelte route the Tauri side loads (path, plus query when the route reads one).
+   *  Absent = no Tauri counterpart (the GPUI control gallery): that panel reads "not applicable". */
+  route?: string;
   /** Tauri window label the stub reports (`windows.rs` AppWindow labels). */
   label: string;
   /** Window size the Tauri side, the mockup and the GPUI golden all render at. */
@@ -14,6 +15,8 @@ export interface Surface {
   page: string;
   /** Element screenshotted on the mockup page (the window, not the fake desktop). */
   selector: string;
+  /** Per-state override of `selector` (pages that show each state in its own element). */
+  stateSelector?: Record<string, string>;
   /** Mockup page size when the window is drawn inside a bigger page (defaults to `viewport`). */
   mockViewport?: { width: number; height: number };
   /** Optional click on the Tauri side after load, for views the route can't address by URL. */
@@ -41,6 +44,16 @@ const insights = (tab: string, label: string, ids: string): Surface => ({
 });
 
 export const SURFACES: Record<string, Surface> = {
+  // Shared controls (S6): the GPUI gallery bin vs the kit gallery's left (current-theme) panes.
+  gallery: {
+    label: "main",
+    viewport: { width: 900, height: 900 },
+    page: "index.html",
+    selector: '.g-pane[data-specimen=""]:not([data-theme-invert])',
+    mockViewport: { width: 1440, height: 900 },
+    stateSelector: { feedback: '.g-pane[data-specimen="feedback"]:not([data-theme-invert])' },
+    states: { components: "", feedback: "" },
+  },
   // Titlebar + status bar around the default surface. Fixtures: parity/fixtures/shell/*.json.
   shell: {
     route: "/",
