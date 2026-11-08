@@ -52,9 +52,10 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
   - baselines at `apps/desktop-gpui/tests/visual/baselines/<surface>-<state>-<theme>.png`, compared at tolerance 2/channel with a 0.99 match; on failure a `*_diff.png`;
   - `UPDATE_BASELINE=1` regenerates them only with founder sign-off.
   - Open the PNGs with Read and look at them.
-- **Parity:** `bash scripts/parity.sh <surface> [state] [theme]` → `target/parity/…/composite.png` (GPUI | Tauri | mockup).
+- **Parity:** `bash scripts/parity.sh <surface> [state] [theme]` → `target/parity/…/composite.png` (GPUI | Tauri | mockup). The GPUI visual test must write `$PARITY_DIR/gpui.png` for `$PARITY_STATE`/`$PARITY_THEME` when those are set. Port :1420 must be free or serve this worktree.
 
 ## Building
+- Agent worktrees are created from `main`: first `git merge --ff-only new-gpui-desktop-app` (or the base commit in your brief).
 - Your brief gives you a build slot N (1-3). Run `export CARGO_TARGET_DIR=$HOME/.cargo/worktree-targets/gpui-slot-$N`. Never share a slot with a live agent: a shared target dir gives phantom errors, and each one costs ~20 GB.
 - `. scripts/openblas-build-env.sh` before any build linking speakrs. `bash scripts/prepare-mnema-cli-sidecar.sh debug` before any `apps/desktop/src-tauri` cargo command.
 - `rustfmt` on touched files only. Never a bare `cargo fmt`, which churns ~17 unrelated files.

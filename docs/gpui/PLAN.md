@@ -135,14 +135,14 @@ Plus screenshots of the window (light/dark), the panel and the tray menu, opened
 1. `apps/desktop/parity/`:
    - Add `@playwright/test` as an `apps/desktop` devDependency.
    - `tauri-stub.ts`: an `addInitScript` defining `__TAURI_INTERNALS__` (`invoke`, `transformCallback`, `convertFileSrc`, window label in `metadata`) and `__TAURI_EVENT_PLUGIN_INTERNALS__.unregisterListener`.
-   - Invoke reads a `command → JSON` map. Unmocked commands return `[]` for `list_*`, `false` for `has_pending*`, `null` only for `drain_*`, and `{}` otherwise. `/debug` needs `developerOptionsEnabled: true`.
+   - Invoke reads a `command → JSON` map. Unmocked commands return the empty value of their real Rust return type (`null` for Option, `[]` for Vec incl. `drain_*`, `false`, `0`, `""`), with name rules (`[]` for `list_*`, `false` for `has_pending*`, `{}` otherwise) only as the fallback. *(Built 2026-11-08: a fake `{}` for an Option-returning command shows phantom overlays.)* `/debug` needs `developerOptionsEnabled: true`.
    - The page clock is fixed with `page.clock.setFixedTime` at the fixture's "now".
 2. `apps/desktop/parity/shoot.ts <surface> <state> <theme>`:
    - Starts or reuses Vite on :1420.
    - Screenshots the route at a fixed viewport, and the mockup at `file://…/<page>.html?state=..&theme=..` (window element only).
    - Writes `target/parity/<surface>/<state>-<theme>/{tauri,mockup}.png`.
 3. `scripts/parity.sh <surface> [state] [theme]`:
-   - Runs `shoot.ts`, plus the GPUI side (`cargo test -p mnema-gpui --test visual -- <surface>` writes `gpui.png` to the same dir).
+   - Runs `shoot.ts`, plus the GPUI side: `PARITY_DIR=<dir> PARITY_STATE=<state> PARITY_THEME=<theme> cargo test -p mnema-gpui --test visual -- <surface>` must write `$PARITY_DIR/gpui.png`.
    - Composes `composite.png` with ImageMagick `montage` (or a 30-line Rust bin if it's missing).
 4. A surface → route → mockup page → states table in `apps/desktop/parity/surfaces.ts`, covering every surface in §3.6.
 5. **Until S1 lands the fixture dumper:** hand-written JSON maps for the shell only. S1 replaces them with generated ones.

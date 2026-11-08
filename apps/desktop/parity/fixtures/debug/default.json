@@ -1,0 +1,100 @@
+{
+ "get_recording_settings": {
+  "captureScreen": true,
+  "captureMicrophone": true,
+  "captureSystemAudio": true,
+  "segmentDurationSeconds": 300,
+  "screenFrameRate": 1.0,
+  "screenResolution": {
+   "mode": "preset",
+   "preset": "original"
+  },
+  "videoBitrate": {
+   "mode": "preset",
+   "preset": "medium",
+   "customMbps": null
+  },
+  "saveDirectory": "/Users/ana/.mnema",
+  "autoStart": true,
+  "developerOptionsEnabled": true,
+  "previewCacheTtlSeconds": 3600,
+  "followTimelineLive": false,
+  "retentionPolicy": "never",
+  "appearance": "system",
+  "timeFormat": "system",
+  "ocr": {
+   "enabled": true,
+   "provider": "apple_vision",
+   "modelId": null,
+   "language": null,
+   "recognitionMode": "fast",
+   "languageCorrection": false,
+   "tesseractPageSegmentationMode": "single_block",
+   "tesseractPreprocessMode": "grayscale",
+   "tesseractUpscaleFactor": 1,
+   "tesseractCharWhitelist": null
+  },
+  "transcription": {
+   "enabled": true,
+   "microphoneEnabled": true,
+   "systemAudioEnabled": false,
+   "provider": "local_whisper",
+   "modelId": "base",
+   "language": "auto",
+   "memoryMode": "balanced",
+   "idleUnloadSeconds": 300,
+   "chunkSeconds": 30
+  },
+  "speakerAnalysis": {
+   "separateSpeakers": false,
+   "recognizeSavedPeople": false,
+   "autoLabelOwner": true,
+   "provider": "speakrs",
+   "modelId": "pyannote-community-1-wespeaker",
+   "timeoutSeconds": 600
+  },
+  "audioSpeechDetection": {
+   "detector": "silero"
+  },
+  "metadata": {
+   "enabled": true,
+   "browserUrlMode": "sanitized"
+  },
+  "privacy": {
+   "excludedApps": [],
+   "filterSystemAudio": true
+  },
+  "access": {
+   "askAiEnabled": false,
+   "askAiMaxToolCalls": 12,
+   "askAiWebFetchEnabled": false,
+   "askAiModel": null,
+   "askAiModelProvider": null,
+   "quickRecallAutoAnswer": "localOnly"
+  },
+  "aiRuntime": {
+   "enabled": false,
+   "providers": [],
+   "defaultModel": null,
+   "mcpServers": [],
+   "favoriteModels": [],
+   "recentModels": []
+  },
+  "userContext": {
+   "enabled": false,
+   "derivationBudgetTier": "balanced",
+   "backfillWindowDays": 30,
+   "backfillGoDeeper": false
+  },
+  "semanticSearch": {
+   "enabled": true,
+   "provider": "local",
+   "modelId": "nomic-embed-text-v1.5"
+  },
+  "pauseCaptureOnInactivity": true,
+  "idleTimeoutSeconds": 10,
+  "microphoneActivitySensitivity": 50,
+  "systemAudioActivitySensitivity": 50,
+  "activityMode": "system_input_or_screen"
+ }
+}

@@ -1,0 +1,251 @@
+// Surface -> Svelte route -> mockup page -> states, for the parity harness (docs/gpui/PLAN.md P0).
+// Every surface in BUILD-PROMPT §3.6 and every window in §3.4. State names are the mockup's own
+// picker values (read from each page's state <select>), so `shoot.ts <surface> <state>` lines up
+// with `docs/mockups/redesign/<page>.html?state=<state>`.
+
+export interface Surface {
+  /** Svelte route the Tauri side loads (path, plus query when the route reads one). */
+  route: string;
+  /** Tauri window label the stub reports (`windows.rs` AppWindow labels). */
+  label: string;
+  /** Window size the Tauri side, the mockup and the GPUI golden all render at. */
+  viewport: { width: number; height: number };
+  /** Mockup file in docs/mockups/redesign/. */
+  page: string;
+  /** Element screenshotted on the mockup page (the window, not the fake desktop). */
+  selector: string;
+  /** Mockup page size when the window is drawn inside a bigger page (defaults to `viewport`). */
+  mockViewport?: { width: number; height: number };
+  /** Optional click on the Tauri side after load, for views the route can't address by URL. */
+  click?: string;
+  /** state -> mockup query string (without theme). */
+  states: Record<string, string>;
+}
+
+const MAIN = { width: 1280, height: 800 };
+const WIN = ".mx-window:visible";
+
+/** `{ id: "<param>=<id>" }` for each id; "" means the mockup's default (no param). */
+const q = (param: string, ids: string, extra = ""): Record<string, string> =>
+  Object.fromEntries(ids.split(/\s+/).filter(Boolean).map((id) => [id, [`${param}=${id}`, extra].filter(Boolean).join("&")]));
+
+const INSIGHTS_ANY = "loading engine-off engine-off-midday not-set-up needs-reconnect offline derivation-off new-user";
+const insights = (tab: string, label: string, ids: string): Surface => ({
+  route: "/insights",
+  label: "main",
+  viewport: MAIN,
+  page: `insights.html#${tab}`,
+  selector: WIN,
+  click: tab === "overview" ? undefined : `.in-bar button:has-text("${label}")`,
+  states: { default: "", ...q("state", `${INSIGHTS_ANY} ${ids}`) },
+});
+
+export const SURFACES: Record<string, Surface> = {
+  // Titlebar + status bar around the default surface. Fixtures: parity/fixtures/shell/*.json.
+  shell: {
+    route: "/",
+    label: "main",
+    viewport: MAIN,
+    page: "timeline.html",
+    selector: WIN,
+    states: { populated: "", empty: "state=first-run" },
+  },
+  // StatusPop (status-bar popover) states; the Tauri side shows the shell, the popover needs a click.
+  status: {
+    route: "/",
+    label: "main",
+    viewport: MAIN,
+    page: "status.html",
+    selector: WIN,
+    states: q("state", "ok catching-up display-asleep sysaudio-rebuild low-disk-soon engine-offline not-recording dev-on"),
+  },
+  // Timeline `/` incl. AudioDrawer (drawer-*), TimelineJumper (jump-*) and the bell (notifs-*).
+  timeline: {
+    route: "/",
+    label: "main",
+    viewport: MAIN,
+    page: "timeline.html",
+    selector: WIN,
+    states: q(
+      "state",
+      `default loading first-run starting load-error stale refreshing not-recording permission permission-helper
+       screen-off display-asleep landed loading-more end-of-history keys sb-off sb-permission readonly trial
+       sb-starting sb-idle-source paused-idle paused-user low-disk stopped privacy-retry privacy-restart
+       sysaudio-blocked sysaudio-reconnecting engine-setup engine-offline preview-decoding preview-failed
+       frame-missing frame-deleted menu-not-ready toast-copied toast-copy-failed ocr-running ocr-empty ocr-reused
+       ocr-missing ocr-error ocr-off ocr-unpositioned audio-loading audio-error audio-none drawer drawer-loading
+       drawer-processing drawer-waiting-network drawer-model-missing drawer-not-transcribed
+       drawer-transcription-off drawer-no-speech drawer-failed drawer-rerun-failed drawer-playback-error
+       speakers-running speakers-failed speakers-none speakers-off recognition-off repair repair-saving
+       repair-error repair-no-people jump jump-loading jump-empty-day jump-error jump-no-frame notifs
+       notifs-warn notifs-empty notifs-error`,
+    ),
+  },
+  "insights-overview": insights(
+    "overview",
+    "Overview",
+    "digest-writing rereading digest-failed too-few empty-range load-error nothing-changed",
+  ),
+  "insights-journal": insights(
+    "journal",
+    "Journal",
+    "digest-writing too-few being-written nothing-captured load-error receipt-loading receipt-audio receipt-expired receipt-no-speech",
+  ),
+  "insights-subjects": insights(
+    "subjects",
+    "Subjects",
+    "none-yet sparse no-match updated load-error detail detail-loading detail-empty detail-error",
+  ),
+  "insights-context": insights("context", "Context", "empty load-error adding add-error over-cap"),
+  chat: {
+    route: "/chat",
+    label: "main",
+    viewport: MAIN,
+    page: "chat.html",
+    selector: WIN,
+    states: {
+      default: "",
+      ...q(
+        "state",
+        `thread thinking tools writing reattach stopped interrupted regenerate copied source-gone error rate-limited
+         context-overflow empty-answer needs-reconnect offline local-down not-set-up ai-off models-loading
+         models-failed models-none scope history-loading history-empty history-error search-empty rename deleted
+         convo-loading convo-error missing`,
+      ),
+    },
+  },
+  // The mockup opens on Capture; `?tab=capture` lands the route there too.
+  settings: {
+    route: "/settings?tab=capture",
+    label: "main",
+    viewport: MAIN,
+    page: "settings.html",
+    selector: WIN,
+    states: {
+      default: "",
+      ...q(
+        "state",
+        `save-failed validation shortcuts-loading shortcut-listening shortcut-conflict capture-loading
+         sysaudio-blocked vad-off res-checking res-original-only bitrate-invalid mic-loading mic-failed mic-none
+         excl-empty excl-recommended gecko-denied ai-not-ready no-providers key-saving key-rejected ollama-down
+         chatgpt-signin chatgpt-reconnect chatgpt-unreachable mcp-empty mcp-authorizing mcp-reconnect mcp-failed
+         askai-unavailable uc-backfill uc-paused ocr-downloading ocr-failed ocr-missing stt-downloading stt-failed
+         stt-missing apple-denied deepgram-rejected deepgram-unavailable spk-downloading voice-none voice-recording
+         voice-review voice-checking voice-rejected voice-saved sem-downloading sem-failed sem-reindex
+         storage-resolving storage-failed storage-restart cleanup-running cleanup-done cleanup-failed cli-missing
+         cli-path cli-installing cli-failed access-loading access-error access-empty lic-checking lic-trial-ready
+         lic-trial lic-readonly lic-revoked lic-pending lic-lapsed lic-devicelimit lic-outofwindow
+         lic-refresh-failed lic-key-invalid lic-activating lic-activated upd-checking upd-available
+         upd-downloading upd-restart upd-failed upd-incompatible upd-outofwindow`,
+      ),
+    },
+  },
+  // NSPanel window; the mockup draws it over a fake desktop, so shoot the panel only.
+  "quick-recall": {
+    route: "/quick-recall",
+    label: "quick-recall",
+    viewport: { width: 800, height: 700 },
+    page: "recall.html",
+    selector: "#rc",
+    mockViewport: MAIN,
+    states: {
+      idle: "",
+      ...q(
+        "state",
+        `recent results first-run loading indexing semantic-off semantic-building error parse-error no-results
+         audio-pending capture-off look look-missing gate ask-streaming ask ask-stopped ask-error ask-no-provider
+         ask-off ask-reconnect ask-unreachable ask-offline closed`,
+      ),
+    },
+  },
+  // `?state=` presets, plus the plain steps (`?step=`, with `&perm` / `&folder` where the step reads them).
+  onboarding: {
+    route: "/onboarding",
+    label: "onboarding",
+    viewport: { width: 1120, height: 800 },
+    page: "onboarding.html",
+    selector: "#ob-win",
+    states: {
+      ...q("step", "welcome permissions capture settings change setup voice finale"),
+      "permissions-mic-denied": "step=permissions&perm=mic-denied",
+      "permissions-sysaudio": "step=permissions&perm=sysaudio",
+      "permissions-done": "step=permissions&perm=done",
+      "capture-work": "step=capture&folder=work",
+      "capture-archive": "step=capture&folder=archive",
+      "capture-offline": "step=capture&folder=offline",
+      "capture-tiny": "step=capture&folder=tiny",
+      ...q(
+        "state",
+        `perm-ask perm-denied perm-prior perm-helper perm-relaunch perm-resumed perm-mic-denied perm-sys-listening
+         perm-sys-blocked perm-done storage-ok storage-tight storage-readonly storage-offline storage-full settings
+         settings-denied change-ai-unready change-undo ai-held ai-verifying ai-invalid ai-none ai-empty ai-ready
+         setup setup-held setup-failed setup-offline setup-nospace setup-cancelled setup-done voice-waiting
+         voice-off voice-ready voice-busy voice-quiet voice-rejected voice-multi voice-saved finale-starting
+         finale-running finale-downloads finale-dl-failed finale-idle finale-audio-only finale-helper
+         finale-failed`,
+      ),
+    },
+  },
+  // cli-access-request window; access.html switches on `?view=`, not `?state=`.
+  access: {
+    route: "/access/request",
+    label: "cli-access-request",
+    viewport: { width: 520, height: 600 },
+    page: "access.html",
+    mockViewport: MAIN,
+    selector: WIN,
+    states: q(
+      "view",
+      "request unnamed widen submitting submit-failed expired blocked loading load-failed no-request manage manage-loading manage-error empty cli-missing",
+    ),
+  },
+  update: {
+    route: "/update",
+    label: "update",
+    viewport: { width: 480, height: 520 },
+    page: "update.html",
+    selector: "#up-win",
+    mockViewport: MAIN,
+    states: q(
+      "state",
+      "available checking uptodate check-failed downloading download-failed installing install-failed ready incompatible expired",
+    ),
+  },
+  // Floating helper; drawn inside timeline.html's permission-helper state.
+  "permission-helper": {
+    route: "/permission-helper",
+    label: "permission-helper",
+    viewport: { width: 460, height: 62 },
+    page: "timeline.html",
+    selector: "#tl-helper",
+    mockViewport: MAIN,
+    states: { waiting: "state=permission-helper" },
+  },
+  // Developer window (gated on developerOptionsEnabled); `mini` is the 300x120 always-on-top mode.
+  debug: {
+    route: "/debug",
+    label: "debug",
+    viewport: { width: 520, height: 640 },
+    page: "developer.html",
+    selector: "#dv-win",
+    mockViewport: MAIN,
+    states: q("state", "overview-ok overview-issues pipeline processor job capture capture-asleep ai logs not-recording"),
+  },
+  "debug-mini": {
+    route: "/debug",
+    label: "debug",
+    viewport: { width: 300, height: 120 },
+    page: "developer.html",
+    selector: "#dv-mini",
+    mockViewport: MAIN,
+    click: 'button[aria-label="Mini mode"]',
+    states: { mini: "state=mini" },
+  },
+};
+
+/** Mockup URL for a surface state and theme. */
+export function mockupUrl(root: string, s: Surface, state: string, theme: string): string {
+  const [file, hash] = s.page.split("#");
+  const query = [s.states[state], `theme=${theme}`].filter(Boolean).join("&");
+  return `file://${root}/docs/mockups/redesign/${file}?${query}${hash ? `#${hash}` : ""}`;
+}
