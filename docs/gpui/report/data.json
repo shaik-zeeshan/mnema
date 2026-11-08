@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-09 04:10",
+  "updated": "2026-11-09 03:05",
   "verdict": "About half done. The whole recording engine and Ask AI now run on the shared backend (~80% of the backend moved). Five of eight screens are built; the startup/shutdown move and the small windows are running.",
   "metrics": [
     {
@@ -9,8 +9,8 @@
     },
     {
       "label": "Backend moved",
-      "value": "~80%",
-      "note": "the Tauri app keeps only window/tray/plugin glue"
+      "value": "~90%",
+      "note": "the Tauri app is down from ~104k to ~9.5k Rust lines"
     },
     {
       "label": "Screens built",
@@ -23,9 +23,9 @@
       "note": "1,284 shared + 91 Tauri + 129 GPUI, 0 failing"
     },
     {
-      "label": "Screenshots",
-      "value": "32 ✓ · 76 waiting",
-      "note": "Timeline 10, Chat 10, Settings 24, Insights 20 new; shell 12 changed"
+      "label": "Screenshots approved",
+      "value": "108",
+      "note": "shell, controls, Timeline, Chat, Settings, Insights"
     }
   ],
   "bars": [
@@ -35,7 +35,7 @@
     },
     {
       "label": "Backend move (S1–S4)",
-      "pct": 80
+      "pct": 90
     },
     {
       "label": "Native layer (S7)",
@@ -242,7 +242,8 @@
     "Pin stable Rust (1.99.1).",
     "Solid tinted surfaces instead of in-window blur (titlebar, popovers).",
     "The titlebar section icons may stay the app's own drawings.",
-    "12 shell and 20 control screenshots approved after viewing."
+    "12 shell and 20 control screenshots approved after viewing.",
+    "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09)."
   ],
   "risks": [
     "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -251,7 +252,7 @@
   ],
   "shots": [
     {
-      "title": "Timeline — new, waiting for sign-off",
+      "title": "Timeline — approved",
       "note": "5 states × dark/light.",
       "files": [
         "timeline-populated",
@@ -262,7 +263,7 @@
       ]
     },
     {
-      "title": "Chat — new, waiting for sign-off",
+      "title": "Chat — approved",
       "note": "5 states × dark/light.",
       "files": [
         "chat-empty",
@@ -273,7 +274,7 @@
       ]
     },
     {
-      "title": "Settings — new, waiting for sign-off",
+      "title": "Settings — approved",
       "note": "12 sections × dark/light.",
       "files": [
         "settings-general",
@@ -291,7 +292,7 @@
       ]
     },
     {
-      "title": "Insights — new, waiting for sign-off",
+      "title": "Insights — approved",
       "note": "Every tab, empty and populated, plus a subject page and an open receipt; dark/light.",
       "files": [
         "insights-overview",
@@ -307,7 +308,7 @@
       ]
     },
     {
-      "title": "Main window — changed, waiting for re-sign-off",
+      "title": "Main window — approved",
       "note": "Now shows the real Timeline instead of a placeholder.",
       "files": [
         "shell-populated",
