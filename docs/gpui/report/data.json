@@ -1,6 +1,6 @@
 {
-  "updated": "2026-11-08 20:35",
-  "verdict": "Paused. About a third done: Timeline and Chat are built (screenshots waiting for your sign-off), the main window and all shared controls are approved, and the backend move's first stage (S2) is complete. Recording-engine move, Settings and Insights were in progress and are saved to resume.",
+  "updated": "2026-11-08 23:25",
+  "verdict": "About a third done: Timeline and Chat are built (screenshots waiting for your sign-off), the main window and all shared controls are approved, and the backend move's first stage (S2) is complete. Recording-engine move, Settings and Insights are in progress; two agents at a time.",
   "metrics": [
     {
       "label": "Overall",
@@ -56,9 +56,14 @@
   ],
   "now": [
     {
-      "id": "Paused",
-      "title": "Work paused at your request",
-      "detail": "Recording-engine move part 1, Settings and Insights stopped mid-way when the usage limit hit; their work is saved and will resume when you say so."
+      "id": "S3a",
+      "title": "Recording engine move — part 1 of 4",
+      "detail": "Capture metadata, activity, capture health, system audio, microphone (+ away), privacy filter."
+    },
+    {
+      "id": "S13",
+      "title": "Settings screen",
+      "detail": "Rail with search, save status, scroll-spy, all 20 sections, the autosave engine with timing tests."
     }
   ],
   "done": [
