@@ -439,7 +439,7 @@ pub(crate) fn capture_health_snapshot(
 
     let root = recordings_root.or_else(|| {
         app_handle
-            .try_state::<crate::app_infra::AppInfraState>()
+            .try_state::<app_core::AppInfraState>()
             .map(|infra| infra.base_dir().to_path_buf())
     });
     dto.disk.free_bytes = root.and_then(|root| {

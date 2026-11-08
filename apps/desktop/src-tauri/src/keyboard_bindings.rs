@@ -886,7 +886,7 @@ fn load_settings_from_disk(app: &tauri::AppHandle) -> KeyboardBindingsSettings {
         .unwrap_or_else(KeyboardBindingsSettings::defaults);
 
     if let Err(error) = persist_settings(app, &settings) {
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "failed to persist keyboard bindings defaults: {error}"
         ));
     }
@@ -1031,7 +1031,7 @@ fn refresh_global_shortcuts(
 
     for shortcut in previous {
         if let Err(error) = app.global_shortcut().unregister(shortcut.as_str()) {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to unregister global shortcut '{shortcut}': {error}"
             ));
         }
@@ -1049,7 +1049,7 @@ fn refresh_global_shortcuts(
         // Best-effort: a failure registering one shortcut is logged/collected but
         // does not abort registration of the remaining shortcuts.
         if let Err(error) = app.global_shortcut().register(entry.shortcut) {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to register global shortcut '{shortcut_string}': {error}"
             ));
             failures.push(entry.display_label());
@@ -1092,7 +1092,7 @@ pub(crate) fn handle_global_shortcut(
         }
         Some(GlobalShortcutAction::ToggleQuickRecall) => {
             if let Err(error) = crate::windows::toggle_quick_recall_window(app) {
-                crate::native_capture::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "global shortcut failed to toggle quick recall: {error}"
                 ));
             }
@@ -1117,7 +1117,7 @@ fn handle_toggle_recording(app: &tauri::AppHandle) {
         };
 
         if let Err(error) = result {
-            crate::native_capture::debug_log::log_error(format!(
+            app_core::debug_log::log_error(format!(
                 "global shortcut failed to toggle recording: [{}] {}",
                 error.code, error.message
             ));
@@ -1139,7 +1139,7 @@ fn handle_pause_resume_recording(app: &tauri::AppHandle) {
         };
 
         if let Err(error) = result {
-            crate::native_capture::debug_log::log_error(format!(
+            app_core::debug_log::log_error(format!(
                 "global shortcut failed to pause/resume recording: [{}] {}",
                 error.code, error.message
             ));
@@ -1153,9 +1153,7 @@ fn warn_registration_failure(app: &tauri::AppHandle, failures: &[String]) {
     }
 
     let names = failures.join(", ");
-    crate::native_capture::debug_log::log_warn(format!(
-        "global shortcut registration failed: {names}"
-    ));
+    app_core::debug_log::log_warn(format!("global shortcut registration failed: {names}"));
 
     let plural = failures.len() > 1;
     let body = format!(

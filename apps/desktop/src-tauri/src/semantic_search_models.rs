@@ -26,7 +26,7 @@ use semantic_search::{
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
-use crate::native_capture::debug_log::{log, log_error, log_info, log_warn};
+use app_core::debug_log::{log, log_error, log_info, log_warn};
 
 /// The frontend event the Settings UI listens on for live download progress.
 /// The bytes/percent in each payload come from the streaming HTTP download of the
@@ -548,8 +548,8 @@ fn select_model_lock() -> &'static tokio::sync::Mutex<()> {
 pub async fn select_semantic_search_model(
     model_id: String,
     app_handle: tauri::AppHandle,
-    infra: tauri::State<'_, crate::app_infra::AppInfraState>,
-    settings_state: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+    infra: tauri::State<'_, app_core::AppInfraState>,
+    settings_state: tauri::State<'_, app_core::recording_settings::RecordingSettingsState>,
 ) -> Result<u64, String> {
     // Serialize the whole rebuild+persist against any concurrent switch, so two
     // invocations cannot interleave recreate + persist and leave the table
@@ -613,18 +613,18 @@ pub async fn select_semantic_search_model(
     match infra.semantic_search().live_vector_model().await {
         Ok(Some(live)) if live == expected_epoch => {}
         Ok(other) => {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "semantic search model switch to '{model_id}': the live vec0 table is stamped {other:?}, NOT the selected model, after rebuild+persist (half-applied switch — startup reconciliation will re-align it; search stays keyword-only until then)"
             ));
         }
         Err(error) => {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "semantic search model switch to '{model_id}': could not read the live vec0 model stamp to confirm it matches the selection after rebuild+persist: {error}"
             ));
         }
     }
 
-    crate::native_capture::debug_log::log_info(format!(
+    app_core::debug_log::log_info(format!(
         "semantic search model switched to '{model_id}': rebuilt vector table at {dimension} dims, discarded {cleared} vector(s); the backfill worker will re-derive every anchor under the new model"
     ));
     Ok(cleared)
@@ -718,7 +718,7 @@ fn reconcile_expected_model(
 /// stands once no switch can be in flight. Passing a value read on the caller's side
 /// would reopen the check-then-act window the lock closes.
 pub(crate) async fn reconcile_semantic_search_index_on_startup(
-    infra: &crate::app_infra::AppInfraState,
+    infra: &app_core::AppInfraState,
     read_settings: impl Fn() -> capture_types::SemanticSearchSettings,
 ) {
     // Serialize against a Settings model switch. `select_semantic_search_model` holds
@@ -743,7 +743,7 @@ pub(crate) async fn reconcile_semantic_search_index_on_startup(
     let settings = read_settings();
 
     let Some((expected_model_id, expected_dimension)) = reconcile_expected_model(&settings) else {
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "semantic search startup reconciliation skipped: selected model '{}' (provider '{}') does not resolve to a known descriptor; leaving the existing vec0 table untouched rather than wiping it to the {DEFAULT_SEMANTIC_SEARCH_DIMENSION}-dim default (catalog/config drift)",
             settings.model_id.as_deref().unwrap_or("<none>"),
             settings.provider
@@ -755,14 +755,14 @@ pub(crate) async fn reconcile_semantic_search_index_on_startup(
         .reconcile_vectors_table(&expected_model_id, expected_dimension)
         .await
     {
-        Ok(Some(discarded)) => crate::native_capture::debug_log::log_info(format!(
+        Ok(Some(discarded)) => app_core::debug_log::log_info(format!(
             "semantic search startup reconciliation: the live vec0 table disagreed with the selected model; rebuilt it for '{expected_model_id}' at {expected_dimension} dims (discarded {discarded} stale vector(s)); the backfill worker will re-derive every anchor"
         )),
         Ok(None) => {
             // The common case: the table already matches the selected model. No log
             // so a default/Anthropic-only user sees nothing on every launch.
         }
-        Err(error) => crate::native_capture::debug_log::log_warn(format!(
+        Err(error) => app_core::debug_log::log_warn(format!(
             "semantic search startup reconciliation failed to read/rebuild the vec0 table (search stays keyword-only until it succeeds): {error}"
         )),
     }
@@ -1326,8 +1326,8 @@ async fn run_model_download_task(
     // already gated on `selected_model_available`, and it never burns failure attempts), so this
     // lock currently protects nothing. It is taken anyway so the four downloads behave alike the
     // day semantic search grows a job — drop it if that day never comes.
-    let download_lock = crate::app_infra::acquire_model_download_lock(
-        &app_handle,
+    let download_lock = app_core::model_download_lock::acquire_model_download_lock(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
         SEMANTIC_SEARCH_MODEL_LOCK_PROCESSOR,
         format!("{}/{}", plan.provider, plan.model_id),
     )
@@ -2403,7 +2403,7 @@ mod tests {
     fn startup_reconciliation_reads_the_selection_after_taking_the_switch_lock() {
         run_async_test(async {
             let dir = tempfile::tempdir().expect("tempdir");
-            let infra: crate::app_infra::AppInfraState = std::sync::Arc::new(
+            let infra: app_core::AppInfraState = std::sync::Arc::new(
                 ::app_infra::AppInfra::initialize(dir.path())
                     .await
                     .expect("infra should initialize"),

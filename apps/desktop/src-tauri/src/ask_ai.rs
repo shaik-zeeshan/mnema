@@ -38,7 +38,7 @@ use capture_types::{AiRuntimeSettings, AskAiScope, TurnSnapshot, TurnUpdate, Tur
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager};
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 use crate::ask_ai::answer_view::AnswerView;
 use crate::conversation::commands::CONVERSATION_CHANGED_EVENT;
 

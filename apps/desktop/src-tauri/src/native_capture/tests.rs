@@ -51,7 +51,7 @@ use super::segments::{
     flush_frame_artifacts, next_emitted_segment_index, try_forward_frame_artifact,
     FrameArtifactEnvelope, FrameArtifactForwardingResult, FrameArtifactMessage,
 };
-use super::settings::{
+use app_core::recording_settings::{
     compute_effective_screen_bitrate_bps, validate_recording_settings,
     validate_recording_settings_with_resolution_support,
 };

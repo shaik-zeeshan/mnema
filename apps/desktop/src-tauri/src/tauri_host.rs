@@ -15,8 +15,8 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::oneshot;
 
-use crate::native_capture::debug_log::{log, log_warn};
 use crate::{status_bar, windows};
+use app_core::debug_log::{log, log_warn};
 
 /// Built before the Tauri app exists (the runtime must be set first), so the
 /// handle arrives in `setup` via [`TauriHost::attach`].

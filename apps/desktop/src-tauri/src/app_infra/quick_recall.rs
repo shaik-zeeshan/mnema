@@ -5,8 +5,8 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use super::AppInfraState;
 use crate::semantic_search_query::SemanticQueryEmbedderState;
+use app_core::AppInfraState;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]

@@ -10,7 +10,7 @@
 use tauri::Manager;
 
 use super::{adapter, ensure_first_seen, is_key_revoked, load_effective_crl, now_ms};
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 use crate::licensing::ActivationHint;
 
 fn set_over_cap_hint(app_handle: &tauri::AppHandle, reset_url: String, buy_url: String) {

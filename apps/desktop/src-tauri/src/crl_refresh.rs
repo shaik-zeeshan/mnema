@@ -11,9 +11,9 @@
 
 use tauri::Manager;
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 use crate::licensing::adapter;
-use crate::native_capture::debug_log;
+use app_core::debug_log;
 
 /// CI-baked fresh-install floor: release CI fetches the live prod CRL
 /// (`https://license.mnema.day/v1/crl/mnema`) and exports the signed wire as

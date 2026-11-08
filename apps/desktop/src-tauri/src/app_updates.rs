@@ -545,7 +545,7 @@ fn app_update_error_from_updater_error(
 ) -> AppUpdateError {
     let kind = map_update_error_kind(&error);
     let message = user_facing_error_message(kind).to_string();
-    native_capture::debug_log::log_warn(format!(
+    app_core::debug_log::log_warn(format!(
         "app update {context} failed: kind={kind:?}; error={error}"
     ));
     AppUpdateError::new(kind, message)
@@ -596,7 +596,7 @@ fn push_update_available_notification(app_handle: &tauri::AppHandle, update: &Ap
 /// die when the process does — only our own window does.
 fn prompt_update_available(app_handle: &tauri::AppHandle) {
     if let Err(error) = windows::open_update_window(app_handle) {
-        native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "failed to open the update window for an available update: {error}"
         ));
     }
@@ -835,7 +835,7 @@ async fn run_update_check(
                     // the window every tick.
                     match persist_settings(app_handle, settings_state.inner(), next) {
                         Ok(_) => prompt_update_available(app_handle),
-                        Err(error) => native_capture::debug_log::log_warn(format!(
+                        Err(error) => app_core::debug_log::log_warn(format!(
                             "skipped the out-of-window update notice: {error}"
                         )),
                     }
@@ -930,7 +930,7 @@ pub fn initialize(app_handle: &tauri::AppHandle) {
         app_handle,
         app_handle.state::<AppUpdateSettingsState>().inner(),
     );
-    native_capture::debug_log::log_info(format!(
+    app_core::debug_log::log_info(format!(
         "loaded app update settings (channel={:?}, endpoint={})",
         settings.channel,
         settings.channel.endpoint()
@@ -1015,7 +1015,7 @@ async fn stop_capture_before_install(app_handle: &tauri::AppHandle) {
     if !capture_session_needs_stop_before_install(&session) {
         return;
     }
-    native_capture::debug_log::log_info("stopping capture to install an app update");
+    app_core::debug_log::log_info("stopping capture to install an app update");
     let stop_app_handle = app_handle.clone();
     match tauri::async_runtime::spawn_blocking(move || {
         native_capture::stop_native_capture_from_app_handle(&stop_app_handle)
@@ -1026,10 +1026,10 @@ async fn stop_capture_before_install(app_handle: &tauri::AppHandle) {
         // Best-effort: a failed stop must not strand an already-downloaded
         // update. The install proceeds; the restart's graceful exit gets
         // another chance to finalize capture.
-        Ok(Err(error)) => native_capture::debug_log::log_warn(format!(
+        Ok(Err(error)) => app_core::debug_log::log_warn(format!(
             "stopping capture before update install failed: {error:?}"
         )),
-        Err(error) => native_capture::debug_log::log_warn(format!(
+        Err(error) => app_core::debug_log::log_warn(format!(
             "stopping capture before update install panicked: {error}"
         )),
     }

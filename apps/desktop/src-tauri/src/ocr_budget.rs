@@ -53,7 +53,7 @@ macro_rules! ocr_budget_trace {
     ($($arg:tt)*) => {{
         #[cfg(feature = "ocr-budget-trace")]
         {
-            crate::native_capture::debug_log::log(format!($($arg)*));
+            app_core::debug_log::log(format!($($arg)*));
         }
     }};
 }

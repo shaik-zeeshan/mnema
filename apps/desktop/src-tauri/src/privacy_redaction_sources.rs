@@ -79,7 +79,7 @@ mod tests {
     // into that same row — same source id, same enabled state, no second row.
     #[test]
     fn pending_rule_resolves_in_place_on_first_sighting_of_a_matching_name() {
-        let mut settings = crate::native_capture::settings::default_recording_settings();
+        let mut settings = app_core::recording_settings::default_recording_settings();
 
         upsert_privacy_excluded_app(&mut settings, "", " Figma ", false)
             .expect("a name-only rule is allowed");
@@ -113,7 +113,7 @@ mod tests {
 
     #[test]
     fn pending_rule_requires_a_display_name() {
-        let mut settings = crate::native_capture::settings::default_recording_settings();
+        let mut settings = app_core::recording_settings::default_recording_settings();
 
         let error = upsert_privacy_excluded_app(&mut settings, "", "  ", false)
             .expect_err("a rule with neither a bundle id nor a name is not a rule");
@@ -124,7 +124,7 @@ mod tests {
 
     #[test]
     fn resolved_rules_still_match_on_bundle_id_not_display_name() {
-        let mut settings = crate::native_capture::settings::default_recording_settings();
+        let mut settings = app_core::recording_settings::default_recording_settings();
 
         upsert_privacy_excluded_app(&mut settings, "com.example.One", "Notes", false)
             .expect("first rule");
@@ -173,14 +173,14 @@ fn upsert_privacy_excluded_app(
     display_name: &str,
     enable_existing: bool,
 ) -> Result<(), CaptureErrorResponse> {
-    let bundle_id = crate::native_capture::settings::canonicalize_app_bundle_id(bundle_id);
+    let bundle_id = app_core::recording_settings::canonicalize_app_bundle_id(bundle_id);
     let display_name = display_name.trim().to_string();
     if display_name.is_empty() {
         return Err(err("invalid_privacy_rule", "App display name is required"));
     }
     let same_name = |app: &capture_metadata::ExcludedAppEntry| {
-        crate::native_capture::settings::canonicalize_app_display_name(&app.display_name)
-            == crate::native_capture::settings::canonicalize_app_display_name(&display_name)
+        app_core::recording_settings::canonicalize_app_display_name(&app.display_name)
+            == app_core::recording_settings::canonicalize_app_display_name(&display_name)
     };
 
     // A name-only rule matches on the name; a real bundle id matches on the id
@@ -189,7 +189,7 @@ fn upsert_privacy_excluded_app(
         if bundle_id.is_empty() {
             same_name(app)
         } else {
-            crate::native_capture::settings::canonicalize_app_bundle_id(&app.bundle_id) == bundle_id
+            app_core::recording_settings::canonicalize_app_bundle_id(&app.bundle_id) == bundle_id
                 || (app.bundle_id.trim().is_empty() && same_name(app))
         }
     });

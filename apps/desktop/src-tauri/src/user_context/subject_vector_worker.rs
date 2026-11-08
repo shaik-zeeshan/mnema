@@ -48,7 +48,8 @@ use semantic_search::{EmbedKind, SemanticSearchModelDescriptor};
 use tauri::Manager;
 use tokio::sync::watch;
 
-use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
+use app_core::AppInfraState;
+use crate::app_infra::{shutdown_aware_sleep, BackgroundWorkersState};
 use crate::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
     selected_model_available, LoadedEmbedder,
@@ -244,7 +245,7 @@ pub fn spawn_user_context_subject_vector_worker(
     background_workers: BackgroundWorkersState,
 ) {
     let mut shutdown_rx = background_workers.subscribe();
-    crate::native_capture::debug_log::log_info(format!(
+    app_core::debug_log::log_info(format!(
         "starting user-context subject vector worker (batch={}, idle_poll_ms={}, error_retry_ms={})",
         SWEEP_BATCH_SIZE,
         IDLE_POLL_INTERVAL.as_millis(),
@@ -285,7 +286,7 @@ pub fn spawn_user_context_subject_vector_worker(
             }
         }
 
-        crate::native_capture::debug_log::log_info("stopped user-context subject vector worker");
+        app_core::debug_log::log_info("stopped user-context subject vector worker");
     });
     background_workers.track(handle);
 }
@@ -305,7 +306,7 @@ async fn run_sweep_pass(
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(dir) => dir,
         Err(error) => {
-            crate::native_capture::debug_log::log_error(format!(
+            app_core::debug_log::log_error(format!(
                 "subject vector backfill could not resolve app data dir: {error}"
             ));
             return SweepPass::Error;
@@ -320,7 +321,7 @@ async fn run_sweep_pass(
         state.consecutive_load_failures = 0;
         state.load_failed_latch = None;
         if !state.logged_no_model {
-            crate::native_capture::debug_log::log(
+            app_core::debug_log::log(
                 "subject vector backfill skipped: no Semantic Search Model installed (silent no-op)",
             );
             state.logged_no_model = true;
@@ -358,7 +359,7 @@ async fn run_sweep_pass(
     {
         Ok(subjects) => subjects,
         Err(error) => {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "subject vector backfill failed to list subjects without a vector: {error}"
             ));
             return SweepPass::Error;
@@ -396,7 +397,7 @@ async fn run_sweep_pass(
                 texts.push((subject, text));
             }
             Err(error) => {
-                crate::native_capture::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "subject vector backfill failed to read a canonical statement: {error}"
                 ));
             }
@@ -467,7 +468,7 @@ async fn run_sweep_pass(
         Either::Left((join_result, _)) => match join_result {
             Ok(load_embed) => load_embed,
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                app_core::debug_log::log_error(format!(
                     "subject vector backfill embed task panicked/cancelled: {error}"
                 ));
                 // A `spawn_blocking` join `Err` is a candle panic that bypasses the
@@ -493,12 +494,12 @@ async fn run_sweep_pass(
         }
         Err(error) => {
             state.consecutive_load_failures = state.consecutive_load_failures.saturating_add(1);
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "subject vector backfill failed to load model '{}/{}' (consecutive load failures: {}): {error}",
                 descriptor.provider, descriptor.model_id, state.consecutive_load_failures
             ));
             if state.consecutive_load_failures >= MAX_CONSECUTIVE_LOAD_FAILURES {
-                crate::native_capture::debug_log::log_error(format!(
+                app_core::debug_log::log_error(format!(
                     "subject vector backfill giving up on loading model '{}/{}' after {MAX_CONSECUTIVE_LOAD_FAILURES} consecutive failures; idling until the selection changes (the search backfill owns the reinstall signal for this model)",
                     descriptor.provider, descriptor.model_id
                 ));
@@ -514,7 +515,7 @@ async fn run_sweep_pass(
     // never goes idle) still lets candle's Metal buffer pool go back to the OS.
     // See `semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME`.
     if loaded.is_stale() {
-        crate::native_capture::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "subject vector backfill recycled the embedder after {}s warm \
              (bounds candle's Metal buffer pool; reloads on next batch)",
             loaded.loaded_at.elapsed().as_secs()
@@ -537,14 +538,14 @@ async fn run_sweep_pass(
                 // non-finite input is eventually quarantined rather than retried
                 // forever.
                 if vector.iter().any(|component| !component.is_finite()) {
-                    crate::native_capture::debug_log::log_warn(format!(
+                    app_core::debug_log::log_warn(format!(
                         "subject vector backfill produced a non-finite component; skipping the subject"
                     ));
                     embed_failures += 1;
                     let (failures, now_quarantined) = state.record_subject_failure(&subject);
                     if now_quarantined {
                         quarantined += 1;
-                        crate::native_capture::debug_log::log_error(format!(
+                        app_core::debug_log::log_error(format!(
                             "subject vector backfill quarantined a subject after {failures} consecutive failures (excluded until content change/restart)"
                         ));
                     }
@@ -561,7 +562,7 @@ async fn run_sweep_pass(
                     }
                     Err(error) => {
                         transient_errors += 1;
-                        crate::native_capture::debug_log::log_warn(format!(
+                        app_core::debug_log::log_warn(format!(
                             "subject vector backfill failed to store a subject vector: {error}"
                         ));
                     }
@@ -574,11 +575,11 @@ async fn run_sweep_pass(
                 let (failures, now_quarantined) = state.record_subject_failure(&subject);
                 if now_quarantined {
                     quarantined += 1;
-                    crate::native_capture::debug_log::log_error(format!(
+                    app_core::debug_log::log_error(format!(
                         "subject vector backfill quarantined a subject after {failures} consecutive embed failures (excluded until content change/restart); last error: {error}"
                     ));
                 } else {
-                    crate::native_capture::debug_log::log_warn(format!(
+                    app_core::debug_log::log_warn(format!(
                         "subject vector backfill failed to embed a subject (failure {failures}/{MAX_CONSECUTIVE_SUBJECT_FAILURES}): {error}"
                     ));
                 }
@@ -587,7 +588,7 @@ async fn run_sweep_pass(
     }
 
     if stored > 0 {
-        crate::native_capture::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "subject vector backfill embedded {stored} subject(s) (batch={}, embed_failures={embed_failures}, quarantined={quarantined}, transient_errors={transient_errors})",
             texts.len()
         ));
@@ -660,7 +661,7 @@ fn maybe_release_embedder_on_idle_decay(state: &mut SweepState, reason: &str) {
     state.consecutive_idles = state.consecutive_idles.saturating_add(1);
     if state.consecutive_idles >= IDLE_PASSES_BEFORE_EMBEDDER_DROP && state.embedder.is_some() {
         state.embedder = None;
-        crate::native_capture::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "subject vector backfill released the embedder after {} {reason} passes (model weights returned to the OS; reloads on next subject)",
             state.consecutive_idles
         ));

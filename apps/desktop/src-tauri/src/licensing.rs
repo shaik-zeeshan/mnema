@@ -33,7 +33,7 @@ use capture_types::{ActivateLicenseResult, Activation, LicenseStatus};
 use sqlx::SqlitePool;
 use tauri::{Emitter, Manager};
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 
 /// Event emitted after every status recompute. Payload is the `LicenseStatus`
 /// (the camelCase tagged shape mirrored in `apps/desktop/src/lib/licensing.ts`).
@@ -317,7 +317,7 @@ fn ensure_first_seen(license_id: &str, guarded_now_ms: i64) {
 /// synchronously. Computes, caches, and emits the status.
 pub fn run_license_gate(app_handle: &tauri::AppHandle) {
     let Some(infra) = app_handle.try_state::<AppInfraState>() else {
-        crate::native_capture::debug_log::log_error(
+        app_core::debug_log::log_error(
             "app infrastructure state was not initialized; skipping license gate",
         );
         return;
@@ -330,10 +330,10 @@ pub fn run_license_gate(app_handle: &tauri::AppHandle) {
     #[cfg(debug_assertions)]
     if std::env::var_os("MNEMA_TRIAL_RESET").is_some() {
         match app_infra::clear_trial_issuance() {
-            Ok(()) => crate::native_capture::debug_log::log_info(
+            Ok(()) => app_core::debug_log::log_info(
                 "MNEMA_TRIAL_RESET: cleared the trial-issuance stamp (stored keys untouched)",
             ),
-            Err(error) => crate::native_capture::debug_log::log_error(format!(
+            Err(error) => app_core::debug_log::log_error(format!(
                 "MNEMA_TRIAL_RESET: could not clear the trial-issuance stamp: {error}"
             )),
         }
@@ -344,7 +344,7 @@ pub fn run_license_gate(app_handle: &tauri::AppHandle) {
         app_handle,
         now_ms(),
     ));
-    crate::native_capture::debug_log::log_info(format!(
+    app_core::debug_log::log_info(format!(
         "license gate computed status: {}",
         status_label(&status)
     ));

@@ -8,7 +8,7 @@
 
 use capture_types::UsageChartsResponse;
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 
 /// Returns the engine-free Overview usage aggregations over an optional
 /// `[start_ms, end_ms]` unix-millis range. Omit either bound (or both) to cover

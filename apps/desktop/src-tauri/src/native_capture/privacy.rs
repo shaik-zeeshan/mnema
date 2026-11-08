@@ -220,7 +220,7 @@ pub(super) fn collect_initial_privacy_filter(
     app_handle: &tauri::AppHandle,
 ) -> InitialPrivacyFilter {
     let settings = app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
+        .state::<app_core::recording_settings::RecordingSettingsState>()
         .lock()
         .expect("recording settings state poisoned")
         .settings
@@ -266,7 +266,7 @@ fn collect_initial_privacy_filter_decision(
 #[cfg(target_os = "macos")]
 fn collect_static_privacy_filter_update(app_handle: &tauri::AppHandle) -> PrivacyFilterUpdate {
     let settings = app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
+        .state::<app_core::recording_settings::RecordingSettingsState>()
         .lock()
         .expect("recording settings state poisoned")
         .settings
@@ -300,7 +300,7 @@ fn collect_metadata_privacy_filter_update(
     browser_url_read_mode: crate::native_capture::metadata::BrowserUrlReadMode,
 ) -> PrivacyFilterUpdate {
     let settings = app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
+        .state::<app_core::recording_settings::RecordingSettingsState>()
         .lock()
         .expect("recording settings state poisoned")
         .settings
@@ -351,7 +351,7 @@ pub(super) fn collect_privacy_filter_update(
     browser_url_read_mode: crate::native_capture::metadata::BrowserUrlReadMode,
 ) -> (PrivacyRefreshMode, PrivacyFilterUpdate) {
     let settings = app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
+        .state::<app_core::recording_settings::RecordingSettingsState>()
         .lock()
         .expect("recording settings state poisoned")
         .settings
@@ -390,7 +390,7 @@ pub(crate) fn request_privacy_filter_refresh(
         let runtime = runtime.runtime();
         if !runtime.is_running || runtime.segment_loop_control.is_none() {
             if privacy_refresh_debug_log_enabled(reason) {
-                super::debug_log::log(format!(
+                app_core::debug_log::log(format!(
                     "privacy refresh skipped because recording is stopped (reason={reason:?})"
                 ));
             }
@@ -411,7 +411,7 @@ pub(crate) fn request_privacy_filter_refresh(
         state.static_fallback_suppressed = false;
     }
     let metadata_enabled = app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
+        .state::<app_core::recording_settings::RecordingSettingsState>()
         .lock()
         .expect("recording settings state poisoned")
         .settings
@@ -426,7 +426,7 @@ pub(crate) fn request_privacy_filter_refresh(
     state.requested_generation = state.requested_generation.saturating_add(1);
     state.latest_reason = Some(reason);
     if privacy_refresh_debug_log_enabled(reason) {
-        super::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "privacy refresh requested (reason={reason:?}, generation={})",
             state.requested_generation
         ));
@@ -453,7 +453,7 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
         return;
     };
     if privacy_refresh_debug_log_enabled(reason) {
-        super::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "privacy refresh collector started (reason={reason:?}, generation={generation})"
         ));
     }
@@ -539,7 +539,7 @@ pub(super) fn take_completed_privacy_filter_update(
         Some(completed)
     } else {
         if privacy_refresh_debug_log_enabled(completed.reason) {
-            super::debug_log::log(format!(
+            app_core::debug_log::log(format!(
                 "stale privacy refresh skipped (reason={:?}, completed_generation={}, requested_generation={})",
                 completed.reason, completed.generation, state.requested_generation
             ));
@@ -644,7 +644,7 @@ fn empty_privacy_filter() -> capture_screen::PrivacyContentFilter {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-    use crate::native_capture::settings::default_recording_settings;
+    use app_core::recording_settings::default_recording_settings;
 
     #[test]
     fn privacy_refresh_uses_metadata_collection_when_metadata_is_enabled() {

@@ -34,7 +34,7 @@ static CENTER_READY: AtomicBool = AtomicBool::new(false);
 
 pub(super) fn post(app_handle: &tauri::AppHandle) {
     if !running_from_app_bundle() {
-        super::super::debug_log::log("native reminder skipped: not running from an .app bundle");
+        app_core::debug_log::log("native reminder skipped: not running from an .app bundle");
         return;
     }
     let _ = APP_HANDLE.set(app_handle.clone());
@@ -45,7 +45,7 @@ pub(super) fn post(app_handle: &tauri::AppHandle) {
         let on_answer = ConcreteBlock::new(|granted: BOOL, _error: id| {
             if granted == NO {
                 if !DENIAL_LOGGED.swap(true, Ordering::Relaxed) {
-                    super::super::debug_log::log_warn(
+                    app_core::debug_log::log_warn(
                         "notifications not authorized; the not-recording reminder stays in-app only",
                     );
                 }
@@ -104,7 +104,7 @@ unsafe fn add_request() {
     let center: id = msg_send![class!(UNUserNotificationCenter), currentNotificationCenter];
     let on_added = ConcreteBlock::new(|error: id| {
         if error != nil {
-            super::super::debug_log::log_warn("failed to post the not-recording notification");
+            app_core::debug_log::log_warn("failed to post the not-recording notification");
         }
     })
     .copy();

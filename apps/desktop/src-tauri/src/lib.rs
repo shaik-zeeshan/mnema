@@ -44,28 +44,11 @@ use std::{collections::VecDeque, path::Path, sync::Mutex};
 use tauri::{Emitter, Manager};
 use tauri_plugin_deep_link::DeepLinkExt;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-use tauri_plugin_log::{RotationStrategy, Target, TargetKind, WEBVIEW_TARGET};
+use app_core::debug_log::{
+    APP_LOG_FILE_NAME, APP_LOG_KEPT_FILES, APP_LOG_MAX_FILE_BYTES, APP_LOG_TARGET_PREFIXES,
+};
+use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
-pub(crate) const APP_LOG_FILE_NAME: &str = "rust";
-const APP_LOG_MAX_FILE_BYTES: u128 = 5 * 1024 * 1024;
-/// Rotated files kept *besides* the active `rust.log` (`KeepSome(n)` keeps n
-/// archives plus the live file), so 4 = five files in all.
-const APP_LOG_KEPT_FILES: usize = 4;
-
-const APP_LOG_TARGET_PREFIXES: &[&str] = &[
-    "mnema",
-    "mnema_lib",
-    "app_infra",
-    "audio_transcription",
-    "ocr",
-    "capture_runtime",
-    "capture_screen",
-    "capture_microphone",
-    "capture_system_audio",
-    "capture_writers",
-    "capture_types",
-    WEBVIEW_TARGET,
-];
 const ALREADY_RUNNING_MESSAGE: &str =
     "Mnema is already running. Close the existing Mnema window before opening it again.";
 const BROKER_OPEN_CAPTURE_RESULT_EVENT: &str = "broker_open_capture_result";
@@ -476,7 +459,7 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
     // `complete_graceful_exit` then kills mid-write. The deferred maintenance
     // above already bails on this condition too (defense in depth).
     if windows::is_graceful_exit_in_progress(app_handle) {
-        native_capture::debug_log::log_info(
+        app_core::debug_log::log_info(
             "graceful exit in progress; skipping capture auto-start and the update-check timer",
         );
         return;
@@ -502,7 +485,7 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
 fn reap_stale_system_audio_aggregate_devices() {
     let destroyed = capture_system_audio::cleanup_stale_aggregate_devices();
     if destroyed > 0 {
-        native_capture::debug_log::log_info(format!(
+        app_core::debug_log::log_info(format!(
             "{} destroyed {destroyed} stale aggregate device(s) from a previous process",
             capture_system_audio::LOG_PREFIX
         ));
@@ -520,7 +503,7 @@ fn reap_stale_system_audio_aggregate_devices() {}
 fn hydrate_system_audio_permission_evidence(app_handle: &tauri::AppHandle) {
     use tauri::Manager;
 
-    let Some(infra) = app_handle.try_state::<app_infra::AppInfraState>() else {
+    let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() else {
         return;
     };
     let infra = infra.inner().clone();
@@ -545,7 +528,7 @@ pub fn run() {
         .manage(native_capture::DisplayReconfigurationNotifierState::default())
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::PrivacyFilterRefreshState::default())
-        .manage(native_capture::RecordingSettingsState::default())
+        .manage(app_core::recording_settings::RecordingSettingsState::default())
         .manage(one_time_prompts::OneTimePromptStateStore::default())
         .manage(native_capture::CaptureMetadataState::default())
         .manage(status_bar::StatusBarState::default())
@@ -593,7 +576,7 @@ pub fn run() {
                 .rotation_strategy(RotationStrategy::KeepSome(APP_LOG_KEPT_FILES))
                 .filter(|metadata| {
                     is_app_log_target(metadata.target())
-                        && native_capture::debug_log::app_log_record_allowed(metadata.level())
+                        && app_core::debug_log::app_log_record_allowed(metadata.level())
                 })
                 .targets([
                     Target::new(TargetKind::Stderr),
@@ -912,7 +895,7 @@ pub fn run() {
             one_time_prompts::initialize(app.handle());
             status_bar::initialize(app.handle())?;
             keyboard_bindings::initialize(app.handle());
-            native_capture::install_panic_hook();
+            app_core::debug_log::install_panic_hook();
             if let Err(error) = app_infra::initialize(app) {
                 match error {
                     app_infra::AppInfraInitializeError::AlreadyRunning => {
@@ -973,7 +956,7 @@ pub fn run() {
                 // fallback and not the normal path. Logged through the app log sink
                 // so a "no background workers" incident is captured in the packaged
                 // app log rather than only on stderr.
-                native_capture::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed to spawn deferred startup thread; running inline (re-blocks first paint): {error}"
                 ));
                 run_deferred_startup(app.handle(), onboarding_complete);

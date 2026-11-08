@@ -203,7 +203,7 @@ impl DuplicateGuard {
 
     /// Fall back to lexical-only for the rest of the pass.
     fn disable(&mut self, reason: String) -> Option<i64> {
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "conclusion duplicate guard: {reason}; using the lexical rule only this pass"
         ));
         self.embedding = Embedding::Off;
@@ -217,13 +217,13 @@ impl DuplicateGuard {
 pub(crate) fn run_dedup_startup_pass(infra: &::app_infra::AppInfra) {
     match tauri::async_runtime::block_on(infra.user_context().dedupe_near_duplicate_conclusions()) {
         Ok(summary) if summary.conclusions_removed > 0 => {
-            crate::native_capture::debug_log::log_info(format!(
+            app_core::debug_log::log_info(format!(
                 "user context dedup removed {} near-duplicate conclusion(s) across {} subject(s)",
                 summary.conclusions_removed, summary.subjects_touched
             ));
         }
         Ok(_) => {}
-        Err(error) => crate::native_capture::debug_log::log_warn(format!(
+        Err(error) => app_core::debug_log::log_warn(format!(
             "user context dedup startup pass failed; retrying next launch: {error}"
         )),
     }

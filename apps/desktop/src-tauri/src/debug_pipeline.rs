@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 
 const DEFAULT_JOB_PAGE_LIMIT: i64 = 50;
 /// Ceiling on one page of jobs. The debug listing is a paged drill-in, not an export, so a

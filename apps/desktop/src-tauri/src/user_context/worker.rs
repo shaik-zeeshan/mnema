@@ -43,8 +43,9 @@ use app_infra::retry_policy::RetryPolicy;
 use app_infra::user_context::confidence;
 use app_infra::{DistillationGateDrops, NewDerivationRun, UserContextStore};
 
-use crate::app_infra::{shutdown_aware_sleep, AppInfraState, BackgroundWorkersState};
-use crate::native_capture::{read_recording_settings, RecordingSettingsState};
+use app_core::AppInfraState;
+use crate::app_infra::{shutdown_aware_sleep, BackgroundWorkersState};
+use app_core::recording_settings::{current_recording_settings, RecordingSettingsState};
 
 use super::derivation;
 
@@ -816,7 +817,7 @@ async fn run_failed_window_retry_pass(
         if step == BackfillStep::Derived {
             derived_anything = true;
         }
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "user context worker retried failed window [{},{}] (attempt {} of {}): {:?}",
             window.window_start_ms,
             window.window_end_ms,
@@ -931,14 +932,14 @@ pub(crate) async fn run_conclusion_distillation(
                 })
                 .await;
             if outcome.upserted > 0 {
-                crate::native_capture::debug_log::log(format!(
+                app_core::debug_log::log(format!(
                     "user context worker distilled {} conclusion(s)",
                     outcome.upserted
                 ));
             }
             if outcome.gate_drops.total() > 0 {
                 let drops = outcome.gate_drops;
-                crate::native_capture::debug_log::log(format!(
+                app_core::debug_log::log(format!(
                     "user context distillation withheld {} draft(s): {} ungrounded, \
                      {} guardrail-suppressed, {} below the formation bar, {} resurface-blocked",
                     drops.total(),
@@ -952,7 +953,7 @@ pub(crate) async fn run_conclusion_distillation(
             // separately from the "withheld N drafts" line so retirements are visible.
             let drops = outcome.gate_drops;
             if drops.superseded + drops.supersede_degraded + drops.supersede_blocked > 0 {
-                crate::native_capture::debug_log::log(format!(
+                app_core::debug_log::log(format!(
                     "user context supersede: {} retired, {} degraded, {} blocked",
                     drops.superseded, drops.supersede_degraded, drops.supersede_blocked,
                 ));
@@ -1053,7 +1054,7 @@ pub(crate) async fn run_confidence_decay(
             .update_conclusion_confidence(conclusion.id, decayed, status, now)
             .await
         {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "user context confidence decay: update failed for conclusion {}: {error}",
                 conclusion.id
             ));
@@ -1065,7 +1066,7 @@ pub(crate) async fn run_confidence_decay(
             .insert_confidence_snapshot(conclusion.id, decayed, now)
             .await
         {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "user context confidence decay: snapshot failed for conclusion {}: {error}",
                 conclusion.id
             ));
@@ -1079,7 +1080,7 @@ pub(crate) async fn run_confidence_decay(
         .prune_confidence_history(MAX_SNAPSHOTS_PER_CONCLUSION)
         .await
     {
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "user context confidence decay: history prune failed: {error}"
         ));
     }
@@ -1102,7 +1103,7 @@ pub(crate) async fn run_confidence_decay(
         .await;
 
     if touched > 0 {
-        crate::native_capture::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "user context worker decayed {touched} conclusion(s)"
         ));
     }
@@ -1120,7 +1121,7 @@ async fn worker_tick(
     let Some(settings_state) = app_handle.try_state::<RecordingSettingsState>() else {
         return IDLE_INTERVAL;
     };
-    let settings = read_recording_settings(settings_state.inner());
+    let settings = current_recording_settings(settings_state.inner());
     let ai_runtime = settings.ai_runtime;
     let user_context = settings.user_context;
 
@@ -1181,7 +1182,7 @@ async fn worker_tick(
 
     let mut dossier_changed = run.changed;
     if run.activities_derived > 0 {
-        crate::native_capture::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "user context worker derived {} activities (window=[{},{}], items={})",
             run.activities_derived, run.window_start_ms, run.window_end_ms, run.items_read
         ));
@@ -1231,7 +1232,7 @@ async fn worker_tick(
         .await;
         if backfilled {
             dossier_changed = true;
-            crate::native_capture::debug_log::log(
+            app_core::debug_log::log(
                 "user context worker backfilled older history (background trickle)",
             );
         }
@@ -1371,7 +1372,7 @@ pub fn spawn_user_context_worker(
     background_workers: BackgroundWorkersState,
 ) {
     let mut shutdown_rx = background_workers.subscribe();
-    crate::native_capture::debug_log::log_info(
+    app_core::debug_log::log_info(
         "starting user context derivation worker (idle_when_disabled)",
     );
     let handle = tauri::async_runtime::spawn(async move {
@@ -1401,7 +1402,7 @@ pub fn spawn_user_context_worker(
                 break;
             }
         }
-        crate::native_capture::debug_log::log_info("stopped user context derivation worker");
+        app_core::debug_log::log_info("stopped user context derivation worker");
     });
     background_workers.track(handle);
 }

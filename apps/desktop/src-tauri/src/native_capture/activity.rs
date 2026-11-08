@@ -101,7 +101,7 @@ pub(super) fn process_pending_microphone_vad_frames(runtime: &mut NativeCaptureR
                 }
             }
             Err(error) => {
-                super::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed to process microphone VAD PCM frame: {error}"
                 ));
                 microphone_capture::disable_microphone_vad_boundary_trim_for_current_output();
@@ -176,7 +176,7 @@ pub(super) fn lock_runtime_for_idle_debug(
     match state.lock() {
         Ok(runtime) => runtime,
         Err(poisoned) => {
-            super::debug_log::log_warn(
+            app_core::debug_log::log_warn(
                 "native capture state poisoned while reading idle debug; returning best-effort snapshot",
             );
             poisoned.into_inner()

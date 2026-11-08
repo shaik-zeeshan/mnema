@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn recommendation_exclusion_state_matches_bundle_ids_case_insensitively() {
-        let mut settings = crate::native_capture::settings::default_recording_settings();
+        let mut settings = app_core::recording_settings::default_recording_settings();
         settings.privacy.excluded_apps = vec![capture_metadata::ExcludedAppEntry {
             id: "app-a".to_string(),
             enabled: false,

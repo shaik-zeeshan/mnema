@@ -275,7 +275,7 @@ async fn run_analysis_subprocess(
         let stderr = trimmed_stderr(&stderr);
         // Helper stderr is model diagnostics, not captured content; keep the tail only.
         let stderr_tail_start = stderr.char_indices().rev().nth(499).map_or(0, |(index, _)| index);
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "speaker-analysis helper failed: elapsed_ms={} status={status} stderr_tail='{}'",
             started_at.elapsed().as_millis(),
             &stderr[stderr_tail_start..]

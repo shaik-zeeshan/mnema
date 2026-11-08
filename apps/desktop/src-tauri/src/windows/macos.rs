@@ -4,8 +4,6 @@
 
 use tauri::{Manager, WebviewWindow};
 
-use crate::native_capture;
-
 /// Hide one of Mnema's own windows from every screen capture, including Mnema's.
 ///
 /// Without this the app records itself: Quick Recall's results land back in the
@@ -34,7 +32,7 @@ fn apply_macos_capture_exclusion(window: &WebviewWindow) {
     // the window stays excluded, never accidentally recordable.
     let developer_options_enabled = window
         .app_handle()
-        .try_state::<native_capture::RecordingSettingsState>()
+        .try_state::<app_core::recording_settings::RecordingSettingsState>()
         .and_then(|state| {
             state
                 .lock()

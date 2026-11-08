@@ -17,8 +17,8 @@ use capture_types::{
 use serde::Serialize;
 use tauri::Emitter;
 
-use crate::app_infra::AppInfraState;
-use crate::native_capture::{read_recording_settings, RecordingSettingsState};
+use app_core::AppInfraState;
+use app_core::recording_settings::{current_recording_settings, RecordingSettingsState};
 
 use super::worker::{
     backfill_floor_ms, model_label_for, now_ms, provider_label_for, run_conclusion_distillation,
@@ -52,7 +52,7 @@ pub async fn get_user_context_status(
     state: tauri::State<'_, RecordingSettingsState>,
     infra: tauri::State<'_, AppInfraState>,
 ) -> Result<UserContextStatus, String> {
-    let settings = read_recording_settings(state.inner());
+    let settings = current_recording_settings(state.inner());
     let ai_runtime = settings.ai_runtime;
     let user_context = settings.user_context;
 
@@ -384,7 +384,7 @@ pub async fn user_context_run_derivation_now(
     state: tauri::State<'_, RecordingSettingsState>,
     infra: tauri::State<'_, AppInfraState>,
 ) -> Result<UserContextDerivationRunResult, String> {
-    let settings = read_recording_settings(state.inner());
+    let settings = current_recording_settings(state.inner());
     let ai_runtime = settings.ai_runtime;
     let user_context = settings.user_context;
 
@@ -546,7 +546,7 @@ pub async fn get_user_context_digest(
     start_ms: i64,
     end_ms: i64,
 ) -> Result<UserContextDigestResult, String> {
-    let settings = read_recording_settings(state.inner());
+    let settings = current_recording_settings(state.inner());
     super::digest::get_or_generate_digest(
         &settings.ai_runtime,
         settings.user_context.enabled,
@@ -573,7 +573,7 @@ pub async fn regenerate_user_context_digest(
     start_ms: i64,
     end_ms: i64,
 ) -> Result<UserContextDigestResult, String> {
-    let settings = read_recording_settings(state.inner());
+    let settings = current_recording_settings(state.inner());
     super::digest::get_or_generate_digest(
         &settings.ai_runtime,
         settings.user_context.enabled,
@@ -612,7 +612,7 @@ pub async fn user_context_dismiss_conclusion(
     // work, so app-infra stays embedding-free.
     if let Some(subject) = dismissed_subject {
         if let Err(error) = infra.subject_vectors().mark_subject_vector_stale(&subject).await {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to mark subject vector stale after dismissing conclusion {id}: {error}"
             ));
         }

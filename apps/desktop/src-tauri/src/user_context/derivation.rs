@@ -1197,18 +1197,18 @@ pub async fn distill_conclusions(
     }
 
     if guard_merged > 0 {
-        crate::native_capture::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "conclusion distillation: duplicate guard turned {guard_merged} new belief(s) into reinforcements"
         ));
     }
-    crate::native_capture::debug_log::log(format!(
+    app_core::debug_log::log(format!(
         "conclusion distillation sent {} activities ({changed_count} new or extended, \
          {context_count} context)",
         changed_count + context_count
     ));
     // A failed write only means the next pass re-sends these Activities.
     if let Err(error) = store.set_distillation_watermark(next_watermark).await {
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "conclusion distillation could not save its watermark: {error}"
         ));
     }

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use capture_types::AnswerBlock;
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 
 /// Running turns whose question was edited into a new one (`ask_ai_cancel`
 /// with `discard`). Consumed by the turn's finalize; a mark landing after that

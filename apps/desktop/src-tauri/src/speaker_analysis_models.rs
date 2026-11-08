@@ -234,7 +234,7 @@ pub async fn delete_speaker_analysis_model(
     app_handle: tauri::AppHandle,
     request: SpeakerAnalysisModelDownloadRequestDto,
     download_state: tauri::State<'_, SpeakerAnalysisModelDownloadState>,
-    infra: tauri::State<'_, crate::app_infra::AppInfraState>,
+    infra: tauri::State<'_, app_core::AppInfraState>,
 ) -> Result<(), String> {
     if active_download_key(download_state.inner())?
         == Some(model_key(&request.provider, &request.model_id))
@@ -495,8 +495,8 @@ async fn run_model_download_task(
     plan: DownloadPlan,
     cancel_requested: Arc<AtomicBool>,
 ) {
-    let download_lock = crate::app_infra::acquire_model_download_lock(
-        &app_handle,
+    let download_lock = app_core::model_download_lock::acquire_model_download_lock(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
         app_infra::SPEAKER_ANALYSIS_PROCESSOR,
         model_key(&plan.provider, &plan.model_id),
     )
@@ -981,7 +981,7 @@ mod tests {
         );
 
         let mut settings =
-            crate::native_capture::settings::default_recording_settings().speaker_analysis;
+            app_core::recording_settings::default_recording_settings().speaker_analysis;
         settings.provider = speaker_analysis::SPEAKRS_PROVIDER_ID.to_string();
         settings.model_id = Some(speaker_analysis::SPEAKRS_DEFAULT_MODEL_ID.to_string());
         assert_eq!(

@@ -940,7 +940,7 @@ pub async fn get_or_generate_digest(
         return Ok(absent(DigestAbsentReason::DerivationOff));
     }
     if let Err(reason) = crate::ai_runtime::engine_configured_prerequisite(ai_runtime).await {
-        crate::native_capture::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "digest: skipped {range_kind} (engine not ready: {reason})"
         ));
         return Ok(absent(DigestAbsentReason::EngineNotReady));
@@ -968,7 +968,7 @@ pub async fn get_or_generate_digest(
         .filter(|a| !guardrail::is_sensitive(&a.title, &a.summary))
         .collect();
     if activities.len() < MIN_DIGEST_ACTIVITIES {
-        crate::native_capture::debug_log::log(format!(
+        app_core::debug_log::log(format!(
             "digest: skipped {range_kind} (only {} activities, need {MIN_DIGEST_ACTIVITIES})",
             activities.len()
         ));
@@ -1064,7 +1064,7 @@ pub async fn get_or_generate_digest(
     );
     let input_tokens = estimate_tokens(&preamble) + estimate_tokens(&prompt);
 
-    crate::native_capture::debug_log::log(format!(
+    app_core::debug_log::log(format!(
         "digest: generating {range_kind} [{range_start_ms}..{range_end_ms}) force={force} \
          activities={} day_digests={} prompt_chars={} est_input_tokens={input_tokens} \
          provider={:?} model={:?}",
@@ -1088,7 +1088,7 @@ pub async fn get_or_generate_digest(
     let engine = match crate::ai_runtime::resolve_engine_config_live(ai_runtime, None, None).await {
         Ok(engine) => engine,
         Err(reason) => {
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "digest: skipped {range_kind} (engine config did not resolve: {reason})"
             ));
             // Both paths surface it (and record it) exactly like the extraction
@@ -1127,7 +1127,7 @@ pub async fn get_or_generate_digest(
             // bad key or an outage). `log_detail` drops the body and any quoted
             // model output: both echo captured content, and user logs leave the
             // machine.
-            crate::native_capture::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "digest: extraction FAILED for {range_kind} [{range_start_ms}..{range_end_ms}) ({}): {}",
                 error.failure_kind(),
                 error.log_detail()
@@ -1213,7 +1213,7 @@ pub async fn get_or_generate_digest(
     record_digest_run(store, ai_runtime, "completed", input_tokens, output_tokens, None).await;
     cooldown_clear(range_kind, range_start_ms);
 
-    crate::native_capture::debug_log::log_info(format!(
+    app_core::debug_log::log_info(format!(
         "digest: generated {range_kind} [{range_start_ms}..{range_end_ms}) \
          narrative_chars={} output_tokens={output_tokens}",
         narrative.chars().count(),

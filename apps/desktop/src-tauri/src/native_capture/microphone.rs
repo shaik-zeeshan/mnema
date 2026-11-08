@@ -273,7 +273,7 @@ fn maybe_reconnect_waiting_microphone_session(
         state,
     ) {
         if let Err(error) = super::segments::stop_microphone_session_for_runtime(runtime) {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to stop microphone session while waiting for same device: [{}] {}",
                 error.code, error.message
             ));

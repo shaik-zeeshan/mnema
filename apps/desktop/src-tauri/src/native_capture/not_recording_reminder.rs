@@ -104,7 +104,7 @@ fn start_from_reminder(app_handle: &tauri::AppHandle) {
     match super::start_native_capture_from_app_handle("not-recording-reminder", app_handle) {
         Ok(_) => clear_reminder(app_handle),
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "start from not-recording reminder failed: [{}]",
                 error.code
             ));
@@ -134,7 +134,7 @@ pub(crate) fn spawn_not_recording_reminder(app_handle: tauri::AppHandle) {
             }
         });
     if let Err(error) = spawned {
-        super::debug_log::log_warn(format!("failed to spawn not-recording reminder: {error}"));
+        app_core::debug_log::log_warn(format!("failed to spawn not-recording reminder: {error}"));
     }
 }
 
@@ -166,7 +166,7 @@ fn tick(app_handle: &tauri::AppHandle, runtime: &mut ReminderRuntime) {
         ReminderStep::Nothing => {}
         ReminderStep::Clear => clear_reminder(app_handle),
         ReminderStep::Fire => {
-            super::debug_log::log_info("not-recording reminder fired");
+            app_core::debug_log::log_info("not-recording reminder fired");
             let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
                 return;
             };

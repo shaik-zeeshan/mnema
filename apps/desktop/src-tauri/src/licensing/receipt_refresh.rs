@@ -14,7 +14,7 @@ use std::time::Duration;
 use capture_types::LicenseStatus;
 use tauri::Manager;
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 
 /// First 14 days after lapse: renewals cluster near lapse.
 const DENSE_LAPSE_MS: i64 = 14 * 24 * 60 * 60 * 1000;

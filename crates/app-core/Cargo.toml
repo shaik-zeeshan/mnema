@@ -14,8 +14,13 @@ fixtures = ["dep:image", "dep:time"]
 [dependencies]
 app-infra = { path = "../app-infra" }
 capture-metadata = { path = "../capture-metadata" }
+capture-screen = { path = "../capture-screen" }
+capture-types = { path = "../capture-types" }
 dirs = "6"
 log = "0.4"
+ocr = { path = "../ocr" }
+semantic-search = { path = "../semantic-search" }
+speaker-analysis = { path = "../speaker-analysis", default-features = false }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }

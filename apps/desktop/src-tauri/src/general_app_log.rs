@@ -7,7 +7,10 @@ fn general_app_log_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, Captur
     app_handle
         .path()
         .app_log_dir()
-        .map(|path| path.join(crate::APP_LOG_FILE_NAME).with_extension("log"))
+        .map(|path| {
+            path.join(app_core::debug_log::APP_LOG_FILE_NAME)
+                .with_extension("log")
+        })
         .map_err(|error| CaptureErrorResponse {
             code: "app_log_path_unavailable".to_string(),
             message: format!("Failed to resolve general application log path: {error}"),

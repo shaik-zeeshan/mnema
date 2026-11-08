@@ -10,7 +10,6 @@ use std::{
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
-use crate::native_capture;
 
 #[cfg(target_os = "macos")]
 mod macos;
@@ -446,7 +445,7 @@ fn persist_onboarding_state(
 
 fn ensure_window_allowed(
     window: AppWindow,
-    state: Option<&native_capture::RecordingSettingsState>,
+    state: Option<&app_core::recording_settings::RecordingSettingsState>,
 ) -> Result<(), String> {
     let config = window.config();
     if !config.gated_by_dev_options {
@@ -457,7 +456,7 @@ fn ensure_window_allowed(
         return Err("developer options state unavailable".into());
     };
 
-    let settings = native_capture::read_recording_settings(state);
+    let settings = app_core::recording_settings::current_recording_settings(state);
     if settings.developer_options_enabled {
         Ok(())
     } else {
@@ -488,7 +487,7 @@ pub(crate) fn open_update_window(app: &tauri::AppHandle) -> Result<(), String> {
 fn open_or_focus_window(
     app: &tauri::AppHandle,
     window: AppWindow,
-    state: Option<&native_capture::RecordingSettingsState>,
+    state: Option<&app_core::recording_settings::RecordingSettingsState>,
 ) -> Result<(), String> {
     ensure_window_allowed(window, state)?;
 
@@ -1072,7 +1071,7 @@ pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
     unsafe {
         let method = class_getInstanceMethod(class!(NSApplication), sel!(terminate:));
         if method.is_null() {
-            crate::native_capture::debug_log::log_error(
+            app_core::debug_log::log_error(
                 "failed to install macOS terminate handler: NSApplication terminate: method not found",
             );
             return;
@@ -1082,7 +1081,7 @@ pub(crate) fn install_macos_terminate_handler(app: &tauri::AppHandle) {
             method.cast_mut(),
             std::mem::transmute(terminate as *const ()),
         );
-        crate::native_capture::debug_log::log(
+        app_core::debug_log::log(
             "installed macOS terminate handler for graceful app exit",
         );
     }
@@ -1119,7 +1118,7 @@ fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_e
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        crate::native_capture::debug_log::log_info(if restart_after_exit {
+        app_core::debug_log::log_info(if restart_after_exit {
             "starting graceful app relaunch; stopping capture and background workers before unloading cached Local Whisper contexts"
         } else {
             "starting graceful app exit; stopping capture and background workers before unloading cached Local Whisper contexts"
@@ -1137,33 +1136,33 @@ fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_e
         })
         .await
         {
-            Ok(Some(Ok(_))) => crate::native_capture::debug_log::log_info(
+            Ok(Some(Ok(_))) => app_core::debug_log::log_info(
                 "stopped active native capture during graceful app exit",
             ),
-            Ok(Some(Err(error))) => crate::native_capture::debug_log::log_error(format!(
+            Ok(Some(Err(error))) => app_core::debug_log::log_error(format!(
                 "failed to stop active native capture during graceful app exit: [{}] {}",
                 error.code, error.message
             )),
             Ok(None) => {}
             Err(error) => {
-                crate::native_capture::debug_log::log_error(format!(
+                app_core::debug_log::log_error(format!(
                     "failed to join native capture stop during graceful app exit: {error}"
                 ));
             }
         }
-        crate::native_capture::debug_log::log_info(
+        app_core::debug_log::log_info(
             "stopping background workers before terminating",
         );
         crate::app_infra::shutdown_background_workers_for_app_exit(&app_handle).await;
 
         match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
             Ok(unloaded) => {
-                crate::native_capture::debug_log::log(format!(
+                app_core::debug_log::log(format!(
                     "unloaded {unloaded} cached Local Whisper context(s) after background worker shutdown"
                 ));
             }
             Err(error) => {
-                crate::native_capture::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed to unload cached Local Whisper contexts after background worker shutdown: {error}"
                 ));
             }
@@ -1179,13 +1178,13 @@ fn complete_graceful_exit(app: &tauri::AppHandle) {
     exit_state.mark_final_graceful_exit_ready();
 
     if restart_requested {
-        crate::native_capture::debug_log::log_info("completed graceful app exit; relaunching");
+        app_core::debug_log::log_info("completed graceful app exit; relaunching");
         app.restart();
     }
 
     #[cfg(target_os = "macos")]
     {
-        crate::native_capture::debug_log::log_info(
+        app_core::debug_log::log_info(
             "completed graceful app exit; exiting without running process static destructors",
         );
         macos_immediate_process_exit(0);
@@ -1391,7 +1390,7 @@ pub(crate) fn open_cli_access_request_window(app: &tauri::AppHandle) -> Result<(
 #[tauri::command]
 pub fn open_debug_window(
     app: tauri::AppHandle,
-    state: tauri::State<'_, native_capture::RecordingSettingsState>,
+    state: tauri::State<'_, app_core::recording_settings::RecordingSettingsState>,
 ) -> Result<(), String> {
     open_or_focus_window(&app, AppWindow::Debug, Some(state.inner()))
 }
@@ -1482,7 +1481,7 @@ pub fn get_onboarding_state(
     // once" == returning user. It must be read LIVE per call (NOT cached in
     // OnboardingStateStore) so a save performed between two onboarding entries in
     // one process lifetime is visible. Use the same path resolver saves land in.
-    let ever_saved = crate::native_capture::settings::recording_settings_file_path(&app).exists();
+    let ever_saved = app_core::recording_settings::recording_settings_file_path(&app.state::<std::sync::Arc<app_core::AppCore>>()).exists();
     OnboardingStateView::from_state_and_disk(
         current_onboarding_state(&app, state.inner()),
         ever_saved,

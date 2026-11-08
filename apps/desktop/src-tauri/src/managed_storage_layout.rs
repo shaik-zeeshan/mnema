@@ -19,7 +19,7 @@ pub struct StorageProbe {
 }
 
 /// Probe a candidate save directory. Blank/absent resolves to
-/// [`crate::native_capture::settings::default_save_directory`]
+/// [`app_core::recording_settings::default_save_directory`]
 /// (`MNEMA_SAVE_DIRECTORY`, else `~/.mnema`). Infallible by design: every
 /// failure mode is one of the three fields, not an error the screen must handle.
 /// `(async)` on a non-async body is Tauri's "run this on the blocking
@@ -33,7 +33,7 @@ pub struct StorageProbe {
 pub fn probe_storage_path(path: Option<String>) -> StorageProbe {
     let requested = path.unwrap_or_default().trim().to_string();
     let resolved = if requested.is_empty() {
-        crate::native_capture::settings::default_save_directory()
+        app_core::recording_settings::default_save_directory()
     } else {
         requested
     };
@@ -75,12 +75,14 @@ const STORAGE_USAGE_TTL: std::time::Duration = std::time::Duration::from_secs(30
 pub fn get_storage_usage(app_handle: tauri::AppHandle, refresh: Option<bool>) -> StorageUsageDto {
     use tauri::Manager;
     let base_dir = app_handle
-        .try_state::<crate::app_infra::AppInfraState>()
+        .try_state::<app_core::AppInfraState>()
         .map(|infra| infra.base_dir().to_path_buf())
         .unwrap_or_else(|| {
             PathBuf::from(
-                crate::native_capture::settings::load_recording_settings_or_default(&app_handle)
-                    .save_directory,
+                app_core::recording_settings::load_recording_settings_or_default(
+                    &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+                )
+                .save_directory,
             )
         });
     let mut cache = STORAGE_USAGE_CACHE
@@ -224,7 +226,7 @@ mod tests {
 
         assert_eq!(
             probe.path,
-            crate::native_capture::settings::default_save_directory()
+            app_core::recording_settings::default_save_directory()
         );
         assert_eq!(probe_storage_path(None).path, probe.path);
     }

@@ -96,39 +96,12 @@ impl AppCore {
 
 #[cfg(test)]
 mod tests {
-    use std::{path::Path, sync::Mutex};
-
-    use tokio::sync::oneshot;
+    use std::path::Path;
 
     use super::*;
-    use crate::{
-        event::CoreEvent,
-        host::{ConfirmDialog, ExitKind, MessageDialog, WindowRequest, WindowSignal},
-    };
+    use crate::{event::CoreEvent, host::ConfirmDialog, test_support::FakeHost};
 
-    #[derive(Default)]
-    struct RecordingHost {
-        events: Mutex<Vec<CoreEvent>>,
-    }
-
-    impl Host for RecordingHost {
-        fn emit(&self, event: CoreEvent) {
-            self.events.lock().unwrap().push(event);
-        }
-        fn message(&self, _req: MessageDialog) {}
-        fn confirm(&self, _req: ConfirmDialog) -> oneshot::Receiver<bool> {
-            let (tx, rx) = oneshot::channel();
-            let _ = tx.send(true);
-            rx
-        }
-        fn open_url(&self, _url: &str) {}
-        fn refresh_tray(&self) {}
-        fn open_window(&self, _req: WindowRequest) {}
-        fn window_signal(&self, _signal: WindowSignal) {}
-        fn exit(&self, _kind: ExitKind) {}
-    }
-
-    fn core_with(host: Arc<RecordingHost>) -> AppCore {
+    fn core_with(host: Arc<FakeHost>) -> AppCore {
         let paths = Paths::resolve("day.mnema.test", Path::new("/tmp/home"), |_| None);
         AppCore::new(host, paths).expect("runtime starts")
     }
@@ -164,7 +137,7 @@ mod tests {
 
     #[test]
     fn host_receives_emits_and_confirms() {
-        let host = Arc::new(RecordingHost::default());
+        let host = Arc::new(FakeHost::default());
         let core = core_with(host.clone());
         core.host().emit(CoreEvent::ConversationChanged);
         assert_eq!(

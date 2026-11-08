@@ -12,7 +12,7 @@ use tauri::Manager;
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 use super::adapter;
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 
 /// Poll budget: the Polar webhook usually lands within seconds; 15 × 2s ≈ 30s
 /// covers the lag without holding a task open toward the 30-day claim window —

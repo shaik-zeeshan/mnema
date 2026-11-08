@@ -262,14 +262,14 @@ pub fn cancel_ocr_model_download(
 pub async fn delete_unused_ocr_models(
     app_handle: tauri::AppHandle,
     download_state: tauri::State<'_, OcrModelDownloadState>,
-    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
-    infra: tauri::State<'_, crate::app_infra::AppInfraState>,
+    settings: tauri::State<'_, app_core::recording_settings::RecordingSettingsState>,
+    infra: tauri::State<'_, app_core::AppInfraState>,
 ) -> Result<DeleteUnusedOcrModelsResponseDto, String> {
     let app_data_dir = app_handle
         .path()
         .app_data_dir()
         .map_err(|error| format!("failed to resolve app data directory: {error}"))?;
-    let settings = crate::native_capture::read_recording_settings(settings.inner());
+    let settings = app_core::recording_settings::current_recording_settings(settings.inner());
     let selected_provider = provider_id_for_settings(settings.ocr.provider);
     let selected_model_id = resolved_model_id_for_settings(&settings.ocr);
     let active_download = active_download_key(download_state.inner())?;
@@ -717,8 +717,8 @@ async fn run_model_download_task(
     plan: DownloadPlan,
     cancel_requested: Arc<AtomicBool>,
 ) {
-    let download_lock = crate::app_infra::acquire_model_download_lock(
-        &app_handle,
+    let download_lock = app_core::model_download_lock::acquire_model_download_lock(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
         app_infra::OCR_PROCESSOR,
         model_key(&plan.provider, &plan.model_id),
     )
@@ -1180,7 +1180,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).expect("test dir should be created");
 
-        let mut settings = crate::native_capture::settings::default_recording_settings().ocr;
+        let mut settings = app_core::recording_settings::default_recording_settings().ocr;
         settings.provider = OcrProvider::Tesseract;
         settings.model_id = Some(ocr::DEFAULT_TESSERACT_MODEL_ID.to_string());
 

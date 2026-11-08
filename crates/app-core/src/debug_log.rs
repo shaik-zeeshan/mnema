@@ -1,5 +1,33 @@
+//! The app log's levels, targets and gate. Lines log under the caller's module
+//! (see [`log_at`]), never this file's, so the app log can tell sources apart.
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
+
+pub const APP_LOG_FILE_NAME: &str = "rust";
+pub const APP_LOG_MAX_FILE_BYTES: u128 = 5 * 1024 * 1024;
+/// Rotated files kept *besides* the active `rust.log` (`KeepSome(n)` keeps n
+/// archives plus the live file), so 4 = five files in all.
+pub const APP_LOG_KEPT_FILES: usize = 4;
+
+/// Targets that reach the app log at Debug; everything else is held at Info and
+/// then dropped by the host's filter. A new crate that logs must be listed here.
+pub const APP_LOG_TARGET_PREFIXES: &[&str] = &[
+    "mnema",
+    "mnema_lib",
+    "app_core",
+    "app_infra",
+    "audio_transcription",
+    "ocr",
+    "capture_runtime",
+    "capture_screen",
+    "capture_microphone",
+    "capture_system_audio",
+    "capture_writers",
+    "capture_types",
+    // `tauri_plugin_log::WEBVIEW_TARGET`: the frontend's console lines.
+    "webview",
+];
 
 /// Runtime gate for whether app-target Debug/Trace records reach the
 /// `tauri_plugin_log` sinks (stderr + the `rust` application log file).
@@ -11,7 +39,7 @@ use std::sync::Once;
 static APP_DEBUG_LOGGING_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// Mirror the developer-options setting into the app-log verbosity gate.
-pub(crate) fn set_app_debug_logging_enabled(enabled: bool) {
+pub fn set_app_debug_logging_enabled(enabled: bool) {
     APP_DEBUG_LOGGING_ENABLED.store(enabled, Ordering::Relaxed);
 }
 
@@ -20,7 +48,7 @@ pub(crate) fn set_app_debug_logging_enabled(enabled: bool) {
 /// `Info`/`Warn`/`Error` always pass. `Debug`/`Trace` pass unconditionally in
 /// debug builds, and in release builds only while developer options have enabled
 /// debug logging.
-pub(crate) fn app_log_record_allowed(level: tauri_plugin_log::log::Level) -> bool {
+pub fn app_log_record_allowed(level: log::Level) -> bool {
     record_allowed(
         level,
         cfg!(debug_assertions),
@@ -30,12 +58,8 @@ pub(crate) fn app_log_record_allowed(level: tauri_plugin_log::log::Level) -> boo
 
 /// Pure decision used by [`app_log_record_allowed`], split out so the
 /// release-build gating branch is exercisable under a debug test build.
-fn record_allowed(
-    level: tauri_plugin_log::log::Level,
-    debug_build: bool,
-    runtime_enabled: bool,
-) -> bool {
-    if level <= tauri_plugin_log::log::Level::Info {
+fn record_allowed(level: log::Level, debug_build: bool, runtime_enabled: bool) -> bool {
+    if level <= log::Level::Info {
         return true;
     }
     debug_build || runtime_enabled
@@ -53,7 +77,7 @@ fn panic_payload_message(info: &std::panic::PanicHookInfo<'_>) -> String {
     "non-string panic payload".to_string()
 }
 
-pub(crate) fn install_panic_hook() {
+pub fn install_panic_hook() {
     static PANIC_HOOK_INSTALLED: Once = Once::new();
 
     PANIC_HOOK_INSTALLED.call_once(|| {
@@ -85,55 +109,61 @@ pub(crate) fn install_panic_hook() {
 }
 
 #[track_caller]
-pub(crate) fn log(message: impl AsRef<str>) {
-    log_at(tauri_plugin_log::log::Level::Debug, message.as_ref());
+pub fn log(message: impl AsRef<str>) {
+    log_at(log::Level::Debug, message.as_ref());
 }
 
 #[track_caller]
-pub(crate) fn log_info(message: impl AsRef<str>) {
-    log_at(tauri_plugin_log::log::Level::Info, message.as_ref());
+pub fn log_info(message: impl AsRef<str>) {
+    log_at(log::Level::Info, message.as_ref());
 }
 
 #[track_caller]
-pub(crate) fn log_warn(message: impl AsRef<str>) {
-    log_at(tauri_plugin_log::log::Level::Warn, message.as_ref());
+pub fn log_warn(message: impl AsRef<str>) {
+    log_at(log::Level::Warn, message.as_ref());
 }
 
 #[track_caller]
-pub(crate) fn log_error(message: impl AsRef<str>) {
-    log_at(tauri_plugin_log::log::Level::Error, message.as_ref());
+pub fn log_error(message: impl AsRef<str>) {
+    log_at(log::Level::Error, message.as_ref());
 }
 
 /// Level for one failure of an operation retried every tick: Warn the first
 /// time, Debug while the same streak keeps failing, so a stuck source writes
 /// one Warn to the app log instead of one per tick. Reset `logged` to `false`
 /// on success.
-pub(crate) fn streak_level(logged: &mut bool) -> tauri_plugin_log::log::Level {
+pub fn streak_level(logged: &mut bool) -> log::Level {
     if std::mem::replace(logged, true) {
-        tauri_plugin_log::log::Level::Debug
+        log::Level::Debug
     } else {
-        tauri_plugin_log::log::Level::Warn
+        log::Level::Warn
     }
 }
 
-/// Logs under the caller's module (`mnema_lib::semantic_search_worker`), not this
-/// file's, so the app log and the Developer window can tell sources apart.
+/// Logs under the caller's module (`mnema_lib::semantic_search_worker`,
+/// `app_core::recording_settings`), not this file's, so the app log and the
+/// Developer window can tell sources apart.
 #[track_caller]
-pub(crate) fn log_at(level: tauri_plugin_log::log::Level, message: &str) {
+pub fn log_at(level: log::Level, message: &str) {
     let target = caller_target(std::panic::Location::caller().file());
-    tauri_plugin_log::log::log!(target: &target, level, "{message}");
+    log::log!(target: &target, level, "{message}");
 }
 
-fn caller_target(file: &str) -> String {
+pub(crate) fn caller_target(file: &str) -> String {
     let file = file.replace('\\', "/");
-    let module = file
+    let (crate_dir, module) = file
         .rsplit_once("/src/")
-        .map(|(_, rest)| rest)
-        .or_else(|| file.strip_prefix("src/"))
-        .unwrap_or(&file);
+        .or_else(|| file.strip_prefix("src/").map(|rest| ("", rest)))
+        .unwrap_or(("", file.as_str()));
+    // Code moved into app-core names app-core; everything else is the desktop crate.
+    let crate_name = if crate_dir.ends_with("app-core") {
+        "app_core"
+    } else {
+        "mnema_lib"
+    };
     let module = module.strip_suffix(".rs").unwrap_or(module);
     let module = module.strip_suffix("/mod").unwrap_or(module);
-    format!("mnema_lib::{}", module.replace('/', "::"))
+    format!("{crate_name}::{}", module.replace('/', "::"))
 }
 
 #[cfg(test)]
@@ -142,7 +172,7 @@ mod tests {
 
     #[test]
     fn record_allowed_always_passes_info_and_more_severe_levels() {
-        use tauri_plugin_log::log::Level;
+        use log::Level;
 
         for level in [Level::Error, Level::Warn, Level::Info] {
             // Severe records pass even in a release build with the gate off.
@@ -152,7 +182,7 @@ mod tests {
 
     #[test]
     fn record_allowed_gates_debug_on_runtime_flag_in_release_builds() {
-        use tauri_plugin_log::log::Level;
+        use log::Level;
 
         // Release build, developer options off: Debug/Trace are suppressed.
         assert!(!record_allowed(Level::Debug, false, false));
@@ -169,7 +199,7 @@ mod tests {
 
     #[test]
     fn set_app_debug_logging_enabled_toggles_the_runtime_gate() {
-        use tauri_plugin_log::log::Level;
+        use log::Level;
 
         set_app_debug_logging_enabled(true);
         assert!(app_log_record_allowed(Level::Info));
@@ -183,7 +213,7 @@ mod tests {
 
     #[test]
     fn streak_level_warns_once_per_failure_streak() {
-        use tauri_plugin_log::log::Level;
+        use log::Level;
 
         let mut logged = false;
         assert_eq!(streak_level(&mut logged), Level::Warn);
@@ -207,5 +237,20 @@ mod tests {
             super::caller_target("C:\\mnema\\apps\\desktop\\src-tauri\\src\\ask_ai\\mod.rs"),
             "mnema_lib::ask_ai"
         );
+        assert_eq!(
+            super::caller_target("crates/app-core/src/recording_settings/domain_patch.rs"),
+            "app_core::recording_settings::domain_patch"
+        );
+        assert_eq!(
+            super::caller_target("/Users/ana/mnema/crates/app-core/src/recording_settings/mod.rs"),
+            "app_core::recording_settings"
+        );
+    }
+
+    #[test]
+    fn app_log_target_prefixes_cover_both_desktop_crates() {
+        for target in ["mnema_lib", "app_core", "app_infra", "webview"] {
+            assert!(APP_LOG_TARGET_PREFIXES.contains(&target), "{target}");
+        }
     }
 }

@@ -80,7 +80,7 @@ fn set_microphone_device_running(runtime: &mut NativeCaptureRuntime, running: bo
 #[cfg(target_os = "macos")]
 fn drop_dead_microphone_session(runtime: &mut NativeCaptureRuntime) {
     if let Err(error) = super::segments::stop_microphone_session_for_runtime(runtime) {
-        super::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "failed to close the file of a microphone whose device stopped; dropping it anyway: [{}] {}",
             error.code, error.message
         ));
@@ -117,7 +117,7 @@ pub(super) fn apply_microphone_away(
         // finalizes; the pause below works on a stopped device.
         set_microphone_device_running(runtime, false);
         if let Err(error) = pause_microphone_for_inactivity_with_app_handle(runtime, app_handle) {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to close the microphone file while the Mac is away; device stopped anyway: [{}] {}",
                 error.code, error.message
             ));
@@ -126,7 +126,7 @@ pub(super) fn apply_microphone_away(
             // would read as recording and never be resumed into a fresh file.
             mark_microphone_family_paused(runtime);
         }
-        super::debug_log::log_info(
+        app_core::debug_log::log_info(
             "stopped microphone while the Mac is locked or its displays are asleep",
         );
     }
@@ -139,9 +139,9 @@ pub(super) fn apply_microphone_away(
     }
     if microphone_device_running(runtime).is_some() {
         if set_microphone_device_running(runtime, true) {
-            super::debug_log::log_info("restarted microphone after the Mac came back");
+            app_core::debug_log::log_info("restarted microphone after the Mac came back");
         } else {
-            super::debug_log::log_warn(
+            app_core::debug_log::log_warn(
                 "microphone did not restart after the Mac came back; reopening it on the current device",
             );
             drop_dead_microphone_session(runtime);
@@ -208,7 +208,7 @@ pub(super) fn reopen_unwakeable_microphone(
         return;
     }
     if microphone_device_running(runtime) == Some(false) {
-        super::debug_log::log_warn("microphone device stopped unexpectedly; reopening it");
+        app_core::debug_log::log_warn("microphone device stopped unexpectedly; reopening it");
         drop_dead_microphone_session(runtime);
     }
     // The device the session started on may be the one that went; reopen on
@@ -229,10 +229,10 @@ pub(super) fn reopen_unwakeable_microphone(
     match settle_microphone_reopen(runtime, reopened) {
         Ok(()) => {
             *failure_logged = false;
-            super::debug_log::log_info("reopened microphone capture");
+            app_core::debug_log::log_info("reopened microphone capture");
         }
-        Err(error) => super::debug_log::log_at(
-            super::debug_log::streak_level(failure_logged),
+        Err(error) => app_core::debug_log::log_at(
+            app_core::debug_log::streak_level(failure_logged),
             &format!(
                 "failed to reopen microphone capture; retrying: [{}] {}",
                 error.code, error.message

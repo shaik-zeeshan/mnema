@@ -14,15 +14,15 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 use tauri::Manager;
 
-use crate::app_infra::{AppInfraState, StartupReport};
+use crate::app_infra::StartupReport;
 use crate::debug_status::{
     get_semantic_index_status, SemanticIndexStatusDto, SemanticWorkerHealthState,
 };
 use crate::native_capture::capture_health::{capture_health_snapshot, CaptureHealthDto};
 use crate::native_capture::metadata::capture_privacy_debug_info;
-use crate::native_capture::{
-    read_recording_settings, CaptureMetadataState, NativeCaptureState, RecordingSettingsState,
-};
+use crate::native_capture::{CaptureMetadataState, NativeCaptureState};
+use app_core::recording_settings::{current_recording_settings, RecordingSettingsState};
+use app_core::AppInfraState;
 
 pub use rules::roll_up;
 
@@ -270,7 +270,7 @@ pub async fn get_debug_health(
     settings_state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<Vec<FeatureHealthDto>, String> {
     let privacy = capture_privacy_debug_info(metadata_state.inner());
-    let settings = read_recording_settings(settings_state.inner());
+    let settings = current_recording_settings(settings_state.inner());
     // Off the async workers: the free-space read can block on a slow volume.
     let capture = {
         let app = app_handle.clone();

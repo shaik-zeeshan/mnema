@@ -14,7 +14,8 @@ use capture_types::SettingsOwnershipDomain;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use crate::app_infra::{AppInfraState, PersonProfileDto};
+use app_core::AppInfraState;
+use crate::app_infra::PersonProfileDto;
 
 /// Name used when the caller does not supply one. The Voice screen may ask; the
 /// Settings re-enroll surface does not have to.
@@ -215,7 +216,7 @@ mod tests {
     /// Test 11 (settings half): storing a voiceprint turns recognition on.
     #[test]
     fn enrolling_enables_recognition_and_leaves_auto_labelling_at_its_default() {
-        let mut settings = crate::native_capture::settings::default_recording_settings();
+        let mut settings = app_core::recording_settings::default_recording_settings();
         assert!(
             !settings.speaker_analysis.recognize_saved_people,
             "recognition is off until something enrolls"

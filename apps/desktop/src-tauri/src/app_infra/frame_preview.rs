@@ -23,7 +23,7 @@ use tauri::{path::BaseDirectory, Emitter, Manager};
 use time::{format_description::well_known::Rfc3339, OffsetDateTime};
 use tokio::sync::oneshot;
 
-use super::AppInfraState;
+use app_core::AppInfraState;
 
 pub type FramePreviewCacheState = Mutex<FramePreviewState>;
 
@@ -1296,7 +1296,7 @@ fn read_segment_frame_preview_or_return_video_error(
     let video_error = video_error.into();
 
     if let Some(bytes) = read_nearest_segment_frame_preview(frame, related_frames)? {
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "[DEBUG-frame-preview] frame_id={} falling back to persisted segment frame after video preview failure at {}: {}",
             frame.id,
             video_path.display(),
@@ -1479,7 +1479,7 @@ fn log_video_preview_exact_miss(
         requested_time,
         actual_time,
     ) {
-        crate::native_capture::debug_log::log(message);
+        app_core::debug_log::log(message);
     }
 }
 
@@ -2162,11 +2162,11 @@ pub(super) async fn get_frame_preview_inner_with_logging(
 
     match &result {
         Ok(Some(_preview)) => {}
-        Ok(None) => crate::native_capture::debug_log::log(format!(
+        Ok(None) => app_core::debug_log::log(format!(
             "[DEBUG-frame-preview] frame_id={} missing elapsed_ms={}",
             frame_id, elapsed_ms,
         )),
-        Err(error) => crate::native_capture::debug_log::log_error(format!(
+        Err(error) => app_core::debug_log::log_error(format!(
             "[DEBUG-frame-preview] frame_id={} failed elapsed_ms={} error={}",
             frame_id, elapsed_ms, error,
         )),
@@ -2344,7 +2344,7 @@ async fn prepare_frame_scrub_preview(
     ))
 }
 
-fn preview_cache_ttl(settings: &crate::native_capture::RecordingSettingsState) -> Duration {
+fn preview_cache_ttl(settings: &app_core::recording_settings::RecordingSettingsState) -> Duration {
     let ttl_seconds = settings
         .lock()
         .expect("recording settings state poisoned")
@@ -2365,7 +2365,7 @@ fn log_scrub_preview_perf(event: &str, fields: impl AsRef<str>) {
     if !scrub_preview_perf_debug_enabled() {
         return;
     }
-    crate::native_capture::debug_log::log(format!(
+    app_core::debug_log::log(format!(
         "[DEBUG-scrub-perf] event={event} {}",
         fields.as_ref()
     ));
@@ -2378,13 +2378,13 @@ pub(crate) fn run_generated_frame_preview_cache_startup_pass(app_handle: &tauri:
     {
         Ok(cache_dir) => {
             if let Err(error) = cleanup_generated_frame_preview_cache_dir(&cache_dir) {
-                crate::native_capture::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed generated frame preview cache startup cleanup at {}: {error}",
                     cache_dir.display()
                 ));
             }
         }
-        Err(error) => crate::native_capture::debug_log::log_warn(format!(
+        Err(error) => app_core::debug_log::log_warn(format!(
             "failed to resolve generated frame preview cache directory for startup cleanup: {error}"
         )),
     }
@@ -2396,20 +2396,20 @@ pub(crate) fn run_generated_frame_preview_cache_startup_pass(app_handle: &tauri:
         Ok(cache_dir) => {
             let frame_scrub_cache_dir = cache_dir.join(GENERATED_FRAME_SCRUB_PREVIEW_CACHE_DIR);
             if let Err(error) = cleanup_generated_frame_preview_cache_dir(&frame_scrub_cache_dir) {
-                crate::native_capture::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed generated frame scrub preview cache startup cleanup at {}: {error}",
                     frame_scrub_cache_dir.display()
                 ));
             }
             let cache_dir = cache_dir.join(SCRUB_PREVIEW_RENDITION);
             if let Err(error) = cleanup_generated_scrub_preview_cache_dir(&cache_dir) {
-                crate::native_capture::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed generated scrub preview cache startup cleanup at {}: {error}",
                     cache_dir.display()
                 ));
             }
         }
-        Err(error) => crate::native_capture::debug_log::log_warn(format!(
+        Err(error) => app_core::debug_log::log_warn(format!(
             "failed to resolve generated scrub preview cache directory for startup cleanup: {error}"
         )),
     }
@@ -3185,7 +3185,7 @@ pub fn enqueue_scrub_preview_generation_for_screen_files(
             }
             Ok(None) => {}
             Err(error) => {
-                crate::native_capture::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed to enqueue finalized screen segment scrub previews for {screen_file}: {error}"
                 ));
             }
@@ -3521,7 +3521,7 @@ pub async fn get_frame_preview(
     request: GetFramePreviewRequest,
     state: tauri::State<'_, AppInfraState>,
     cache: tauri::State<'_, FramePreviewCacheState>,
-    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+    settings: tauri::State<'_, app_core::recording_settings::RecordingSettingsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<Option<FramePreviewDto>, String> {
     let infra = Arc::clone(&*state);
@@ -3589,7 +3589,7 @@ pub async fn get_frame_scrub_previews(
     request: GetFrameScrubPreviewsRequest,
     state: tauri::State<'_, AppInfraState>,
     cache: tauri::State<'_, FramePreviewCacheState>,
-    settings: tauri::State<'_, crate::native_capture::RecordingSettingsState>,
+    settings: tauri::State<'_, app_core::recording_settings::RecordingSettingsState>,
     app_handle: tauri::AppHandle,
 ) -> Result<FrameScrubPreviewsDto, String> {
     let started_at = Instant::now();

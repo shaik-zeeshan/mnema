@@ -463,9 +463,7 @@ pub(crate) fn refresh(app: &tauri::AppHandle) -> bool {
     let menu = match build_menu(app, &model) {
         Ok(menu) => menu,
         Err(error) => {
-            crate::native_capture::debug_log::log_warn(format!(
-                "failed to rebuild status-bar menu: {error}"
-            ));
+            app_core::debug_log::log_warn(format!("failed to rebuild status-bar menu: {error}"));
             return false;
         }
     };
@@ -480,15 +478,11 @@ pub(crate) fn refresh(app: &tauri::AppHandle) -> bool {
     // bailing here would silently stop refreshing their tooltip too.
     let mut menu_landed = true;
     if let Err(error) = tray.set_menu(Some(menu)) {
-        crate::native_capture::debug_log::log_warn(format!(
-            "failed to set status-bar menu: {error}"
-        ));
+        app_core::debug_log::log_warn(format!("failed to set status-bar menu: {error}"));
         menu_landed = false;
     }
     if let Err(error) = tray.set_tooltip(Some(model.tooltip)) {
-        crate::native_capture::debug_log::log_warn(format!(
-            "failed to set status-bar tooltip: {error}"
-        ));
+        app_core::debug_log::log_warn(format!("failed to set status-bar tooltip: {error}"));
     }
     menu_landed
 }
@@ -563,7 +557,7 @@ fn handle_source_toggle(app: &tauri::AppHandle, id: &str) {
     };
 
     if let Err(error) = crate::native_capture::update_recording_sources_from_app_handle(app, next) {
-        crate::native_capture::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "failed to update recording sources from status bar: [{}] {}",
             error.code, error.message
         ));
@@ -732,7 +726,7 @@ fn handle_menu_event(app: &tauri::AppHandle, id: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::native_capture::settings::default_recording_settings;
+    use app_core::recording_settings::default_recording_settings;
 
     fn support_all() -> CaptureSources {
         CaptureSources {

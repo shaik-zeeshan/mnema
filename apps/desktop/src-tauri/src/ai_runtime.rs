@@ -12,7 +12,7 @@
 use capture_types::{AccessSettings, AiEngineRef, AiProviderConfig, AiProviderKind, AiRuntimeSettings};
 use serde::{Deserialize, Serialize};
 
-use crate::native_capture::{read_recording_settings, RecordingSettingsState};
+use app_core::recording_settings::{current_recording_settings, RecordingSettingsState};
 
 /// Availability snapshot for the configured engine, mirroring Ask AI's
 /// "Ok with available:false + reason" shape for the normal not-ready cases.
@@ -970,7 +970,7 @@ fn status_reason_code(reason: String) -> String {
 pub async fn get_ai_runtime_status(
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<AiRuntimeStatus, String> {
-    let settings = read_recording_settings(state.inner()).ai_runtime;
+    let settings = current_recording_settings(state.inner()).ai_runtime;
 
     // Availability + reason flow through the single shared prerequisite so this
     // status surface and the feature gates can never drift on what "ready"
@@ -1007,7 +1007,7 @@ pub async fn get_ai_runtime_status(
 pub async fn ai_runtime_test_connection(
     state: tauri::State<'_, RecordingSettingsState>,
 ) -> Result<AiRuntimeTestResult, String> {
-    let settings = read_recording_settings(state.inner()).ai_runtime;
+    let settings = current_recording_settings(state.inner()).ai_runtime;
 
     // Test the global default model's engine. Deliberately NOT gated on the
     // master switch so the Settings card can verify a key/endpoint before the
@@ -1399,7 +1399,7 @@ pub async fn ai_runtime_list_models(
 ) -> Result<AiRuntimeModelsResult, String> {
     let providers = request
         .and_then(|request| request.providers)
-        .unwrap_or_else(|| read_recording_settings(state.inner()).ai_runtime.providers);
+        .unwrap_or_else(|| current_recording_settings(state.inner()).ai_runtime.providers);
 
     let client = reqwest::Client::new();
     let mut models: Vec<AiRuntimeModel> = Vec::new();
@@ -1485,7 +1485,7 @@ pub async fn verify_ai_provider(
     }
     let providers = request
         .providers
-        .unwrap_or_else(|| read_recording_settings(state.inner()).ai_runtime.providers);
+        .unwrap_or_else(|| current_recording_settings(state.inner()).ai_runtime.providers);
     let provider = providers
         .iter()
         .find(|candidate| candidate.id == provider_id)

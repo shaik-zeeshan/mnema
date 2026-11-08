@@ -9,7 +9,7 @@ use capture_types::{Conversation, ConversationSummary};
 use serde::Deserialize;
 use tauri::Emitter;
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 
 /// Frontend refresh event emitted after a conversation is saved or deleted.
 pub const CONVERSATION_CHANGED_EVENT: &str = "conversation_changed";

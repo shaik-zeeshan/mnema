@@ -3,7 +3,7 @@ use super::output::{
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file, strip_live_system_audio_output_file,
 };
-use super::settings::compute_effective_screen_bitrate_bps;
+use app_core::recording_settings::compute_effective_screen_bitrate_bps;
 use super::{disk_space, metadata, privacy};
 use capture_microphone as microphone_capture;
 use capture_runtime::{
@@ -101,7 +101,7 @@ fn persist_capture_session_started(
     source_sessions: &SourceSessions,
     segment_duration_seconds: u64,
 ) {
-    let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+    let infra = Arc::clone(&*app_handle.state::<app_core::AppInfraState>());
     let started_at = rfc3339_from_unix_ms(started_at_unix_ms);
     let session = ::app_infra::NewCaptureSession {
         capture_session_id,
@@ -130,11 +130,11 @@ fn persist_capture_session_started(
             .await
     }) {
         Ok(Ok(())) => {}
-        Ok(Err(error)) => super::debug_log::log_error(format!(
+        Ok(Err(error)) => app_core::debug_log::log_error(format!(
             "failed to persist native capture session: {error}"
         )),
         Err(error) => {
-            super::debug_log::log_error(format!(
+            app_core::debug_log::log_error(format!(
                 "native capture session persistence failed: {error}"
             ));
         }
@@ -290,7 +290,7 @@ pub(super) fn cleanup_failed_segment_dirs(
 
     if let Err(error) = std::fs::remove_dir_all(segment_dir) {
         if error.kind() != std::io::ErrorKind::NotFound {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed removing unusable capture output directory {}: {}",
                 segment_dir.display(),
                 error
@@ -310,7 +310,7 @@ fn cleanup_failed_audio_outputs(
     {
         if let Err(error) = std::fs::remove_file(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                super::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed removing unusable capture output file {}: {}",
                     path.display(),
                     error
@@ -420,7 +420,7 @@ pub(super) fn apply_microphone_output_finalization(
             {
                 if shifted != output_file {
                     if let Err(error) = std::fs::rename(&output_file, &shifted) {
-                        super::debug_log::log_warn(format!(
+                        app_core::debug_log::log_warn(format!(
                             "failed to rename trimmed microphone output {} to {}: {}",
                             output_file, shifted, error
                         ));
@@ -877,7 +877,7 @@ pub(super) fn recover_from_segment_finalize_error(
         microphone_recording_file,
         system_audio_recording_file,
     );
-    super::debug_log::log_warn(format!(
+    app_core::debug_log::log_warn(format!(
         "recovered native capture segment finalization failure while {context}: [{}] {}",
         error.code, error.message
     ));
@@ -918,7 +918,7 @@ fn capture_session_options(
                         // The worker is gone for this session; say so once, not
                         // once per exported frame.
                         if !channel_closed_logged.swap(true, std::sync::atomic::Ordering::Relaxed) {
-                            super::debug_log::log_error(
+                            app_core::debug_log::log_error(
                                 "failed to forward native frame artifact for persistence: worker channel closed",
                             );
                         }
@@ -1167,13 +1167,13 @@ pub(super) fn maybe_suspend_for_low_disk_at_boundary(
                 &error,
                 CaptureSuspensionKind::LowDisk,
             ) {
-                super::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "low-disk suspension could not stop capture; preserving runtime state: [{}] {}",
                     stop_error.code, stop_error.message
                 ));
                 return LowDiskBoundaryOutcome::Proceed;
             }
-            super::debug_log::log_info(
+            app_core::debug_log::log_info(
                 "capture paused: recordings volume low on disk; suspending all sources until free space recovers",
             );
             LowDiskBoundaryOutcome::Suspended
@@ -1342,7 +1342,7 @@ fn commit_suspended_screen_system_outputs(
             warm_scrub_previews_for_committed_screen_outputs(app_handle, Some(&output_files));
         }
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to finalize suspended screen outputs; continuing privacy handling: [{}] {}",
                 error.code, error.message
             ));
@@ -1400,7 +1400,7 @@ fn commit_suspended_microphone_outputs(
             );
         }
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to commit microphone outputs while {context}; continuing: [{}] {}",
                 error.code, error.message
             ));
@@ -1446,7 +1446,7 @@ pub(super) fn graceful_stop_at_boundary(
                 active_session: &mut runtime.active_screen_session,
             })
         {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed stopping screen session before boundary graceful-stop commit; continuing: [{}] {}",
                 stop_error.code, stop_error.message
             ));
@@ -1501,7 +1501,7 @@ pub(super) fn graceful_stop_for_low_disk(
         );
     }
 
-    super::debug_log::log_error(format!(
+    app_core::debug_log::log_error(format!(
         "capture stopped: recordings volume free space fell below the critical reserve floor; ending session to protect app storage ({} free, floor {})",
         disk_space::human_bytes(free_bytes),
         disk_space::human_bytes(disk_space::critical_threshold_bytes()),
@@ -1558,7 +1558,7 @@ pub(super) fn graceful_stop_for_license_block(
         );
     }
 
-    super::debug_log::log_warn(if revoked {
+    app_core::debug_log::log_warn(if revoked {
         "capture stopped: license revoked during the session, Read-Only Mode — committed the current segment and ended the session at the rotation boundary"
     } else {
         "capture stopped: trial ended during the session, Read-Only Mode — committed the current segment and ended the session at the rotation boundary"
@@ -1582,7 +1582,7 @@ fn finalize_live_microphone_continuation_on_stop(
     let finalization = match session.pause_output_file_for_inactivity(0, 0.0) {
         Ok(finalization) => finalization,
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to finalize microphone continuation during low-disk graceful stop; continuing stop: [{}] {}",
                 error.code, error.message
             ));
@@ -1617,7 +1617,7 @@ fn finalize_live_microphone_continuation_on_stop(
             system_audio: false,
         }),
     ) {
-        super::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "failed to commit microphone continuation during low-disk graceful stop; continuing stop: [{}] {}",
             error.code, error.message
         ));
@@ -1685,7 +1685,7 @@ pub(super) fn discard_partial_segment_on_disk_full(
     for path in &paths {
         if let Err(error) = std::fs::remove_file(path) {
             if error.kind() != std::io::ErrorKind::NotFound {
-                super::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed removing disk-full partial capture file {path}: {error}"
                 ));
             }
@@ -1783,7 +1783,7 @@ pub(super) fn handle_mid_segment_write_failure_for_low_disk(
         // discarded, so do not re-commit a current segment.
         disk_space::LowDiskDecision::Critical => {
             graceful_stop_for_low_disk(Some(app_handle), runtime, free, false);
-            super::debug_log::log_error(format!(
+            app_core::debug_log::log_error(format!(
                 "mid-segment disk-full below the reserve floor; discarded the partial and stopped gracefully ({} free)",
                 disk_space::human_bytes(free)
             ));
@@ -1793,7 +1793,7 @@ pub(super) fn handle_mid_segment_write_failure_for_low_disk(
         // Suspension so recovery resumes once free space returns.
         disk_space::LowDiskDecision::Pause => {
             enter_low_disk_suspension_after_partial_discard(app_handle, runtime);
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "mid-segment disk-full; discarded the partial and suspended all sources until free space recovers ({} free)",
                 disk_space::human_bytes(free)
             ));
@@ -1943,7 +1943,7 @@ fn attempt_privacy_suspension_recovery(
             if let Some(suspension) = runtime.capture_suspension.as_mut() {
                 suspension.record_recovery_failure(&error);
                 if suspension.status == CaptureSuspensionStatus::RestartRequired {
-                    super::debug_log::log_error(format!(
+                    app_core::debug_log::log_error(format!(
                         "privacy recovery restart attempts exhausted; screen capture requires manual stop/start: [{}] {}",
                         error.code, error.message
                     ));
@@ -1951,7 +1951,7 @@ fn attempt_privacy_suspension_recovery(
                     return PrivacySuspensionRecoveryOutcome::RestartRequired;
                 }
             }
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "privacy recovery restart failed; screen capture remains suspended: [{}] {}",
                 error.code, error.message
             ));
@@ -1974,7 +1974,7 @@ fn attempt_privacy_suspension_recovery(
     runtime.active_screen_session = active_screen_session;
     runtime.capture_suspension = None;
     if let Err(error) = reanchor_active_segment_timing(runtime, "recovering privacy suspension") {
-        super::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "failed to reanchor segment timing after privacy recovery: [{}] {}",
             error.code, error.message
         ));
@@ -2048,7 +2048,7 @@ fn attempt_low_disk_recovery(
         Ok(()) => {
             runtime.capture_suspension = None;
             super::clear_app_notification_by_id(app_handle, LOW_DISK_NOTIFICATION_ID);
-            super::debug_log::log_info(format!(
+            app_core::debug_log::log_info(format!(
                 "recovered: recordings volume free space back above resume threshold; restarted all sources ({} free)",
                 disk_space::human_bytes(free)
             ));
@@ -2058,7 +2058,7 @@ fn attempt_low_disk_recovery(
             if let Some(suspension) = runtime.capture_suspension.as_mut() {
                 suspension.record_recovery_failure(&error);
             }
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "low-disk recovery restart failed; sources remain suspended: [{}] {}",
                 error.code, error.message
             ));
@@ -2166,7 +2166,7 @@ fn resume_all_sources_after_low_disk(
     ) {
         Ok(output_file) => output_file,
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to restart system audio after low-disk recovery; continuing without it: [{}] {}",
                 error.code, error.message
             ));
@@ -2223,7 +2223,7 @@ fn resume_all_sources_after_low_disk(
     runtime.system_audio_recording_file = next_system_audio_recording_file;
 
     if let Err(error) = reanchor_active_segment_timing(runtime, "recovering low-disk suspension") {
-        super::debug_log::log_warn(format!(
+        app_core::debug_log::log_warn(format!(
             "failed to reanchor segment timing after low-disk recovery: [{}] {}",
             error.code, error.message
         ));
@@ -2238,7 +2238,7 @@ fn spawn_frame_artifact_worker(
 ) -> mpsc::Sender<FrameArtifactMessage> {
     let (tx, mut rx) = mpsc::channel(FRAME_ARTIFACT_BUFFER_CAPACITY);
     let app_handle = app_handle.clone();
-    let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+    let infra = Arc::clone(&*app_handle.state::<app_core::AppInfraState>());
 
     tauri::async_runtime::spawn(async move {
         while let Some(message) = rx.recv().await {
@@ -2247,7 +2247,7 @@ fn spawn_frame_artifact_worker(
                     if let Err(error) = crate::app_infra::persist_screen_frame_artifact(
                         infra.as_ref(),
                         app_handle
-                            .state::<crate::native_capture::RecordingSettingsState>()
+                            .state::<app_core::recording_settings::RecordingSettingsState>()
                             .inner(),
                         envelope.metadata_snapshot,
                         &session_id,
@@ -2255,7 +2255,7 @@ fn spawn_frame_artifact_worker(
                     )
                     .await
                     {
-                        super::debug_log::log_error(format!(
+                        app_core::debug_log::log_error(format!(
                             "failed to persist native frame artifact: {error}"
                         ));
                     }
@@ -2445,12 +2445,12 @@ fn transcription_admission_for_app_handle(
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::AudioSegmentTranscriptionAdmission {
     let transcription_settings = match app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
+        .state::<app_core::recording_settings::RecordingSettingsState>()
         .lock()
     {
         Ok(settings) => settings.settings.transcription.clone(),
         Err(_) => {
-            super::debug_log::log_error(
+            app_core::debug_log::log_error(
                 "failed to read recording settings for audio transcription admission".to_string(),
             );
             return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
@@ -2469,7 +2469,7 @@ fn transcription_admission_for_app_handle(
             )
         }
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to resolve app data directory for audio transcription admission: {error}"
             ));
             return ::app_infra::AudioSegmentTranscriptionAdmission::unavailable();
@@ -2506,7 +2506,7 @@ fn transcription_admission_for_app_handle(
                     ::app_infra::AudioSegmentTranscriptionAdmission::available(payload_json)
                 }
                 Err(error) => {
-                    super::debug_log::log_error(format!(
+                    app_core::debug_log::log_error(format!(
                         "failed to serialize audio transcription admission payload: {error}"
                     ));
                     ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
@@ -2515,7 +2515,7 @@ fn transcription_admission_for_app_handle(
         }
         Ok(false) => ::app_infra::AudioSegmentTranscriptionAdmission::unavailable(),
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to inspect selected audio transcription model: {error}"
             ));
             ::app_infra::AudioSegmentTranscriptionAdmission::unavailable()
@@ -2528,12 +2528,12 @@ fn system_audio_speech_admission_for_app_handle(
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::SystemAudioSpeechActivityAdmission {
     let settings = match app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
+        .state::<app_core::recording_settings::RecordingSettingsState>()
         .lock()
     {
         Ok(settings) => settings.settings.clone(),
         Err(_) => {
-            super::debug_log::log_error(
+            app_core::debug_log::log_error(
                 "failed to read recording settings for system-audio speech admission".to_string(),
             );
             return ::app_infra::SystemAudioSpeechActivityAdmission::disabled();
@@ -2556,7 +2556,7 @@ fn system_audio_speech_admission_for_app_handle(
                 )
             }
             Err(error) => {
-                super::debug_log::log_warn(format!(
+                app_core::debug_log::log_warn(format!(
                     "failed to resolve app data directory for system-audio speech admission: {error}"
                 ));
                 return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
@@ -2607,7 +2607,7 @@ fn system_audio_speech_admission_for_app_handle(
             ::app_infra::SystemAudioSpeechActivityAdmission::available(payload_json)
         }
         Err(error) => {
-            super::debug_log::log_error(format!(
+            app_core::debug_log::log_error(format!(
                 "failed to serialize system-audio speech admission payload: {error}"
             ));
             ::app_infra::SystemAudioSpeechActivityAdmission::unavailable()
@@ -2620,12 +2620,12 @@ fn speaker_analysis_admission_for_app_handle(
     app_handle: &tauri::AppHandle,
 ) -> ::app_infra::AudioSegmentSpeakerAnalysisAdmission {
     let speaker_settings = match app_handle
-        .state::<crate::native_capture::RecordingSettingsState>()
+        .state::<app_core::recording_settings::RecordingSettingsState>()
         .lock()
     {
         Ok(settings) => settings.settings.speaker_analysis.clone(),
         Err(_) => {
-            super::debug_log::log_error(
+            app_core::debug_log::log_error(
                 "failed to read recording settings for speaker analysis admission".to_string(),
             );
             return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
@@ -2637,7 +2637,7 @@ fn speaker_analysis_admission_for_app_handle(
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(app_data_dir) => app_data_dir,
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to resolve app data directory for speaker analysis admission: {error}"
             ));
             return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable();
@@ -2666,7 +2666,7 @@ fn speaker_analysis_admission_for_app_handle(
                     ::app_infra::AudioSegmentSpeakerAnalysisAdmission::available(payload_json)
                 }
                 Err(error) => {
-                    super::debug_log::log_error(format!(
+                    app_core::debug_log::log_error(format!(
                         "failed to serialize speaker analysis admission payload: {error}"
                     ));
                     ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable()
@@ -2675,7 +2675,7 @@ fn speaker_analysis_admission_for_app_handle(
         }
         Ok(_) => ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable(),
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to inspect selected speaker analysis model: {error}"
             ));
             ::app_infra::AudioSegmentSpeakerAnalysisAdmission::unavailable()
@@ -2707,7 +2707,7 @@ pub(super) fn persist_committed_audio_segments(
         return;
     }
 
-    let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+    let infra = Arc::clone(&*app_handle.state::<app_core::AppInfraState>());
     let app_handle = app_handle.clone();
     let persistence = run_native_capture_async("audio-segment-persistence", async move {
         let mut persisted_any = false;
@@ -2729,7 +2729,7 @@ pub(super) fn persist_committed_audio_segments(
                     persisted_any = true;
                 }
                 Err(error) => {
-                    super::debug_log::log_error(format!(
+                    app_core::debug_log::log_error(format!(
                         "failed to persist native audio segment {}: {}",
                         segment.file_path, error
                     ));
@@ -2743,7 +2743,7 @@ pub(super) fn persist_committed_audio_segments(
     });
 
     if let Err(error) = persistence {
-        super::debug_log::log_error(format!("native audio segment persistence failed: {error}"));
+        app_core::debug_log::log_error(format!("native audio segment persistence failed: {error}"));
     }
 }
 
@@ -2770,7 +2770,7 @@ pub(super) fn warm_scrub_previews_for_committed_screen_outputs(
     ) {
         Ok(_) => {}
         Err(error) => {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to enqueue scrub previews for finalized screen segment: {error}"
             ));
         }
@@ -2779,7 +2779,7 @@ pub(super) fn warm_scrub_previews_for_committed_screen_outputs(
 
 #[cfg(target_os = "macos")]
 pub(super) async fn close_frame_batches_for_stopped_screen_session_id_async(
-    infra: &crate::app_infra::AppInfraState,
+    infra: &app_core::AppInfraState,
     session_id: &str,
 ) -> Result<(), CaptureErrorResponse> {
     let session_id = session_id.to_string();
@@ -2790,7 +2790,7 @@ pub(super) async fn close_frame_batches_for_stopped_screen_session_id_async(
         .await
         .map(|_| ())
         .map_err(|error| {
-            super::debug_log::log_warn(format!(
+            app_core::debug_log::log_warn(format!(
                 "failed to close frame batches for stopped screen session {session_id}: {error}"
             ));
             CaptureErrorResponse {
@@ -2804,7 +2804,7 @@ pub(super) async fn close_frame_batches_for_stopped_screen_session_id_async(
 
 #[cfg(target_os = "macos")]
 pub(super) fn close_frame_batches_for_stopped_screen_session_id(
-    infra: &crate::app_infra::AppInfraState,
+    infra: &app_core::AppInfraState,
     session_id: &str,
 ) -> Result<(), CaptureErrorResponse> {
     let infra = Arc::clone(infra);
@@ -2834,7 +2834,7 @@ fn close_frame_batches_for_stopped_screen_session(
         return Ok(());
     };
 
-    let infra = Arc::clone(&*app_handle.state::<crate::app_infra::AppInfraState>());
+    let infra = Arc::clone(&*app_handle.state::<app_core::AppInfraState>());
     close_frame_batches_for_stopped_screen_session_id(&infra, &screen_session.session_id)
 }
 
@@ -3587,7 +3587,7 @@ pub(super) fn resume_screen_from_inactivity(
             if let (Some(app_handle), Some(initial)) = (app_handle, initial_privacy_filter) {
                 initial.mark_applied(app_handle);
                 if let Some(settings) = app_handle
-                    .try_state::<crate::native_capture::RecordingSettingsState>()
+                    .try_state::<app_core::recording_settings::RecordingSettingsState>()
                     .map(|state| {
                         state
                             .lock()
@@ -4243,7 +4243,7 @@ where
                 None,
                 None,
             );
-            super::debug_log::log_error(format!(
+            app_core::debug_log::log_error(format!(
                 "failed to finalize stale screen capture outputs while recovering after system wake: [{}] {}",
                 error.code, error.message
             ));
@@ -4421,7 +4421,7 @@ pub(super) fn recover_screen_capture_after_wake(
             if let (Some(app_handle), Some(initial)) = (app_handle, initial_privacy_filter) {
                 initial.mark_applied(app_handle);
                 if let Some(settings) = app_handle
-                    .try_state::<crate::native_capture::RecordingSettingsState>()
+                    .try_state::<app_core::recording_settings::RecordingSettingsState>()
                     .map(|state| {
                         state
                             .lock()
@@ -4497,7 +4497,7 @@ pub(super) fn handle_inactivity_resume_error(
     retry_log_level: tauri_plugin_log::log::Level,
 ) -> bool {
     if should_fail_runtime_on_inactivity_resume_error(&error) {
-        super::debug_log::log_error(format!(
+        app_core::debug_log::log_error(format!(
             "fatal native capture inactivity resume failure: [{}] {}",
             error.code, error.message
         ));
@@ -4505,7 +4505,7 @@ pub(super) fn handle_inactivity_resume_error(
         return true;
     }
 
-    super::debug_log::log_at(
+    app_core::debug_log::log_at(
         retry_log_level,
         &format!(
             "failed to resume native capture after activity; keeping session paused for retry: [{}] {}",
@@ -4548,7 +4548,7 @@ pub(super) fn start_segment_with_current_privacy_filter(
     )?;
     initial_privacy_filter.mark_applied(app_handle);
     if let Some(settings) = app_handle
-        .try_state::<crate::native_capture::RecordingSettingsState>()
+        .try_state::<app_core::recording_settings::RecordingSettingsState>()
         .map(|state| {
             state
                 .lock()
@@ -4830,7 +4830,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                 last_low_disk_recovery_attempt = Instant::now();
                 match attempt_privacy_suspension_recovery(&app_handle, runtime.runtime_mut()) {
                     PrivacySuspensionRecoveryOutcome::Recovered => {
-                        super::debug_log::log(
+                        app_core::debug_log::log(
                             "low-disk capture recovered; restarted all sources after suspension",
                         );
                     }
@@ -4866,7 +4866,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                             runtime.runtime_mut(),
                         ) {
                             PrivacySuspensionRecoveryOutcome::Recovered => {
-                                super::debug_log::log_info(
+                                app_core::debug_log::log_info(
                                     "screen capture recovered; restarted after suspension",
                                 );
                             }
@@ -4886,7 +4886,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                             if privacy::privacy_refresh_debug_log_enabled(
                                 privacy_filter_update.reason,
                             ) {
-                                super::debug_log::log(format!(
+                                app_core::debug_log::log(format!(
                                     "privacy refresh apply succeeded (reason={:?}, generation={}, mode={:?}, request_satisfied={})",
                                     privacy_filter_update.reason,
                                     privacy_filter_update.generation,
@@ -4909,12 +4909,12 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                                 CaptureSuspensionKind::PrivacyFilter
                             };
                             if display_unavailable {
-                                super::debug_log::log_warn(format!(
+                                app_core::debug_log::log_warn(format!(
                                     "capture display unavailable; suspending screen capture until the display returns: [{}] {}",
                                     error.code, error.message
                                 ));
                             } else {
-                                super::debug_log::log_warn(format!(
+                                app_core::debug_log::log_warn(format!(
                                     "privacy filter update failed; suspending screen capture: [{}] {}",
                                     error.code, error.message
                                 ));
@@ -4925,7 +4925,7 @@ fn spawn_segment_loop(app_handle: tauri::AppHandle) -> SegmentLoopControl {
                                 &error,
                                 suspension_kind,
                             ) {
-                                super::debug_log::log_warn(format!(
+                                app_core::debug_log::log_warn(format!(
                         "capture suspension could not stop screen capture; preserving runtime state: [{}] {}",
                         stop_error.code, stop_error.message
                     ));
@@ -5758,7 +5758,7 @@ pub(super) fn start_capture_runtime(
                     runtime.system_audio_recording_file = system_audio_recording_file;
                 }
                 Err(error) => {
-                    super::debug_log::log_warn(format!(
+                    app_core::debug_log::log_warn(format!(
                         "failed to start system audio capture; continuing without it: [{}] {}",
                         error.code, error.message
                     ));

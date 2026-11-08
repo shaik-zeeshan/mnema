@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex};
 use serde::Serialize;
 use tauri::Manager;
 
-use crate::app_infra::AppInfraState;
+use app_core::AppInfraState;
 
 /// Default ceiling for the frame-batch and derivation-run listings. Both are
 /// polled from the debug page, so they are always bounded.
@@ -226,7 +226,10 @@ fn app_log_path(app_handle: &tauri::AppHandle) -> Result<PathBuf, String> {
     app_handle
         .path()
         .app_log_dir()
-        .map(|dir| dir.join(crate::APP_LOG_FILE_NAME).with_extension("log"))
+        .map(|dir| {
+            dir.join(app_core::debug_log::APP_LOG_FILE_NAME)
+                .with_extension("log")
+        })
         .map_err(|error| format!("failed to resolve application log path: {error}"))
 }
 

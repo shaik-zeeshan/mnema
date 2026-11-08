@@ -3,8 +3,6 @@ pub(crate) mod capture_health;
 #[cfg(target_os = "macos")]
 #[path = "native_capture_browser_url_ax.rs"]
 pub(crate) mod browser_url_ax;
-#[path = "native_capture_debug_log.rs"]
-pub(crate) mod debug_log;
 pub(crate) mod disk_space;
 #[path = "native_capture_inactivity.rs"]
 pub(crate) mod inactivity;
@@ -28,6 +26,7 @@ pub(crate) mod system_idle;
 #[cfg(test)]
 mod tests;
 
+use app_core::debug_log;
 use capture_microphone as microphone_capture;
 use capture_types::{
     AudioTranscriptionProvider, AudioTranscriptionSettings, CaptureErrorResponse,
@@ -46,10 +45,13 @@ use capture_types::{
     VideoBitrateMode, VideoBitratePreset, VideoBitrateSettings,
 };
 use capture_vad::configured_adapter_as_str;
+use app_core::recording_settings::{
+    current_auto_start, current_recording_settings, initialize_recording_settings_state_from_disk,
+    RecordingSettingsDomainPatch, RecordingSettingsState,
+};
 use settings::{
     apply_recording_settings_domain_mutation, apply_recording_settings_domain_patch,
-    apply_recording_settings_update, current_auto_start, current_recording_settings,
-    initialize_recording_settings_state_from_disk, RecordingSettingsDomainPatch,
+    apply_recording_settings_update,
 };
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(target_os = "macos")]
@@ -63,7 +65,6 @@ use std::time::Duration;
 use tauri::{path::BaseDirectory, Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
-pub(crate) use debug_log::install_panic_hook;
 use lifecycle::{RecordingLifecycle, StartRecordingLifecycleOutcome};
 use microphone::{
     resolve_capture_microphone_device_id, should_wait_for_same_microphone_device,
@@ -76,11 +77,6 @@ pub use microphone::{
 use runtime::validate_start_request;
 pub type NativeCaptureState = Mutex<RecordingLifecycle>;
 pub use privacy::PrivacyFilterRefreshState;
-pub use settings::RecordingSettingsState;
-// Re-exported so adapter-level Tauri commands (e.g. `open_debug_window`) can
-// read the persisted recording settings through the same seam used by the
-// rest of `native_capture` without bypassing it to touch persistence directly.
-pub(crate) use settings::current_recording_settings as read_recording_settings;
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
@@ -2326,7 +2322,7 @@ fn start_native_capture_inner(
         crate::licensing::cached_status(&app_handle),
         Some(capture_types::LicenseStatus::Licensed { .. })
     ) {
-        if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+        if let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() {
             let infra = std::sync::Arc::clone(&*infra);
             let trial_app_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
@@ -3005,7 +3001,7 @@ fn take_bounded_microphone_clip(
 pub fn initialize_recording_settings_from_disk(app_handle: &tauri::AppHandle) {
     reset_capture_log_snapshots();
     let settings_state = app_handle.state::<RecordingSettingsState>();
-    let loaded = initialize_recording_settings_state_from_disk(app_handle, settings_state.inner());
+    let loaded = initialize_recording_settings_state_from_disk(&app_handle.state::<std::sync::Arc<app_core::AppCore>>(), settings_state.inner());
 
     debug_log::set_app_debug_logging_enabled(loaded.settings.developer_options_enabled);
     log_loaded_recording_settings(loaded.source, &loaded.settings);
@@ -3054,7 +3050,7 @@ pub(crate) fn model_selection_changed(
 
 fn finish_recording_settings_update(
     app_handle: &tauri::AppHandle,
-    update: settings::AppliedRecordingSettingsUpdate,
+    update: app_core::recording_settings::AppliedRecordingSettingsUpdate,
     domain: Option<SettingsOwnershipDomain>,
 ) -> Result<RecordingSettings, CaptureErrorResponse> {
     let settings = update.settings;
@@ -3076,7 +3072,7 @@ fn finish_recording_settings_update(
     }
 
     if previous_settings.ocr.enabled && !settings.ocr.enabled {
-        if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+        if let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() {
             // Fire-and-forget off the main thread: this only marks already-queued
             // OCR jobs failed now that OCR is disabled (cleanup whose result is
             // merely logged). Settings commands run on the main thread, so we must
@@ -3195,7 +3191,7 @@ fn finish_recording_settings_update(
 fn finish_recording_settings_domain_update(
     app_handle: &tauri::AppHandle,
     domain: SettingsOwnershipDomain,
-    update: settings::AppliedRecordingSettingsUpdate,
+    update: app_core::recording_settings::AppliedRecordingSettingsUpdate,
 ) -> Result<RecordingSettingsDomainUpdateResponse, CaptureErrorResponse> {
     let settings = finish_recording_settings_update(app_handle, update, Some(domain))?;
     Ok(RecordingSettingsDomainUpdateResponse { domain, settings })
@@ -3631,7 +3627,7 @@ fn stop_native_capture_with_state(
     ));
 
     if !source_session_ids_before_stop.is_empty() {
-        if let Some(infra) = app_handle.try_state::<crate::app_infra::AppInfraState>() {
+        if let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() {
             let stopped_at = time::OffsetDateTime::now_utc()
                 .format(&time::format_description::well_known::Rfc3339)
                 .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string());
