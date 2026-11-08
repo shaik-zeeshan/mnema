@@ -80,7 +80,7 @@ fn tauri_event(event: CoreEvent) -> (&'static str, Value) {
             ("speaker_analysis_model_download_progress", json(p))
         }
         OcrModelDownloadProgress(p) => ("ocr_model_download_progress", json(p)),
-        SemanticSearchModelDownloadProgress(p) => ("semantic_search_model_download_progress", p),
+        SemanticSearchModelDownloadProgress(p) => ("semantic_search_model_download_progress", json(p)),
         NativeCaptureSessionChanged(p) => ("native_capture_session_changed", p),
         AppUpdateStatusChanged(p) => ("app_update_status_changed", p),
         // Unit events were emitted with `()`, which serializes to `null`.
@@ -270,6 +270,18 @@ mod tests {
         }
     }
 
+    fn semantic_progress(
+    ) -> app_core::semantic_search_models::SemanticSearchModelDownloadProgressDto {
+        app_core::semantic_search_models::SemanticSearchModelDownloadProgressDto::new(
+            "local",
+            "nomic-embed-text-v1.5",
+            app_core::semantic_search_models::SemanticSearchModelDownloadStatusDto::Downloading,
+            5,
+            Some(10),
+            None,
+        )
+    }
+
     /// One of each variant. `tauri_event`'s exhaustive match breaks the build on a
     /// new variant; add it here and to `APPENDIX_A` too.
     fn every_event() -> Vec<CoreEvent> {
@@ -280,7 +292,7 @@ mod tests {
             AudioTranscriptionModelDownloadProgress(audio_progress()),
             SpeakerAnalysisModelDownloadProgress(speaker_progress()),
             OcrModelDownloadProgress(ocr_progress()),
-            SemanticSearchModelDownloadProgress(p()),
+            SemanticSearchModelDownloadProgress(semantic_progress()),
             NativeCaptureSessionChanged(p()),
             AppUpdateStatusChanged(p()),
             ConversationChanged,
@@ -370,7 +382,7 @@ mod tests {
             native_capture::SCREENS_DID_WAKE_EVENT,
             native_capture::SYSTEM_DID_WAKE_EVENT,
             app_core::ocr_models::OCR_MODEL_DOWNLOAD_PROGRESS_EVENT,
-            semantic_search_models::SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
+            app_core::semantic_search_models::SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
             app_core::speaker_analysis_models::SPEAKER_ANALYSIS_MODEL_DOWNLOAD_PROGRESS_EVENT,
             user_context::worker::USER_CONTEXT_CHANGED_EVENT,
             ask_ai::mcp::oauth_flow::MCP_AUTHORIZATION_CHANGED_EVENT,
@@ -384,6 +396,26 @@ mod tests {
                 "{constant} has no CoreEvent"
             );
         }
+    }
+
+    #[test]
+    fn semantic_progress_payload_keeps_its_wire_shape() {
+        assert_eq!(
+            tauri_event(CoreEvent::SemanticSearchModelDownloadProgress(
+                semantic_progress()
+            )),
+            (
+                "semantic_search_model_download_progress",
+                json!({
+                    "provider": "local",
+                    "modelId": "nomic-embed-text-v1.5",
+                    "status": "downloading",
+                    "downloadedBytes": 5,
+                    "totalBytes": 10,
+                    "message": null,
+                })
+            )
+        );
     }
 
     #[test]

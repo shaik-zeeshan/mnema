@@ -50,7 +50,7 @@ use tokio::sync::watch;
 
 use app_core::AppInfraState;
 use crate::app_infra::{shutdown_aware_sleep, BackgroundWorkersState};
-use crate::semantic_search_worker::{
+use app_core::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
     selected_model_available, LoadedEmbedder,
 };
@@ -301,7 +301,9 @@ async fn run_sweep_pass(
     state: &mut SweepState,
     shutdown_rx: &mut watch::Receiver<bool>,
 ) -> SweepPass {
-    let settings = effective_semantic_search_settings(app_handle);
+    let settings = effective_semantic_search_settings(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+    );
 
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(dir) => dir,
@@ -422,9 +424,9 @@ async fn run_sweep_pass(
 
     // Share the one background GPU slot with the search backfill sweep so the two
     // never embed concurrently — see
-    // `crate::semantic_search_worker::BACKGROUND_EMBED_SLOT` for the measured cost
+    // `app_core::semantic_search_worker::BACKGROUND_EMBED_SLOT` for the measured cost
     // of letting them overlap (+38% GPU power, +9°C).
-    let _embed_slot = crate::semantic_search_worker::BACKGROUND_EMBED_SLOT
+    let _embed_slot = app_core::semantic_search_worker::BACKGROUND_EMBED_SLOT
         .acquire()
         .await
         .ok();

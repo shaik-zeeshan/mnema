@@ -388,7 +388,7 @@ fn meaning_index_rules() {
     inputs.semantic.consecutive_load_failures = Some(1);
     assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Warn);
     inputs.semantic.consecutive_load_failures =
-        Some(crate::semantic_search_worker::MAX_CONSECUTIVE_LOAD_FAILURES);
+        Some(app_core::semantic_search_worker::MAX_CONSECUTIVE_LOAD_FAILURES);
     assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Error);
     inputs.semantic_enabled = false;
     assert_eq!(sev(&roll_up(&inputs), F::MeaningIndex), S::Off);

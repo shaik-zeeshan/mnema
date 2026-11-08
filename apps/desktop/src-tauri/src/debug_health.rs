@@ -327,7 +327,7 @@ pub async fn get_debug_health(
             && settings.speaker_analysis.separate_speakers,
         semantic_enabled: settings.semantic_search.enabled,
         semantic_model_installed: app_handle.path().app_data_dir().is_ok_and(|dir| {
-            crate::semantic_search_worker::selected_model_available(&dir, &settings.semantic_search)
+            app_core::semantic_search_worker::selected_model_available(&dir, &settings.semantic_search)
         }),
         semantic,
         ai: AiEngineInputs {

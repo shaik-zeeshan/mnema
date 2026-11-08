@@ -23,7 +23,7 @@ use app_infra::SubjectVectorStore;
 use semantic_search::EmbedKind;
 use tauri::Manager;
 
-use crate::semantic_search_worker::{
+use app_core::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
     selected_model_available,
 };
@@ -66,7 +66,9 @@ pub(crate) async fn select_semantic_subject_candidates(
         return Vec::new();
     }
 
-    let settings = effective_semantic_search_settings(app_handle);
+    let settings = effective_semantic_search_settings(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+    );
     let app_data_dir = match app_handle.path().app_data_dir() {
         Ok(dir) => dir,
         Err(error) => {
@@ -115,12 +117,12 @@ pub(crate) async fn select_semantic_subject_candidates(
 
     // This is a THIRD background embed path (User Context distillation), so it takes
     // the same slot as the two background sweeps — see
-    // `crate::semantic_search_worker::BACKGROUND_EMBED_SLOT`. Without it a
+    // `app_core::semantic_search_worker::BACKGROUND_EMBED_SLOT`. Without it a
     // distillation overlapping the semantic backfill is exactly the two-concurrent-
     // embedders case that slot exists to prevent (measured +38% GPU power, +9 °C),
     // and — since `load_embedder` hands both the SAME candle device — it also
     // serializes them on candle's device lock with neither side pacing for the other.
-    let _embed_slot = crate::semantic_search_worker::BACKGROUND_EMBED_SLOT
+    let _embed_slot = app_core::semantic_search_worker::BACKGROUND_EMBED_SLOT
         .acquire()
         .await
         .ok();

@@ -18,7 +18,6 @@ mod ocr_models;
 mod one_time_prompts;
 mod privacy_redaction_sources;
 mod semantic_search_models;
-mod semantic_search_query;
 mod semantic_search_worker;
 mod sensitive_capture_recommendations;
 #[cfg(test)]
@@ -554,7 +553,7 @@ pub fn run() {
         .manage(native_capture::AppNotificationsState::default())
         .manage(app_updates::AppUpdateSettingsState::default())
         .manage(app_updates::AppUpdateRuntimeState::default())
-        .manage(semantic_search_models::SemanticSearchModelDownloadState::default())
+        .manage(app_core::semantic_search_models::SemanticSearchModelDownloadState::default())
         .manage(windows::OnboardingStateStore::default())
         .manage(windows::AppExitCoordinatorState::default())
         .manage(windows::PendingOpenSettingsState::default())
@@ -562,7 +561,7 @@ pub fn run() {
         .manage(InsightsOpenConversationState::default())
         .manage(LicenseDeepLinkState::default())
         .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
-        .manage(semantic_search_query::SemanticQueryEmbedderState::new())
+        .manage(app_core::semantic_search_query::SemanticQueryEmbedderState::new())
         // The Semantic Index Backfill worker's health, published each sweep pass and
         // read by the debug surface's `get_semantic_index_status`. Registered here
         // (not in the worker) so the state exists before deferred startup spawns it.

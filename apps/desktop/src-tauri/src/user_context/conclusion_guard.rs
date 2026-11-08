@@ -24,7 +24,7 @@ use app_infra::UserContextStore;
 use semantic_search::{EmbedKind, SemanticSearchModelDescriptor};
 use tauri::Manager;
 
-use crate::semantic_search_worker::{
+use app_core::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder, resolve_selected_descriptor,
     selected_model_available, LoadedEmbedder, BACKGROUND_EMBED_SLOT,
 };
@@ -70,7 +70,9 @@ pub(crate) struct DuplicateGuard {
 impl DuplicateGuard {
     /// Resolve (but do not load) the embedding model for this pass.
     pub(crate) fn new(app_handle: &tauri::AppHandle) -> Self {
-        let settings = effective_semantic_search_settings(app_handle);
+        let settings = effective_semantic_search_settings(
+            &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+        );
         let model = app_handle.path().app_data_dir().ok().and_then(|dir| {
             if !selected_model_available(&dir, &settings) {
                 return None;

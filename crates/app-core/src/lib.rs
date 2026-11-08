@@ -29,6 +29,9 @@ pub mod ocr_models;
 pub mod one_time_prompts;
 mod paths;
 pub mod recording_settings;
+pub mod semantic_search_models;
+pub mod semantic_search_query;
+pub mod semantic_search_worker;
 pub mod speaker_analysis_models;
 pub mod speaker_analysis_runtime;
 #[cfg(test)]

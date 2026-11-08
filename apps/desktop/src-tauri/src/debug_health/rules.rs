@@ -426,7 +426,7 @@ fn meaning_index(inputs: &DebugHealthInputs) -> FeatureHealthDto {
     let behind = Some(format!("{} behind", thousands(semantic.backlog_count)));
     let load_failures = semantic.consecutive_load_failures.unwrap_or(0);
     // The worker gives up at its cap; below it, the next pass retries the load.
-    if load_failures >= crate::semantic_search_worker::MAX_CONSECUTIVE_LOAD_FAILURES {
+    if load_failures >= app_core::semantic_search_worker::MAX_CONSECUTIVE_LOAD_FAILURES {
         return row(
             F::MeaningIndex,
             S::Error,

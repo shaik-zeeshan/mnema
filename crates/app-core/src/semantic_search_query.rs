@@ -20,12 +20,12 @@
 use std::sync::Mutex;
 
 use semantic_search::EmbedKind;
-use tauri::Manager;
 
 use crate::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder_private, resolve_selected_descriptor,
     selected_model_available, LoadedEmbedder,
 };
+use crate::AppCore;
 
 /// The cached query embedder, shared as Tauri managed state across `search_capture`
 /// calls. `None` until the first search runs with an installed model. A model
@@ -93,8 +93,8 @@ fn cached_embedder_is_reusable(
 /// that must stay off the tokio reactor (and off the capture hot path — this is
 /// user-initiated search, not capture).
 pub async fn embed_search_query(
-    app_handle: &tauri::AppHandle,
-    state: &tauri::State<'_, SemanticQueryEmbedderState>,
+    core: &AppCore,
+    state: &SemanticQueryEmbedderState,
     query: &str,
 ) -> Option<Vec<f32>> {
     let trimmed = query.trim();
@@ -102,16 +102,8 @@ pub async fn embed_search_query(
         return None;
     }
 
-    let settings = effective_semantic_search_settings(app_handle);
-    let app_data_dir = match app_handle.path().app_data_dir() {
-        Ok(dir) => dir,
-        Err(error) => {
-            app_core::debug_log::log_warn(format!(
-                "semantic query embed could not resolve app data dir: {error}"
-            ));
-            return None;
-        }
-    };
+    let settings = effective_semantic_search_settings(core);
+    let app_data_dir = core.paths().config.clone();
 
     // Model-gating: silent no-op when no model is installed (no error, no
     // auto-download). Routes through the resolver so a Custom-picked model is
@@ -156,7 +148,7 @@ pub async fn embed_search_query(
     };
 
     let query = trimmed.to_string();
-    let result = tauri::async_runtime::spawn_blocking(move || {
+    let result = core.spawn_blocking(move || {
         let loaded = match cached {
             Some(loaded) => loaded,
             // A PRIVATE instance, not the shared background one: a search does not
@@ -167,7 +159,7 @@ pub async fn embed_search_query(
             None => match load_embedder_private(&app_data_dir, &descriptor) {
                 Ok(loaded) => loaded,
                 Err(error) => {
-                    app_core::debug_log::log_warn(format!(
+                    crate::debug_log::log_warn(format!(
                         "semantic query embed failed to load model '{}/{}': {error}",
                         descriptor.provider, descriptor.model_id
                     ));
@@ -192,7 +184,7 @@ pub async fn embed_search_query(
         Ok(Some((loaded, vector))) => (loaded, vector),
         Ok(None) => return None,
         Err(error) => {
-            app_core::debug_log::log_warn(format!(
+            crate::debug_log::log_warn(format!(
                 "semantic query embed task panicked/cancelled: {error}"
             ));
             return None;
@@ -219,7 +211,7 @@ pub async fn embed_search_query(
         // ordering, so drop the vector and fall back to the keyword-only path the
         // function already takes when there is no usable semantic vector.
         Ok(vector) if vector.iter().any(|component| !component.is_finite()) => {
-            app_core::debug_log::log_warn(
+            crate::debug_log::log_warn(
                 "semantic query embed produced a non-finite component; \
                  falling back to keyword-only search"
                     .to_string(),
@@ -228,7 +220,7 @@ pub async fn embed_search_query(
         }
         Ok(vector) => Some(vector),
         Err(error) => {
-            app_core::debug_log::log_warn(format!(
+            crate::debug_log::log_warn(format!(
                 "semantic query embed failed: {error}"
             ));
             None
@@ -300,5 +292,14 @@ mod tests {
             Duration::ZERO,
             &descriptor
         ));
+    }
+
+    #[test]
+    fn query_embed_is_keyword_only_without_an_installed_model() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let core = crate::test_support::core_in(Default::default(), dir.path());
+        let state = SemanticQueryEmbedderState::new();
+        assert_eq!(core.block_on(embed_search_query(&core, &state, "standup notes")), None);
+        assert_eq!(core.block_on(embed_search_query(&core, &state, "   ")), None);
     }
 }

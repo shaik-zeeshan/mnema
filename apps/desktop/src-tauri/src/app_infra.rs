@@ -1921,9 +1921,13 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     // OLD model on it, which the write gate then rejects for the whole session.
     {
         tauri::async_runtime::block_on(
-            crate::semantic_search_models::reconcile_semantic_search_index_on_startup(
+            app_core::semantic_search_models::reconcile_semantic_search_index_on_startup(
                 &infra,
-                || crate::semantic_search_worker::effective_semantic_search_settings(app_handle),
+                || {
+                    app_core::semantic_search_worker::effective_semantic_search_settings(
+                        &app_handle.state::<Arc<app_core::AppCore>>(),
+                    )
+                },
             ),
         );
     }
@@ -4640,7 +4644,7 @@ pub async fn search_capture(
     request: SearchCaptureRequest,
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, AppInfraState>,
-    query_embedder: tauri::State<'_, crate::semantic_search_query::SemanticQueryEmbedderState>,
+    query_embedder: tauri::State<'_, app_core::semantic_search_query::SemanticQueryEmbedderState>,
 ) -> Result<SearchCaptureResponseDto, String> {
     let infra = Arc::clone(&*state);
 
@@ -4657,8 +4661,12 @@ pub async fn search_capture(
     // which `embed_search_query` empty-guards to `None` (keyword-only).
     let residual_query = ::app_infra::semantic_search_residual_query(&request.query);
     let query_embedding =
-        crate::semantic_search_query::embed_search_query(&app_handle, &query_embedder, &residual_query)
-            .await;
+        app_core::semantic_search_query::embed_search_query(
+            &app_handle.state::<Arc<app_core::AppCore>>(),
+            &query_embedder,
+            &residual_query,
+        )
+        .await;
 
     let query = request.query.clone();
     let mut response = infra

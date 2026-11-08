@@ -5,7 +5,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use crate::semantic_search_query::SemanticQueryEmbedderState;
+use app_core::semantic_search_query::SemanticQueryEmbedderState;
 use app_core::AppInfraState;
 
 #[derive(Debug, Clone, Deserialize)]
@@ -75,8 +75,8 @@ pub async fn count_search_facet(
 ) -> Result<::app_infra::SearchFacetCounts, String> {
     // Same embed as `search_capture`, so counts match what the search shows.
     let residual_query = ::app_infra::semantic_search_residual_query(&request.query);
-    let query_embedding = crate::semantic_search_query::embed_search_query(
-        &app_handle,
+    let query_embedding = app_core::semantic_search_query::embed_search_query(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
         &query_embedder,
         &residual_query,
     )
@@ -127,11 +127,12 @@ pub async fn get_quick_recall_index_status(
         .frame_reading_backlog()
         .await
         .map_err(|error| format!("failed to read the indexing backlog: {error}"))?;
-    let settings = crate::semantic_search_worker::effective_semantic_search_settings(&app_handle);
-    let meaning_on = app_handle
-        .path()
-        .app_data_dir()
-        .is_ok_and(|dir| crate::semantic_search_worker::selected_model_available(&dir, &settings));
+    let settings = app_core::semantic_search_worker::effective_semantic_search_settings(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+    );
+    let meaning_on = app_handle.path().app_data_dir().is_ok_and(|dir| {
+        app_core::semantic_search_worker::selected_model_available(&dir, &settings)
+    });
     let semantic_indexed_percent = if meaning_on {
         let store = state.semantic_search();
         let indexed = store
