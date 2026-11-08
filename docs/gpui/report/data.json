@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-08 20:10",
+  "updated": "2026-11-08 20:20",
   "verdict": "About a third done. Timeline and Chat are built (screenshots waiting for your sign-off), every shared control and the main window are approved, and ~45% of the backend has moved. Next: the recording engine move, Settings and Insights.",
   "metrics": [
     {
@@ -35,7 +35,7 @@
     },
     {
       "label": "Backend move (S1–S4)",
-      "pct": 45
+      "pct": 48
     },
     {
       "label": "Native layer (S7)",
@@ -56,9 +56,19 @@
   ],
   "now": [
     {
-      "id": "S2 B6b",
-      "title": "Frame previews move — verifying",
-      "detail": "Done by the agent; being re-checked before commit."
+      "id": "S3a",
+      "title": "Recording engine move — part 1 of 4",
+      "detail": "The capture leaf modules: metadata, activity, capture health, system audio, microphone (+ away), privacy filter. Parts 2–4 follow one after another (segments, lifecycle, Ask AI)."
+    },
+    {
+      "id": "S13",
+      "title": "Settings screen",
+      "detail": "Rail with search, save status, one scroll column with scroll-spy, all 20 sections, the autosave engine (450 / 0 / 250 ms) with timing tests."
+    },
+    {
+      "id": "S12",
+      "title": "Insights screen",
+      "detail": "Overview, Journal with the receipt viewer, Subjects with the evidence drawer and the 5-second Undo, Context, and the six chart types."
     }
   ],
   "done": [
@@ -157,6 +167,12 @@
       "title": "Chat screen",
       "what": "List, thread, live-streaming answers (prose, bars, dossier, timeline), sources, composer with Send/Stop, model picker, scope. Near pixel match with Tauri after 3 fix rounds.",
       "commit": "bc38c3bb"
+    },
+    {
+      "id": "S2 B6b",
+      "title": "Frame previews",
+      "what": "The preview pipeline (frame and scrub previews, cache) moved to the shared crate; the backend move's S2 step is complete.",
+      "commit": "26e994bb"
     }
   ],
   "next": [
