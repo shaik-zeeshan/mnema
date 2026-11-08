@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-09 02:10",
-  "verdict": "About 40% done. Timeline, Chat and Settings are built (screenshots waiting for your sign-off); the main window and all shared controls are approved; the recording engine move is halfway through its four parts. Insights is building now.",
+  "updated": "2026-11-09 03:10",
+  "verdict": "About 45% done. Timeline, Chat, Settings and Insights are built (screenshots waiting for your sign-off); the main window and shared controls are approved; ~70% of the backend has moved and the recording engine move is on its last part.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~40%",
+      "value": "~45%",
       "note": "of the whole build"
     },
     {
@@ -14,8 +14,8 @@
     },
     {
       "label": "Screens built",
-      "value": "4 of 8",
-      "note": "shell, Timeline, Chat, Settings"
+      "value": "5 of 8",
+      "note": "shell, Timeline, Chat, Settings, Insights"
     },
     {
       "label": "Tests passing",
@@ -24,8 +24,8 @@
     },
     {
       "label": "Screenshots",
-      "value": "32 ✓ · 56 waiting",
-      "note": "Timeline 10, Chat 10, Settings 24 new; shell 12 changed"
+      "value": "32 ✓ · 76 waiting",
+      "note": "Timeline 10, Chat 10, Settings 24, Insights 20 new; shell 12 changed"
     }
   ],
   "bars": [
@@ -43,7 +43,7 @@
     },
     {
       "label": "Screens (S5, S6, S8–S15)",
-      "pct": 55
+      "pct": 65
     },
     {
       "label": "Packaging + updater (S16)",
@@ -61,9 +61,9 @@
       "detail": "The capture root (start/stop/settings), the not-recording reminder, then Ask AI and conversations, plus every piece that was waiting for the recording engine."
     },
     {
-      "id": "S12",
-      "title": "Insights screen",
-      "detail": "Overview, Journal with the receipt viewer, Subjects with the evidence drawer and the 5-second Undo, Context, and the six chart types."
+      "id": "S15",
+      "title": "Small windows",
+      "detail": "CLI access request, update window, permission helper, and the debug window with its mini mode."
     }
   ],
   "done": [
@@ -186,6 +186,12 @@
       "title": "Recording engine move — part 2",
       "what": "segments.rs (the heart of recording) and the recording lifecycle moved in 12 files; every moved function diffed against the original; 1,370 tests green.",
       "commit": "84ff6911"
+    },
+    {
+      "id": "S12",
+      "title": "Insights screen",
+      "what": "Overview, Journal with the receipt timelapse, Subjects with the evidence drawer and the 5-second Undo, Context (live). Six chart types.",
+      "commit": "b934b8ed"
     }
   ],
   "next": [
@@ -233,7 +239,7 @@
     "12 shell and 20 control screenshots approved after viewing."
   ],
   "risks": [
-    "Disk space: three parallel builds share ~25–30 GB free; it has filled twice. More free space = more agents at once.",
+    "Disk space: ~13 GB free. It limits how many agents run at once and blocks the Timeline smoothness pass (needs a release build).",
     "The recording-engine move (S3) is the riskiest step; permission flows need your signed build.",
     "Screens may need several fix rounds to match pixel-for-pixel; the Timeline will show how many."
   ],
@@ -276,6 +282,22 @@
         "settings-data",
         "settings-data-access",
         "settings-about"
+      ]
+    },
+    {
+      "title": "Insights — new, waiting for sign-off",
+      "note": "Every tab, empty and populated, plus a subject page and an open receipt; dark/light.",
+      "files": [
+        "insights-overview",
+        "insights-overview-empty",
+        "insights-journal",
+        "insights-journal-empty",
+        "insights-receipt",
+        "insights-subjects",
+        "insights-subjects-empty",
+        "insights-subject",
+        "insights-context",
+        "insights-context-empty"
       ]
     },
     {
