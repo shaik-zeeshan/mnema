@@ -106,9 +106,10 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
     - GPUI shadows don't follow radius+spread (use `ui::ring_box` for focus rings).
 
 ### Next up (orchestrator queue; keep current)
-1. **Running:** S2 B4 (slot 3), S8 Timeline (slot 2). Done: S16b 9d609663. **Held:** S11 Chat (slot 1 is idle on purpose: 15 GB free disk; start it once B4 ends and slot 3 is cleaned, or when ≥25 GB is free).
-2. **Then:** S2 B6 (app_infra + frame_preview + quick_recall, cli_access, broker channel with the ruled seams).
-3. **UI waves:** S11 Chat and S13 Settings start as soon as slots free up (S8 already running).
+1. **Running:** S2 B6 (slot 3; also takes the leftover worker loops from B3b/B4), S8 Timeline (slot 2), S11 Chat (slot 1). Done: B4 ebd213ac.
+2. **Waiting for S3** (all in src-tauri): voice_enrollment, select_semantic_search_model, wipe_user_context, the privacy-exclusion apply step, the installed-app list.
+3. **UI waves:** S13 Settings next, then S12 Insights, S10 Quick Recall and S15 small windows.
+5. **Docs debt:** `AGENTS.md` and `docs/user-context/CONTEXT.md` still name src-tauri paths for ai_runtime and user_context. Update them in one pass after S3.
 4. **After B6:** S3 (capture + ask_ai), then S4, then S7.
 
 ## T0 · Tooling (orchestrator, before S0)
