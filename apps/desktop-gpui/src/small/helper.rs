@@ -83,8 +83,9 @@ impl GrantCheck for LiveGrant {
             // "assumed working" evidence row is read by native_capture (S3), so
             // until then this helper waits until dismissed, as it usually does.
             PermKind::SystemAudio => false,
-            // shortcut: the AXIsProcessTrusted read is S7's native layer.
-            PermKind::Accessibility => false,
+            PermKind::Accessibility => {
+                app_core::native_capture::browser_url_ax::accessibility_trusted()
+            }
         })
     }
 }

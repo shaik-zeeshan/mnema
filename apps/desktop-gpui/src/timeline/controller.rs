@@ -63,9 +63,13 @@ impl TimelineView {
         );
         self._poll = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(HEAD_POLL).await;
-            // shortcut: no render-idle gate (screens asleep / window hidden) until S7's
-            // visibility tracking; the poll is cheap but still runs while hidden.
-            if this.update(cx, |view, cx| view.poll(cx)).is_err() {
+            // Nothing to show while the window is hidden or every screen sleeps.
+            let polled = this.update(cx, |view, cx| {
+                if !crate::window::render_idle(cx) {
+                    view.poll(cx);
+                }
+            });
+            if polled.is_err() {
                 break;
             }
         }));
@@ -335,8 +339,7 @@ impl TimelineView {
                         view.engine.warm_loaded(generation, res, frames, active);
                     },
                 ),
-                Effect::CancelVideo => self.fetch(
-            cx, |s| s.cancel_video(), |_, _, _| {}),
+                Effect::CancelVideo => self.fetch(cx, |s| s.cancel_video(), |_, _, _| {}),
             }
         }
         self.arm_timer(cx);

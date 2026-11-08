@@ -301,8 +301,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .text_color(p.text_muted)
             .child("Local tools and AI agents can read your searchable Mnema text \u{2014} screen text, transcripts and timeline results, with the app and window each came from. Never media files, raw database rows or full web addresses.")
             .into_any_element(),
-        // shortcut: install_cli (app-core install_cli_inner) runs from Install CLI once its
-        // privileged-path prompt is routed through the host (S7).
+        // shortcut: Install CLI (app-core `install_cli_inner`: a ~/.local/bin link, no
+        // host prompt) needs the installing / error line state; a Settings follow-up.
         row("mnema command")
             .control(Button::new("cli-install", if installed { "Reinstall CLI" } else { "Install CLI" }))
             .below(cli_line)
@@ -442,14 +442,20 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                             .text_color(p.text_strong)
                             .child("Recent activity"),
                     )
-                    // shortcut: revealing the audit file goes through the S7 native layer.
                     .when(!s.data.history.is_empty(), |d| {
                         d.child(
                             div().ml_auto().child(
                                 Button::new("cli-reveal-log", "Reveal log in Finder")
                                     .ghost()
                                     .sm()
-                                    .icon(icons::FOLDER),
+                                    .icon(icons::FOLDER)
+                                    .on_click(|_, _, cx| {
+                                        if let Some(core) = crate::chat::core(cx) {
+                                            cx.reveal_path(
+                                                &core.paths().config.join("broker-audit.json"),
+                                            );
+                                        }
+                                    }),
                             ),
                         )
                     }),

@@ -20,6 +20,24 @@ const RETENTION: [RetentionPolicy; 4] = [
     RetentionPolicy::Never,
 ];
 
+/// Browse… (`browseSaveDirectory`): the native folder picker; a pick becomes the
+/// draft save directory (it takes effect after a restart).
+fn browse(
+    cx: &Context<Settings>,
+) -> impl Fn(&gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut gpui_kit::App) + 'static {
+    let this = cx.entity().downgrade();
+    move |_, _, cx| {
+        let this = this.clone();
+        crate::native::dialogs::pick_folder("Choose", cx, move |path, cx| {
+            let path = path.to_string_lossy().into_owned();
+            let _ = this.update(cx, |s, cx| {
+                s.data.storage_location = Some(path.clone());
+                s.edit(|d| d.save_directory = path, cx);
+            });
+        });
+    }
+}
+
 /// The meter's five parts (`meterParts`), in mockup order.
 fn parts(u: &serde_json::Value, p: &Palette) -> Vec<(&'static str, f64, Hsla)> {
     let n = |k: &str| u.num_at(&[k]).unwrap_or(0.);
@@ -143,8 +161,11 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         row("Save directory")
             .desc("Where captures and the database live on disk. Downloaded models stay in Mnema's app data.")
             .control(div().font_family(FONT_MONO).text_size(text::SM).text_color(p.text_muted).child(shown))
-            // shortcut: the folder picker (NSOpenPanel) is the S7 native layer; Browse is shown, not run.
-            .control(Button::new("storage-browse", "Browse\u{2026}").icon(icons::FOLDER))
+            .control(
+                Button::new("storage-browse", "Browse\u{2026}")
+                    .icon(icons::FOLDER)
+                    .on_click(browse(cx)),
+            )
             .build(p)
             .into_any_element(),
         row("Retention")

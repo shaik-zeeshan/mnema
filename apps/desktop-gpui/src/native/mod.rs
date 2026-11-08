@@ -1,5 +1,21 @@
-//! objc2 bits GPUI doesn't give us. S7 grows this into the full native layer.
+//! What GPUI doesn't give us (BUILD-PROMPT §3.5): the tray, global shortcuts,
+//! deep links, the Dock, the graceful quit, the native reminder, window chrome,
+//! dialogs and the OS observers, plus the objc2 NSWindow helpers they share.
 
+pub mod chrome;
+pub mod deep_links;
+pub mod dialogs;
+pub mod dock;
+pub mod hotkeys;
+pub mod notification;
+pub mod quit;
+pub mod sys;
+pub mod tray;
+
+use std::sync::Arc;
+
+use app_core::AppCore;
+use capture_types::CaptureErrorResponse;
 use gpui_kit::Window;
 use objc2::msg_send;
 use objc2::runtime::AnyObject;
@@ -21,14 +37,23 @@ pub fn ns_window(window: &Window) -> Option<&NSWindow> {
     }
 }
 
-/// Mnema never records itself: `none`, or `read-only` with developer options
-/// (so screenshots of the app work). Must run before the window's first show.
 /// Show without becoming key or activating the app (the permission helper must
 /// never take focus from System Settings).
 pub fn order_front_regardless(window: &Window) {
     if let Some(ns_window) = ns_window(window) {
         ns_window.orderFrontRegardless();
     }
+}
+
+/// Hide the window without closing it (the main window's close = hide).
+pub fn order_out(window: &Window) {
+    if let Some(ns_window) = ns_window(window) {
+        ns_window.orderOut(None);
+    }
+}
+
+pub fn is_visible(window: &Window) -> bool {
+    ns_window(window).is_some_and(|w| w.isVisible())
 }
 
 /// Keep above normal windows (the developer window's pin and mini mode).
@@ -46,6 +71,8 @@ pub fn set_min_size(window: &Window, w: f32, h: f32) {
     }
 }
 
+/// Mnema never records itself: `none`, or `read-only` with developer options
+/// (so screenshots of the app work). Must run before the window's first show.
 pub fn apply_sharing_type(window: &Window, developer_options: bool) {
     if let Some(ns_window) = ns_window(window) {
         ns_window.setSharingType(if developer_options {
@@ -53,5 +80,61 @@ pub fn apply_sharing_type(window: &Window, developer_options: bool) {
         } else {
             NSWindowSharingType::None
         });
+    }
+}
+
+/// Read before onboarding-gated work (tray menu, shortcuts).
+pub fn onboarding_complete(core: &AppCore) -> bool {
+    let store = core.state::<app_core::onboarding_state::OnboardingStateStore>();
+    app_core::onboarding_state::current_onboarding_state(core, &store).is_complete()
+}
+
+/// Developer options, read live (a missing state reads as off: windows stay excluded).
+pub fn developer_options(core: &AppCore) -> bool {
+    core.try_state::<app_core::recording_settings::RecordingSettingsState>()
+        .is_some_and(|s| {
+            app_core::recording_settings::current_recording_settings(&s).developer_options_enabled
+        })
+}
+
+pub fn now_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// A capture command's failure: the dialog title and the error.
+pub type CaptureResult = Result<(), (&'static str, CaptureErrorResponse)>;
+
+/// Start or stop recording. Blocks (streams open/flush): call off the main thread.
+pub fn toggle_recording(core: &Arc<AppCore>, origin: &str) -> CaptureResult {
+    use app_core::native_capture::control;
+    if control::current_native_capture_session(core).is_running {
+        control::stop_native_capture_from_core(core)
+            .map(|_| ())
+            .map_err(|e| ("Recording could not stop", e))
+    } else {
+        control::start_native_capture_from_core(origin, core)
+            .map(|_| ())
+            .map_err(|e| ("Recording could not start", e))
+    }
+}
+
+/// Pause or resume a running session. Blocks: call off the main thread.
+pub fn toggle_pause(core: &Arc<AppCore>) -> CaptureResult {
+    use app_core::native_capture::control;
+    let session = control::current_native_capture_session(core);
+    if !session.is_running {
+        return Ok(());
+    }
+    if session.is_user_paused {
+        control::resume_native_capture_from_core(core)
+            .map(|_| ())
+            .map_err(|e| ("Recording could not resume", e))
+    } else {
+        control::pause_native_capture_from_core(core)
+            .map(|_| ())
+            .map_err(|e| ("Recording could not pause", e))
     }
 }

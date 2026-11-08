@@ -19,6 +19,7 @@ pub mod microphone;
 pub mod microphone_away;
 pub mod model_warnings;
 pub mod not_recording_reminder;
+pub mod os_notifiers;
 pub mod permissions;
 pub mod privacy;
 pub mod runtime;

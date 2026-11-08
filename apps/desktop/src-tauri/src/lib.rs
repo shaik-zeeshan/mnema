@@ -460,10 +460,11 @@ pub fn run() {
                     keyboard_bindings::initialize(app.handle());
                     Ok(())
                 },
-                |_| {
-                    native_capture::start_system_wake_notifier(app.handle().clone());
-                    native_capture::start_display_reconfiguration_notifier(app.handle().clone());
-                    native_capture::start_metadata_notifier(app.handle().clone());
+                |core| {
+                    use app_core::native_capture::os_notifiers as os;
+                    os::start_system_wake_notifier(core, true);
+                    os::start_display_reconfiguration_notifier(core);
+                    os::start_metadata_notifier(core);
                 },
             );
             let report = match started {

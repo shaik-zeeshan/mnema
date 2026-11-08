@@ -8,6 +8,7 @@
 //! once B6 lands.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use capture_types::{Activity, ActivityCategory};
@@ -344,10 +345,23 @@ pub fn local(ms: i64, offset: UtcOffset) -> OffsetDateTime {
         .to_offset(offset)
 }
 
-/// `formatClock(d, { seconds })` in the 12-hour cycle: `2:31:56 PM`.
-// shortcut: the 24-hour preference (`system_uses_24_hour_time`) is S7's
-// sys.rs (NSDateFormatter "j"); 12-hour until then, like the parity fixture.
+/// The Mac's 24-hour preference (NSDateFormatter "j"), set once at startup.
+/// Off by default, so tests and goldens keep the parity fixture's 12-hour cycle.
+static HOUR_24: AtomicBool = AtomicBool::new(false);
+
+pub fn set_24_hour(on: bool) {
+    HOUR_24.store(on, Ordering::Relaxed);
+}
+
+/// `formatClock(d, { seconds })`: `2:31:56 PM`, or `14:31:56` with the 24-hour cycle.
 pub fn clock_label(t: OffsetDateTime, seconds: bool) -> String {
+    if HOUR_24.load(Ordering::Relaxed) {
+        return if seconds {
+            format!("{:02}:{:02}:{:02}", t.hour(), t.minute(), t.second())
+        } else {
+            format!("{:02}:{:02}", t.hour(), t.minute())
+        };
+    }
     let h = t.hour() % 12;
     let h = if h == 0 { 12 } else { h };
     let ampm = if t.hour() < 12 { "AM" } else { "PM" };

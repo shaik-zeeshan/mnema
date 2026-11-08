@@ -42,6 +42,22 @@ copy() { # copy <from> <to>: clone `from` into `to` unless `to` exists (or --fre
 }
 copy "$src_data" "$data"
 copy "$src_config" "$config"
+# The copied settings still name the source save directory, and app-infra opens
+# the persisted `saveDirectory` over MNEMA_SAVE_DIRECTORY: point it at the copy.
+python3 - "$config/recording-settings.json" "$data" <<'PY'
+import json, sys
+path, data = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        settings = json.load(f)
+except FileNotFoundError:
+    sys.exit(0)
+if settings.get("saveDirectory") != data:
+    settings["saveDirectory"] = data
+    with open(path, "w") as f:
+        json.dump(settings, f, indent=2)
+    print(f"dev-gpui: saveDirectory -> {data}")
+PY
 
 # Same layout dev-app.sh gives the Tauri sandbox, pointed at the copies.
 export MNEMA_SAVE_DIRECTORY="$data"

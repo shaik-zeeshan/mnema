@@ -16,10 +16,8 @@ pub fn now(cx: &App) -> OffsetDateTime {
     if let Some(frozen) = cx.try_global::<Clock>().and_then(|c| c.frozen) {
         return frozen;
     }
-    let utc = OffsetDateTime::now_utc();
-    // shortcut: `current_local_offset` refuses in a multi-threaded process (time's
-    // soundness guard) and we fall back to UTC; S7's sys.rs reads the offset natively.
-    time::UtcOffset::current_local_offset().map_or(utc, |offset| utc.to_offset(offset))
+    // Read natively: `time`'s `current_local_offset` refuses in a multi-threaded process.
+    OffsetDateTime::now_utc().to_offset(crate::native::sys::local_offset())
 }
 
 pub fn now_ms(cx: &App) -> i64 {

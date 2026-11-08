@@ -674,9 +674,28 @@ impl Insights {
             .update(cx, |s, cx| s.set_value(String::new(), window, cx));
     }
 
+    /// After the native confirm (`Host::confirm`), as the Svelte page does.
+    /// Without an `AppCore` (tests, goldens) it deletes straight away.
     pub fn delete_statement(&mut self, id: i64, cx: &mut Context<Self>) {
-        // shortcut: the Svelte page confirms with a native dialog first; the
-        // confirm goes through the Host's `confirm` once S7 wires dialogs.
+        let Some(core) = crate::chat::core(cx) else {
+            return self.delete_now(id, cx);
+        };
+        let answer = core.host().confirm(app_core::ConfirmDialog {
+            title: Some("Delete context".into()),
+            message: "Delete this statement? Mnema stops using it to steer your dossier.".into(),
+            kind: app_core::DialogKind::Warning,
+            ok_label: "OK".into(),
+            cancel_label: "Cancel".into(),
+        });
+        cx.spawn(async move |this, cx| {
+            if answer.await == Ok(true) {
+                let _ = this.update(cx, |this, cx| this.delete_now(id, cx));
+            }
+        })
+        .detach();
+    }
+
+    fn delete_now(&mut self, id: i64, cx: &mut Context<Self>) {
         self.write(
             cx,
             move |b| b.delete_authored(id),

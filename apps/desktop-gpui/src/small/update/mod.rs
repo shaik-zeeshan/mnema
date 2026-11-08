@@ -41,6 +41,15 @@ struct LastStatus(Option<Value>);
 
 impl Global for LastStatus {}
 
+/// The same status, typed (the tray's update row reads it).
+struct LastTyped(app_core::updates::AppUpdateStatus);
+
+impl Global for LastTyped {}
+
+pub fn last_status(cx: &App) -> Option<&app_core::updates::AppUpdateStatus> {
+    cx.try_global::<LastTyped>().map(|s| &s.0)
+}
+
 pub struct UpdateWindow {
     pub status: Option<Value>,
     pub license: Option<LicenseStatus>,
@@ -478,9 +487,10 @@ impl Render for UpdateWindow {
 
 /// `CoreEvent::AppUpdateStatusChanged`: remember it, and refresh an open window.
 pub fn status_changed(status: app_core::updates::AppUpdateStatus, cx: &mut App) {
-    let Ok(v) = serde_json::to_value(status) else {
+    let Ok(v) = serde_json::to_value(&status) else {
         return;
     };
+    cx.set_global(LastTyped(status));
     cx.set_global(LastStatus(Some(v.clone())));
     let open = cx
         .try_global::<super::Open>()

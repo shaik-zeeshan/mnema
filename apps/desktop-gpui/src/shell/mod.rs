@@ -136,14 +136,18 @@ impl Shell {
             t.developer = developer;
             cx.notify();
         });
-        // The REC clock ticks once a second while it shows.
-        // shortcut: no render-idle gate yet (hidden window still ticks); S7's
-        // window visibility tracking pauses it.
+        // The REC clock ticks once a second while it shows (not while the window
+        // is hidden or every screen is asleep).
         let ticking = model::rec_view(&self.model.status).elapsed_clock;
         self.tick = ticking.then(|| {
             cx.spawn(async move |this, cx| loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
+                let ticked = this.update(cx, |_, cx| {
+                    if !crate::window::render_idle(cx) {
+                        cx.notify();
+                    }
+                });
+                if ticked.is_err() {
                     break;
                 }
             })

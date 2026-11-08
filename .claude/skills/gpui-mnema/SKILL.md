@@ -74,7 +74,7 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 ## Settings *(set by S13)*
 - **Shape:** `settings::Settings` holds the drafts (`draft` vs a private `saved` `RecordingSettings`, plus keyboard JSON and the mic state); sections in `settings/sections/*` read `s.d()` and write through `s.edit(|d| …, cx)` / `edit_keyboard` / `edit_mic`. Build rows with `settings::row::{section, row(..).desc().control().below().full().build(p)}`; wire controls with `settings::on(cx, |s, v, cx| …)` / `settings::click(cx, …)`.
 - **Autosave:** `settings/autosave.rs` is pure over `Instant`s (450 ms recording, 0 ms sources, 250 ms mic; nothing saves while `privacy_in_flight`). Saves go through `data::Backend` on the background executor; `fixture::FixtureBackend` records them for tests. Recording-domain, mic and privacy saves fail honestly until S3 moves `native_capture_settings`; keyboard saves are live.
-- **Confirms** go through `settings::confirm` → `Host::confirm`; the GPUI host drops confirms (reads as Cancel) until S7.
+- **Confirms** go through `settings::confirm` → `Host::confirm` (a native sheet since S7).
 - **Goldens:** `settings-<state>-<theme>.png` for `settings::fixture::STATES` (group tops + deeper sections reached by `open_tab`), all from `parity/fixtures/settings/default.json`, shell not recording.
 
 ## Insights *(set by S12)*
@@ -89,6 +89,14 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **Access request keys:** focus starts on Deny (`deny_focus`); Enter is swallowed at the root (capture `prevent_default`, so not even the focused button presses); Esc and the strip's close light deny (`userCancelled`); a dismissed window answers `closed` via `access::answer_closed_on_dismiss`; our own teardown uses `remove_window`, which never fires that hook.
 - **Controls added:** `Button::focus_handle(&h)` (owner-held focus), `Button::ghost_danger()`, `Segmented::fill()` (equal options across the parent).
 - **Goldens:** `<surface>-<state>-<theme>.png` for `tests/visual/small.rs::STATES` (access, update, permission-helper, debug, debug-mini) at each window's real size, from `parity/fixtures/<surface>/*.json`.
+
+## Native layer *(set by S7)*
+- **Startup (`main.rs`):** `manage_default_states` → `native::quit::install` (the `terminate:` swizzle) → `AppCore::start(host_setup = tray::create + hotkeys::init, register_native_notifiers = sys::register_core_notifiers)` → `open_main` → `spawn_deferred_startup`. `AlreadyRunning` shows `dialogs::run_modal_alert` from a spawned task, then exits.
+- **Quit:** every path (⌘Q action, menu, Dock, tray, logout, `cx.quit()`) reaches `AppCore::shutdown`; `Host::exit(Quit)` = `quit::exit_now()` (`_exit(0)`, as Tauri), `Restart` = `cx.restart()` (the swizzle then sees the exit is final).
+- **Windows:** `window::{show_main, toggle_main, open_settings(tab), shell, render_idle}`; main's close = hide. Frameless windows call `native::chrome::frameless(window, radius)` before first show; `native::dock::refresh(cx)` after a window shows/hides (closes are hooked globally); S10 calls `dock::exclude(window_id)` for Quick Recall.
+- **Dialogs:** `Host::confirm`/`message` are NSAlert sheets on the key window, else on main (shown first); `native::dialogs::pick_folder`. Clipboard/reveal/open are GPUI's own (`write_to_clipboard`, `reveal_path`, `open_with_system`).
+- **Shared pure code moved to app-core:** `status_bar_model` (tray ids, `build_menu_model`, `tray_update_menu_item`), `deep_links::route` (schemes `mnema`, `mnema-dev`, `mnema-gpui-dev`), `native_capture::os_notifiers` (screens sleep/wake, display callback, focus/app changes; GPUI does will-sleep/did-wake itself).
+- **Dev bundle:** `bash scripts/bundle-gpui-app.sh --dev` → `$CARGO_TARGET_DIR/gpui-bundle/Mnema GPUI Dev.app` (ad-hoc, debug, `day.mnema.gpui-dev`, LSEnvironment → `~/.mnema-gpui-dev` copy). **The copied `recording-settings.json` carries the source `saveDirectory`, which app-infra opens over `MNEMA_SAVE_DIRECTORY`**: both dev scripts rewrite it to the copy; any new launcher must too.
 
 ## Tests
 - **Behaviour:**

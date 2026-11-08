@@ -64,9 +64,8 @@ pub fn options(win: (f32, f32), min: (f32, f32), kind: WindowKind, cx: &App) -> 
         .unwrap_or(point(px(160.), px(160.)));
     WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds::new(origin, s))),
-        // shortcut: titlebar None still leaves AppKit's standard buttons and a
-        // square-cornered native shadow; hiding them and the continuous-corner
-        // mask are S7's (`windows/macos.rs` port).
+        // No titlebar: `native::chrome::frameless` hides AppKit's leftover buttons
+        // and rounds the content (12 px; the helper 8 px) before the first show.
         titlebar: None,
         app_owns_titlebar_drag: true,
         window_background: WindowBackgroundAppearance::Transparent,
@@ -121,6 +120,7 @@ pub fn open_or_focus<V: Render + 'static>(
     let mut built: Option<Entity<V>> = None;
     let opened = cx.open_window(options(win, min, wkind, cx), |window, cx| {
         crate::native::apply_sharing_type(window, developer);
+        crate::native::chrome::frameless(window, if kind == Kind::Helper { 8. } else { 12. });
         let view = build(window, cx);
         built = Some(view.clone());
         cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))
@@ -145,6 +145,8 @@ pub fn open_or_focus<V: Render + 'static>(
     cx.default_global::<Open>()
         .0
         .insert(kind, (any, weak.into()));
+    // Shown (its show is queued, so a visibility read would still say no).
+    crate::native::dock::set_regular(true, cx);
     Some(view)
 }
 

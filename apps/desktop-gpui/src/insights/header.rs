@@ -129,8 +129,6 @@ pub fn notice(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
     let derivation_off = engine == Engine::On
         && this.status.ctx.as_ref().and_then(|c| c.reason.as_deref())
             == Some("user_context_disabled");
-    // shortcut: "Set up AI" / "Turn on in Settings →" / "Reconnect" open Settings
-    // through the shell once S7 routes Settings deep links (the button is inert).
     let (tone, icon, title, body, action, ghost): (Tone, SharedString, String, String, &str, bool) = match &engine {
         Engine::Pitch if tab != Tab::Journal => (
             Tone::Neutral,
@@ -212,6 +210,13 @@ pub fn notice(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
         btn = btn
             .icon(IconName::RotateCcw.path())
             .on_click(cx.listener(|this, _, _, cx| this.reload(cx)));
+    } else {
+        let tab = if derivation_off {
+            "userContext"
+        } else {
+            "intelligence"
+        };
+        btn = btn.on_click(move |_, _, cx| crate::window::open_settings(Some(tab), cx));
     }
     Some(
         div()

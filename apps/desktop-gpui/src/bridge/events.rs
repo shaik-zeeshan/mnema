@@ -3,11 +3,12 @@
 
 use std::sync::Arc;
 
-use app_core::{AppCore, CoreEvent, ExitKind};
+use app_core::{AppCore, CoreEvent, ExitKind, WindowRequest, WindowSignal};
 use gpui_kit::{App, Entity, Global, WeakEntity};
 
 use super::tokio::Tokio;
 use crate::host::HostMsg;
+use crate::native;
 use crate::shell::{data, Shell};
 
 /// The one `AppCore`, for views that need to start backend work.
@@ -41,7 +42,6 @@ fn touches_shell(event: &CoreEvent) -> bool {
             | CoreEvent::RecordingSettingsDomainChanged(_)
             | CoreEvent::AppNotificationsChanged(_)
             | CoreEvent::LicenseStatus(_)
-            | CoreEvent::KeyboardBindingsSettingsChanged(_)
     )
 }
 
@@ -68,6 +68,10 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             if let Some(shell) = shell.upgrade() {
                 reload_shell(&shell, cx);
             }
+            // Read-Only Mode flips the tray header and Start Recording.
+            if matches!(event, CoreEvent::LicenseStatus(_)) {
+                native::tray::refresh(cx);
+            }
         }
         HostMsg::Event(CoreEvent::AskAiUpdate(ev)) => {
             if let Some(shell) = shell.upgrade() {
@@ -82,26 +86,65 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             }
         }
         HostMsg::Event(CoreEvent::AppUpdateStatusChanged(status)) => {
-            crate::small::update::status_changed(status, cx)
+            crate::small::update::status_changed(status, cx);
+            native::tray::refresh(cx);
+        }
+        HostMsg::Event(CoreEvent::KeyboardBindingsSettingsChanged(payload)) => {
+            if let (Some(core), Ok(settings)) = (
+                cx.try_global::<Core>().map(|c| c.0.clone()),
+                serde_json::from_value(payload),
+            ) {
+                native::hotkeys::settings_changed(&core, &settings, cx);
+            }
+            if let Some(shell) = shell.upgrade() {
+                reload_shell(&shell, cx);
+            }
         }
         // Surface entities subscribe to theirs as S8+ land.
         HostMsg::Event(_) => {}
         HostMsg::OpenWindow(req) if crate::small::open_request(&req, cx) => {}
+        HostMsg::OpenWindow(WindowRequest::Main) => {
+            crate::window::show_main(cx);
+        }
+        HostMsg::OpenWindow(WindowRequest::Settings { tab, .. }) => {
+            crate::window::open_settings(tab.as_deref(), cx)
+        }
+        HostMsg::OpenWindow(_) => {}
         HostMsg::WindowSignal(signal) if crate::small::signal(&signal, cx) => {}
+        HostMsg::WindowSignal(signal) => window_signal(signal, cx),
         HostMsg::OpenUrl(target) if target.starts_with('/') => {
             cx.open_with_system(std::path::Path::new(&target))
         }
         HostMsg::OpenUrl(url) => cx.open_url(&url),
-        HostMsg::Exit(ExitKind::Quit) => cx.quit(),
-        HostMsg::Exit(ExitKind::Restart) => cx.restart(),
-        // shortcut: dialogs (with a parent window), tray, extra windows and
-        // window signals are S7 / S15; a dropped confirm sender reads as cancel.
-        HostMsg::Message(_)
-        | HostMsg::Confirm(..)
-        | HostMsg::RefreshTray
-        | HostMsg::OpenWindow(_)
-        | HostMsg::WindowSignal(_) => {
-            log::debug!("host: request not handled until S7/S15");
+        HostMsg::Message(req) => native::dialogs::message(req, cx),
+        HostMsg::Confirm(req, tx) => native::dialogs::confirm(req, tx, cx),
+        HostMsg::RefreshTray => native::tray::refresh(cx),
+        // The graceful exit is done (`AppCore::shutdown`): end now, or relaunch.
+        // `restart` spawns the relaunch, then `terminate:` reaches the swizzle,
+        // which sees the exit is final and ends the process.
+        HostMsg::Exit(ExitKind::Quit) => native::quit::exit_now(),
+        HostMsg::Exit(ExitKind::Restart) => {
+            log::info!("completed graceful app exit; relaunching");
+            cx.restart()
         }
+    }
+}
+
+fn window_signal(signal: WindowSignal, cx: &mut App) {
+    match signal {
+        WindowSignal::CaptureExclusionChanged => {
+            if let Some(core) = cx.try_global::<Core>().map(|c| c.0.clone()) {
+                native::chrome::reapply_sharing(native::developer_options(&core), cx);
+            }
+        }
+        WindowSignal::HideAllViews(asleep) => crate::window::set_screens_asleep(asleep, cx),
+        WindowSignal::NotRecordingReminder { post: true } => native::notification::post(cx),
+        WindowSignal::NotRecordingReminder { post: false } => native::notification::remove(cx),
+        // GPUI parks no views; asset grants are filtered out in `GpuiHost`.
+        WindowSignal::RefreshParkedViews | WindowSignal::AllowAssetPath { .. } => {}
+        // shortcut: the GPUI updater (feed check every 2 h) is S16.
+        WindowSignal::StartUpdateCheckTimer => log::debug!("update check timer: lands with S16"),
+        // Handled by `small::signal`.
+        WindowSignal::CloseCliAccessRequest => {}
     }
 }

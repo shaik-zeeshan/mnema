@@ -18,6 +18,7 @@ pub mod debug_health;
 pub mod debug_log;
 pub mod debug_pipeline;
 pub mod debug_status;
+pub mod deep_links;
 pub mod disk_space;
 mod event;
 pub mod exit;
@@ -47,6 +48,7 @@ pub mod sensitive_capture_recommendations;
 pub mod speaker_analysis_models;
 pub mod speaker_analysis_runtime;
 pub mod startup;
+pub mod status_bar_model;
 #[cfg(test)]
 mod test_support;
 pub mod third_party_notices;

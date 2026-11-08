@@ -198,8 +198,7 @@ impl Backend for CoreBackend {
         let settings = request.validated_for_update()?;
         persist_settings(&self.0, &settings)?;
         let payload = serde_json::to_value(&settings).map_err(|e| e.to_string())?;
-        // shortcut: global hotkey re-registration is S7 (native layer); the in-app
-        // keymap rebinds from this event.
+        // The native layer re-registers the global shortcuts from this event.
         self.0
             .host()
             .emit(app_core::CoreEvent::KeyboardBindingsSettingsChanged(

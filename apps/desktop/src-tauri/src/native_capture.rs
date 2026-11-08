@@ -1,8 +1,7 @@
-//! The Tauri adapters over `app_core::native_capture`: one-line commands, plus
-//! the native notifier registrations (NSWorkspace sleep/wake, screens
-//! sleep/wake, focus/app changes, the Core Graphics display-reconfiguration
-//! callback) that call app-core's handlers. The macOS banner for the
-//! not-recording reminder is host-side too (`macos_notification`).
+//! The Tauri adapters over `app_core::native_capture`: one-line commands. The
+//! OS notifier registrations are app-core's (`native_capture::os_notifiers`);
+//! the macOS banner for the not-recording reminder is host-side
+//! (`macos_notification`).
 
 #[cfg(target_os = "macos")]
 pub(crate) mod macos_notification;
@@ -33,164 +32,9 @@ use capture_types::{
     UpdateRecordingSettingsRequest, UpdateStorageSettingsRequest, UpdateUserContextSettingsRequest,
     UpdateVideoSettingsRequest,
 };
-use tauri::{Manager, State};
+use tauri::State;
 
 type Core<'a> = State<'a, Arc<AppCore>>;
-
-#[cfg(target_os = "macos")]
-pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
-    use app_core::native_capture::privacy::PrivacyRefreshReason;
-    use cidre::ns;
-
-    let core = app_handle.state::<Arc<AppCore>>().inner().clone();
-    let mut center = ns::Workspace::shared().notification_center();
-    let mut guards = Vec::new();
-    for (notification, reason) in [
-        (
-            ns::workspace::notification::did_activate_app(),
-            PrivacyRefreshReason::WorkspaceFocusChanged,
-        ),
-        (
-            ns::workspace::notification::did_deactivate_app(),
-            PrivacyRefreshReason::WorkspaceFocusChanged,
-        ),
-        (
-            ns::workspace::notification::active_space_did_change(),
-            PrivacyRefreshReason::WorkspaceFocusChanged,
-        ),
-        (
-            ns::workspace::notification::did_launch_app(),
-            PrivacyRefreshReason::WorkspaceAppChanged,
-        ),
-        (
-            ns::workspace::notification::did_terminate_app(),
-            PrivacyRefreshReason::WorkspaceAppChanged,
-        ),
-        (
-            ns::workspace::notification::did_hide_app(),
-            PrivacyRefreshReason::WorkspaceAppChanged,
-        ),
-        (
-            ns::workspace::notification::did_unhide_app(),
-            PrivacyRefreshReason::WorkspaceAppChanged,
-        ),
-    ] {
-        guards.push(center.add_observer_guard(notification, None, None, {
-            let core = core.clone();
-            move |_notification| {
-                app_core::native_capture::privacy::refresh::request_privacy_filter_refresh(
-                    &core, reason,
-                );
-            }
-        }));
-    }
-
-    core.state::<app_core::native_capture::metadata::MetadataNotifierState>()
-        .replace(guards);
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn start_metadata_notifier(_app_handle: tauri::AppHandle) {}
-
-#[cfg(target_os = "macos")]
-pub fn start_system_wake_notifier(app_handle: tauri::AppHandle) {
-    use app_core::native_capture::system_wake::{self, SystemWakeNotifierState};
-    use cidre::ns;
-
-    let core = app_handle.state::<Arc<AppCore>>().inner().clone();
-    let mut center = ns::Workspace::shared().notification_center();
-    let will_sleep_guard =
-        center.add_observer_guard(ns::workspace::notification::will_sleep(), None, None, {
-            let core = core.clone();
-            move |_notification| {
-                system_wake::handle_system_will_sleep(&core);
-            }
-        });
-    let did_wake_guard =
-        center.add_observer_guard(ns::workspace::notification::did_wake(), None, None, {
-            let core = core.clone();
-            move |_notification| {
-                system_wake::recover_screen_capture_after_system_wake(core.clone());
-            }
-        });
-    let screens_did_sleep_guard = center.add_observer_guard(
-        ns::workspace::notification::screens_did_sleep(),
-        None,
-        None,
-        {
-            let core = core.clone();
-            move |_notification| {
-                system_wake::handle_screens_did_sleep(&core);
-            }
-        },
-    );
-    let screens_did_wake_guard = center.add_observer_guard(
-        ns::workspace::notification::screens_did_wake(),
-        None,
-        None,
-        {
-            let core = core.clone();
-            move |_notification| {
-                system_wake::handle_screens_did_wake(&core);
-            }
-        },
-    );
-
-    let notifier_state = core.state::<SystemWakeNotifierState>();
-    let mut notifier_slot = notifier_state
-        .0
-        .lock()
-        .expect("system wake notifier state poisoned");
-    notifier_slot.clear();
-    notifier_slot.push(will_sleep_guard);
-    notifier_slot.push(did_wake_guard);
-    notifier_slot.push(screens_did_sleep_guard);
-    notifier_slot.push(screens_did_wake_guard);
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn start_system_wake_notifier(_app_handle: tauri::AppHandle) {}
-
-// `NSWorkspaceDidWake` is only posted on a *full* wake; dark wakes, Power Nap,
-// and "Wake from Deep Idle" never post it. The display reconfiguration callback
-// is the polling-free re-arm signal (`app_core::native_capture::system_wake`).
-#[cfg(target_os = "macos")]
-pub fn start_display_reconfiguration_notifier(app_handle: tauri::AppHandle) {
-    use app_core::native_capture::system_wake::{
-        display_reconfiguration_callback, set_display_reconfiguration_recovery_core,
-        DisplayReconfigurationCallbackGuard, DisplayReconfigurationNotifierState,
-    };
-    use core_graphics::base::{kCGErrorSuccess, CGError};
-
-    let core = app_handle.state::<Arc<AppCore>>().inner().clone();
-    // The C callback can't capture state, so stash the core where it can reach
-    // it. Set before registering so no early callback races a missing core.
-    set_display_reconfiguration_recovery_core(&core);
-
-    let error: CGError = unsafe {
-        core_graphics::display::CGDisplayRegisterReconfigurationCallback(
-            display_reconfiguration_callback,
-            std::ptr::null(),
-        )
-    };
-    if error != kCGErrorSuccess {
-        app_core::debug_log::log_warn(format!(
-            "failed to register display reconfiguration callback for wake recovery (CGError {error}); \
-             relying on NSWorkspaceDidWake fallback"
-        ));
-        return;
-    }
-
-    let notifier_state = core.state::<DisplayReconfigurationNotifierState>();
-    let mut slot = notifier_state
-        .0
-        .lock()
-        .expect("display reconfiguration notifier state poisoned");
-    *slot = Some(DisplayReconfigurationCallbackGuard);
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn start_display_reconfiguration_notifier(_app_handle: tauri::AppHandle) {}
 
 #[tauri::command]
 pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
