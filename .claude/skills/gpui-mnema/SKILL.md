@@ -90,5 +90,7 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - `. scripts/openblas-build-env.sh` before any build linking speakrs. `bash scripts/prepare-mnema-cli-sidecar.sh debug` before any `apps/desktop/src-tauri` cargo command.
 - `rustfmt` on touched files only. Never a bare `cargo fmt`, which churns ~17 unrelated files.
 - The four `resume_screen_from_inactivity_*` failures and the known flakes already exist. Don't chase them, and don't add to them.
+- **Never touch the real keychain.** Any process that may reach app-core secrets (provider keys, the vault, the DB key) must run with `MNEMA_TRIPWIRE_NO_KEYCHAIN=1` and `MNEMA_DEV_MASTER_KEY_FILE=<scratch file>` (+ `MNEMA_CAPTURE_INDEX_KEY_DIR=<scratch dir>`). That includes throwaway fixture dumpers and examples, not just tests. On 2026-11-08 a fixture dumper hung on a real keychain read.
+- **`rustfmt` on a `lib.rs`/`mod.rs` follows the whole module tree.** Format only leaf files you touched, or revert the churn.
 - **Never launch an app against the founder's real data** (`~/.mnema-dev`, `~/.mnema`, `~/Library/Application Support/day.mnema*`). Startup runs retention and repair passes, which delete data. Smoke tests use a copy: `cp -R ~/.mnema-dev <scratch>/mnema-dev-copy` and point `MNEMA_SAVE_DIRECTORY`/`MNEMA_APP_CONFIG_DIR` at it, or use an `app_core::fixtures` seed.
 - Never run `scripts/build-macos-local-sign.sh`: the founder runs signed builds. TCC flows (screen, mic, system audio, accessibility) only work in a signed build launched with `open`.
