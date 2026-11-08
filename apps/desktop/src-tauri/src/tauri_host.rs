@@ -88,7 +88,7 @@ fn tauri_event(event: CoreEvent) -> (&'static str, Value) {
         UserContextChanged => ("user_context_changed", Value::Null),
         AudioSegmentsChanged => ("audio_segments_changed", Value::Null),
         TimelineDataChanged(p) => ("timeline_data_changed", json(p)),
-        ScrubPreviewCacheChanged(p) => ("scrub_preview_cache_changed", p),
+        ScrubPreviewCacheChanged(p) => ("scrub_preview_cache_changed", json(p)),
         RecordingSettingsChanged(p) => ("recording_settings_changed", p),
         RecordingSettingsDomainChanged(p) => ("recording_settings_domain_changed", p),
         AppNotificationsChanged(p) => ("app_notifications_changed", p),
@@ -236,6 +236,22 @@ impl Host for TauriHost {
                     let _ = window.destroy();
                 }
             }
+            // Runs synchronously, so the grant lands before the command that
+            // asked for it hands the path to the webview.
+            WindowSignal::AllowAssetPath { path, recursive } => {
+                let scope = app.asset_protocol_scope();
+                let result = if recursive {
+                    scope.allow_directory(&path, true)
+                } else {
+                    scope.allow_file(&path)
+                };
+                if let Err(error) = result {
+                    log_warn(format!(
+                        "failed to allow preview path {} in asset scope: {error}",
+                        path.display()
+                    ));
+                }
+            }
         }
     }
 
@@ -324,6 +340,15 @@ mod tests {
         )
     }
 
+    fn scrub_cache_changed() -> app_core::app_infra::frame_preview::ScrubPreviewCacheChangedPayload
+    {
+        app_core::app_infra::frame_preview::ScrubPreviewCacheChangedPayload {
+            rendition: "v1-jpeg-q72-max360-1fps".into(),
+            start_unix_ms: 1_000,
+            end_unix_ms: 31_000,
+        }
+    }
+
     /// One of each variant. `tauri_event`'s exhaustive match breaks the build on a
     /// new variant; add it here and to `APPENDIX_A` too.
     fn every_event() -> Vec<CoreEvent> {
@@ -348,7 +373,7 @@ mod tests {
                 deleted_frame_ids: vec![1],
                 deleted_audio_segment_ids: vec![],
             }),
-            ScrubPreviewCacheChanged(p()),
+            ScrubPreviewCacheChanged(scrub_cache_changed()),
             RecordingSettingsChanged(p()),
             RecordingSettingsDomainChanged(p()),
             AppNotificationsChanged(p()),
@@ -417,7 +442,7 @@ mod tests {
         let constants = [
             app_core::updates::APP_UPDATE_STATUS_CHANGED_EVENT,
             app_core::app_infra::TIMELINE_DATA_CHANGED_EVENT,
-            app_infra::frame_preview::SCRUB_PREVIEW_CACHE_CHANGED_EVENT,
+            app_core::app_infra::frame_preview::SCRUB_PREVIEW_CACHE_CHANGED_EVENT,
             app_core::audio_transcription_models::AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
             conversation::commands::CONVERSATION_CHANGED_EVENT,
             app_core::licensing::LICENSE_DEEP_LINK_DONE_EVENT,
@@ -462,6 +487,21 @@ mod tests {
                     "downloadedBytes": 5,
                     "totalBytes": 10,
                     "message": null,
+                })
+            )
+        );
+    }
+
+    #[test]
+    fn scrub_preview_cache_changed_keeps_its_wire_shape() {
+        assert_eq!(
+            tauri_event(CoreEvent::ScrubPreviewCacheChanged(scrub_cache_changed())),
+            (
+                "scrub_preview_cache_changed",
+                json!({
+                    "rendition": "v1-jpeg-q72-max360-1fps",
+                    "startUnixMs": 1_000,
+                    "endUnixMs": 31_000,
                 })
             )
         );

@@ -37,6 +37,7 @@ mod commands;
 mod delete_recent;
 mod dto;
 mod frame_pipeline;
+pub mod frame_preview;
 pub mod quick_recall;
 mod requests;
 mod retention;
@@ -290,6 +291,15 @@ pub fn initialize(core: &AppCore) -> Result<(), AppInfraInitializeError> {
         );
         return Err(AppInfraInitializeError::Other(
             "app infrastructure directory lock state was already initialized".to_string(),
+        ));
+    }
+
+    if !core.manage(frame_preview::FramePreviewCacheState::default()) {
+        crate::debug_log::log_error(
+            "frame preview cache state was already initialized; refusing duplicate setup",
+        );
+        return Err(AppInfraInitializeError::Other(
+            "frame preview cache state was already initialized".to_string(),
         ));
     }
 

@@ -65,6 +65,10 @@ impl Host for GpuiHost {
     }
 
     fn window_signal(&self, signal: WindowSignal) {
+        // GPUI reads preview files directly; there is no asset scope to grant.
+        if matches!(signal, WindowSignal::AllowAssetPath { .. }) {
+            return;
+        }
         self.send(HostMsg::WindowSignal(signal));
     }
 

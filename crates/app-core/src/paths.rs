@@ -106,5 +106,10 @@ mod tests {
             paths.config,
             PathBuf::from("/Users/ana/Library/Application Support/day.mnema")
         );
+        // Where Tauri's `BaseDirectory::AppCache` put the frame/scrub previews.
+        assert_eq!(
+            paths.cache,
+            PathBuf::from("/Users/ana/Library/Caches/day.mnema")
+        );
     }
 }

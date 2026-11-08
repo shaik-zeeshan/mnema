@@ -2,19 +2,10 @@ use std::{
     collections::BTreeSet,
     fs,
     path::{Path, PathBuf},
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    thread,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
-use super::frame_preview::*;
 use super::workers::*;
-
-mod preview_cache;
-mod preview_extract;
 
 struct TestDir {
     path: PathBuf,
@@ -52,15 +43,6 @@ fn run_async_test(test: impl std::future::Future<Output = ()>) {
         .block_on(test);
 }
 
-fn run_multithread_async_test(test: impl std::future::Future<Output = ()> + Send + 'static) {
-    tokio::runtime::Builder::new_multi_thread()
-        .worker_threads(4)
-        .enable_all()
-        .build()
-        .expect("test runtime should build")
-        .block_on(test);
-}
-
 #[test]
 fn timestamp_delta_ms_accepts_sqlite_current_timestamp_format() {
     assert_eq!(
@@ -71,31 +53,6 @@ fn timestamp_delta_ms_accepts_sqlite_current_timestamp_format() {
         timestamp_delta_ms(Some("2026-04-12T10:00:00Z"), Some("2026-04-12T10:00:02Z")),
         Some(2000)
     );
-}
-
-struct TestVideoPreviewExtractorGuard;
-
-impl TestVideoPreviewExtractorGuard {
-    fn install(extractor: Arc<TestVideoPreviewExtractor>) -> Self {
-        let mut state = test_video_preview_extractor_state()
-            .lock()
-            .expect("test video preview extractor poisoned");
-        assert!(
-            state.is_none(),
-            "test video preview extractor should not already be installed"
-        );
-        *state = Some(extractor);
-        Self
-    }
-}
-
-impl Drop for TestVideoPreviewExtractorGuard {
-    fn drop(&mut self) {
-        let mut state = test_video_preview_extractor_state()
-            .lock()
-            .expect("test video preview extractor poisoned");
-        *state = None;
-    }
 }
 
 #[test]

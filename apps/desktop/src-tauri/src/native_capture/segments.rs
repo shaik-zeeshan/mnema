@@ -2765,8 +2765,8 @@ pub(super) fn warm_scrub_previews_for_committed_screen_outputs(
         return;
     }
 
-    match crate::app_infra::frame_preview::enqueue_scrub_preview_generation_for_screen_files(
-        app_handle,
+    match app_core::app_infra::frame_preview::enqueue_scrub_preview_generation_for_screen_files(
+        &app_handle.state::<Arc<app_core::AppCore>>(),
         &screen_files,
     ) {
         Ok(_) => {}

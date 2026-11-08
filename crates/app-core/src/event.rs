@@ -8,6 +8,7 @@
 
 use serde_json::Value;
 
+use crate::app_infra::frame_preview::ScrubPreviewCacheChangedPayload;
 use crate::app_infra::TimelineDataChangedPayload;
 use crate::audio_transcription_models::AudioTranscriptionModelDownloadProgressDto;
 use crate::ocr_models::OcrModelDownloadProgressDto;
@@ -30,7 +31,7 @@ pub enum CoreEvent {
     UserContextChanged,
     AudioSegmentsChanged,
     TimelineDataChanged(TimelineDataChangedPayload),
-    ScrubPreviewCacheChanged(Value),
+    ScrubPreviewCacheChanged(ScrubPreviewCacheChangedPayload),
     RecordingSettingsChanged(Value),
     RecordingSettingsDomainChanged(Value),
     AppNotificationsChanged(Value),

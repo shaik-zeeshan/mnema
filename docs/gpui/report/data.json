@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-08 19:30",
-  "verdict": "About 30% done. The groundwork is proven, the main window and every shared control are built and approved, and about 45% of the backend has moved into the shared crate. Timeline, Chat and the frame-preview move are running now; the recording engine is next.",
+  "updated": "2026-11-08 20:10",
+  "verdict": "About a third done. Timeline and Chat are built (screenshots waiting for your sign-off), every shared control and the main window are approved, and ~45% of the backend has moved. Next: the recording engine move, Settings and Insights.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~30%",
+      "value": "~33%",
       "note": "of the whole build"
     },
     {
@@ -13,9 +13,9 @@
       "note": "≈45k of ~104k Rust lines left the Tauri app"
     },
     {
-      "label": "Screens done",
-      "value": "1 of 8",
-      "note": "main window shell"
+      "label": "Screens built",
+      "value": "3 of 8",
+      "note": "shell, Timeline, Chat"
     },
     {
       "label": "Tests passing",
@@ -23,9 +23,9 @@
       "note": "660 shared + 696 Tauri, 0 failing"
     },
     {
-      "label": "Screenshots approved",
-      "value": "32",
-      "note": "12 shell + 20 controls"
+      "label": "Screenshots",
+      "value": "32 ✓ · 32 waiting",
+      "note": "10 Timeline + 10 Chat new; 12 shell changed"
     }
   ],
   "bars": [
@@ -43,7 +43,7 @@
     },
     {
       "label": "Screens (S5, S6, S8–S15)",
-      "pct": 20
+      "pct": 40
     },
     {
       "label": "Packaging + updater (S16)",
@@ -57,18 +57,8 @@
   "now": [
     {
       "id": "S2 B6b",
-      "title": "Frame previews move",
-      "detail": "The preview pipeline (scrub previews, frame images, cache) moves to the shared crate behind a small file-permission signal the GPUI app ignores."
-    },
-    {
-      "id": "S8",
-      "title": "Timeline screen",
-      "detail": "Frame stage, OCR and match overlays, the scrub rail with app bands, the date jumper, the scrub engine with every timing constant tested, image cache, frame-time measurement."
-    },
-    {
-      "id": "S11",
-      "title": "Chat screen",
-      "detail": "Conversation list, thread, live-streaming answers (bars, dossier, timeline blocks), sources, composer, model picker; streaming frame-time measurement."
+      "title": "Frame previews move — verifying",
+      "detail": "Done by the agent; being re-checked before commit."
     }
   ],
   "done": [
@@ -155,9 +145,26 @@
       "title": "Database layer",
       "what": "Setup, workers' control, the frame pipeline, timeline/search/speaker commands, retention policy, Quick Recall's backend, CLI access and the CLI approval channel — 50 SQL strings unchanged, 1,356 tests green.",
       "commit": "e8198e04"
+    },
+    {
+      "id": "S8",
+      "title": "Timeline screen",
+      "what": "Stage with OCR + match overlays, the scrub rail with app bands and audio lane, date jumper, frame actions, image cache; every timing constant tested at its boundary. Matches Tauri within ~1 px. Scroll-smoothness needs a performance pass (a few stutters up to 170 ms).",
+      "commit": "2a17488a"
+    },
+    {
+      "id": "S11",
+      "title": "Chat screen",
+      "what": "List, thread, live-streaming answers (prose, bars, dossier, timeline), sources, composer with Send/Stop, model picker, scope. Near pixel match with Tauri after 3 fix rounds.",
+      "commit": "bc38c3bb"
     }
   ],
   "next": [
+    {
+      "id": "S8-perf",
+      "title": "Timeline smoothness pass",
+      "detail": "Fix the frame-time metric (it can't go below 16.7 ms on 60 Hz) and chase the real stutters while scrubbing (likely page loads / image uploads)."
+    },
     {
       "id": "S3",
       "title": "Move the recording engine + Ask AI",
@@ -203,8 +210,30 @@
   ],
   "shots": [
     {
-      "title": "Main window — shell",
-      "note": "6 states × dark/light. The middle is a placeholder until the Timeline lands.",
+      "title": "Timeline — new, waiting for sign-off",
+      "note": "5 states × dark/light.",
+      "files": [
+        "timeline-populated",
+        "timeline-empty",
+        "timeline-stale",
+        "timeline-matches",
+        "timeline-narrow"
+      ]
+    },
+    {
+      "title": "Chat — new, waiting for sign-off",
+      "note": "5 states × dark/light.",
+      "files": [
+        "chat-empty",
+        "chat-list",
+        "chat-mid-stream",
+        "chat-done",
+        "chat-error"
+      ]
+    },
+    {
+      "title": "Main window — changed, waiting for re-sign-off",
+      "note": "Now shows the real Timeline instead of a placeholder.",
       "files": [
         "shell-populated",
         "shell-empty",
@@ -215,8 +244,8 @@
       ]
     },
     {
-      "title": "Shared controls — gallery",
-      "note": "Every control in every state, dark/light.",
+      "title": "Shared controls — approved",
+      "note": "Every control in every state.",
       "files": [
         "gallery-buttons",
         "gallery-fields",

@@ -1,7 +1,7 @@
 //! The Tauri side of `app_core::app_infra`: `initialize` (which also hands the
 //! shared states to Tauri's state for the code still reading them there), the
-//! command wrappers, frame previews (the webview asset scope), and the startup
-//! and retention pieces that read the live capture session.
+//! command wrappers, and the startup and retention pieces that read the live
+//! capture session.
 
 use std::sync::Arc;
 
@@ -9,7 +9,6 @@ use app_core::app_infra::{self as core_infra, *};
 use app_core::{AppCore, AppInfraState};
 use tauri::{Manager, State};
 
-pub mod frame_preview;
 pub mod quick_recall;
 pub mod retention;
 mod startup;
@@ -17,9 +16,6 @@ mod startup;
 mod tests;
 mod workers;
 
-pub(crate) use frame_preview::{
-    run_generated_frame_preview_cache_startup_pass, FramePreviewCacheState,
-};
 pub(crate) use retention::delete_recent_capture_from_app_handle;
 pub(crate) use startup::{
     run_deferred_startup_blocking, startup_panicked, startup_report, StartupReport,
@@ -37,15 +33,6 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         );
         return Err(AppInfraInitializeError::Other(
             "app infrastructure state was already initialized".to_string(),
-        ));
-    }
-
-    if !app.manage(FramePreviewCacheState::default()) {
-        app_core::debug_log::log_error(
-            "frame preview cache state was already initialized; refusing duplicate setup",
-        );
-        return Err(AppInfraInitializeError::Other(
-            "frame preview cache state was already initialized".to_string(),
         ));
     }
 
@@ -406,4 +393,49 @@ pub async fn move_speaker_turn_to_cluster(
     state: State<'_, AppInfraState>,
 ) -> Result<SpeakerTurnDto, String> {
     core_infra::move_speaker_turn_to_cluster(request, &state).await
+}
+
+#[tauri::command]
+pub async fn get_frame_preview(
+    request: frame_preview::GetFramePreviewRequest,
+    core: State<'_, Arc<AppCore>>,
+) -> Result<Option<frame_preview::FramePreviewDto>, String> {
+    frame_preview::get_frame_preview(&core, request).await
+}
+
+#[tauri::command]
+pub async fn get_frame_scrub_previews(
+    request: frame_preview::GetFrameScrubPreviewsRequest,
+    core: State<'_, Arc<AppCore>>,
+) -> Result<frame_preview::FrameScrubPreviewsDto, String> {
+    frame_preview::get_frame_scrub_previews(&core, request).await
+}
+
+#[tauri::command]
+pub async fn get_scrub_preview_availability(
+    request: frame_preview::GetScrubPreviewAvailabilityRequest,
+    core: State<'_, Arc<AppCore>>,
+) -> Result<frame_preview::ScrubPreviewAvailabilityDto, String> {
+    frame_preview::get_scrub_preview_availability(&core, request).await
+}
+
+#[tauri::command]
+pub fn get_scrub_preview_cache_status(
+    core: State<'_, Arc<AppCore>>,
+) -> Result<frame_preview::ScrubPreviewCacheStatusDto, String> {
+    frame_preview::get_scrub_preview_cache_status(&core)
+}
+
+#[tauri::command]
+pub fn clear_scrub_preview_cache(
+    core: State<'_, Arc<AppCore>>,
+) -> Result<frame_preview::ScrubPreviewCacheStatusDto, String> {
+    frame_preview::clear_scrub_preview_cache(&core)
+}
+
+#[tauri::command]
+pub fn cancel_active_frame_preview_video_requests(
+    core: State<'_, Arc<AppCore>>,
+) -> Result<usize, String> {
+    frame_preview::cancel_active_frame_preview_video_requests(&core)
 }

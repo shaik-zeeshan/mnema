@@ -41,3 +41,14 @@ pub(crate) fn run_async_test(test: impl std::future::Future<Output = ()>) {
         .expect("test runtime should build")
         .block_on(test);
 }
+
+pub(crate) fn run_multithread_async_test(
+    test: impl std::future::Future<Output = ()> + Send + 'static,
+) {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(4)
+        .enable_all()
+        .build()
+        .expect("test runtime should build")
+        .block_on(test);
+}

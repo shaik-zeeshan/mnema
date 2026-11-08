@@ -154,8 +154,8 @@ pub async fn run_retention_cleanup_now(
         .await
         .map_err(|error| format!("failed to run retention cleanup: {error}"))?;
     if summary.deleted_capture_segments > 0 {
-        let _ = super::frame_preview::clear_scrub_preview_cache_for_video_paths(
-            app_handle.clone(),
+        let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
+            &app_handle.state::<Arc<AppCore>>(),
             &summary.deleted_capture_segment_media_paths,
         );
     }
@@ -227,8 +227,8 @@ pub(super) async fn delete_recent_capture_inner(
     };
     let retention_context = retention_context_for_app(app_handle, infra).await;
     if !deletion.capture_segment_media_paths.is_empty() {
-        let _ = super::frame_preview::clear_scrub_preview_cache_for_video_paths(
-            app_handle.clone(),
+        let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
+            &app_handle.state::<Arc<AppCore>>(),
             &deletion.capture_segment_media_paths,
         );
     }

@@ -190,7 +190,9 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
                 &app_handle.state::<Arc<app_core::AppCore>>(),
             ),
         );
-        super::run_generated_frame_preview_cache_startup_pass(app_handle);
+        app_core::app_infra::frame_preview::run_generated_frame_preview_cache_startup_pass(
+            &app_handle.state::<Arc<app_core::AppCore>>(),
+        );
         report.workspaces_removed =
             run_hidden_segment_workspace_repair_startup_pass(&infra, &base_dir, app_handle);
         if report.workspaces_removed.is_none() {

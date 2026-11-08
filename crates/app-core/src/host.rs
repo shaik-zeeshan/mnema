@@ -67,7 +67,7 @@ pub enum WindowRequest {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WindowSignal {
     /// The capture exclusion list changed; re-apply it to every window.
     CaptureExclusionChanged,
@@ -76,6 +76,13 @@ pub enum WindowSignal {
     /// Tear the CLI Access approval window down after its request was answered,
     /// without it counting as the user dismissing the request.
     CloseCliAccessRequest,
+    /// Let the webview load `path` (a preview file, or with `recursive` a whole
+    /// preview cache dir) through the asset protocol. A host that reads files
+    /// directly ignores it.
+    AllowAssetPath {
+        path: std::path::PathBuf,
+        recursive: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

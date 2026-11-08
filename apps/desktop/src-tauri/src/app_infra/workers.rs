@@ -337,8 +337,8 @@ pub(super) fn spawn_retention_cleanup_worker(
                         retry_soon =
                             summary.skipped_running_jobs > 0 || summary.pending_file_tombstones > 0;
                         if summary.deleted_capture_segments > 0 {
-                            let _ = super::frame_preview::clear_scrub_preview_cache_for_video_paths(
-                                app_handle.clone(),
+                            let _ = frame_preview::clear_scrub_preview_cache_for_video_paths(
+                                &app_handle.state::<Arc<AppCore>>(),
                                 &summary.deleted_capture_segment_media_paths,
                             );
                         }
