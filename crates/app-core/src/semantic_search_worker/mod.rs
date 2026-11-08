@@ -15,7 +15,7 @@
 //! with no **Semantic Search Model** installed the worker is a silent no-op
 //! (logged once at INFO, never an error, never blocking capture, never
 //! auto-downloading). It mirrors `spawn_user_context_worker` /
-//! `spawn_retention_cleanup_worker`: one `tauri::async_runtime::spawn` loop,
+//! `spawn_retention_cleanup_worker`: one `AppCore::spawn` loop (`spawn.rs`),
 //! tracked for graceful shutdown, that selects between an idle sleep and the
 //! shutdown watch.
 //!
@@ -50,12 +50,14 @@ use crate::semantic_search_models::{
 use crate::{AppCore, AppInfraState, CoreEvent};
 
 mod embedder;
+mod spawn;
 mod sweep;
 #[cfg(test)]
 mod tests;
 
 pub use embedder::{load_embedder, load_embedder_private, LoadedEmbedder};
 pub use sweep::run_sweep_pass;
+pub use spawn::spawn_semantic_index_backfill_worker;
 
 /// How many anchors to drain per batch. A bounded batch keeps the worker
 /// responsive to shutdown between batches and caps the blocking-thread hop cost,

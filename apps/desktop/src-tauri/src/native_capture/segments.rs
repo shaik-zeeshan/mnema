@@ -2245,7 +2245,7 @@ fn spawn_frame_artifact_worker(
         while let Some(message) = rx.recv().await {
             match message {
                 FrameArtifactMessage::Artifact(envelope) => {
-                    if let Err(error) = crate::app_infra::persist_screen_frame_artifact(
+                    if let Err(error) = app_core::app_infra::persist_screen_frame_artifact(
                         infra.as_ref(),
                         app_handle
                             .state::<app_core::recording_settings::RecordingSettingsState>()

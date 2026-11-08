@@ -662,13 +662,6 @@ pub(super) struct ResolvedSegmentPreviewPaths {
     pub(super) video_path: PathBuf,
 }
 
-pub(super) fn captured_at_from_unix_ms(unix_ms: u64) -> String {
-    time::OffsetDateTime::from_unix_timestamp_nanos(i128::from(unix_ms) * 1_000_000)
-        .unwrap_or(time::OffsetDateTime::UNIX_EPOCH)
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_string())
-}
-
 fn frame_preview_payload(
     file_path: impl Into<String>,
     mime_type: &str,

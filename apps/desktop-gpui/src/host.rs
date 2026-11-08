@@ -58,8 +58,10 @@ impl Host for GpuiHost {
         self.send(HostMsg::RefreshTray);
     }
 
-    fn open_window(&self, req: WindowRequest) {
+    fn open_window(&self, req: WindowRequest) -> Result<(), String> {
+        // Like `open_url`: shown asynchronously on the main thread, no failure reported.
         self.send(HostMsg::OpenWindow(req));
+        Ok(())
     }
 
     fn window_signal(&self, signal: WindowSignal) {

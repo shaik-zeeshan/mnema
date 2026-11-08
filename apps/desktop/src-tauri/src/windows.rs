@@ -1,12 +1,17 @@
-use serde::{Deserialize, Serialize};
+use app_core::exit::AppExitCoordinatorState;
+use app_core::onboarding_state::{
+    current_onboarding_state, persist_onboarding_state, OnboardingState, OnboardingStateStore,
+    OnboardingStateView,
+};
+use app_core::AppCore;
+use serde::Serialize;
 use std::{
     collections::VecDeque,
-    path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex, MutexGuard, OnceLock,
+        Arc, Mutex, OnceLock,
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
@@ -26,7 +31,6 @@ pub fn refresh_capture_exclusion(_app_handle: &tauri::AppHandle) {}
 #[cfg(not(target_os = "macos"))]
 pub(crate) fn finish_macos_window(_window: &WebviewWindow, _corner_radius: Option<f64>) {}
 
-const ONBOARDING_STATE_FILE_NAME: &str = "onboarding-state.json";
 const OPEN_SETTINGS_TAB_EVENT: &str = "open_settings_tab";
 const QUICK_RECALL_WINDOW_LABEL: &str = "quick-recall";
 // Emitted to the Quick Recall webview whenever the panel is dismissed (ordered
@@ -107,99 +111,6 @@ enum DestroyedWindowAction {
     FocusMainWindow,
     ExitApp,
     None,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OnboardingState {
-    schema_version: u32,
-    completed_at_unix_ms: Option<u64>,
-}
-
-impl OnboardingState {
-    fn incomplete() -> Self {
-        Self {
-            schema_version: 1,
-            completed_at_unix_ms: None,
-        }
-    }
-
-    fn completed_now() -> Self {
-        Self {
-            schema_version: 1,
-            completed_at_unix_ms: Some(now_unix_ms()),
-        }
-    }
-
-    pub(crate) fn is_complete(&self) -> bool {
-        self.completed_at_unix_ms.is_some()
-    }
-}
-
-/// Command-only return shape for `get_onboarding_state`. Mirrors the persisted
-/// `OnboardingState` fields and adds `recording_settings_ever_saved` — a
-/// LIVE-COMPUTED, NON-PERSISTED signal (the existence of `recording-settings.json`
-/// on disk). It lives on a SEPARATE type so the persisted file shape
-/// (`OnboardingState`) stays unchanged: the computed flag is never written into
-/// `onboarding-state.json` and never required when deserializing existing files.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct OnboardingStateView {
-    schema_version: u32,
-    completed_at_unix_ms: Option<u64>,
-    recording_settings_ever_saved: bool,
-}
-
-impl OnboardingStateView {
-    fn from_state_and_disk(state: OnboardingState, recording_settings_ever_saved: bool) -> Self {
-        Self {
-            schema_version: state.schema_version,
-            completed_at_unix_ms: state.completed_at_unix_ms,
-            recording_settings_ever_saved,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
-pub struct OnboardingStateRuntime {
-    state: Option<OnboardingState>,
-}
-
-pub type OnboardingStateStore = Mutex<OnboardingStateRuntime>;
-
-#[derive(Default)]
-pub struct AppExitCoordinatorState {
-    exit_requested: AtomicBool,
-    final_graceful_exit_ready: AtomicBool,
-    restart_after_graceful_exit: AtomicBool,
-}
-
-impl AppExitCoordinatorState {
-    fn begin_exit(&self, restart_after_graceful_exit: bool) -> bool {
-        // Merge restart intent on every call so a restart-to-update request is
-        // honored even when a plain graceful exit is already in progress. We
-        // only ever raise the flag (never downgrade true -> false), so a later
-        // plain quit cannot cancel a pending update restart.
-        self.restart_after_graceful_exit
-            .fetch_or(restart_after_graceful_exit, Ordering::SeqCst);
-        !self.exit_requested.swap(true, Ordering::SeqCst)
-    }
-
-    fn is_exit_requested(&self) -> bool {
-        self.exit_requested.load(Ordering::SeqCst)
-    }
-
-    fn mark_final_graceful_exit_ready(&self) {
-        self.final_graceful_exit_ready.store(true, Ordering::SeqCst);
-    }
-
-    fn is_final_graceful_exit_ready(&self) -> bool {
-        self.final_graceful_exit_ready.load(Ordering::SeqCst)
-    }
-
-    fn should_restart_after_graceful_exit(&self) -> bool {
-        self.restart_after_graceful_exit.load(Ordering::SeqCst)
-    }
 }
 
 struct AppWindowConfig {
@@ -371,76 +282,6 @@ impl AppWindow {
         Self::Update,
         Self::PermissionHelper,
     ];
-}
-
-fn now_unix_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as u64
-}
-
-fn onboarding_state_file_path(app_handle: &tauri::AppHandle) -> PathBuf {
-    if let Ok(config_dir) = app_handle.path().app_config_dir() {
-        return config_dir.join(ONBOARDING_STATE_FILE_NAME);
-    }
-
-    PathBuf::from(".mnema").join(ONBOARDING_STATE_FILE_NAME)
-}
-
-fn load_onboarding_state_from_path(path: PathBuf) -> OnboardingState {
-    std::fs::read_to_string(path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<OnboardingState>(&raw).ok())
-        .filter(OnboardingState::is_complete)
-        .unwrap_or_else(OnboardingState::incomplete)
-}
-
-fn lock_onboarding_state(store: &OnboardingStateStore) -> MutexGuard<'_, OnboardingStateRuntime> {
-    store.lock().expect("onboarding state store poisoned")
-}
-
-fn current_onboarding_state(
-    app: &tauri::AppHandle,
-    store: &OnboardingStateStore,
-) -> OnboardingState {
-    let mut runtime = lock_onboarding_state(store);
-    if let Some(state) = runtime.state.clone() {
-        return state;
-    }
-
-    let state = load_onboarding_state_from_path(onboarding_state_file_path(app));
-    runtime.state = Some(state.clone());
-    state
-}
-
-pub fn current_onboarding_state_for_app(
-    app: &tauri::AppHandle,
-    store: &OnboardingStateStore,
-) -> OnboardingState {
-    current_onboarding_state(app, store)
-}
-
-fn persist_onboarding_state(
-    app: &tauri::AppHandle,
-    store: &OnboardingStateStore,
-    state: OnboardingState,
-) -> Result<OnboardingState, String> {
-    let file_path = onboarding_state_file_path(app);
-    if let Some(parent) = file_path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("Failed to create onboarding state directory: {error}"))?;
-    }
-
-    let serialized = serde_json::to_string_pretty(&state)
-        .map_err(|error| format!("Failed to serialize onboarding state: {error}"))?;
-    std::fs::write(file_path, serialized)
-        .map_err(|error| format!("Failed to persist onboarding state: {error}"))?;
-
-    let mut runtime = lock_onboarding_state(store);
-    runtime.state = Some(state.clone());
-
-    Ok(state)
 }
 
 fn ensure_window_allowed(
@@ -1111,7 +952,7 @@ pub fn request_app_relaunch(app_handle: tauri::AppHandle) {
 }
 
 fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_exit: bool) {
-    let exit_state = app.state::<AppExitCoordinatorState>();
+    let exit_state = app.state::<Arc<AppCore>>().state::<AppExitCoordinatorState>();
     if !exit_state.begin_exit(restart_after_exit) {
         return;
     }
@@ -1153,7 +994,10 @@ fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_e
         app_core::debug_log::log_info(
             "stopping background workers before terminating",
         );
-        crate::app_infra::shutdown_background_workers_for_app_exit(&app_handle).await;
+        app_core::app_infra::shutdown_background_workers_for_app_exit(
+            &app_handle.state::<Arc<AppCore>>(),
+        )
+        .await;
 
         match audio_transcription::providers::local_whisper::unload_all_cached_contexts() {
             Ok(unloaded) => {
@@ -1173,7 +1017,7 @@ fn request_graceful_exit_with_completion(app: &tauri::AppHandle, restart_after_e
 }
 
 fn complete_graceful_exit(app: &tauri::AppHandle) {
-    let exit_state = app.state::<AppExitCoordinatorState>();
+    let exit_state = app.state::<Arc<AppCore>>().state::<AppExitCoordinatorState>();
     let restart_requested = exit_state.should_restart_after_graceful_exit();
     exit_state.mark_final_graceful_exit_ready();
 
@@ -1205,12 +1049,8 @@ fn macos_immediate_process_exit(code: i32) -> ! {
     unsafe { _exit(code) }
 }
 
-pub(crate) fn is_graceful_exit_in_progress(app: &tauri::AppHandle) -> bool {
-    app.state::<AppExitCoordinatorState>().is_exit_requested()
-}
-
 pub(crate) fn is_final_graceful_exit_ready(app: &tauri::AppHandle) -> bool {
-    app.state::<AppExitCoordinatorState>()
+    app.state::<Arc<AppCore>>().state::<AppExitCoordinatorState>()
         .is_final_graceful_exit_ready()
 }
 
@@ -1304,8 +1144,9 @@ pub fn handle_window_event(
 
     let action = match AppWindow::from_label(label) {
         Some(AppWindow::Onboarding) => {
-            let store = app.state::<OnboardingStateStore>();
-            if current_onboarding_state(app, store.inner()).is_complete() {
+            let core = app.state::<Arc<AppCore>>();
+            if current_onboarding_state(&core, &core.state::<OnboardingStateStore>()).is_complete()
+            {
                 DestroyedWindowAction::None
             } else {
                 DestroyedWindowAction::ExitApp
@@ -1326,7 +1167,7 @@ pub fn open_startup_window(
     app: &tauri::AppHandle,
     store: &OnboardingStateStore,
 ) -> Result<bool, String> {
-    let state = current_onboarding_state(app, store);
+    let state = current_onboarding_state(&app.state::<Arc<AppCore>>(), store);
     if state.is_complete() {
         open_or_focus_window(app, AppWindow::Main, None)?;
         Ok(true)
@@ -1337,8 +1178,8 @@ pub fn open_startup_window(
 }
 
 pub(crate) fn is_onboarding_complete(app: &tauri::AppHandle) -> bool {
-    let store = app.state::<OnboardingStateStore>();
-    current_onboarding_state(app, store.inner()).is_complete()
+    let core = app.state::<Arc<AppCore>>();
+    current_onboarding_state(&core, &core.state::<OnboardingStateStore>()).is_complete()
 }
 
 /// Focus the Main window and ask it to open the `/settings` route. Settings is
@@ -1472,33 +1313,23 @@ fn summon_query(query: Option<String>) -> Option<String> {
 }
 
 #[tauri::command]
-pub fn get_onboarding_state(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, OnboardingStateStore>,
-) -> OnboardingStateView {
-    // `recording-settings.json` is written ONLY by explicit user saves (never at
-    // install/startup), so its existence == "the user has saved settings at least
-    // once" == returning user. It must be read LIVE per call (NOT cached in
-    // OnboardingStateStore) so a save performed between two onboarding entries in
-    // one process lifetime is visible. Use the same path resolver saves land in.
-    let ever_saved = app_core::recording_settings::recording_settings_file_path(&app.state::<std::sync::Arc<app_core::AppCore>>()).exists();
-    OnboardingStateView::from_state_and_disk(
-        current_onboarding_state(&app, state.inner()),
-        ever_saved,
-    )
+pub fn get_onboarding_state(app: tauri::AppHandle) -> OnboardingStateView {
+    let core = app.state::<Arc<AppCore>>();
+    app_core::onboarding_state::get_onboarding_state(&core, &core.state::<OnboardingStateStore>())
 }
 
 #[tauri::command]
-pub fn complete_onboarding(
-    app: tauri::AppHandle,
-    window: WebviewWindow,
-    state: tauri::State<'_, OnboardingStateStore>,
-) -> Result<(), String> {
+pub fn complete_onboarding(app: tauri::AppHandle, window: WebviewWindow) -> Result<(), String> {
     if AppWindow::from_label(window.label()) != Some(AppWindow::Onboarding) {
         return Err("onboarding can only be completed from the onboarding window".into());
     }
 
-    persist_onboarding_state(&app, state.inner(), OnboardingState::completed_now())?;
+    let core = app.state::<Arc<AppCore>>();
+    persist_onboarding_state(
+        &core,
+        &core.state::<OnboardingStateStore>(),
+        OnboardingState::completed_now(),
+    )?;
     open_or_focus_window(&app, AppWindow::Main, None)?;
     crate::status_bar::refresh(&app);
     window.close().map_err(|err| err.to_string())
@@ -1508,10 +1339,9 @@ pub fn complete_onboarding(
 mod tests {
     use super::{
         close_window_focuses_main_before_close, destroyed_window_action,
-        enqueue_cold_open_settings, is_known_settings_tab, load_onboarding_state_from_path,
-        normalize_settings_focus, normalize_settings_tab, normalized_open_settings_payload,
-        settings_tab_focus_path, summon_query, AppExitCoordinatorState, DestroyedWindowAction,
-        OnboardingState, OnboardingStateView, OpenSettingsTabPayload, PendingOpenSettingsState,
+        enqueue_cold_open_settings, is_known_settings_tab, normalize_settings_focus,
+        normalize_settings_tab, normalized_open_settings_payload, settings_tab_focus_path,
+        summon_query, DestroyedWindowAction, OpenSettingsTabPayload, PendingOpenSettingsState,
     };
 
     #[test]
@@ -1757,46 +1587,6 @@ mod tests {
     }
 
     #[test]
-    fn app_exit_coordinator_marks_final_exit_only_after_graceful_work_is_done() {
-        let coordinator = AppExitCoordinatorState::default();
-
-        assert!(coordinator.begin_exit(false));
-        assert!(!coordinator.begin_exit(false));
-        assert!(coordinator.is_exit_requested());
-        assert!(!coordinator.is_final_graceful_exit_ready());
-
-        coordinator.mark_final_graceful_exit_ready();
-
-        assert!(coordinator.is_final_graceful_exit_ready());
-    }
-
-    #[test]
-    fn restart_intent_is_preserved_when_requested_after_exit_begins() {
-        let coordinator = AppExitCoordinatorState::default();
-
-        // A plain graceful exit (quit / window close) starts first.
-        assert!(coordinator.begin_exit(false));
-        assert!(!coordinator.should_restart_after_graceful_exit());
-
-        // The user triggers restart-to-update before shutdown finishes; the
-        // request is dropped for spawning purposes but its intent is retained.
-        assert!(!coordinator.begin_exit(true));
-        assert!(coordinator.should_restart_after_graceful_exit());
-    }
-
-    #[test]
-    fn restart_intent_is_not_downgraded_by_a_later_plain_exit() {
-        let coordinator = AppExitCoordinatorState::default();
-
-        assert!(coordinator.begin_exit(true));
-        assert!(coordinator.should_restart_after_graceful_exit());
-
-        // A subsequent plain exit must not cancel the pending update restart.
-        assert!(!coordinator.begin_exit(false));
-        assert!(coordinator.should_restart_after_graceful_exit());
-    }
-
-    #[test]
     fn settings_tab_deeplink_accepts_known_tabs_only() {
         assert!(is_known_settings_tab("processing"));
         assert!(is_known_settings_tab("about"));
@@ -1937,57 +1727,5 @@ mod tests {
         enqueue_cold_open_settings(&pending, &payload, /* main_window_was_open */ true);
 
         assert!(pending.pending.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn missing_onboarding_state_is_incomplete() {
-        let path = std::env::temp_dir().join(format!(
-            "mnema-missing-onboarding-state-{}.json",
-            super::now_unix_ms()
-        ));
-
-        assert!(!load_onboarding_state_from_path(path).is_complete());
-    }
-
-    #[test]
-    fn onboarding_state_view_serializes_recording_settings_ever_saved_in_camel_case() {
-        let view = OnboardingStateView::from_state_and_disk(
-            OnboardingState {
-                schema_version: 1,
-                completed_at_unix_ms: Some(42),
-            },
-            true,
-        );
-        let json = serde_json::to_value(&view).expect("view serializes");
-        assert_eq!(json["schemaVersion"], 1);
-        assert_eq!(json["completedAtUnixMs"], 42);
-        assert_eq!(json["recordingSettingsEverSaved"], true);
-    }
-
-    #[test]
-    fn onboarding_state_view_carries_ever_saved_signal_independently() {
-        // The signal is independent of completion: a not-yet-completed onboarding
-        // can still report a returning user (settings saved), and vice versa.
-        let returning =
-            OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), true);
-        assert!(returning.recording_settings_ever_saved);
-        assert_eq!(returning.completed_at_unix_ms, None);
-
-        let first_run =
-            OnboardingStateView::from_state_and_disk(OnboardingState::incomplete(), false);
-        assert!(!first_run.recording_settings_ever_saved);
-    }
-
-    #[test]
-    fn invalid_onboarding_state_is_incomplete() {
-        let path = std::env::temp_dir().join(format!(
-            "mnema-invalid-onboarding-state-{}.json",
-            super::now_unix_ms()
-        ));
-        std::fs::write(&path, "{not-json").expect("invalid test state should write");
-
-        assert!(!load_onboarding_state_from_path(path.clone()).is_complete());
-
-        let _ = std::fs::remove_file(path);
     }
 }

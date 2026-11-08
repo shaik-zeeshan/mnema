@@ -41,7 +41,7 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **Logging:** use the `log` crate. Never log content (titles, URLs, OCR, transcripts, prompts, answers, queries, keys). Pick levels per `AGENTS.md`.
 
 ## app-core API *(set by S1; update when it changes)*
-- `Host` trait (`emit`, `message`, `confirm` → `tokio::sync::oneshot::Receiver<bool>`, `open_url`, `refresh_tray`, `open_window(WindowRequest)`, `window_signal(WindowSignal)`, `exit(ExitKind)`), `Paths { data, config, cache, log }` (`Paths::from_env(bundle_id)`), `CoreEvent`.
+- `Host` trait (`emit`, `message`, `confirm` → `tokio::sync::oneshot::Receiver<bool>`, `open_url` → `Result<(), String>`, `refresh_tray`, `open_window(WindowRequest)` → `Result<(), String>` (an `Err` means the window never appeared), `window_signal(WindowSignal)`, `exit(ExitKind)`), `Paths { data, config, cache, log }` (`Paths::from_env(bundle_id)`), `CoreEvent`.
 - `AppCore::new(host, paths)` owns the one tokio runtime; `AppCore::{state, try_state, manage, spawn, spawn_blocking, block_on, runtime_handle, host, paths}`. `state::<T>()` returns `Arc<T>`.
 - `CoreEvent` payloads are `serde_json::Value` (the old Tauri payload) until S2/S3 move each payload type into a crate; unit events carry none. The Tauri wire names live in `src-tauri/src/tauri_host.rs` (`tauri_event`).
 - `app_core::fixtures::{seed(dir, FixtureId) -> Paths, seed_paths, FIXTURE_NOW}` for tests and goldens (feature `fixtures`, default-on; src-tauri uses `default-features = false`). Seeding sets `MNEMA_CAPTURE_INDEX_KEY_DIR` for the process. `cargo run -p app-core --example dump_fixture -- <fixture> <out.json>` writes the parity `command → JSON` map.

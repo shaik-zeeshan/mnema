@@ -3141,7 +3141,7 @@ fn finish_recording_settings_update(
 
     if previous_settings.retention_policy != settings.retention_policy {
         if let Some(background_workers) =
-            app_handle.try_state::<crate::app_infra::BackgroundWorkersState>()
+            app_handle.try_state::<app_core::app_infra::BackgroundWorkersState>()
         {
             background_workers.notify_retention_schedule_changed();
         } else {

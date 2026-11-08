@@ -178,7 +178,7 @@ fn transcription_label(provider: capture_types::AudioTranscriptionProvider) -> &
 }
 
 async fn read_cli(app_handle: &tauri::AppHandle, day_start_ms: i64) -> CliInputs {
-    let installed = crate::app_infra::get_cli_status_inner(app_handle.clone())
+    let installed = app_core::cli_access::get_cli_status_inner()
         .await
         .is_ok_and(|status| status.installed);
     if !installed {

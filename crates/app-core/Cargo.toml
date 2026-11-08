@@ -47,8 +47,8 @@ sha2 = "0.10"
 tar = "0.4"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls"] }
 thiserror = "2"
-time = { version = "0.3", features = ["formatting", "parsing"] }
-tokio = { version = "1", features = ["io-util", "process", "rt-multi-thread", "sync", "time"] }
+time = { version = "0.3", features = ["formatting", "local-offset", "parsing"] }
+tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
 url = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
 

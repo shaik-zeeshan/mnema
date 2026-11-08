@@ -12,11 +12,16 @@ use crate::{
     WindowSignal,
 };
 
-/// Records every emit and opened URL; confirms answer yes; everything else is a no-op.
+/// Records every emit, opened URL, window request and window signal; confirms
+/// answer yes; `open_window` fails with `open_window_error` when set; everything
+/// else is a no-op.
 #[derive(Default)]
 pub(crate) struct FakeHost {
     pub(crate) events: Mutex<Vec<CoreEvent>>,
     pub(crate) opened_urls: Mutex<Vec<String>>,
+    pub(crate) opened_windows: Mutex<Vec<WindowRequest>>,
+    pub(crate) window_signals: Mutex<Vec<WindowSignal>>,
+    pub(crate) open_window_error: Mutex<Option<String>>,
 }
 
 impl Host for FakeHost {
@@ -34,8 +39,16 @@ impl Host for FakeHost {
         Ok(())
     }
     fn refresh_tray(&self) {}
-    fn open_window(&self, _req: WindowRequest) {}
-    fn window_signal(&self, _signal: WindowSignal) {}
+    fn open_window(&self, req: WindowRequest) -> Result<(), String> {
+        self.opened_windows.lock().unwrap().push(req);
+        match self.open_window_error.lock().unwrap().clone() {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+    fn window_signal(&self, signal: WindowSignal) {
+        self.window_signals.lock().unwrap().push(signal);
+    }
     fn exit(&self, _kind: ExitKind) {}
 }
 

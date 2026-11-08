@@ -10,7 +10,7 @@ use app_core::{
     WindowRequest, WindowSignal,
 };
 use serde_json::Value;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::oneshot;
@@ -87,7 +87,7 @@ fn tauri_event(event: CoreEvent) -> (&'static str, Value) {
         ConversationChanged => ("conversation_changed", Value::Null),
         UserContextChanged => ("user_context_changed", Value::Null),
         AudioSegmentsChanged => ("audio_segments_changed", Value::Null),
-        TimelineDataChanged(p) => ("timeline_data_changed", p),
+        TimelineDataChanged(p) => ("timeline_data_changed", json(p)),
         ScrubPreviewCacheChanged(p) => ("scrub_preview_cache_changed", p),
         RecordingSettingsChanged(p) => ("recording_settings_changed", p),
         RecordingSettingsDomainChanged(p) => ("recording_settings_domain_changed", p),
@@ -194,8 +194,10 @@ impl Host for TauriHost {
         status_bar::refresh(app);
     }
 
-    fn open_window(&self, req: WindowRequest) {
-        let Some(app) = self.app() else { return };
+    fn open_window(&self, req: WindowRequest) -> Result<(), String> {
+        let Some(app) = self.app() else {
+            return Err("app is not ready".to_string());
+        };
         let result = match req {
             WindowRequest::Main => windows::open_main_window(app),
             WindowRequest::Settings { tab, focus } => {
@@ -207,9 +209,10 @@ impl Host for TauriHost {
                 windows::permission_helper::show_permission_helper(app.clone(), kind)
             }
         };
-        if let Err(error) = result {
+        if let Err(error) = &result {
             log_warn(format!("failed to open a window: {error}"));
         }
+        result
     }
 
     fn window_signal(&self, signal: WindowSignal) {
@@ -218,6 +221,20 @@ impl Host for TauriHost {
             WindowSignal::CaptureExclusionChanged => windows::refresh_capture_exclusion(app),
             WindowSignal::HideAllViews(hidden) => {
                 windows::set_all_webview_views_hidden(app, hidden)
+            }
+            // `destroy()`, not `close()`: `close()` emits `CloseRequested`, which is
+            // the event lib.rs reads as "the user dismissed the approval" and
+            // answers the pending request `denied`/`closed` with. The teardown is
+            // queued on the main thread while the broker has ALREADY emptied the
+            // pending slot and released the single-flight guard, so by the time
+            // that event is pumped the slot can hold the NEXT request — which would
+            // then be denied without a window ever being shown for it. `destroy()`
+            // emits only `Destroyed`, leaving `CloseRequested` to mean what lib.rs's
+            // hook assumes it means.
+            WindowSignal::CloseCliAccessRequest => {
+                if let Some(window) = app.get_webview_window("cli-access-request") {
+                    let _ = window.destroy();
+                }
             }
         }
     }
@@ -323,7 +340,14 @@ mod tests {
             ConversationChanged,
             UserContextChanged,
             AudioSegmentsChanged,
-            TimelineDataChanged(p()),
+            TimelineDataChanged(app_core::app_infra::TimelineDataChangedPayload {
+                reason: "retention".into(),
+                deleted_before: None,
+                started_at: None,
+                ended_at: None,
+                deleted_frame_ids: vec![1],
+                deleted_audio_segment_ids: vec![],
+            }),
             ScrubPreviewCacheChanged(p()),
             RecordingSettingsChanged(p()),
             RecordingSettingsDomainChanged(p()),
@@ -392,7 +416,7 @@ mod tests {
         use crate::*;
         let constants = [
             app_core::updates::APP_UPDATE_STATUS_CHANGED_EVENT,
-            app_infra::TIMELINE_DATA_CHANGED_EVENT,
+            app_core::app_infra::TIMELINE_DATA_CHANGED_EVENT,
             app_infra::frame_preview::SCRUB_PREVIEW_CACHE_CHANGED_EVENT,
             app_core::audio_transcription_models::AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
             conversation::commands::CONVERSATION_CHANGED_EVENT,

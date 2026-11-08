@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
 use app_core::AppInfraState;
-use crate::app_infra::PersonProfileDto;
+use app_core::app_infra::PersonProfileDto;
 
 /// Name used when the caller does not supply one. The Voice screen may ask; the
 /// Settings re-enroll surface does not have to.

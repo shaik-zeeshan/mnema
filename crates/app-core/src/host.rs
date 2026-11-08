@@ -18,7 +18,9 @@ pub trait Host: Send + Sync + 'static {
     fn open_url(&self, target: &str) -> Result<(), String>;
     /// Rebuild the status-bar menu from current state.
     fn refresh_tray(&self);
-    fn open_window(&self, req: WindowRequest);
+    /// Open (or focus) a window. `Err` carries the host's reason when the window
+    /// could not be shown, so a caller waiting on it can give up instead of hanging.
+    fn open_window(&self, req: WindowRequest) -> Result<(), String>;
     fn window_signal(&self, signal: WindowSignal);
     fn exit(&self, kind: ExitKind);
 }
@@ -71,6 +73,9 @@ pub enum WindowSignal {
     CaptureExclusionChanged,
     /// Hide (or restore) every window's rendered views, e.g. across display sleep.
     HideAllViews(bool),
+    /// Tear the CLI Access approval window down after its request was answered,
+    /// without it counting as the user dismissing the request.
+    CloseCliAccessRequest,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

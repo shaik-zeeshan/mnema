@@ -18,7 +18,6 @@ mod ocr_models;
 mod one_time_prompts;
 mod privacy_redaction_sources;
 mod semantic_search_models;
-mod semantic_search_worker;
 mod sensitive_capture_recommendations;
 #[cfg(test)]
 mod secret_vault_test_support;
@@ -462,7 +461,9 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
     // update check on top of that teardown — that would record a segment
     // `complete_graceful_exit` then kills mid-write. The deferred maintenance
     // above already bails on this condition too (defense in depth).
-    if windows::is_graceful_exit_in_progress(app_handle) {
+    if app_core::exit::is_graceful_exit_in_progress(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+    ) {
         app_core::debug_log::log_info(
             "graceful exit in progress; skipping capture auto-start and the update-check timer",
         );
@@ -539,6 +540,15 @@ pub fn run() {
     // One settings state, shared by the Tauri builder and app-core.
     let recording_settings = app_core::recording_settings::RecordingSettingsState::default();
     core.manage(recording_settings.clone());
+    core.manage(app_core::onboarding_state::OnboardingStateStore::default());
+    core.manage(app_core::exit::AppExitCoordinatorState::default());
+    core.manage(app_core::broker_authorization_channel::BrokerAuthorizationChannelState::default());
+    // The Semantic Index Backfill worker's health, published each sweep pass and
+    // read by the debug surface's `get_semantic_index_status`. Registered here
+    // (not in the worker) so the state exists before deferred startup spawns it;
+    // one `Arc`, shared by the worker (app-core) and the Tauri command.
+    let semantic_worker_health = app_core::debug_status::SemanticWorkerHealthState::default();
+    core.manage(semantic_worker_health.clone());
     tauri::Builder::default()
         .manage(core)
         .manage(native_capture::NativeCaptureState::default())
@@ -554,18 +564,12 @@ pub fn run() {
         .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())
         .manage(app_updates::AppUpdateRuntimeState::default())
-        .manage(windows::OnboardingStateStore::default())
-        .manage(windows::AppExitCoordinatorState::default())
         .manage(windows::PendingOpenSettingsState::default())
         .manage(BrokerOpenCaptureResultState::default())
         .manage(InsightsOpenConversationState::default())
         .manage(LicenseDeepLinkState::default())
-        .manage(broker_authorization_channel::BrokerAuthorizationChannelState::default())
         .manage(app_core::semantic_search_query::SemanticQueryEmbedderState::new())
-        // The Semantic Index Backfill worker's health, published each sweep pass and
-        // read by the debug surface's `get_semantic_index_status`. Registered here
-        // (not in the worker) so the state exists before deferred startup spawns it.
-        .manage(app_core::debug_status::SemanticWorkerHealthState::default())
+        .manage(semantic_worker_health)
         // MCP tool connectors (Workstream C, ADR 0048): persistent connection
         // manager. Lazy — nothing connects here at launch; it dials on first use.
         .manage(ask_ai::mcp::McpManager::default())
@@ -631,8 +635,8 @@ pub fn run() {
             if window.label() == "cli-access-request"
                 && matches!(event, tauri::WindowEvent::CloseRequested { .. })
             {
-                broker_authorization_channel::cancel_pending_request(
-                    &window.app_handle(),
+                app_core::broker_authorization_channel::cancel_pending_request(
+                    &window.app_handle().state::<std::sync::Arc<app_core::AppCore>>(),
                     "closed",
                 );
             }
@@ -659,8 +663,8 @@ pub fn run() {
             licensing::refresh_license_now,
             licensing::reset_license_devices,
             licensing::get_license_devices,
-            app_infra::preview_retention_cleanup,
-            app_infra::run_retention_cleanup_now,
+            app_infra::retention::preview_retention_cleanup,
+            app_infra::retention::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
             cli_access::list_cli_access_grants,
             cli_access::block_cli_access_client,
@@ -683,7 +687,7 @@ pub fn run() {
             broker_authorization_channel::approve_pending_cli_access_request,
             broker_authorization_channel::block_pending_cli_access_request,
             broker_authorization_channel::cancel_pending_cli_access_request,
-            app_infra::delete_recent_capture,
+            app_infra::retention::delete_recent_capture,
             one_time_prompts::get_one_time_prompt_state,
             one_time_prompts::mark_one_time_prompt_shown,
             one_time_prompts::dismiss_one_time_prompt,
@@ -912,7 +916,7 @@ pub fn run() {
             app_core::debug_log::install_panic_hook();
             if let Err(error) = app_infra::initialize(app) {
                 match error {
-                    app_infra::AppInfraInitializeError::AlreadyRunning => {
+                    app_core::app_infra::AppInfraInitializeError::AlreadyRunning => {
                         app.dialog()
                             .message(ALREADY_RUNNING_MESSAGE)
                             .kind(MessageDialogKind::Warning)
@@ -921,12 +925,15 @@ pub fn run() {
                         app.handle().exit(0);
                         return Ok(());
                     }
-                    app_infra::AppInfraInitializeError::Other(message) => {
+                    app_core::app_infra::AppInfraInitializeError::Other(message) => {
                         return Err(std::io::Error::other(message).into());
                     }
                 }
             }
-            broker_authorization_channel::start(app.handle()).map_err(std::io::Error::other)?;
+            app_core::broker_authorization_channel::start(
+                &app.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
+            .map_err(std::io::Error::other)?;
             native_capture::maybe_push_audio_transcription_unavailable_startup_warning(
                 app.handle(),
             );
@@ -936,8 +943,10 @@ pub fn run() {
             native_capture::start_display_reconfiguration_notifier(app.handle().clone());
             native_capture::start_metadata_notifier(app.handle().clone());
             let onboarding_complete = windows::is_onboarding_complete(app.handle());
-            let onboarding_state = app.state::<windows::OnboardingStateStore>();
-            windows::open_startup_window(app.handle(), onboarding_state.inner())
+            let onboarding_state = app
+                .state::<std::sync::Arc<app_core::AppCore>>()
+                .state::<app_core::onboarding_state::OnboardingStateStore>();
+            windows::open_startup_window(app.handle(), &onboarding_state)
                 .map_err(std::io::Error::other)?;
             // The window is open and the database is ready; run the remaining
             // startup work (index maintenance, filesystem repair, background
@@ -984,7 +993,9 @@ pub fn run() {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
                 match exit_request_action_for_exit_request(
                     code,
-                    windows::is_graceful_exit_in_progress(app_handle),
+                    app_core::exit::is_graceful_exit_in_progress(
+                        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+                    ),
                     windows::is_final_graceful_exit_ready(app_handle),
                 ) {
                     ExitRequestAction::StartGracefulExit => {

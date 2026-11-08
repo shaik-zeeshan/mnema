@@ -25,7 +25,7 @@
 //! - [`digest`] — the lazy, fingerprint-cached **User Context Digest** (the
 //!   Insights Overview narrative lede) generation (#89).
 //! - [`worker`] — one tick of the background, tier-paced derivation loop (OCR
-//!   Catch-Up style); the loop itself is spawned by the host.
+//!   Catch-Up style); `spawn` runs that loop (and the Subject Vector one).
 //! - [`commands`] — the command surface (status / list activities +
 //!   conclusions / subject view / digest / run-now).
 
@@ -36,6 +36,9 @@ mod continuation;
 pub mod derivation;
 pub mod digest;
 mod evidence_tags;
+mod spawn;
 pub mod subject_candidates;
 pub mod subject_vector_worker;
 pub mod worker;
+
+pub use spawn::{spawn_user_context_subject_vector_worker, spawn_user_context_worker};
