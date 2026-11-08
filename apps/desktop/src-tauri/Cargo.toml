@@ -57,6 +57,8 @@ sha2 = "0.10"
 sqlx = { version = "0.8", features = ["sqlite", "runtime-tokio-rustls"] }
 thiserror = "2"
 app-infra = { path = "../../../crates/app-infra" }
+# Shared behaviour (Host seam, AppCore runtime + states). No fixtures in the app.
+app-core = { path = "../../../crates/app-core", default-features = false }
 # licensegate client: offline verification (Verifier/evaluate) + the /v1 API client.
 licensegate = "0.2"
 # Aliased so the Tauri-side `mod ai_runtime;` does not collide with the crate name.

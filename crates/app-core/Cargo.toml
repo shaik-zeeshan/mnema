@@ -1,0 +1,29 @@
+[package]
+name = "app-core"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[features]
+# `fixtures` seeds a temp data dir (DB rows + generated JPEG frames) for tests,
+# goldens and the parity dumper. Default-on so `cargo test -p app-core` covers
+# it; the desktop binaries depend on app-core with `default-features = false`.
+default = ["fixtures"]
+fixtures = ["dep:image", "dep:time"]
+
+[dependencies]
+app-infra = { path = "../app-infra" }
+capture-metadata = { path = "../capture-metadata" }
+dirs = "6"
+log = "0.4"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "sync"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"], optional = true }
+time = { version = "0.3", features = ["formatting", "parsing"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[example]]
+name = "dump_fixture"
+required-features = ["fixtures"]

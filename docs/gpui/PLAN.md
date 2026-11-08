@@ -73,6 +73,12 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
   - Needs Rust ≥1.93: the founder chose to pin stable, and `rust-toolchain.toml` = 1.99.1.
   - Quit swizzle → AppKit's original `terminate:` still fires GPUI's `on_app_quit`.
   - Open for S7: a real tray click (founder), and an unexplained off-screen 500×500 window with sharingState 1.
+- **S1 done:**
+  - app-core tests 10/10; desktop lib 1313 passed / 0 failed on Rust 1.99.1 (the 4 `resume_*` failures no longer reproduce);
+  - `otool -L` unchanged;
+  - `CoreEvent` payloads are `serde_json::Value` until S2/S3 move their types (shortcut);
+  - new 1.99 warnings: `fetch_update` deprecated (`licensing.rs:129`), `__eh_frame` too large linker message, `block 0.1.6` future-incompat.
+  - Incident: the S1 smoke ran against the real `~/.mnema-dev`, and its 7-day retention deleted 37 old segments. Rule added: agents launch only against copies.
 
 ## T0 · Tooling (orchestrator, before S0)
 
@@ -215,7 +221,7 @@ Plus screenshots of the window (light/dark), the panel and the tray menu, opened
 cargo test -p app-core
 cargo check --manifest-path apps/desktop/src-tauri/Cargo.toml
 cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --lib    # same pass/fail set as before (4 known failures)
-bun run dev:sandbox   # app starts, records 30 s, timeline shows it; Info log startup lines identical
+# dev-sandbox smoke on a COPY of ~/.mnema-dev (never the real dir: startup retention deletes data)
 ```
 Also add a test that every `CoreEvent` variant maps to exactly its old event name.
 

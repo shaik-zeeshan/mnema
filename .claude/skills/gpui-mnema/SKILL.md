@@ -40,8 +40,10 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **Logging:** use the `log` crate. Never log content (titles, URLs, OCR, transcripts, prompts, answers, queries, keys). Pick levels per `AGENTS.md`.
 
 ## app-core API *(set by S1; update when it changes)*
-- `Host` trait (`emit`, `message`, `confirm`, `open_url`, `refresh_tray`, `open_window`, `window_signal`, `exit`), `Paths`, `CoreEvent`, `AppCore::{state, try_state, manage, spawn, spawn_blocking, block_on, host, paths}`.
-- `app_core::fixtures::seed(dir, FixtureId)` for tests and goldens (feature `fixtures`).
+- `Host` trait (`emit`, `message`, `confirm` → `tokio::sync::oneshot::Receiver<bool>`, `open_url`, `refresh_tray`, `open_window(WindowRequest)`, `window_signal(WindowSignal)`, `exit(ExitKind)`), `Paths { data, config, cache, log }` (`Paths::from_env(bundle_id)`), `CoreEvent`.
+- `AppCore::new(host, paths)` owns the one tokio runtime; `AppCore::{state, try_state, manage, spawn, spawn_blocking, block_on, runtime_handle, host, paths}`. `state::<T>()` returns `Arc<T>`.
+- `CoreEvent` payloads are `serde_json::Value` (the old Tauri payload) until S2/S3 move each payload type into a crate; unit events carry none. The Tauri wire names live in `src-tauri/src/tauri_host.rs` (`tauri_event`).
+- `app_core::fixtures::{seed(dir, FixtureId) -> Paths, seed_paths, FIXTURE_NOW}` for tests and goldens (feature `fixtures`, default-on; src-tauri uses `default-features = false`). Seeding sets `MNEMA_CAPTURE_INDEX_KEY_DIR` for the process. `cargo run -p app-core --example dump_fixture -- <fixture> <out.json>` writes the parity `command → JSON` map.
 
 ## Theme API *(set by S5)*
 
@@ -66,4 +68,5 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - `. scripts/openblas-build-env.sh` before any build linking speakrs. `bash scripts/prepare-mnema-cli-sidecar.sh debug` before any `apps/desktop/src-tauri` cargo command.
 - `rustfmt` on touched files only. Never a bare `cargo fmt`, which churns ~17 unrelated files.
 - The four `resume_screen_from_inactivity_*` failures and the known flakes already exist. Don't chase them, and don't add to them.
+- **Never launch an app against the founder's real data** (`~/.mnema-dev`, `~/.mnema`, `~/Library/Application Support/day.mnema*`). Startup runs retention and repair passes, which delete data. Smoke tests use a copy: `cp -R ~/.mnema-dev <scratch>/mnema-dev-copy` and point `MNEMA_SAVE_DIRECTORY`/`MNEMA_APP_CONFIG_DIR` at it, or use an `app_core::fixtures` seed.
 - Never run `scripts/build-macos-local-sign.sh`: the founder runs signed builds. TCC flows (screen, mic, system audio, accessibility) only work in a signed build launched with `open`.

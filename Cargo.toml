@@ -3,6 +3,7 @@ members = [
     "apps/desktop/src-tauri",
     "apps/desktop-gpui",
     "crates/ai-runtime",
+    "crates/app-core",
     "crates/app-infra",
     "crates/cli",
     "crates/audio-transcription",

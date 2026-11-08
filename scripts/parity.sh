@@ -20,6 +20,11 @@ fi
 repo="$(cd "$(dirname "$0")/.." && pwd)"
 surface="$1" state="${2:-}" theme="${3:-}"
 
+# Stop the Vite that shoot.ts starts if :1420 was free, so it can't serve this tree to another worktree's run.
+if ! lsof -tiTCP:1420 -sTCP:LISTEN >/dev/null 2>&1; then
+  trap 'kill $(lsof -tiTCP:1420 -sTCP:LISTEN) 2>/dev/null || true' EXIT
+fi
+
 dirs="$(cd "$repo/apps/desktop" && bun parity/shoot.ts "$surface" "$state" "$theme")"
 
 gpui_test="$repo/apps/desktop-gpui/tests/visual.rs"

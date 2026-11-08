@@ -1,6 +1,8 @@
 .DS_Store
 node_modules
 **/build
+# Shared build-script sources include!d by the binaries' build.rs, not build output.
+!scripts/build/
 **/dist
 **/.astro
 **/.svelte-kit

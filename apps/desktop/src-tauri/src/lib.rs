@@ -30,6 +30,7 @@ mod secret_vault_test_support;
 mod speaker_analysis_models;
 mod speaker_analysis_runtime;
 mod status_bar;
+mod tauri_host;
 mod third_party_notices;
 mod transcription_deepgram;
 mod usage_charts;
@@ -533,7 +534,10 @@ fn hydrate_system_audio_permission_evidence(_app_handle: &tauri::AppHandle) {}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let context = tauri::generate_context!();
+    let (host, core) = tauri_host::start_core(&context.config().identifier);
     tauri::Builder::default()
+        .manage(core)
         .manage(native_capture::NativeCaptureState::default())
         .manage(native_capture::MicrophoneControllerPreferencesState::default())
         .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
@@ -888,7 +892,8 @@ pub fn run() {
             has_pending_insights_open_conversations,
             open_conversation_in_chat,
         ])
-        .setup(|app| {
+        .setup(move |app| {
+            host.attach(app.handle().clone());
             let app_handle = app.handle().clone();
             app.deep_link().on_open_url(move |event| {
                 for url in event.urls() {
@@ -976,7 +981,7 @@ pub fn run() {
             status_bar::refresh(app.handle());
             Ok(())
         })
-        .build(tauri::generate_context!())
+        .build(context)
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
             tauri::RunEvent::ExitRequested { code, api, .. } => {
