@@ -6,7 +6,12 @@
 //! a deliberate pause never counts as "off". Away = display asleep or the lock
 //! screen in front (ADR 0021's display-unavailable, plus `loginwindow`).
 
-use super::{AppNotification, AppNotificationAction, AppNotificationsState};
+use app_core::native_capture::app_notifications::{
+    clear_app_notification_by_id, push_app_notification, AppNotification,
+    AppNotificationAction, AppNotificationsState,
+};
+use app_core::AppCore;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tauri::{Emitter, Manager};
@@ -93,7 +98,10 @@ fn snooze_until(app_handle: &tauri::AppHandle, until_unix_ms: u64) {
 
 /// Removes both the in-app row and the native banner.
 fn clear_reminder(app_handle: &tauri::AppHandle) {
-    super::clear_app_notification_by_id(app_handle, NOT_RECORDING_REMINDER_NOTIFICATION_ID);
+    clear_app_notification_by_id(
+        &app_handle.state::<Arc<AppCore>>(),
+        NOT_RECORDING_REMINDER_NOTIFICATION_ID,
+    );
     #[cfg(target_os = "macos")]
     macos_notification::remove();
 }
@@ -170,12 +178,13 @@ fn tick(app_handle: &tauri::AppHandle, runtime: &mut ReminderRuntime) {
         ReminderStep::Clear => clear_reminder(app_handle),
         ReminderStep::Fire => {
             app_core::debug_log::log_info("not-recording reminder fired");
-            let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
+            let core = app_handle.state::<Arc<AppCore>>();
+            let Some(state) = core.try_state::<AppNotificationsState>() else {
                 return;
             };
-            super::push_app_notification(
-                app_handle,
-                state.inner(),
+            push_app_notification(
+                &core,
+                &state,
                 AppNotification {
                     id: NOT_RECORDING_REMINDER_NOTIFICATION_ID.to_string(),
                     severity: "warning".to_string(),

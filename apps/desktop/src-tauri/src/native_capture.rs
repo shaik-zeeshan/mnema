@@ -1,11 +1,4 @@
-mod activity;
-pub(crate) mod capture_health;
-mod lifecycle;
-mod microphone;
-mod microphone_away;
 pub(crate) mod not_recording_reminder;
-pub(crate) mod privacy;
-mod segments;
 #[path = "native_capture_settings.rs"]
 pub(crate) mod settings;
 #[cfg(test)]
@@ -55,15 +48,19 @@ use std::time::Duration;
 use tauri::{path::BaseDirectory, Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
-use lifecycle::{RecordingLifecycle, StartRecordingLifecycleOutcome};
+use app_core::native_capture::app_notifications::{
+    emit_app_notifications_changed, push_app_notification, AppNotification,
+    AppNotificationAction, AppNotificationsState,
+};
+use app_core::native_capture::lifecycle::{NativeCaptureState, StartRecordingLifecycleOutcome};
+use app_core::AppCore;
+use std::sync::Arc;
 use app_core::native_capture::microphone::{
     resolve_capture_microphone_device_id, should_wait_for_same_microphone_device,
     MicrophoneControllerPreferencesState,
 };
-use microphone::update_microphone_controller as update_microphone_controller_impl;
-pub use microphone::start_microphone_device_change_notifier;
+use app_core::native_capture::microphone::controller::update_microphone_controller as update_microphone_controller_impl;
 use runtime::validate_start_request;
-pub type NativeCaptureState = Mutex<RecordingLifecycle>;
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
@@ -149,7 +146,10 @@ pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
         guards.push(center.add_observer_guard(notification, None, None, {
             let app_handle = app_handle.clone();
             move |_notification| {
-                crate::native_capture::privacy::request_privacy_filter_refresh(&app_handle, reason);
+                app_core::native_capture::privacy::refresh::request_privacy_filter_refresh(
+                    &app_handle.state::<Arc<AppCore>>(),
+                    reason,
+                );
             }
         }));
     }
@@ -187,16 +187,13 @@ pub const SCREENS_DID_WAKE_EVENT: &str = "screens_did_wake";
 const SYSTEM_WAKE_RECOVERY_RETRY_DELAYS_MS: &[u64] = &[
     500, 1_500, 3_000, 5_000, 10_000, 10_000, 10_000, 10_000, 10_000,
 ];
-pub const AUDIO_SEGMENTS_CHANGED_EVENT: &str = "audio_segments_changed";
 pub const RECORDING_SETTINGS_CHANGED_EVENT: &str = "recording_settings_changed";
 pub const RECORDING_SETTINGS_DOMAIN_CHANGED_EVENT: &str = "recording_settings_domain_changed";
 pub const NATIVE_CAPTURE_SESSION_CHANGED_EVENT: &str = "native_capture_session_changed";
-pub const APP_NOTIFICATIONS_CHANGED_EVENT: &str = "app_notifications_changed";
 const AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID: &str = "audio-transcription-unavailable";
 const OCR_UNAVAILABLE_NOTIFICATION_ID: &str = "ocr-unavailable";
 const SPEECH_DETECTOR_UNAVAILABLE_NOTIFICATION_ID: &str = "speech-detector-unavailable";
 const SPEAKER_ANALYSIS_UNAVAILABLE_NOTIFICATION_ID: &str = "speaker-analysis-unavailable";
-const PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID: &str = "privacy-recovery-restart-required";
 const PROCESSING_SETTINGS_TAB_ID: &str = "processing";
 const TRANSCRIPTION_SETTINGS_TAB_ID: &str = "transcription";
 const SPEAKER_SETTINGS_TAB_ID: &str = "speakers";
@@ -209,26 +206,6 @@ const APP_ICON_CACHE_DIR: &str = "app-icons";
 #[cfg(target_os = "macos")]
 const APP_ICON_RENDER_POINT_SIZE: u32 = 128;
 
-#[derive(Debug, Clone, serde::Serialize)]
-#[allow(dead_code)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum AppNotificationAction {
-    OpenSettingsTab { tab: String },
-    /// "Start" + "Snooze for today" (see `not_recording_reminder`).
-    NotRecordingReminder,
-}
-
-#[derive(Debug, Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AppNotification {
-    pub id: String,
-    pub severity: String,
-    pub title: String,
-    pub message: String,
-    pub created_at_unix_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub action: Option<AppNotificationAction>,
-}
 
 #[derive(Debug, Clone, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -256,35 +233,6 @@ pub struct BrowserUrlSupportResponse {
     pub supported: bool,
     pub warning: Option<String>,
 }
-
-#[derive(Debug, Default)]
-pub struct AppNotificationsRuntime {
-    notifications: Vec<AppNotification>,
-}
-
-impl AppNotificationsRuntime {
-    fn list(&self) -> Vec<AppNotification> {
-        self.notifications.clone()
-    }
-
-    fn push_session_notification(&mut self, notification: AppNotification) -> Vec<AppNotification> {
-        self.notifications.retain(|item| item.id != notification.id);
-        self.notifications.push(notification);
-        self.list()
-    }
-
-    fn clear_one(&mut self, id: &str) -> Vec<AppNotification> {
-        self.notifications.retain(|item| item.id != id);
-        self.list()
-    }
-
-    fn clear_all(&mut self) -> Vec<AppNotification> {
-        self.notifications.clear();
-        self.list()
-    }
-}
-
-pub type AppNotificationsState = Mutex<AppNotificationsRuntime>;
 
 #[tauri::command]
 pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
@@ -851,10 +799,6 @@ fn emit_system_did_wake(app_handle: &tauri::AppHandle) {
     let _ = app_handle.emit(SYSTEM_DID_WAKE_EVENT, ());
 }
 
-pub(super) fn emit_audio_segments_changed(app_handle: &tauri::AppHandle) {
-    let _ = app_handle.emit(AUDIO_SEGMENTS_CHANGED_EVENT, ());
-}
-
 pub(crate) fn emit_recording_settings_changed(
     app_handle: &tauri::AppHandle,
     settings: &RecordingSettings,
@@ -874,142 +818,6 @@ pub(crate) fn emit_native_capture_session_changed(
     session: &capture_types::NativeCaptureSession,
 ) {
     let _ = app_handle.emit(NATIVE_CAPTURE_SESSION_CHANGED_EVENT, session);
-}
-
-fn emit_app_notifications_changed(
-    app_handle: &tauri::AppHandle,
-    notifications: &[AppNotification],
-) {
-    let _ = app_handle.emit(APP_NOTIFICATIONS_CHANGED_EVENT, notifications);
-}
-
-fn push_app_notification(
-    app_handle: &tauri::AppHandle,
-    state: &AppNotificationsState,
-    notification: AppNotification,
-) {
-    let notifications = {
-        let mut runtime = state.lock().expect("app notifications state poisoned");
-        runtime.push_session_notification(notification)
-    };
-    emit_app_notifications_changed(app_handle, &notifications);
-}
-
-pub(super) fn push_privacy_recovery_restart_required_notification(app_handle: &tauri::AppHandle) {
-    let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
-        debug_log::log_warn(
-            "app notifications state unavailable while reporting privacy recovery restart requirement",
-        );
-        return;
-    };
-    push_app_notification(
-        app_handle,
-        state.inner(),
-        AppNotification {
-            id: PRIVACY_RECOVERY_RESTART_REQUIRED_NOTIFICATION_ID.to_string(),
-            severity: "warning".to_string(),
-            title: "Screen capture paused for privacy".to_string(),
-            message: "Screen and system audio capture were paused after privacy filter recovery failed. Stop and start recording to resume those sources.".to_string(),
-            created_at_unix_ms: runtime::now_unix_ms(),
-            action: None,
-        },
-    );
-}
-
-pub(crate) fn push_warning_app_notification(
-    app_handle: &tauri::AppHandle,
-    id: &str,
-    title: &str,
-    message: &str,
-    settings_tab: Option<&str>,
-    created_at_unix_ms: u64,
-) {
-    let action = settings_tab.map(|tab| AppNotificationAction::OpenSettingsTab {
-        tab: tab.to_string(),
-    });
-    push_app_notification(
-        app_handle,
-        app_handle.state::<AppNotificationsState>().inner(),
-        AppNotification {
-            id: id.to_string(),
-            severity: "warning".to_string(),
-            title: title.to_string(),
-            message: message.to_string(),
-            created_at_unix_ms,
-            action,
-        },
-    );
-}
-
-/// Clear (remove) a single app notification by its stable id and broadcast the
-/// updated list. Mirrors [`push_warning_app_notification`] for the suspend/resume
-/// pair: the low-disk warning is pushed on suspend and cleared here on resume.
-/// Best-effort — silently no-ops if the notifications state is unavailable.
-pub(crate) fn clear_app_notification_by_id(app_handle: &tauri::AppHandle, id: &str) {
-    let Some(state) = app_handle.try_state::<AppNotificationsState>() else {
-        return;
-    };
-    let notifications = {
-        let mut runtime = state.lock().expect("app notifications state poisoned");
-        runtime.clear_one(id)
-    };
-    emit_app_notifications_changed(app_handle, &notifications);
-}
-
-pub(crate) fn push_info_app_notification(
-    app_handle: &tauri::AppHandle,
-    id: &str,
-    title: &str,
-    message: &str,
-    settings_tab: Option<&str>,
-    created_at_unix_ms: u64,
-) {
-    let action = settings_tab.map(|tab| AppNotificationAction::OpenSettingsTab {
-        tab: tab.to_string(),
-    });
-    push_app_notification(
-        app_handle,
-        app_handle.state::<AppNotificationsState>().inner(),
-        AppNotification {
-            id: id.to_string(),
-            severity: "info".to_string(),
-            title: title.to_string(),
-            message: message.to_string(),
-            created_at_unix_ms,
-            action,
-        },
-    );
-}
-
-/// Push an `error`-severity app notification. Mirrors
-/// [`push_warning_app_notification`] but with `severity: "error"`; used for the
-/// low-disk graceful-stop notice (ADR 0040), where capture has stopped and the
-/// user must free space before recording can be restarted. The frontend already
-/// types `severity` as `"info" | "warning" | "error"` and styles the `error`
-/// case; an unstyled severity would degrade to the neutral base card.
-pub(crate) fn push_error_app_notification(
-    app_handle: &tauri::AppHandle,
-    id: &str,
-    title: &str,
-    message: &str,
-    settings_tab: Option<&str>,
-    created_at_unix_ms: u64,
-) {
-    let action = settings_tab.map(|tab| AppNotificationAction::OpenSettingsTab {
-        tab: tab.to_string(),
-    });
-    push_app_notification(
-        app_handle,
-        app_handle.state::<AppNotificationsState>().inner(),
-        AppNotification {
-            id: id.to_string(),
-            severity: "error".to_string(),
-            title: title.to_string(),
-            message: message.to_string(),
-            created_at_unix_ms,
-            action,
-        },
-    );
 }
 
 fn should_warn_audio_transcription_unavailable_at_start(settings: &RecordingSettings) -> bool {
@@ -1111,7 +919,7 @@ fn maybe_push_audio_transcription_unavailable_warning(
                 "audio transcription unavailable at {context} (selection={selection})"
             ));
             push_app_notification(
-                app_handle,
+                &app_handle.state::<Arc<AppCore>>(),
                 app_notifications_state,
                 audio_transcription_unavailable_notification(settings, runtime::now_unix_ms()),
             );
@@ -1122,7 +930,7 @@ fn maybe_push_audio_transcription_unavailable_warning(
                 "failed to inspect selected audio transcription model at {context} (selection={selection}): {error}"
             ));
             push_app_notification(
-                app_handle,
+                &app_handle.state::<Arc<AppCore>>(),
                 app_notifications_state,
                 audio_transcription_unavailable_notification(settings, runtime::now_unix_ms()),
             );
@@ -1263,7 +1071,7 @@ fn maybe_push_ocr_unavailable_warning(
                 "ocr unavailable at {context} (selection={selection})"
             ));
             push_app_notification(
-                app_handle,
+                &app_handle.state::<Arc<AppCore>>(),
                 app_notifications_state,
                 ocr_unavailable_notification(settings, runtime::now_unix_ms()),
             );
@@ -1274,7 +1082,7 @@ fn maybe_push_ocr_unavailable_warning(
                 "failed to inspect selected OCR model at {context} (selection={selection}): {error}"
             ));
             push_app_notification(
-                app_handle,
+                &app_handle.state::<Arc<AppCore>>(),
                 app_notifications_state,
                 ocr_unavailable_notification(settings, runtime::now_unix_ms()),
             );
@@ -1358,7 +1166,7 @@ fn recover_screen_capture_after_system_wake_once(
             .to_string(),
     })?;
 
-    let outcome = runtime.recover_after_wake(Some(app_handle));
+    let outcome = runtime.recover_after_wake(Some(&app_handle.state::<Arc<AppCore>>()));
     let runtime_state = runtime.runtime();
     match &outcome {
         Ok(true) => {
@@ -2135,7 +1943,7 @@ fn start_native_capture_inner(
             Ok(true) => {}
             Ok(false) => {
                 push_app_notification(
-                    &app_handle,
+                    &app_handle.state::<Arc<AppCore>>(),
                     app_notifications_state.inner(),
                     speech_detector_unavailable_notification(runtime::now_unix_ms()),
                 );
@@ -2146,7 +1954,7 @@ fn start_native_capture_inner(
             }
             Err(error) => {
                 push_app_notification(
-                    &app_handle,
+                    &app_handle.state::<Arc<AppCore>>(),
                     app_notifications_state.inner(),
                     speech_detector_unavailable_notification(runtime::now_unix_ms()),
                 );
@@ -2221,7 +2029,7 @@ fn start_native_capture_inner(
             Ok(true) => {}
             Ok(false) => {
                 push_app_notification(
-                    &app_handle,
+                    &app_handle.state::<Arc<AppCore>>(),
                     app_notifications_state.inner(),
                     speaker_analysis_unavailable_notification(runtime::now_unix_ms()),
                 );
@@ -2232,7 +2040,7 @@ fn start_native_capture_inner(
             }
             Err(error) => {
                 push_app_notification(
-                    &app_handle,
+                    &app_handle.state::<Arc<AppCore>>(),
                     app_notifications_state.inner(),
                     speaker_analysis_unavailable_notification(runtime::now_unix_ms()),
                 );
@@ -2317,7 +2125,7 @@ fn start_native_capture_inner(
 
     let requested_sources_for_log = sources.clone();
     let started_session = match runtime.start(
-        app_handle.clone(),
+        app_handle.state::<Arc<AppCore>>().inner().clone(),
         &settings,
         sources,
         microphone_device_id_for_capture,
@@ -2395,7 +2203,7 @@ fn start_native_capture_inner(
             notice.reason
         ));
         push_app_notification(
-            &app_handle,
+            &app_handle.state::<Arc<AppCore>>(),
             app_notifications_state.inner(),
             AppNotification {
                 id: format!(
@@ -2708,12 +2516,15 @@ pub fn get_capture_health(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, NativeCaptureState>,
 ) -> app_core::native_capture::capture_health::CaptureHealthDto {
-    capture_health::capture_health_snapshot(&state, &app_handle)
+    app_core::native_capture::capture_health::capture_health_snapshot(
+        &state,
+        &app_handle.state::<Arc<AppCore>>(),
+    )
 }
 
 #[tauri::command]
 pub fn get_idle_debug(state: tauri::State<'_, NativeCaptureState>) -> IdleDebugInfo {
-    activity::get_idle_debug(state)
+    app_core::native_capture::activity::get_idle_debug(&state)
 }
 
 #[tauri::command]
@@ -2736,7 +2547,7 @@ pub fn clear_app_notification(
         let mut runtime = state.lock().expect("app notifications state poisoned");
         runtime.clear_one(&id)
     };
-    emit_app_notifications_changed(&app_handle, &notifications);
+    emit_app_notifications_changed(&app_handle.state::<Arc<AppCore>>(), &notifications);
     notifications
 }
 
@@ -2749,7 +2560,7 @@ pub fn clear_app_notifications(
         let mut runtime = state.lock().expect("app notifications state poisoned");
         runtime.clear_all()
     };
-    emit_app_notifications_changed(&app_handle, &notifications);
+    emit_app_notifications_changed(&app_handle.state::<Arc<AppCore>>(), &notifications);
     notifications
 }
 
@@ -2777,8 +2588,8 @@ pub async fn update_microphone_controller(
     tauri::async_runtime::spawn_blocking(move || {
         update_microphone_controller_impl(
             request,
-            &app_handle,
-            app_handle.state::<MicrophoneControllerPreferencesState>(),
+            &app_handle.state::<Arc<AppCore>>(),
+            &app_handle.state::<MicrophoneControllerPreferencesState>(),
         )
     })
     .await
@@ -3219,13 +3030,13 @@ fn finish_recording_settings_update(
     let privacy_changed = previous_settings.privacy != settings.privacy;
     let metadata_changed = previous_settings.metadata != settings.metadata;
     if metadata_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
+        app_core::native_capture::privacy::refresh::request_privacy_filter_refresh(
+            &app_handle.state::<Arc<AppCore>>(),
             app_core::native_capture::privacy::PrivacyRefreshReason::MetadataSettingsMutation,
         );
     } else if privacy_changed {
-        privacy::request_privacy_filter_refresh(
-            app_handle,
+        app_core::native_capture::privacy::refresh::request_privacy_filter_refresh(
+            &app_handle.state::<Arc<AppCore>>(),
             app_core::native_capture::privacy::PrivacyRefreshReason::StaticAppRuleMutation,
         );
     }
@@ -3308,7 +3119,7 @@ pub(crate) fn pause_native_capture_from_app_handle(
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let state = app_handle.state::<NativeCaptureState>();
     let mut runtime = state.lock().expect("native capture state poisoned");
-    let session = runtime.pause_user_capture(app_handle)?;
+    let session = runtime.pause_user_capture(&app_handle.state::<Arc<AppCore>>())?;
     drop(runtime);
     emit_native_capture_session_changed(app_handle, &session);
     crate::status_bar::refresh(app_handle);
@@ -3320,7 +3131,7 @@ pub(crate) fn resume_native_capture_from_app_handle(
 ) -> Result<NativeCaptureSessionResponse, CaptureErrorResponse> {
     let state = app_handle.state::<NativeCaptureState>();
     let mut runtime = state.lock().expect("native capture state poisoned");
-    let session = runtime.resume_user_capture(app_handle)?;
+    let session = runtime.resume_user_capture(&app_handle.state::<Arc<AppCore>>())?;
     drop(runtime);
     emit_native_capture_session_changed(app_handle, &session);
     crate::status_bar::refresh(app_handle);
@@ -3641,7 +3452,7 @@ fn stop_native_capture_with_state(
         format_output_file_counts(output_files_before_stop.as_ref())
     ));
 
-    let session = match runtime.stop(app_handle) {
+    let session = match runtime.stop(&app_handle.state::<Arc<AppCore>>()) {
         Ok(session) => session,
         Err(error) => {
             if capture_screen::should_preserve_runtime_on_stop_error(&error) {

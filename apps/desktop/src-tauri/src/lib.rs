@@ -551,22 +551,28 @@ pub fn run() {
     // one `Arc`, shared by the worker (app-core) and the Tauri command.
     let semantic_worker_health = app_core::debug_status::SemanticWorkerHealthState::default();
     core.manage(semantic_worker_health.clone());
+    // The capture lock, the bell list and the microphone preference: one `Arc`
+    // each, shared by the Tauri builder (its commands) and app-core (capture).
+    let native_capture_state = app_core::native_capture::lifecycle::NativeCaptureState::default();
+    core.manage(native_capture_state.clone());
+    let app_notifications =
+        app_core::native_capture::app_notifications::AppNotificationsState::default();
+    core.manage(app_notifications.clone());
+    let microphone_preferences =
+        app_core::native_capture::microphone::MicrophoneControllerPreferencesState::default();
+    core.manage(microphone_preferences.clone());
+    core.manage(app_core::native_capture::microphone::MicrophoneDeviceChangeNotifierState::default());
     tauri::Builder::default()
         .manage(core)
-        .manage(native_capture::NativeCaptureState::default())
-        .manage(
-            app_core::native_capture::microphone::MicrophoneControllerPreferencesState::default(),
-        )
-        .manage(
-            app_core::native_capture::microphone::MicrophoneDeviceChangeNotifierState::default(),
-        )
+        .manage(native_capture_state)
+        .manage(microphone_preferences)
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::DisplayReconfigurationNotifierState::default())
         .manage(native_capture::MetadataNotifierState::default())
         .manage(recording_settings)
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
-        .manage(native_capture::AppNotificationsState::default())
+        .manage(app_notifications)
         .manage(app_updates::AppUpdateRuntimeState::default())
         .manage(windows::PendingOpenSettingsState::default())
         .manage(BrokerOpenCaptureResultState::default())
@@ -942,7 +948,9 @@ pub fn run() {
                 app.handle(),
             );
             native_capture::maybe_push_ocr_unavailable_startup_warning(app.handle());
-            native_capture::start_microphone_device_change_notifier(app.handle().clone());
+            app_core::native_capture::microphone::controller::start_microphone_device_change_notifier(
+                app.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
+            );
             native_capture::start_system_wake_notifier(app.handle().clone());
             native_capture::start_display_reconfiguration_notifier(app.handle().clone());
             native_capture::start_metadata_notifier(app.handle().clone());

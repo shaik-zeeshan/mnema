@@ -1,26 +1,19 @@
-//! The privacy refresh's host half: requesting one and spawning its collector
-//! read and wake the segment loop through `NativeCaptureState`, so they stay in
-//! the desktop crate until S3 part c. The rest is
-//! `app_core::native_capture::privacy`.
+//! The privacy refresh's request and its collector thread, which read and wake
+//! the segment loop through `NativeCaptureState`.
 
 #[cfg(target_os = "macos")]
-use app_core::native_capture::privacy::{
+use super::{
     collect_privacy_filter_update, privacy_refresh_debug_log_enabled, CollectedPrivacyFilterUpdate,
     PrivacyFilterRefreshState, PrivacyRefreshReason,
 };
 #[cfg(target_os = "macos")]
-use app_core::AppCore;
+use crate::AppCore;
 #[cfg(target_os = "macos")]
 use std::sync::Arc;
-#[cfg(target_os = "macos")]
-use tauri::Manager;
 
 #[cfg(target_os = "macos")]
-pub(crate) fn request_privacy_filter_refresh(
-    app_handle: &tauri::AppHandle,
-    reason: PrivacyRefreshReason,
-) {
-    let capture_state = app_handle.state::<crate::native_capture::NativeCaptureState>();
+pub fn request_privacy_filter_refresh(core: &AppCore, reason: PrivacyRefreshReason) {
+    let capture_state = core.state::<crate::native_capture::lifecycle::NativeCaptureState>();
     let control = {
         let Ok(runtime) = capture_state.lock() else {
             return;
@@ -28,7 +21,7 @@ pub(crate) fn request_privacy_filter_refresh(
         let runtime = runtime.runtime();
         if !runtime.is_running || runtime.segment_loop_control.is_none() {
             if privacy_refresh_debug_log_enabled(reason) {
-                app_core::debug_log::log(format!(
+                crate::debug_log::log(format!(
                     "privacy refresh skipped because recording is stopped (reason={reason:?})"
                 ));
             }
@@ -37,10 +30,7 @@ pub(crate) fn request_privacy_filter_refresh(
         runtime.segment_loop_control.clone()
     };
 
-    let Some(refresh_state) = app_handle
-        .state::<Arc<AppCore>>()
-        .try_state::<PrivacyFilterRefreshState>()
-    else {
+    let Some(refresh_state) = core.try_state::<PrivacyFilterRefreshState>() else {
         return;
     };
     let mut state = refresh_state
@@ -49,8 +39,8 @@ pub(crate) fn request_privacy_filter_refresh(
     if reason != PrivacyRefreshReason::FallbackPoll {
         state.static_fallback_suppressed = false;
     }
-    let metadata_enabled = app_handle
-        .state::<app_core::recording_settings::RecordingSettingsState>()
+    let metadata_enabled = core
+        .state::<crate::recording_settings::RecordingSettingsState>()
         .lock()
         .expect("recording settings state poisoned")
         .settings
@@ -65,7 +55,7 @@ pub(crate) fn request_privacy_filter_refresh(
     state.requested_generation = state.requested_generation.saturating_add(1);
     state.latest_reason = Some(reason);
     if privacy_refresh_debug_log_enabled(reason) {
-        app_core::debug_log::log(format!(
+        crate::debug_log::log(format!(
             "privacy refresh requested (reason={reason:?}, generation={})",
             state.requested_generation
         ));
@@ -77,11 +67,8 @@ pub(crate) fn request_privacy_filter_refresh(
 }
 
 #[cfg(target_os = "macos")]
-pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandle) {
-    let Some(refresh_state) = app_handle
-        .state::<Arc<AppCore>>()
-        .try_state::<PrivacyFilterRefreshState>()
-    else {
+pub fn maybe_start_privacy_filter_collection(core: &Arc<AppCore>) {
+    let Some(refresh_state) = core.try_state::<PrivacyFilterRefreshState>() else {
         return;
     };
     let Some((generation, token, reason)) = ({
@@ -93,11 +80,11 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
         return;
     };
     if privacy_refresh_debug_log_enabled(reason) {
-        app_core::debug_log::log(format!(
+        crate::debug_log::log(format!(
             "privacy refresh collector started (reason={reason:?}, generation={generation})"
         ));
     }
-    let app_handle = app_handle.clone();
+    let core = core.clone();
     std::thread::spawn(move || {
         // A Rust-spawned thread has no autorelease pool; without this every
         // autoreleased object the frontmost-app and browser-URL reads below
@@ -119,20 +106,17 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
         // "Hitch"). The live pass then upgrades only the browser URL for the same app.
         if reason == PrivacyRefreshReason::WorkspaceFocusChanged {
             let _ = collect_privacy_filter_update(
-                &app_handle.state::<Arc<AppCore>>(),
+                &core,
                 reason,
-                app_core::native_capture::metadata::BrowserUrlReadMode::Cached,
+                crate::native_capture::metadata::BrowserUrlReadMode::Cached,
             );
         }
         let (mode, update) = collect_privacy_filter_update(
-            &app_handle.state::<Arc<AppCore>>(),
+            &core,
             reason,
-            app_core::native_capture::metadata::BrowserUrlReadMode::Live,
+            crate::native_capture::metadata::BrowserUrlReadMode::Live,
         );
-        if let Some(refresh_state) = app_handle
-            .state::<Arc<AppCore>>()
-            .try_state::<PrivacyFilterRefreshState>()
-        {
+        if let Some(refresh_state) = core.try_state::<PrivacyFilterRefreshState>() {
             {
                 let mut state = refresh_state
                     .lock()
@@ -155,8 +139,8 @@ pub(super) fn maybe_start_privacy_filter_collection(app_handle: &tauri::AppHandl
                 );
             }
         }
-        if let Some(control) = app_handle
-            .state::<crate::native_capture::NativeCaptureState>()
+        if let Some(control) = core
+            .state::<crate::native_capture::lifecycle::NativeCaptureState>()
             .lock()
             .ok()
             .and_then(|runtime| runtime.runtime().segment_loop_control.clone())

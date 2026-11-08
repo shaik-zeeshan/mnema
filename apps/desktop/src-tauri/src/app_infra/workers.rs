@@ -446,7 +446,7 @@ pub(super) fn hidden_workspace_repair_retention_cutoff(
 pub(super) fn active_workspace_dirs_for_hidden_workspace_repair(
     app_handle: &tauri::AppHandle,
 ) -> BTreeSet<String> {
-    let state = app_handle.state::<crate::native_capture::NativeCaptureState>();
+    let state = app_handle.state::<app_core::native_capture::lifecycle::NativeCaptureState>();
     let Ok(runtime) = state.lock() else {
         return BTreeSet::new();
     };
@@ -581,7 +581,9 @@ pub(super) fn timestamp_delta_ms(start: Option<&str>, end: Option<&str>) -> Opti
 
 pub(super) fn live_recording_active(app_handle: Option<&tauri::AppHandle>) -> bool {
     app_handle
-        .and_then(|app_handle| app_handle.try_state::<crate::native_capture::NativeCaptureState>())
+        .and_then(|app_handle| {
+            app_handle.try_state::<app_core::native_capture::lifecycle::NativeCaptureState>()
+        })
         .and_then(|state| {
             state
                 .lock()

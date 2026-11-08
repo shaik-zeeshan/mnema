@@ -61,7 +61,9 @@ pub(super) async fn retention_context_for_app(
 ) -> ::app_infra::RetentionCleanupContext {
     let save_directory = Some(infra.base_dir().display().to_string());
     let mut active_capture_segment_refs = Vec::new();
-    if let Some(state) = app_handle.try_state::<crate::native_capture::NativeCaptureState>() {
+    if let Some(state) =
+        app_handle.try_state::<app_core::native_capture::lifecycle::NativeCaptureState>()
+    {
         if let Ok(lifecycle) = state.lock() {
             let runtime = lifecycle.runtime();
             if runtime.is_running {

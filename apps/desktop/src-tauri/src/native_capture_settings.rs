@@ -76,7 +76,7 @@ impl CaptureUse {
 
 fn capture_session_running(app_handle: &tauri::AppHandle) -> bool {
     app_handle
-        .try_state::<super::NativeCaptureState>()
+        .try_state::<app_core::native_capture::lifecycle::NativeCaptureState>()
         .is_some_and(|capture| {
             capture
                 .lock()

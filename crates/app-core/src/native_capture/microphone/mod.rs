@@ -1,7 +1,6 @@
 //! The microphone controller: its preferences, the waited-for-device rules and
-//! the one restart path. The device-change notifier and the reconnect drive
-//! `NativeCaptureState` and the segment machinery, so they stay in the desktop
-//! crate until S3 parts b and c.
+//! the one restart path. The device-change notifier and the reconnect, which
+//! drive `NativeCaptureState`, are [`controller`].
 
 use capture_microphone as microphone_capture;
 use capture_types::{
@@ -9,7 +8,7 @@ use capture_types::{
     MicrophonePreference, MicrophonePreferenceMode,
 };
 use serde::Serialize;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use super::runtime::{
     ensure_microphone_planner_for_runtime, now_unix_ms, refresh_runtime_planner_dates,
@@ -35,7 +34,8 @@ impl Default for MicrophoneControllerPreferencesRuntime {
     }
 }
 
-pub type MicrophoneControllerPreferencesState = Mutex<MicrophoneControllerPreferencesRuntime>;
+/// One preference, shared by app-core and the host (both manage the same `Arc`).
+pub type MicrophoneControllerPreferencesState = Arc<Mutex<MicrophoneControllerPreferencesRuntime>>;
 pub type MicrophoneDeviceChangeNotifierState =
     Mutex<Option<microphone_capture::MicrophoneDeviceChangeNotifier>>;
 
@@ -202,6 +202,8 @@ pub fn resolve_capture_microphone_device_id(state: &MicrophoneControllerState) -
         }
     })
 }
+
+pub mod controller;
 
 #[cfg(test)]
 mod tests {

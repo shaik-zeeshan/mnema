@@ -62,7 +62,11 @@ fn startup_check_availability_notification_targets_about_settings() {
     assert_eq!(notification.id, APP_UPDATE_AVAILABLE_NOTIFICATION_ID);
     assert_eq!(notification.severity, "info");
     match notification.action {
-        Some(native_capture::AppNotificationAction::OpenSettingsTab { tab }) => {
+        Some(
+            app_core::native_capture::app_notifications::AppNotificationAction::OpenSettingsTab {
+                tab,
+            },
+        ) => {
             assert_eq!(tab, "about");
         }
         _ => panic!("expected open settings action"),

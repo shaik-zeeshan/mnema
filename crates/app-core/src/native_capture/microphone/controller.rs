@@ -1,34 +1,33 @@
-//! The microphone controller's host half: the device-change notifier, the
-//! preference update and the waited-for-device reconnect drive
-//! `NativeCaptureState` and the segment machinery (S3 parts b and c). The rest
-//! is `app_core::native_capture::microphone`.
+//! The microphone controller's capture half: the device-change notifier, the
+//! preference update and the waited-for-device reconnect, which drive
+//! `NativeCaptureState` and the segment machinery.
 
-use app_core::native_capture::microphone::{
+use super::{
     emit_microphone_auto_disconnect_transition_failed, emit_microphone_controller_changed,
     resolve_capture_microphone_device_id, validate_microphone_preference,
-    MicrophoneControllerPreferencesState, MicrophoneDeviceChangeNotifierState,
+    MicrophoneControllerPreferencesState,
 };
 #[cfg(target_os = "macos")]
-use app_core::native_capture::microphone::{
+use super::{
     restart_microphone_session_for_runtime, should_move_microphone_capture_to_waiting_state,
     should_reconnect_waiting_microphone_session, should_wait_for_same_microphone_device,
+    MicrophoneDeviceChangeNotifierState,
 };
-use app_core::AppCore;
+#[cfg(target_os = "macos")]
+use crate::native_capture::lifecycle::NativeCaptureState;
+use crate::AppCore;
 use capture_microphone as microphone_capture;
 use capture_types::{
     CaptureErrorResponse, MicrophoneControllerState, UpdateMicrophoneControllerRequest,
 };
 use std::sync::Arc;
-use tauri::Manager;
-
-use super::NativeCaptureState;
 
 #[cfg(target_os = "macos")]
-pub fn start_microphone_device_change_notifier(app_handle: tauri::AppHandle) {
+pub fn start_microphone_device_change_notifier(core: Arc<AppCore>) {
     let notifier = microphone_capture::start_microphone_device_change_notifier({
-        let app_handle = app_handle.clone();
+        let core = core.clone();
         move || {
-            let preferences_state = app_handle.state::<MicrophoneControllerPreferencesState>();
+            let preferences_state = core.state::<MicrophoneControllerPreferencesState>();
             let runtime = match preferences_state.lock() {
                 Ok(runtime) => runtime,
                 Err(_) => return,
@@ -42,15 +41,12 @@ pub fn start_microphone_device_change_notifier(app_handle: tauri::AppHandle) {
                 Err(_) => return,
             };
 
-            maybe_reconnect_waiting_microphone_session(&app_handle, &controller_state);
-            emit_microphone_controller_changed(
-                &app_handle.state::<Arc<AppCore>>(),
-                controller_state,
-            );
+            maybe_reconnect_waiting_microphone_session(&core, &controller_state);
+            emit_microphone_controller_changed(&core, controller_state);
         }
     });
 
-    let notifier_state = app_handle.state::<MicrophoneDeviceChangeNotifierState>();
+    let notifier_state = core.state::<MicrophoneDeviceChangeNotifierState>();
     let mut notifier_slot = notifier_state
         .lock()
         .expect("microphone device change notifier state poisoned");
@@ -58,12 +54,12 @@ pub fn start_microphone_device_change_notifier(app_handle: tauri::AppHandle) {
 }
 
 #[cfg(not(target_os = "macos"))]
-pub fn start_microphone_device_change_notifier(_app_handle: tauri::AppHandle) {}
+pub fn start_microphone_device_change_notifier(_app_handle: Arc<AppCore>) {}
 
-pub(super) fn update_microphone_controller(
+pub fn update_microphone_controller(
     request: UpdateMicrophoneControllerRequest,
-    app_handle: &tauri::AppHandle,
-    state: tauri::State<'_, MicrophoneControllerPreferencesState>,
+    core: &AppCore,
+    state: &MicrophoneControllerPreferencesState,
 ) -> Result<MicrophoneControllerState, CaptureErrorResponse> {
     let preference = validate_microphone_preference(request.preference)?;
     let disconnect_policy = request.disconnect_policy;
@@ -82,22 +78,19 @@ pub(super) fn update_microphone_controller(
     // A new preference can end (or start) a wait for a missing device; settle
     // it now rather than at the next device change.
     #[cfg(target_os = "macos")]
-    maybe_reconnect_waiting_microphone_session(app_handle, &controller_state);
+    maybe_reconnect_waiting_microphone_session(core, &controller_state);
 
-    emit_microphone_controller_changed(
-        &app_handle.state::<Arc<AppCore>>(),
-        controller_state.clone(),
-    );
+    emit_microphone_controller_changed(core, controller_state.clone());
 
     Ok(controller_state)
 }
 
 #[cfg(target_os = "macos")]
-fn maybe_reconnect_waiting_microphone_session(
-    app_handle: &tauri::AppHandle,
+pub fn maybe_reconnect_waiting_microphone_session(
+    core: &AppCore,
     state: &MicrophoneControllerState,
 ) {
-    let capture_state = app_handle.state::<NativeCaptureState>();
+    let capture_state = core.state::<NativeCaptureState>();
     let mut runtime = match capture_state.lock() {
         Ok(runtime) => runtime,
         Err(_) => return,
@@ -112,15 +105,14 @@ fn maybe_reconnect_waiting_microphone_session(
         runtime.active_microphone_session.is_some(),
         state,
     ) {
-        if let Err(error) = super::segments::stop_microphone_session_for_runtime(runtime) {
-            app_core::debug_log::log_warn(format!(
+        if let Err(error) =
+            crate::native_capture::segments::stop_microphone_session_for_runtime(runtime)
+        {
+            crate::debug_log::log_warn(format!(
                 "failed to stop microphone session while waiting for same device: [{}] {}",
                 error.code, error.message
             ));
-            emit_microphone_auto_disconnect_transition_failed(
-                &app_handle.state::<Arc<AppCore>>(),
-                &error,
-            );
+            emit_microphone_auto_disconnect_transition_failed(core, &error);
             stop_failed_while_waiting = true;
         }
         if !stop_failed_while_waiting {
@@ -149,11 +141,9 @@ fn maybe_reconnect_waiting_microphone_session(
 /// device-change notifier takes the preferences lock and then the capture
 /// lock, so this only ever `try_lock`s: blocking here could deadlock.
 #[cfg(target_os = "macos")]
-pub(super) fn current_capture_microphone_device_id(
-    app_handle: &tauri::AppHandle,
-) -> Option<Option<String>> {
+pub fn current_capture_microphone_device_id(core: &AppCore) -> Option<Option<String>> {
     let (preference, disconnect_policy) = {
-        let state = app_handle.try_state::<MicrophoneControllerPreferencesState>()?;
+        let state = core.try_state::<MicrophoneControllerPreferencesState>()?;
         let preferences = state.try_lock().ok()?;
         (
             preferences.preference.clone(),

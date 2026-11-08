@@ -12,12 +12,14 @@ use crate::{
     WindowSignal,
 };
 
-/// Records every emit, opened URL, window request and window signal; confirms
-/// answer yes; `open_window` fails with `open_window_error` when set; everything
-/// else is a no-op.
+/// Records every emit, message dialog, tray refresh, opened URL, window request
+/// and window signal; confirms answer yes; `open_window` fails with
+/// `open_window_error` when set; everything else is a no-op.
 #[derive(Default)]
 pub(crate) struct FakeHost {
     pub(crate) events: Mutex<Vec<CoreEvent>>,
+    pub(crate) messages: Mutex<Vec<MessageDialog>>,
+    pub(crate) tray_refreshes: std::sync::atomic::AtomicUsize,
     pub(crate) opened_urls: Mutex<Vec<String>>,
     pub(crate) opened_windows: Mutex<Vec<WindowRequest>>,
     pub(crate) window_signals: Mutex<Vec<WindowSignal>>,
@@ -28,7 +30,9 @@ impl Host for FakeHost {
     fn emit(&self, event: CoreEvent) {
         self.events.lock().unwrap().push(event);
     }
-    fn message(&self, _req: MessageDialog) {}
+    fn message(&self, req: MessageDialog) {
+        self.messages.lock().unwrap().push(req);
+    }
     fn confirm(&self, _req: ConfirmDialog) -> oneshot::Receiver<bool> {
         let (tx, rx) = oneshot::channel();
         let _ = tx.send(true);
@@ -38,7 +42,10 @@ impl Host for FakeHost {
         self.opened_urls.lock().unwrap().push(url.to_string());
         Ok(())
     }
-    fn refresh_tray(&self) {}
+    fn refresh_tray(&self) {
+        self.tray_refreshes
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
     fn open_window(&self, req: WindowRequest) -> Result<(), String> {
         self.opened_windows.lock().unwrap().push(req);
         match self.open_window_error.lock().unwrap().clone() {

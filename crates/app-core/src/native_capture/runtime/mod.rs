@@ -207,11 +207,11 @@ pub struct NativeCaptureRuntime {
     /// Stands in for the microphone session's device where the away hold and
     /// the reopen check look at it: a real session needs the hardware and a TCC
     /// grant, so tests cannot hold one.
-    #[cfg(all(any(test, feature = "test-support"), target_os = "macos"))]
+    #[cfg(all(test, target_os = "macos"))]
     pub test_microphone_device: Option<TestMicrophoneDevice>,
 }
 
-#[cfg(all(any(test, feature = "test-support"), target_os = "macos"))]
+#[cfg(all(test, target_os = "macos"))]
 #[derive(Debug, Default)]
 pub struct TestMicrophoneDevice {
     pub running: bool,
@@ -688,7 +688,7 @@ pub fn system_audio_stops_with_suspension(runtime: &NativeCaptureRuntime) -> boo
         .is_some_and(|suspension| suspension.kind == CaptureSuspensionKind::LowDisk)
 }
 
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub fn should_rotate_segment(current_segment_index: u64, scheduled_segment_index: u64) -> bool {
     scheduled_segment_index > current_segment_index
 }

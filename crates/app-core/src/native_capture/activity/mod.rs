@@ -1,3 +1,4 @@
+use crate::native_capture::lifecycle::{NativeCaptureState, RecordingLifecycle};
 use crate::native_capture_inactivity::{
     ActivityPolicyEvaluation, ActivityPolicyEvaluations, ActivitySnapshot, ActivitySourceKind,
     AudioActivitySourceState,
@@ -8,6 +9,7 @@ use capture_types::{
     MicrophoneVadStatus, RuntimeSourceStatus, RuntimeSourcesStatus,
 };
 use capture_vad::{configured_adapter_as_str, MicrophonePcmVadFrame};
+use std::sync::MutexGuard;
 
 #[cfg(target_os = "macos")]
 use super::runtime::{
@@ -476,3 +478,22 @@ pub struct IdleDebugFamilyFields {
 
 #[cfg(test)]
 mod tests;
+
+pub fn lock_runtime_for_idle_debug(
+    state: &NativeCaptureState,
+) -> MutexGuard<'_, RecordingLifecycle> {
+    match state.lock() {
+        Ok(runtime) => runtime,
+        Err(poisoned) => {
+            crate::debug_log::log_warn(
+                "native capture state poisoned while reading idle debug; returning best-effort snapshot",
+            );
+            poisoned.into_inner()
+        }
+    }
+}
+
+pub fn get_idle_debug(state: &NativeCaptureState) -> IdleDebugInfo {
+    let mut runtime = lock_runtime_for_idle_debug(state);
+    idle_debug_for_runtime(runtime.runtime_mut())
+}

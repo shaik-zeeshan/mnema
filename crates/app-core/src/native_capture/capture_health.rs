@@ -11,8 +11,10 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use capture_microphone as microphone_capture;
 use serde::Serialize;
 
+use super::lifecycle::NativeCaptureState;
 use super::runtime::NativeCaptureRuntime;
 use crate::disk_space::{self, RESERVE_FLOOR_BYTES};
+use crate::AppCore;
 
 /// A system-audio rebuild this recent reads as "reconnecting". A tunable
 /// ceiling: a rebuild finishes inside one tick, so this is how long the lane
@@ -416,6 +418,30 @@ fn disk_thresholds(_runtime: &NativeCaptureRuntime) -> DiskHealthDto {
         pause_threshold_bytes: None,
         resume_threshold_bytes: None,
     }
+}
+
+/// The one capture-health seam. Takes the capture lock once, copies out what it
+/// needs, then measures free space (a single statfs, no directory walk) after
+/// releasing it — on the live recordings root, else the storage root.
+pub fn capture_health_snapshot(state: &NativeCaptureState, core: &AppCore) -> CaptureHealthDto {
+    let Locked {
+        mut dto,
+        recordings_root,
+    } = {
+        let lifecycle = state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        read_locked(lifecycle.runtime())
+    };
+
+    let root = recordings_root.or_else(|| {
+        core.try_state::<crate::AppInfraState>()
+            .map(|infra| infra.base_dir().to_path_buf())
+    });
+    dto.disk.free_bytes = root.and_then(|root| {
+        disk_space::measure_free_space(&root, disk_space::default_free_space_probe)
+    });
+    dto
 }
 
 #[cfg(test)]

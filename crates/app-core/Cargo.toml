@@ -15,9 +15,6 @@ ocr-budget-trace = []
 # Compile the speakrs engine into the speaker-analysis helper subprocess
 # (forwarded from the desktop crate's default-on feature of the same name).
 speaker-analysis-speakrs = ["speaker-analysis/speakrs"]
-# Test-only hooks on capture types the desktop crate's tests still build (the
-# scripted microphone device on `NativeCaptureRuntime`). Enabled from its dev-deps.
-test-support = []
 # Trace privacy-filter refresh requests and applies (forwarded from the desktop crate).
 privacy-refresh-trace = []
 

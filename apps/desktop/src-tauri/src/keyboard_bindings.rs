@@ -303,8 +303,8 @@ fn warn_registration_failure(app: &tauri::AppHandle, failures: &[String]) {
             "this global shortcut"
         }
     );
-    crate::native_capture::push_warning_app_notification(
-        app,
+    app_core::native_capture::app_notifications::push_warning_app_notification(
+        &app.state::<std::sync::Arc<app_core::AppCore>>(),
         REGISTRATION_WARNING_ID,
         "Global shortcuts unavailable",
         &body,

@@ -197,8 +197,8 @@ fn set_runtime_error(
 }
 
 fn push_update_available_notification(app_handle: &tauri::AppHandle, update: &AppUpdateInfo) {
-    native_capture::push_info_app_notification(
-        app_handle,
+    app_core::native_capture::app_notifications::push_info_app_notification(
+        &app_handle.state::<Arc<AppCore>>(),
         APP_UPDATE_AVAILABLE_NOTIFICATION_ID,
         "Mnema update available",
         &format!(
@@ -264,8 +264,8 @@ pub(crate) fn install_and_restart(app_handle: tauri::AppHandle) {
 fn startup_update_notification_for_update(
     update: &AppUpdateInfo,
     created_at_unix_ms: u64,
-) -> native_capture::AppNotification {
-    native_capture::AppNotification {
+) -> app_core::native_capture::app_notifications::AppNotification {
+    app_core::native_capture::app_notifications::AppNotification {
         id: APP_UPDATE_AVAILABLE_NOTIFICATION_ID.to_string(),
         severity: "info".to_string(),
         title: "Mnema update available".to_string(),
@@ -274,7 +274,7 @@ fn startup_update_notification_for_update(
             update.version
         ),
         created_at_unix_ms,
-        action: Some(native_capture::AppNotificationAction::OpenSettingsTab {
+        action: Some(app_core::native_capture::app_notifications::AppNotificationAction::OpenSettingsTab {
             tab: "about".to_string(),
         }),
     }

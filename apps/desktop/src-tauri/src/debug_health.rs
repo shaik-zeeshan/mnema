@@ -18,10 +18,10 @@ use crate::app_infra::StartupReport;
 use app_core::debug_status::{
     get_semantic_index_status, SemanticIndexStatusDto, SemanticWorkerHealthState,
 };
-use crate::native_capture::capture_health::capture_health_snapshot;
+use app_core::native_capture::capture_health::capture_health_snapshot;
 use app_core::native_capture::capture_health::CaptureHealthDto;
 use app_core::native_capture::metadata::{capture_privacy_debug_info, CaptureMetadataState};
-use crate::native_capture::NativeCaptureState;
+use app_core::native_capture::lifecycle::NativeCaptureState;
 use app_core::recording_settings::{current_recording_settings, RecordingSettingsState};
 use app_core::AppInfraState;
 
@@ -276,7 +276,10 @@ pub async fn get_debug_health(
     let capture = {
         let app = app_handle.clone();
         tauri::async_runtime::spawn_blocking(move || {
-            capture_health_snapshot(&app.state::<NativeCaptureState>(), &app)
+            capture_health_snapshot(
+                &app.state::<NativeCaptureState>(),
+                &app.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
         })
         .await
         .map_err(|error| format!("failed to read capture health: {error}"))?

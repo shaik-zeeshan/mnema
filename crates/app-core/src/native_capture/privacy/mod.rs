@@ -467,5 +467,8 @@ fn empty_privacy_filter() -> capture_screen::PrivacyContentFilter {
     }
 }
 
+#[cfg(target_os = "macos")]
+pub mod refresh;
+
 #[cfg(all(test, target_os = "macos"))]
 mod tests;
