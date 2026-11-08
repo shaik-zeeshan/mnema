@@ -93,7 +93,7 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
   - `Host::open_url` now returns `Result` and opens absolute paths with `open_path`. This fixes a B2 regression where "open log" lost its error toast.
   - app-core now depends on `global-hotkey 0.7` (the Tauri plugin's version) for shortcut validation, while the GPUI app pins 0.9. Reconcile in S7: app-core validates strings, and each host converts.
 - **S6 done:**
-  - 42 tests; 20 gallery goldens awaiting founder sign-off.
+  - 42 tests; 20 gallery goldens approved by the founder 2026-11-08. To do: drop the "pressed primary" gallery cell (the app never uses a primary toggle) and regenerate `gallery-buttons-*` (pre-approved).
   - Gaps logged for polish:
     - hover/focus colour transitions are instant (spec 120–220 ms quart);
     - no popover scale-in;
