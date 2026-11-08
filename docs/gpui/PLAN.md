@@ -114,7 +114,7 @@ After **every** merged slice/feature:
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
 ### Next up (orchestrator queue; keep current)
-1. **Resumed 2026-11-08 23:20.** Running two at a time to spare the usage limit: S3a (slot 3) and S13 Settings (slot 1). S12 Insights waits for a free slot. The paused agents had no edits yet, so they were resumed by message. Worktrees:
+1. **Running, two at a time:** S3b `segments.rs` (slot 3) and S13 Settings (slot 1). S3a done in 5467e174. S12 Insights waits for a free slot (its old agent never wrote anything, so relaunch it fresh). Old worktrees:
    - S3a capture leaves: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-ac2748086a4bbf839`
    - S13 Settings: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-aef107fcd394658f0`
    - S12 Insights: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-acad0b6ce3e5374fa`

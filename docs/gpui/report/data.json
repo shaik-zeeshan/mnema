@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-08 23:25",
+  "updated": "2026-11-09 00:30",
   "verdict": "About a third done: Timeline and Chat are built (screenshots waiting for your sign-off), the main window and all shared controls are approved, and the backend move's first stage (S2) is complete. Recording-engine move, Settings and Insights are in progress; two agents at a time.",
   "metrics": [
     {
@@ -19,8 +19,8 @@
     },
     {
       "label": "Tests passing",
-      "value": "1,356",
-      "note": "660 shared + 696 Tauri, 0 failing"
+      "value": "1,364",
+      "note": "799 shared + 565 Tauri, 0 failing"
     },
     {
       "label": "Screenshots",
@@ -35,7 +35,7 @@
     },
     {
       "label": "Backend move (S1–S4)",
-      "pct": 48
+      "pct": 55
     },
     {
       "label": "Native layer (S7)",
@@ -56,9 +56,9 @@
   ],
   "now": [
     {
-      "id": "S3a",
-      "title": "Recording engine move — part 1 of 4",
-      "detail": "Capture metadata, activity, capture health, system audio, microphone (+ away), privacy filter."
+      "id": "S3b",
+      "title": "Recording engine move — part 2 of 4",
+      "detail": "segments.rs, the heart of recording: start/stop, low-disk, inactivity pause/resume, wake recovery, audio commit. The riskiest move; every function body diffed against the original."
     },
     {
       "id": "S13",
@@ -168,6 +168,12 @@
       "title": "Frame previews",
       "what": "The preview pipeline (frame and scrub previews, cache) moved to the shared crate; the backend move's S2 step is complete.",
       "commit": "26e994bb"
+    },
+    {
+      "id": "S3a",
+      "title": "Recording engine move — part 1",
+      "what": "Capture runtime, system audio, browser URL, metadata, capture health, and most of activity, microphone and privacy moved to the shared crate; 1,364 tests green.",
+      "commit": "5467e174"
     }
   ],
   "next": [
