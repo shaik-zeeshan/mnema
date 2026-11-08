@@ -83,10 +83,10 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
 - **S5 done:**
   - 33 behaviour tests; 12 shell goldens (pending founder sign-off).
   - Shell data is empty in the real app until S2/S3 move the commands (`shell/data.rs` shortcuts).
-  - **Open founder questions:**
-    - titlebar surface glyphs are the Svelte app's own SVGs, not Lucide;
-    - GPUI can't blur inside a window (titlebar 82% + blur 20);
-    - GPUI has no letter-spacing (kicker 0.12em).
+  - **Founder rulings, 2026-11-08:**
+    - no in-window blur: titlebar and popovers use **solid tinted surfaces**, logged as native-by-design;
+    - the titlebar surface glyphs may stay the app's own drawings (an allowed exception to Lucide-only).
+  - **Still open:** GPUI has no letter-spacing (kicker 0.12em).
   - The `terminate:` swizzle lives at git f45ddec5 `apps/desktop-gpui/src/spike/native.rs`, for S7.
 - **S2 B2 + B5 merged:**
   - B5 left `broker_authorization_channel` for B6 (see the B6 seams).

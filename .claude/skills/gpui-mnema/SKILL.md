@@ -34,6 +34,7 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **Tasks and Subscriptions cancel on drop.** Store them in the entity or call `.detach()`.
 - **Accessibility:** every interactive element gets `.id(..)` and `.role(gpui::Role::…)`, plus `.aria_label(..)` when it has no text. Tests and AX driving find elements by these.
 - **Visuals:** colours, type, spacing, radii, control heights, easing and durations come only from `theme.rs` tokens. No literals in views. Icons are Lucide (`gpui_kit::assets`) only, never unicode glyphs; titlebar icon stroke is 1.75.
+- **No blur (founder ruling 2026-11-08):** GPUI can't blur inside a window. The titlebar, popovers and any "glass" surface use a solid tinted surface token, and parity logs it as native-by-design. The titlebar surface-pill glyphs are the app's own drawn SVGs, the one allowed exception to Lucide-only.
 - **Motion:** ease-out only (expo `.16,1,.3,1`, quart `.25,1,.5,1`), 120/220/420 ms. When `reduce_motion()` is on, skip to the end state.
 - **Time:** read through `ui::clock::now(cx)` so tests and goldens are frozen.
 - **Files ≤800 lines.** Split by responsibility. A hook enforces it.
