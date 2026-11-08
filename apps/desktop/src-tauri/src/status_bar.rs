@@ -642,7 +642,7 @@ fn confirm_delete_recent(app: &tauri::AppHandle, seconds: i64) {
 fn handle_exclude_current_app(app: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
-        let snapshot = crate::native_capture::metadata::collect_native_active_window_snapshot();
+        let snapshot = app_core::native_capture::metadata::collect_native_active_window_snapshot();
         let bundle_id = snapshot.bundle_id.unwrap_or_default();
         let display_name = snapshot.app_name.unwrap_or_else(|| bundle_id.clone());
         if bundle_id.trim().is_empty() || bundle_id == "day.mnema" {

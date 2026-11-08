@@ -15,6 +15,11 @@ ocr-budget-trace = []
 # Compile the speakrs engine into the speaker-analysis helper subprocess
 # (forwarded from the desktop crate's default-on feature of the same name).
 speaker-analysis-speakrs = ["speaker-analysis/speakrs"]
+# Test-only hooks on capture types the desktop crate's tests still build (the
+# scripted microphone device on `NativeCaptureRuntime`). Enabled from its dev-deps.
+test-support = []
+# Trace privacy-filter refresh requests and applies (forwarded from the desktop crate).
+privacy-refresh-trace = []
 
 [dependencies]
 # The Reasoning Engine, aliased so it does not collide with `crate::ai_runtime`.
@@ -26,8 +31,12 @@ audio-transcription = { path = "../audio-transcription", features = ["parakeet-o
 base64 = "0.22"
 bzip2 = "0.6"
 capture-metadata = { path = "../capture-metadata" }
+capture-microphone = { path = "../capture-microphone" }
+capture-runtime = { path = "../capture-runtime" }
 capture-screen = { path = "../capture-screen" }
+capture-system-audio = { path = "../capture-system-audio" }
 capture-types = { path = "../capture-types" }
+capture-vad = { path = "../capture-vad" }
 capture-writers = { path = "../capture-writers" }
 dirs = "6"
 futures-util = "0.3"

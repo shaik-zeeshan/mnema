@@ -2,77 +2,16 @@
 //! is away; 2026-10-29: fast user switching is away). The tick drives both;
 //! the Recording Lifecycle owns when they run.
 
-#[cfg(target_os = "macos")]
-use app_core::native_capture_inactivity::ActivitySnapshot;
-use super::runtime::{CaptureSuspensionKind, NativeCaptureRuntime};
+use app_core::native_capture::microphone_away::{
+    mac_is_away, microphone_device_running, set_microphone_device_running,
+    should_reopen_microphone,
+};
+use app_core::native_capture::runtime::NativeCaptureRuntime;
 use super::segments::{
     mark_microphone_family_paused, pause_microphone_for_inactivity_with_app_handle,
     resume_microphone_from_inactivity,
 };
 use capture_types::CaptureErrorResponse;
-/// Whether only the microphone family's own state keeps it from recording:
-/// capture runs and wants it, and nothing outside the family holds it — not
-/// the user, voice enrollment, the away hold, low disk, or a waited-for device
-/// that is gone. Each of those brings the microphone back itself.
-#[cfg(target_os = "macos")]
-pub(super) fn microphone_free_to_record(runtime: &NativeCaptureRuntime) -> bool {
-    runtime.is_running
-        && !runtime.user_capture_paused
-        && runtime
-            .requested_sources
-            .as_ref()
-            .is_some_and(|sources| sources.microphone)
-        && !runtime.microphone_lent_out
-        && !runtime.microphone_away_hold
-        && !runtime.microphone_waiting_for_device
-        && !runtime
-            .capture_suspension
-            .as_ref()
-            .is_some_and(|suspension| suspension.kind == CaptureSuspensionKind::LowDisk)
-}
-
-/// Lock is away (founder ruling 2026-10-23): the Mac is locked, another user
-/// holds the console (fast user switching, ruling 2026-10-29), or every
-/// display is asleep. Read by the tick and by every path that opens the
-/// microphone on its own initiative.
-#[cfg(target_os = "macos")]
-pub(super) fn mac_is_away(runtime: &NativeCaptureRuntime) -> bool {
-    match runtime.away_probe {
-        Some(probe) => probe(),
-        None => {
-            app_core::native_capture_system_idle::session_is_away()
-                || !capture_screen::screen_display_available()
-        }
-    }
-}
-
-/// Whether the microphone session's device runs; `None` with no session.
-#[cfg(target_os = "macos")]
-fn microphone_device_running(runtime: &NativeCaptureRuntime) -> Option<bool> {
-    #[cfg(test)]
-    if let Some(device) = runtime.test_microphone_device.as_ref() {
-        return Some(device.running);
-    }
-    runtime
-        .active_microphone_session
-        .as_ref()
-        .map(|session| session.capture_running())
-}
-
-/// Starts or stops the session's device; whether it reached that state.
-#[cfg(target_os = "macos")]
-fn set_microphone_device_running(runtime: &mut NativeCaptureRuntime, running: bool) -> bool {
-    #[cfg(test)]
-    if let Some(device) = runtime.test_microphone_device.as_mut() {
-        device.running = running && !device.gone;
-        return device.running == running;
-    }
-    runtime
-        .active_microphone_session
-        .as_mut()
-        .is_some_and(|session| session.set_capture_running(running))
-}
-
 /// Stops and drops a session whose device is gone, booking its file for the
 /// segment like any stop, so the reopen path starts a fresh session on
 /// whatever device is current. A session kept on a dead device never records
@@ -153,23 +92,6 @@ pub(super) fn apply_microphone_away(
     runtime.microphone_away_hold = false;
 }
 
-/// Whether the tick must bring the microphone back itself, because nothing
-/// else will: with no session there is no sound for activity to hear, a
-/// session whose device stopped hears nothing either, and with inactivity
-/// monitoring off nothing ever resumes a pause.
-///
-/// Only the away hold stops a device on purpose, so a free microphone's
-/// stopped device died — `startRunning` can succeed and the device vanish
-/// moments later. An inactivity pause leaves the device running (listen-only).
-#[cfg(target_os = "macos")]
-fn should_reopen_microphone(runtime: &NativeCaptureRuntime) -> bool {
-    microphone_free_to_record(runtime)
-        && match microphone_device_running(runtime) {
-            None | Some(false) => true,
-            Some(true) => runtime.inactivity.is_microphone_paused() && !runtime.inactivity.enabled,
-        }
-}
-
 /// Stop the microphone device while the Mac is locked or every display is
 /// asleep, and restart it once neither holds (founder ruling 2026-10-23: lock
 /// is away, so speech said while locked is not recorded).
@@ -220,7 +142,7 @@ pub(super) fn reopen_unwakeable_microphone(
         resume_microphone_from_inactivity(runtime)
     } else {
         let device_id = runtime.microphone_device_id_for_capture.clone();
-        super::microphone::restart_microphone_session_for_runtime(
+        app_core::native_capture::microphone::restart_microphone_session_for_runtime(
             runtime,
             device_id.as_deref(),
             "reopening microphone",
@@ -259,19 +181,4 @@ pub(super) fn settle_microphone_reopen(
         });
     }
     Ok(())
-}
-
-/// Inactivity resumes the microphone on activity only while nothing outside the
-/// family holds it ([`microphone_free_to_record`]); enrollment's own speech, for
-/// one, would otherwise "resume" a no-op every tick.
-#[cfg(target_os = "macos")]
-pub(super) fn should_resume_microphone_after_activity(
-    runtime: &mut NativeCaptureRuntime,
-    now: u64,
-    activity_snapshot: ActivitySnapshot,
-) -> bool {
-    microphone_free_to_record(runtime)
-        && runtime
-            .inactivity
-            .should_resume_microphone_from_inactivity(now, activity_snapshot)
 }

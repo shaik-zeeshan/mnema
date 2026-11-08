@@ -92,9 +92,9 @@ fn tauri_event(event: CoreEvent) -> (&'static str, Value) {
         RecordingSettingsChanged(p) => ("recording_settings_changed", p),
         RecordingSettingsDomainChanged(p) => ("recording_settings_domain_changed", p),
         AppNotificationsChanged(p) => ("app_notifications_changed", p),
-        MicrophoneControllerChanged(p) => ("microphone_controller_changed", p),
+        MicrophoneControllerChanged(p) => ("microphone_controller_changed", json(p)),
         MicrophoneAutoDisconnectTransitionFailed(p) => {
-            ("microphone_auto_disconnect_transition_failed", p)
+            ("microphone_auto_disconnect_transition_failed", json(p))
         }
         OpenAppNotifications => ("open_app_notifications", Value::Null),
         LicenseStatus(p) => ("license_status", p),
@@ -349,6 +349,28 @@ mod tests {
         }
     }
 
+    fn microphone_controller_state() -> capture_types::MicrophoneControllerState {
+        capture_types::MicrophoneControllerState {
+            devices: vec![],
+            preference: capture_types::MicrophonePreference {
+                mode: capture_types::MicrophonePreferenceMode::Default,
+                device_id: None,
+            },
+            disconnect_policy: capture_types::MicrophoneDisconnectPolicy::FallbackToDefault,
+            effective_device: None,
+        }
+    }
+
+    fn microphone_transition_failed(
+    ) -> app_core::native_capture::microphone::MicrophoneAutoDisconnectTransitionFailedEvent {
+        app_core::native_capture::microphone::microphone_auto_disconnect_transition_failed_event(
+            &capture_types::CaptureErrorResponse {
+                code: "microphone_stop_failed".into(),
+                message: "stop failed".into(),
+            },
+        )
+    }
+
     /// One of each variant. `tauri_event`'s exhaustive match breaks the build on a
     /// new variant; add it here and to `APPENDIX_A` too.
     fn every_event() -> Vec<CoreEvent> {
@@ -377,8 +399,8 @@ mod tests {
             RecordingSettingsChanged(p()),
             RecordingSettingsDomainChanged(p()),
             AppNotificationsChanged(p()),
-            MicrophoneControllerChanged(p()),
-            MicrophoneAutoDisconnectTransitionFailed(p()),
+            MicrophoneControllerChanged(microphone_controller_state()),
+            MicrophoneAutoDisconnectTransitionFailed(microphone_transition_failed()),
             OpenAppNotifications,
             LicenseStatus(p()),
             LicenseDeepLink(p()),
@@ -448,6 +470,8 @@ mod tests {
             app_core::licensing::LICENSE_DEEP_LINK_DONE_EVENT,
             app_core::licensing::LICENSE_STATUS_EVENT,
             native_capture::APP_NOTIFICATIONS_CHANGED_EVENT,
+            app_core::native_capture::microphone::MICROPHONE_CONTROLLER_CHANGED_EVENT,
+            app_core::native_capture::microphone::MICROPHONE_AUTO_DISCONNECT_TRANSITION_FAILED_EVENT,
             native_capture::AUDIO_SEGMENTS_CHANGED_EVENT,
             native_capture::NATIVE_CAPTURE_SESSION_CHANGED_EVENT,
             native_capture::RECORDING_SETTINGS_CHANGED_EVENT,

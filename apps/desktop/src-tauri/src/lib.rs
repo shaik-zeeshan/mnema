@@ -542,6 +542,8 @@ pub fn run() {
     core.manage(recording_settings.clone());
     core.manage(app_core::onboarding_state::OnboardingStateStore::default());
     core.manage(app_core::exit::AppExitCoordinatorState::default());
+    core.manage(app_core::native_capture::metadata::CaptureMetadataState::default());
+    core.manage(app_core::native_capture::privacy::PrivacyFilterRefreshState::default());
     core.manage(app_core::broker_authorization_channel::BrokerAuthorizationChannelState::default());
     // The Semantic Index Backfill worker's health, published each sweep pass and
     // read by the debug surface's `get_semantic_index_status`. Registered here
@@ -552,14 +554,16 @@ pub fn run() {
     tauri::Builder::default()
         .manage(core)
         .manage(native_capture::NativeCaptureState::default())
-        .manage(native_capture::MicrophoneControllerPreferencesState::default())
-        .manage(native_capture::MicrophoneDeviceChangeNotifierState::default())
+        .manage(
+            app_core::native_capture::microphone::MicrophoneControllerPreferencesState::default(),
+        )
+        .manage(
+            app_core::native_capture::microphone::MicrophoneDeviceChangeNotifierState::default(),
+        )
         .manage(native_capture::SystemWakeNotifierState::default())
         .manage(native_capture::DisplayReconfigurationNotifierState::default())
         .manage(native_capture::MetadataNotifierState::default())
-        .manage(native_capture::PrivacyFilterRefreshState::default())
         .manage(recording_settings)
-        .manage(native_capture::CaptureMetadataState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
         .manage(native_capture::AppNotificationsState::default())

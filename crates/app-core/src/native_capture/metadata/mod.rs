@@ -12,7 +12,6 @@ use std::process::Command;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Instant;
-use tauri::Manager;
 
 /// How many `(published_at_unix_ms, snapshot)` entries to retain. The ring must
 /// span the capture→JPEG-write lag (~100-300ms nominally, up to ~1-2s under load):
@@ -71,7 +70,7 @@ pub type CaptureMetadataState = Mutex<CaptureMetadataRuntime>;
 /// Whether a metadata refresh may issue a *live* active-tab browser-URL read.
 ///
 /// The Gecko (Firefox/Zen) URL is read via the Accessibility API
-/// ([`crate::native_capture::browser_url_ax::read_active_tab_url`]), which is
+/// ([`super::browser_url_ax::read_active_tab_url`]), which is
 /// wall-clock bounded but can still cost up to ~1.4s on a cold/slow read. That
 /// read is fine on the periodic metadata-refresh tick (its own background
 /// thread, off every capture lock), but several synchronous capture-lifecycle
@@ -95,20 +94,13 @@ pub enum BrowserUrlReadMode {
     Cached,
 }
 
-pub(super) type FrameMetadataSnapshotProvider =
+pub type FrameMetadataSnapshotProvider =
     Arc<dyn Fn(u64) -> Option<FrameMetadataSnapshot> + Send + Sync + 'static>;
 
-pub(super) fn frame_metadata_snapshot_provider(
-    app_handle: &tauri::AppHandle,
-) -> FrameMetadataSnapshotProvider {
-    let app_handle = app_handle.clone();
+pub fn frame_metadata_snapshot_provider(core: &crate::AppCore) -> FrameMetadataSnapshotProvider {
+    let state = core.state::<CaptureMetadataState>();
     Arc::new(move |captured_at_unix_ms| {
-        frame_metadata_snapshot_in_effect_at(
-            app_handle
-                .state::<crate::native_capture::CaptureMetadataState>()
-                .inner(),
-            captured_at_unix_ms,
-        )
+        frame_metadata_snapshot_in_effect_at(&state, captured_at_unix_ms)
     })
 }
 
@@ -198,7 +190,7 @@ pub fn refresh_metadata_state(
     if let Some(browser_url_probe_cache) = active.browser_url_probe_cache {
         runtime.browser_url_probe_cache = browser_url_probe_cache;
     }
-    runtime.publish_snapshot(crate::native_capture::runtime::now_unix_ms(), snapshot);
+    runtime.publish_snapshot(super::runtime::now_unix_ms(), snapshot);
     runtime.latest_decision = decision.clone();
     decision
 }
@@ -213,69 +205,6 @@ pub fn refresh_static_excluded_app_privacy_state(
         .expect("capture metadata state poisoned")
         .latest_decision = decision.clone();
     decision
-}
-
-#[cfg(target_os = "macos")]
-pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
-    use cidre::ns;
-
-    let mut center = ns::Workspace::shared().notification_center();
-    let mut guards = Vec::new();
-    for (notification, reason) in [
-        (
-            ns::workspace::notification::did_activate_app(),
-            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
-        ),
-        (
-            ns::workspace::notification::did_deactivate_app(),
-            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
-        ),
-        (
-            ns::workspace::notification::active_space_did_change(),
-            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
-        ),
-        (
-            ns::workspace::notification::did_launch_app(),
-            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
-        ),
-        (
-            ns::workspace::notification::did_terminate_app(),
-            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
-        ),
-        (
-            ns::workspace::notification::did_hide_app(),
-            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
-        ),
-        (
-            ns::workspace::notification::did_unhide_app(),
-            crate::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
-        ),
-    ] {
-        guards.push(center.add_observer_guard(notification, None, None, {
-            let app_handle = app_handle.clone();
-            move |_notification| {
-                crate::native_capture::privacy::request_privacy_filter_refresh(&app_handle, reason);
-            }
-        }));
-    }
-
-    replace_metadata_notifier_guards(
-        app_handle
-            .state::<crate::native_capture::MetadataNotifierState>()
-            .inner(),
-        guards,
-    );
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn start_metadata_notifier(_app_handle: tauri::AppHandle) {}
-
-#[cfg(target_os = "macos")]
-fn replace_metadata_notifier_guards(
-    slot: &crate::native_capture::MetadataNotifierState,
-    guards: Vec<cidre::ns::NotificationGuard>,
-) {
-    slot.replace(guards);
 }
 
 #[derive(Debug, Clone)]
@@ -424,7 +353,7 @@ fn collect_active_window_metadata(
 }
 
 #[cfg(target_os = "macos")]
-pub(crate) fn collect_native_active_window_snapshot() -> NativeActiveWindowSnapshot {
+pub fn collect_native_active_window_snapshot() -> NativeActiveWindowSnapshot {
     let Some((pid, bundle_id, app_name)) = frontmost_running_app_snapshot() else {
         return NativeActiveWindowSnapshot::default();
     };
@@ -441,7 +370,7 @@ pub(crate) fn collect_native_active_window_snapshot() -> NativeActiveWindowSnaps
 
 /// Whether the lock screen (`loginwindow`) holds the foreground.
 #[cfg(target_os = "macos")]
-pub(crate) fn frontmost_app_is_lock_screen() -> bool {
+pub fn frontmost_app_is_lock_screen() -> bool {
     frontmost_running_app_snapshot().is_some_and(|(_, app_bundle_id, app_name)| {
         FrameMetadataSnapshot {
             app_bundle_id,
@@ -590,8 +519,8 @@ fn active_browser_url(bundle_id: &str, pid: Option<i32>) -> Option<String> {
         Some(BrowserUrlStrategy::Accessibility) => {
             // First-sighting prompt: the first time a Gecko browser is frontmost
             // while browser-URL capture is enabled and trust is missing, ask once.
-            crate::native_capture::browser_url_ax::maybe_prompt_on_gecko_frontmost();
-            pid.and_then(crate::native_capture::browser_url_ax::read_active_tab_url)
+            super::browser_url_ax::maybe_prompt_on_gecko_frontmost();
+            pid.and_then(super::browser_url_ax::read_active_tab_url)
         }
         None => None,
     }
@@ -643,196 +572,4 @@ fn run_osascript(script: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use capture_metadata::BrowserUrlMode;
-
-    #[test]
-    fn initial_privacy_decision_includes_static_apps_when_metadata_is_disabled() {
-        let metadata = MetadataSettings {
-            enabled: false,
-            browser_url_mode: BrowserUrlMode::Sanitized,
-        };
-        let privacy = PrivacySettings {
-            excluded_apps: vec![capture_metadata::ExcludedAppEntry {
-                id: "app".to_string(),
-                enabled: true,
-                bundle_id: "com.secret".to_string(),
-                display_name: "Secret".to_string(),
-            }],
-            ..PrivacySettings::default()
-        };
-
-        let state = CaptureMetadataState::default();
-        let decision =
-            refresh_metadata_state(&state, &metadata, &privacy, BrowserUrlReadMode::Live);
-        let runtime = state.lock().expect("capture metadata state should lock");
-
-        assert_eq!(decision.excluded_bundle_ids, vec!["com.secret"]);
-        assert!(decision.metadata_redaction_reason.is_none());
-        assert_eq!(runtime.latest_decision, decision);
-        assert!(runtime.latest_snapshot().is_none());
-    }
-
-    #[test]
-    fn refresh_with_metadata_disabled_keeps_static_privacy_without_snapshot() {
-        let state = CaptureMetadataState::default();
-        let metadata = MetadataSettings {
-            enabled: false,
-            browser_url_mode: BrowserUrlMode::Sanitized,
-        };
-        let privacy = PrivacySettings {
-            excluded_apps: vec![capture_metadata::ExcludedAppEntry {
-                id: "app-rule".to_string(),
-                enabled: true,
-                bundle_id: "com.example.Secret".to_string(),
-                display_name: "Secret".to_string(),
-            }],
-            ..PrivacySettings::default()
-        };
-
-        let decision =
-            refresh_metadata_state(&state, &metadata, &privacy, BrowserUrlReadMode::Live);
-        let runtime = state.lock().expect("capture metadata state should lock");
-
-        assert_eq!(decision.excluded_bundle_ids, vec!["com.example.Secret"]);
-        assert!(decision.metadata_redaction_reason.is_none());
-        assert!(runtime.latest_snapshot().is_none());
-        assert_eq!(runtime.latest_decision, decision);
-    }
-
-    fn snapshot_named(app: &str) -> FrameMetadataSnapshot {
-        FrameMetadataSnapshot {
-            app_name: Some(app.to_string()),
-            ..FrameMetadataSnapshot::default()
-        }
-    }
-
-    #[test]
-    fn snapshot_in_effect_at_stamps_the_app_frontmost_at_capture_time() {
-        let mut runtime = CaptureMetadataRuntime::default();
-        runtime.publish_snapshot(1000, Some(snapshot_named("Hitch")));
-        runtime.publish_snapshot(2000, Some(snapshot_named("mnema")));
-
-        // Frame captured before the switch (t=1900) must keep Hitch, even though
-        // "mnema" is now the latest snapshot.
-        assert_eq!(
-            runtime.snapshot_in_effect_at(1900).unwrap().app_name.unwrap(),
-            "Hitch"
-        );
-        // Frame captured after the switch gets mnema.
-        assert_eq!(
-            runtime.snapshot_in_effect_at(2100).unwrap().app_name.unwrap(),
-            "mnema"
-        );
-        // Frame captured before any snapshot was published gets None (session start).
-        assert!(runtime.snapshot_in_effect_at(500).is_none());
-    }
-
-    #[test]
-    fn snapshot_history_is_bounded_and_reset_clears_it() {
-        let state = CaptureMetadataState::default();
-        {
-            let mut runtime = state.lock().expect("lock");
-            for t in 0..(SNAPSHOT_HISTORY_CAP as u64 + 5) {
-                runtime.publish_snapshot(t, Some(snapshot_named("app")));
-            }
-            assert_eq!(runtime.snapshot_history.len(), SNAPSHOT_HISTORY_CAP);
-        }
-
-        reset_recording_session_privacy_state(&state);
-
-        let runtime = state.lock().expect("lock");
-        assert!(runtime.snapshot_history.is_empty());
-        assert!(runtime.snapshot_in_effect_at(u64::MAX).is_none());
-    }
-
-    #[test]
-    fn reset_recording_session_privacy_state_clears_verified_windows_and_website_holds() {
-        let state = CaptureMetadataState::default();
-        {
-            let mut runtime = state.lock().expect("capture metadata state should lock");
-            runtime.publish_snapshot(
-                1000,
-                Some(FrameMetadataSnapshot {
-                    app_bundle_id: Some("net.imput.helium".to_string()),
-                    app_name: Some("Helium".to_string()),
-                    window_title: Some("Private window".to_string()),
-                    browser_url: Some("https://secret.example".to_string()),
-                    ..FrameMetadataSnapshot::default()
-                }),
-            );
-            runtime.latest_decision = PrivacyFilterDecision {
-                excluded_bundle_ids: vec!["net.imput.helium".to_string()],
-                privacy_filter_applied: true,
-                ..PrivacyFilterDecision::default()
-            };
-            runtime.latest_applied_decision = PrivacyFilterDecision {
-                excluded_bundle_ids: vec!["net.imput.helium".to_string()],
-                privacy_filter_applied: true,
-                ..PrivacyFilterDecision::default()
-            };
-        }
-
-        reset_recording_session_privacy_state(&state);
-
-        let runtime = state.lock().expect("capture metadata state should lock");
-        assert!(runtime.latest_snapshot().is_none());
-        assert_eq!(runtime.latest_decision, PrivacyFilterDecision::default());
-        assert_eq!(
-            runtime.latest_applied_decision,
-            PrivacyFilterDecision::default()
-        );
-    }
-
-    #[test]
-    fn reset_recording_session_privacy_state_clears_browser_url_probe_cache() {
-        let state = CaptureMetadataState::default();
-        {
-            let mut runtime = state.lock().expect("capture metadata state should lock");
-            runtime.browser_url_probe_cache = BrowserUrlProbeCache::from_probe(
-                Some("com.google.Chrome".to_string()),
-                Some("Old Tab — Example".to_string()),
-                Some("https://example.com/old-tab".to_string()),
-                Instant::now(),
-            );
-        }
-
-        reset_recording_session_privacy_state(&state);
-
-        let runtime = state.lock().expect("capture metadata state should lock");
-        assert_eq!(
-            runtime.browser_url_probe_cache.cached_url_for(
-                "com.google.Chrome",
-                Some("Old Tab — Example"),
-                Instant::now()
-            ),
-            None
-        );
-    }
-
-    // The strategy dispatch in `active_browser_url` routes a Chromium bundle to
-    // the AppleScript path and a Gecko bundle to the Accessibility path. We do
-    // not run osascript or a live Accessibility read here (those need a running
-    // browser + permission — that is a manual verify step); we assert the
-    // routing inputs the dispatch keys off. `browser_url_applescript` backs the
-    // AppleScript branch, `browser_url_strategy` selects the branch.
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn active_browser_url_routes_chromium_to_applescript_and_gecko_away() {
-        // Chromium routes to AppleScript, which has a script to run.
-        assert!(matches!(
-            browser_url_strategy("com.google.Chrome"),
-            Some(BrowserUrlStrategy::AppleScript(_))
-        ));
-        assert!(browser_url_applescript("com.google.Chrome")
-            .is_some_and(|script| script.contains("active tab of front window")));
-        // Gecko routes to Accessibility and has no AppleScript surface at all, so
-        // dispatch never reaches the osascript path for it.
-        assert_eq!(
-            browser_url_strategy("org.mozilla.firefox"),
-            Some(BrowserUrlStrategy::Accessibility),
-        );
-        assert_eq!(browser_url_applescript("org.mozilla.firefox"), None);
-    }
-}
+mod tests;

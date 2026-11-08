@@ -1,22 +1,23 @@
-use super::activity::current_activity_snapshot;
+use app_core::native_capture::activity::current_activity_snapshot;
 #[cfg(target_os = "macos")]
-use super::microphone_away::{
-    mac_is_away, reopen_unwakeable_microphone, should_resume_microphone_after_activity,
-    tick_microphone_away,
+use super::microphone_away::{reopen_unwakeable_microphone, tick_microphone_away};
+#[cfg(target_os = "macos")]
+use app_core::native_capture::microphone_away::{
+    mac_is_away, should_resume_microphone_after_activity,
 };
 use app_core::native_capture_output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
     set_current_system_audio_output_file,
 };
-use super::runtime::{
+use app_core::native_capture::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
     mark_runtime_session_failed, microphone_planner_for_runtime, refresh_runtime_planner_dates,
     screen_planner_for_runtime, system_audio_planner_for_runtime, system_audio_stops_with_suspension,
     CaptureSuspensionKind,
 };
-use super::runtime::{
+use app_core::native_capture::runtime::{
     mark_runtime_session_stopped, request_segment_loop_stop, session_from_runtime,
     stopped_session_from_runtime, NativeCaptureRuntime,
 };
@@ -26,12 +27,13 @@ use super::segments::{
     pause_microphone_for_inactivity_with_app_handle, pause_runtime_for_inactivity_with_app_handle,
     pause_screen_for_inactivity_with_app_handle, pause_system_audio_for_inactivity_with_app_handle,
     plan_live_rotation_segment, reanchor_active_segment_timing,
-    flush_frame_artifacts, recover_from_segment_finalize_error, recover_screen_capture_after_wake,
+    recover_from_segment_finalize_error, recover_screen_capture_after_wake,
     resume_microphone_from_inactivity, resume_runtime_from_inactivity,
     resume_screen_from_inactivity, resume_system_audio_from_inactivity, start_capture_runtime,
     start_segment_with_current_privacy_filter, start_system_audio_family_for_runtime,
     stop_active_sessions_after_failure, stop_capture_runtime,
 };
+use app_core::native_capture::frame_artifacts::flush_frame_artifacts;
 use capture_runtime::RuntimeSignal;
 use capture_types::{
     CaptureErrorResponse, CaptureSources, NativeCaptureSession, RecordingSettings,
@@ -429,7 +431,10 @@ impl RecordingLifecycle {
             // starts it again — including for a session with no screen at all.
             match super::segments::start_system_audio_family_for_runtime(
                 &mut self.runtime,
-                super::privacy::collect_initial_privacy_filter(app_handle).excluded_bundle_ids(),
+                app_core::native_capture::privacy::collect_initial_privacy_filter(
+                    &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+                )
+                .excluded_bundle_ids(),
                 next_index,
                 "resuming user pause",
             ) {
@@ -538,7 +543,7 @@ impl RecordingLifecycle {
         }
 
         let device_id = self.runtime.microphone_device_id_for_capture.clone();
-        super::microphone::restart_microphone_session_for_runtime(
+        app_core::native_capture::microphone::restart_microphone_session_for_runtime(
             &mut self.runtime,
             device_id.as_deref(),
             "restoring microphone after a bounded enrollment recording",
@@ -663,9 +668,15 @@ impl RecordingLifecycle {
             .source_sessions
             .as_ref()
             .and_then(|sessions| sessions.system_audio.as_ref())
-            .map(|session| super::runtime::now_unix_ms().saturating_sub(session.started_at_unix_ms))
+            .map(|session| {
+                app_core::native_capture::runtime::now_unix_ms()
+                    .saturating_sub(session.started_at_unix_ms)
+            })
             .unwrap_or(0);
-        super::system_audio::note_permission_evidence(app_handle, session_age_ms);
+        app_core::native_capture::system_audio::note_permission_evidence(
+            &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+            session_age_ms,
+        );
 
         let Some(system_audio_output_file) = rotated_output_file else {
             return;
@@ -703,7 +714,7 @@ impl RecordingLifecycle {
             return;
         }
 
-        let now = super::runtime::now_monotonic_marker_ms();
+        let now = app_core::native_capture::runtime::now_monotonic_marker_ms();
         if self
             .system_audio_start_retry_at_ms
             .is_some_and(|retry_at| now < retry_at)
@@ -714,7 +725,10 @@ impl RecordingLifecycle {
         let segment_index = self.runtime.current_segment_index;
         match start_system_audio_family_for_runtime(
             &mut self.runtime,
-            super::privacy::collect_initial_privacy_filter(app_handle).excluded_bundle_ids(),
+            app_core::native_capture::privacy::collect_initial_privacy_filter(
+                &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+            )
+            .excluded_bundle_ids(),
             segment_index,
             "retrying system audio start",
         ) {
@@ -781,7 +795,7 @@ impl RecordingLifecycle {
             return self.suspend_screen_after_unexpected_stop(Some(app_handle), &error);
         }
 
-        let now = super::runtime::now_monotonic_marker_ms();
+        let now = app_core::native_capture::runtime::now_monotonic_marker_ms();
         let activity_snapshot = current_activity_snapshot(&mut self.runtime);
         let effective_idle = self
             .runtime
@@ -942,7 +956,9 @@ impl RecordingLifecycle {
                 pause_screen_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
             {
                 if !capture_screen::should_preserve_runtime_on_stop_error(&error) {
-                    super::runtime::mark_runtime_session_failed(&mut self.runtime);
+                    app_core::native_capture::runtime::mark_runtime_session_failed(
+                        &mut self.runtime,
+                    );
                     return TickOutcome::StopLoop;
                 }
             } else {
@@ -989,7 +1005,9 @@ impl RecordingLifecycle {
                 pause_runtime_for_inactivity_with_app_handle(&mut self.runtime, Some(app_handle))
             {
                 if !capture_screen::should_preserve_runtime_on_stop_error(&error) {
-                    super::runtime::mark_runtime_session_failed(&mut self.runtime);
+                    app_core::native_capture::runtime::mark_runtime_session_failed(
+                        &mut self.runtime,
+                    );
                     return TickOutcome::StopLoop;
                 }
             } else {
@@ -1303,7 +1321,9 @@ impl RecordingLifecycle {
             self.runtime.active_screen_session = active_screen_session;
 
             if active_sources.microphone {
-                super::activity::process_pending_microphone_vad_frames(&mut self.runtime);
+                app_core::native_capture::activity::process_pending_microphone_vad_frames(
+                    &mut self.runtime,
+                );
                 if let Some(session) = self.runtime.active_microphone_session.as_mut() {
                     let microphone_output_file = microphone_planner
                         .as_ref()
@@ -1347,7 +1367,9 @@ impl RecordingLifecycle {
                 }
             }
         } else if active_sources.microphone {
-            super::activity::process_pending_microphone_vad_frames(&mut self.runtime);
+            app_core::native_capture::activity::process_pending_microphone_vad_frames(
+                &mut self.runtime,
+            );
             if let Some(session) = self.runtime.active_microphone_session.as_mut() {
                 let microphone_output_file = microphone_planner
                     .as_ref()
@@ -1392,7 +1414,7 @@ impl RecordingLifecycle {
         }
 
         if let Some(tx) = self.runtime.frame_artifact_tx.as_ref() {
-            super::segments::flush_frame_artifacts(tx);
+            app_core::native_capture::frame_artifacts::flush_frame_artifacts(tx);
         }
 
         let previous_segment_committed = match finalize_capture_outputs(
@@ -1547,7 +1569,7 @@ impl RecordingLifecycle {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
-    use crate::native_capture::runtime::CaptureSuspension;
+    use app_core::native_capture::runtime::CaptureSuspension;
     use capture_types::CaptureOutputFiles;
 
     fn screen_only_sources() -> CaptureSources {

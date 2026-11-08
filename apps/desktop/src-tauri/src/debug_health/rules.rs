@@ -10,7 +10,7 @@
 //! [ADR 0021]: ../../../../../docs/adr/0021-recover-from-display-unavailable-as-transient-liveness.md
 //! [ADR 0048]: ../../../../../docs/adr/0048-cloud-transcription-errors-are-transient-liveness-not-job-failures.md
 
-use crate::native_capture::capture_health::{
+use app_core::native_capture::capture_health::{
     CaptureSourceHealth, CaptureSourceState, SuspensionKindDto, SystemAudioTapDto,
     TapRebuildReasonDto,
 };

@@ -23,7 +23,6 @@ use capture_system_audio::{
     SystemAudioSegmentHooks, LOG_PREFIX, SILENT_SESSION_AFTER_MS,
 };
 use capture_types::{CaptureErrorResponse, CapturePermissionState};
-use tauri::Manager;
 
 use super::runtime::now_unix_ms;
 
@@ -64,7 +63,7 @@ impl SegmentBus {
 
         if let Some(audio_dir) = next.parent() {
             if let Err(error) = std::fs::create_dir_all(audio_dir) {
-                app_core::debug_log::log_error(format!(
+                crate::debug_log::log_error(format!(
                     "{LOG_PREFIX} failed to create system audio output directory: {error}"
                 ));
                 self.live_output_file = None;
@@ -79,7 +78,7 @@ impl SegmentBus {
 
 /// A live system-audio capture, parked in the runtime and driven from the
 /// capture tick.
-pub(crate) struct SystemAudioFamily {
+pub struct SystemAudioFamily {
     session: SystemAudioCaptureSession,
     bus: Arc<Mutex<SegmentBus>>,
 }
@@ -101,7 +100,7 @@ impl SystemAudioFamily {
     /// Starts the tap and opens the first segment. `excluded_bundle_ids` is the
     /// privacy list, which the tap excludes exactly as ScreenCaptureKit's content
     /// filter used to.
-    pub(super) fn start(
+    pub fn start(
         planner: SegmentPlanner,
         segment_index: u64,
         first_output_file: PathBuf,
@@ -129,7 +128,7 @@ impl SystemAudioFamily {
 
     /// The file being written right now, or `None` while paused for inactivity.
     /// The runtime mirrors this into `system_audio_recording_file`.
-    pub(super) fn live_output_file(&self) -> Option<String> {
+    pub fn live_output_file(&self) -> Option<String> {
         lock_bus(&self.bus)
             .live_output_file
             .as_ref()
@@ -139,7 +138,7 @@ impl SystemAudioFamily {
     /// Closes the in-flight segment and opens `next`, or none when `next` is
     /// `None` — which is what an inactivity pause is. Returns the file now being
     /// written, which is `None` when nothing is.
-    pub(super) fn advance_segment(
+    pub fn advance_segment(
         &mut self,
         planner: &SegmentPlanner,
         segment_index: u64,
@@ -168,13 +167,13 @@ impl SystemAudioFamily {
     /// Returns the file being written if a rebuild rotated onto a new one — an
     /// `Err` from the session is a failed rebuild, never a dead session, so it is
     /// logged and polling continues on the watchdog's own backoff.
-    pub(super) fn poll(&mut self) -> Option<String> {
+    pub fn poll(&mut self) -> Option<String> {
         let before = self.live_output_file();
         let rebuilds_before = self.session.rebuild_count();
         let polled = self.session.poll();
         note_rebuilds(self.session.rebuild_count() - rebuilds_before);
         if let Err(error) = polled {
-            app_core::debug_log::log_warn(format!(
+            crate::debug_log::log_warn(format!(
                 "{LOG_PREFIX} tap rebuild failed; retrying on the watchdog's backoff: [{}] {}",
                 error.code, error.message
             ));
@@ -188,15 +187,15 @@ impl SystemAudioFamily {
     /// watcher. Cheap and lock-safe — it only stores the set and marks the
     /// watcher dirty; the next `poll` does the Core Audio read, reconcile, and
     /// any rebuild off the caller's lock.
-    pub(super) fn set_excluded_bundle_ids(&self, excluded_bundle_ids: Vec<String>) {
+    pub fn set_excluded_bundle_ids(&self, excluded_bundle_ids: Vec<String>) {
         self.session.set_excluded_bundle_ids(excluded_bundle_ids);
     }
 
-    pub(super) fn stop(mut self) {
+    pub fn stop(mut self) {
         self.session.stop();
     }
 
-    pub(super) fn health(&self) -> capture_system_audio::TapHealth {
+    pub fn health(&self) -> capture_system_audio::TapHealth {
         self.session.health()
     }
 }
@@ -235,7 +234,7 @@ fn note_rebuilds(added: u64) {
 
 /// Tap rebuilds since local midnight **within this app run** — not persisted,
 /// so a relaunch starts from zero.
-pub(super) fn rebuilds_today() -> u64 {
+pub fn rebuilds_today() -> u64 {
     let mut slot = REBUILDS_TODAY
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -309,7 +308,7 @@ fn store_evidence(evidence: SystemAudioEvidence) {
 /// The tri-state the permission surfaces render. Until [`hydrate_evidence`] has
 /// run this reads as "not yet requested", which is the honest answer while the
 /// evidence is still on disk — and the frontend re-polls on focus.
-pub(crate) fn permission_state() -> CapturePermissionState {
+pub fn permission_state() -> CapturePermissionState {
     capture_system_audio::system_audio_permission_state(
         capture_system_audio::supports_system_audio_capture(),
         cached_evidence(),
@@ -323,7 +322,7 @@ pub(crate) fn permission_state() -> CapturePermissionState {
 /// this session judging: the stored answer may be stronger than anything this
 /// session could observe, and it is the one thing that must not be overwritten
 /// blind.
-pub(crate) async fn hydrate_evidence(infra: &::app_infra::AppInfra) {
+pub async fn hydrate_evidence(infra: &::app_infra::AppInfra) {
     match infra.system_audio_evidence().evidence().await {
         Ok(stored) => store_evidence(
             stored
@@ -331,7 +330,7 @@ pub(crate) async fn hydrate_evidence(infra: &::app_infra::AppInfra) {
                 .map(SystemAudioEvidence::from_str)
                 .unwrap_or_default(),
         ),
-        Err(error) => app_core::debug_log::log_warn(format!(
+        Err(error) => crate::debug_log::log_warn(format!(
             "{LOG_PREFIX} failed to read stored permission evidence; leaving it unjudged for this session: {error}"
         )),
     }
@@ -343,7 +342,7 @@ pub(crate) async fn hydrate_evidence(infra: &::app_infra::AppInfra) {
 /// `session_age_ms` is how long the tap has been running: silence only counts as
 /// evidence once a tap has had [`SILENT_SESSION_AFTER_MS`] to deliver something,
 /// so a recording started and stopped in seconds never accuses anyone.
-pub(super) fn note_permission_evidence(app_handle: &tauri::AppHandle, session_age_ms: u64) {
+pub fn note_permission_evidence(core: &crate::AppCore, session_age_ms: u64) {
     let heard_sound = capture_system_audio::system_audio_sound_observed();
     if !heard_sound && session_age_ms < SILENT_SESSION_AFTER_MS {
         return;
@@ -354,20 +353,24 @@ pub(super) fn note_permission_evidence(app_handle: &tauri::AppHandle, session_ag
     };
     store_evidence(next);
 
-    app_core::debug_log::log_info(format!(
+    crate::debug_log::log_info(format!(
         "{LOG_PREFIX} permission evidence moved to {} after {session_age_ms}ms of tap",
         next.as_str()
     ));
 
-    let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() else {
+    let Some(infra) = core.try_state::<crate::AppInfraState>() else {
         return;
     };
     let infra = std::sync::Arc::clone(&infra);
     // Off the capture tick: the cache above is what the next permission read
     // uses, and this is only the durable copy catching up.
-    tauri::async_runtime::spawn(async move {
-        if let Err(error) = infra.system_audio_evidence().set_evidence(next.as_str()).await {
-            app_core::debug_log::log_warn(format!(
+    core.spawn(async move {
+        if let Err(error) = infra
+            .system_audio_evidence()
+            .set_evidence(next.as_str())
+            .await
+        {
+            crate::debug_log::log_warn(format!(
                 "{LOG_PREFIX} failed to persist permission evidence: {error}"
             ));
         }
@@ -381,7 +384,7 @@ pub(super) fn note_permission_evidence(app_handle: &tauri::AppHandle, session_ag
 /// zero-duration files on its own.
 fn log_finalization(finalization: SystemAudioSegmentFinalization) {
     if let Err(error) = finalization.result {
-        app_core::debug_log::log(format!(
+        crate::debug_log::log(format!(
             "{LOG_PREFIX} segment {} closed without usable audio: [{}] {}",
             finalization.output_file.display(),
             error.code,

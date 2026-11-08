@@ -19,7 +19,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 default = ["speaker-analysis-speakrs"]
 cargo-clippy = []
 ocr-budget-trace = ["app-core/ocr-budget-trace"]
-privacy-refresh-trace = []
+privacy-refresh-trace = ["app-core/privacy-refresh-trace"]
 # Forwarding feature: turn the `speaker-analysis` speakrs engine on AND expose a
 # desktop-crate cfg the subprocess dispatcher gates the speakrs arm on (see
 # `app_core::speaker_analysis_runtime::analyze_request_for_provider`). Default-on, so the
@@ -124,3 +124,8 @@ objc = "0.2"
 # the macOS build gets Metal while other platforms stay candle-CPU. The path must
 # match the base entry above exactly.
 semantic-search = { path = "../../../crates/semantic-search", features = ["metal"] }
+
+[dev-dependencies]
+# The capture test hooks (`test-support`) for the native_capture tests that still
+# live in this crate until S3 moves the segment machinery and the lifecycle.
+app-core = { path = "../../../crates/app-core", default-features = false, features = ["test-support"] }

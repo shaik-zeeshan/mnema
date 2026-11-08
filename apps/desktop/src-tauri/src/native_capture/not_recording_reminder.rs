@@ -157,7 +157,7 @@ fn tick(app_handle: &tauri::AppHandle, runtime: &mut ReminderRuntime) {
     }
 
     let capture_off = !super::current_native_capture_session(app_handle).is_running;
-    let now_ms = super::runtime::now_unix_ms();
+    let now_ms = app_core::native_capture::runtime::now_unix_ms();
     let step = runtime.observe(
         now_ms,
         capture_off,
@@ -196,7 +196,7 @@ fn tick(app_handle: &tauri::AppHandle, runtime: &mut ReminderRuntime) {
 fn user_away() -> bool {
     let _autorelease_pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
     core_graphics::display::CGDisplay::main().is_asleep()
-        || super::metadata::frontmost_app_is_lock_screen()
+        || app_core::native_capture::metadata::frontmost_app_is_lock_screen()
 }
 
 #[cfg(not(target_os = "macos"))]

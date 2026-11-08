@@ -1,102 +1,27 @@
+//! The microphone controller's host half: the device-change notifier, the
+//! preference update and the waited-for-device reconnect drive
+//! `NativeCaptureState` and the segment machinery (S3 parts b and c). The rest
+//! is `app_core::native_capture::microphone`.
+
+use app_core::native_capture::microphone::{
+    emit_microphone_auto_disconnect_transition_failed, emit_microphone_controller_changed,
+    resolve_capture_microphone_device_id, validate_microphone_preference,
+    MicrophoneControllerPreferencesState, MicrophoneDeviceChangeNotifierState,
+};
+#[cfg(target_os = "macos")]
+use app_core::native_capture::microphone::{
+    restart_microphone_session_for_runtime, should_move_microphone_capture_to_waiting_state,
+    should_reconnect_waiting_microphone_session, should_wait_for_same_microphone_device,
+};
+use app_core::AppCore;
 use capture_microphone as microphone_capture;
 use capture_types::{
-    CaptureErrorResponse, CaptureSources, MicrophoneControllerState, MicrophoneDisconnectPolicy,
-    MicrophonePreference, MicrophonePreferenceMode, UpdateMicrophoneControllerRequest,
+    CaptureErrorResponse, MicrophoneControllerState, UpdateMicrophoneControllerRequest,
 };
-use serde::Serialize;
-use std::sync::Mutex;
-use tauri::{Emitter, Manager};
+use std::sync::Arc;
+use tauri::Manager;
 
-use super::runtime::{
-    ensure_microphone_planner_for_runtime, now_unix_ms, refresh_runtime_planner_dates,
-    NativeCaptureRuntime,
-};
 use super::NativeCaptureState;
-use app_core::native_capture_output::set_current_microphone_output_file;
-
-#[derive(Debug, Clone)]
-pub struct MicrophoneControllerPreferencesRuntime {
-    pub preference: MicrophonePreference,
-    pub disconnect_policy: MicrophoneDisconnectPolicy,
-}
-
-impl Default for MicrophoneControllerPreferencesRuntime {
-    fn default() -> Self {
-        Self {
-            preference: MicrophonePreference {
-                mode: MicrophonePreferenceMode::Default,
-                device_id: None,
-            },
-            disconnect_policy: MicrophoneDisconnectPolicy::FallbackToDefault,
-        }
-    }
-}
-
-pub type MicrophoneControllerPreferencesState = Mutex<MicrophoneControllerPreferencesRuntime>;
-pub type MicrophoneDeviceChangeNotifierState =
-    Mutex<Option<microphone_capture::MicrophoneDeviceChangeNotifier>>;
-
-const MICROPHONE_CONTROLLER_CHANGED_EVENT: &str = "microphone_controller_changed";
-const MICROPHONE_AUTO_DISCONNECT_TRANSITION_FAILED_EVENT: &str =
-    "microphone_auto_disconnect_transition_failed";
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(super) struct MicrophoneAutoDisconnectTransitionFailedEvent {
-    pub context: String,
-    pub code: String,
-    pub message: String,
-}
-
-pub(super) fn microphone_auto_disconnect_transition_failed_event(
-    error: &CaptureErrorResponse,
-) -> MicrophoneAutoDisconnectTransitionFailedEvent {
-    MicrophoneAutoDisconnectTransitionFailedEvent {
-        context: "stop_before_wait_for_same_device".to_string(),
-        code: error.code.clone(),
-        message: error.message.clone(),
-    }
-}
-
-fn validate_microphone_preference(
-    preference: MicrophonePreference,
-) -> Result<MicrophonePreference, CaptureErrorResponse> {
-    if preference.mode != MicrophonePreferenceMode::SpecificDevice {
-        return Ok(preference);
-    }
-
-    let device_id = preference
-        .device_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-        .ok_or_else(|| CaptureErrorResponse {
-            code: "microphone_specific_device_id_required".to_string(),
-            message: "A non-empty device_id is required when preference.mode is specific_device"
-                .to_string(),
-        })?;
-
-    Ok(MicrophonePreference {
-        mode: preference.mode,
-        device_id: Some(device_id),
-    })
-}
-
-fn emit_microphone_controller_changed(
-    app_handle: &tauri::AppHandle,
-    state: MicrophoneControllerState,
-) {
-    let _ = app_handle.emit(MICROPHONE_CONTROLLER_CHANGED_EVENT, state);
-}
-
-fn emit_microphone_auto_disconnect_transition_failed(
-    app_handle: &tauri::AppHandle,
-    error: &CaptureErrorResponse,
-) {
-    let payload = microphone_auto_disconnect_transition_failed_event(error);
-    let _ = app_handle.emit(MICROPHONE_AUTO_DISCONNECT_TRANSITION_FAILED_EVENT, payload);
-}
 
 #[cfg(target_os = "macos")]
 pub fn start_microphone_device_change_notifier(app_handle: tauri::AppHandle) {
@@ -118,7 +43,10 @@ pub fn start_microphone_device_change_notifier(app_handle: tauri::AppHandle) {
             };
 
             maybe_reconnect_waiting_microphone_session(&app_handle, &controller_state);
-            emit_microphone_controller_changed(&app_handle, controller_state);
+            emit_microphone_controller_changed(
+                &app_handle.state::<Arc<AppCore>>(),
+                controller_state,
+            );
         }
     });
 
@@ -156,100 +84,12 @@ pub(super) fn update_microphone_controller(
     #[cfg(target_os = "macos")]
     maybe_reconnect_waiting_microphone_session(app_handle, &controller_state);
 
-    emit_microphone_controller_changed(app_handle, controller_state.clone());
+    emit_microphone_controller_changed(
+        &app_handle.state::<Arc<AppCore>>(),
+        controller_state.clone(),
+    );
 
     Ok(controller_state)
-}
-
-pub(super) fn should_wait_for_same_microphone_device(state: &MicrophoneControllerState) -> bool {
-    state.preference.mode == MicrophonePreferenceMode::SpecificDevice
-        && state.disconnect_policy == MicrophoneDisconnectPolicy::WaitForSameDevice
-        && state.preference.device_id.is_some()
-        && state.effective_device.is_none()
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn should_move_microphone_capture_to_waiting_state(
-    runtime_is_running: bool,
-    requested_sources: Option<&CaptureSources>,
-    has_active_microphone_session: bool,
-    state: &MicrophoneControllerState,
-) -> bool {
-    runtime_is_running
-        && requested_sources.is_some_and(|sources| sources.microphone)
-        && has_active_microphone_session
-        && should_wait_for_same_microphone_device(state)
-}
-
-#[cfg(target_os = "macos")]
-pub(super) fn next_microphone_output_file_for_runtime(
-    runtime: &NativeCaptureRuntime,
-) -> Result<String, CaptureErrorResponse> {
-    let planner = runtime
-        .microphone_planner
-        .as_ref()
-        .ok_or_else(|| CaptureErrorResponse {
-            code: "invalid_runtime_state".to_string(),
-            message: "Capture microphone planner missing while reconnecting microphone".to_string(),
-        })?;
-    let audio_dir = planner.audio_dir();
-    std::fs::create_dir_all(&audio_dir).map_err(|error| CaptureErrorResponse {
-        code: "io_error".to_string(),
-        message: format!("Failed to create capture audio directory: {error}"),
-    })?;
-
-    Ok(planner
-        .microphone_reconnect_file(runtime.current_segment_index, now_unix_ms())
-        .to_string_lossy()
-        .to_string())
-}
-
-/// A paused microphone is left to the tick, which reopens it once the device is
-/// back ([`super::microphone_away::reopen_unwakeable_microphone`]).
-#[cfg(target_os = "macos")]
-pub(super) fn should_reconnect_waiting_microphone_session(
-    runtime: &NativeCaptureRuntime,
-    state: &MicrophoneControllerState,
-) -> bool {
-    super::microphone_away::microphone_free_to_record(runtime)
-        && !runtime.inactivity.is_microphone_paused()
-        && runtime.active_microphone_session.is_none()
-        && state.preference.mode == MicrophonePreferenceMode::SpecificDevice
-        && state.disconnect_policy == MicrophoneDisconnectPolicy::WaitForSameDevice
-        && state.preference.device_id.is_some()
-        && state.effective_device.is_some()
-}
-
-/// Start a fresh microphone session for a still-running capture runtime and wire
-/// its output file into the current segment.
-///
-/// The one microphone restart path: used both when a waited-for device reappears
-/// and when a bounded out-of-band recording (voice enrollment) hands the
-/// microphone back. Screen and the system-audio tap are untouched — neither
-/// shares the device.
-#[cfg(target_os = "macos")]
-pub(super) fn restart_microphone_session_for_runtime(
-    runtime: &mut NativeCaptureRuntime,
-    device_id: Option<&str>,
-    reason: &str,
-) -> Result<(), CaptureErrorResponse> {
-    ensure_microphone_planner_for_runtime(runtime, reason)?;
-    refresh_runtime_planner_dates(runtime);
-
-    let microphone_recording_file = next_microphone_output_file_for_runtime(runtime)?;
-    let session =
-        microphone_capture::start_avfoundation_microphone_capture_session_for_file_with_device_id(
-            &microphone_recording_file,
-            device_id,
-        )?;
-
-    runtime.active_microphone_session = Some(session);
-    runtime.microphone_recording_file = Some(microphone_recording_file.clone());
-    if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-        set_current_microphone_output_file(output_files, microphone_recording_file);
-    }
-
-    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -277,7 +117,10 @@ fn maybe_reconnect_waiting_microphone_session(
                 "failed to stop microphone session while waiting for same device: [{}] {}",
                 error.code, error.message
             ));
-            emit_microphone_auto_disconnect_transition_failed(app_handle, &error);
+            emit_microphone_auto_disconnect_transition_failed(
+                &app_handle.state::<Arc<AppCore>>(),
+                &error,
+            );
             stop_failed_while_waiting = true;
         }
         if !stop_failed_while_waiting {
@@ -320,16 +163,4 @@ pub(super) fn current_capture_microphone_device_id(
     let state =
         microphone_capture::microphone_controller_state(preference, disconnect_policy).ok()?;
     Some(resolve_capture_microphone_device_id(&state))
-}
-
-pub(super) fn resolve_capture_microphone_device_id(
-    state: &MicrophoneControllerState,
-) -> Option<String> {
-    state.effective_device.as_ref().and_then(|device| {
-        if device.is_default {
-            None
-        } else {
-            Some(device.id.clone())
-        }
-    })
 }

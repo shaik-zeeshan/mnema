@@ -1,25 +1,21 @@
 mod activity;
 pub(crate) mod capture_health;
-#[cfg(target_os = "macos")]
-#[path = "native_capture_browser_url_ax.rs"]
-pub(crate) mod browser_url_ax;
 mod lifecycle;
-#[path = "native_capture_metadata.rs"]
-pub(crate) mod metadata;
 mod microphone;
 mod microphone_away;
 pub(crate) mod not_recording_reminder;
 pub(crate) mod privacy;
-mod runtime;
 mod segments;
 #[path = "native_capture_settings.rs"]
 pub(crate) mod settings;
-#[cfg(target_os = "macos")]
-mod system_audio;
 #[cfg(test)]
 mod tests;
 
 use app_core::debug_log;
+#[cfg(target_os = "macos")]
+use app_core::native_capture::{browser_url_ax, system_audio};
+use app_core::native_capture::metadata::{self, CaptureMetadataState};
+use app_core::native_capture::runtime;
 use app_core::privacy_redaction_sources::PrivacyAppCandidate;
 use capture_microphone as microphone_capture;
 use capture_types::{
@@ -60,17 +56,14 @@ use tauri::{path::BaseDirectory, Emitter, Manager};
 
 pub use capture_types::IdleDebugInfo;
 use lifecycle::{RecordingLifecycle, StartRecordingLifecycleOutcome};
-use microphone::{
+use app_core::native_capture::microphone::{
     resolve_capture_microphone_device_id, should_wait_for_same_microphone_device,
-    update_microphone_controller as update_microphone_controller_impl,
+    MicrophoneControllerPreferencesState,
 };
-pub use microphone::{
-    start_microphone_device_change_notifier, MicrophoneControllerPreferencesState,
-    MicrophoneDeviceChangeNotifierState,
-};
+use microphone::update_microphone_controller as update_microphone_controller_impl;
+pub use microphone::start_microphone_device_change_notifier;
 use runtime::validate_start_request;
 pub type NativeCaptureState = Mutex<RecordingLifecycle>;
-pub use privacy::PrivacyFilterRefreshState;
 
 #[cfg(target_os = "macos")]
 #[derive(Default)]
@@ -115,6 +108,69 @@ impl MetadataNotifierState {
     pub(crate) fn replace(&self, guards: Vec<()>) {
         *self.0.lock().expect("metadata notifier state poisoned") = guards;
     }
+}
+
+#[cfg(target_os = "macos")]
+pub fn start_metadata_notifier(app_handle: tauri::AppHandle) {
+    use cidre::ns;
+
+    let mut center = ns::Workspace::shared().notification_center();
+    let mut guards = Vec::new();
+    for (notification, reason) in [
+        (
+            ns::workspace::notification::did_activate_app(),
+            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+        ),
+        (
+            ns::workspace::notification::did_deactivate_app(),
+            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+        ),
+        (
+            ns::workspace::notification::active_space_did_change(),
+            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceFocusChanged,
+        ),
+        (
+            ns::workspace::notification::did_launch_app(),
+            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+        ),
+        (
+            ns::workspace::notification::did_terminate_app(),
+            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+        ),
+        (
+            ns::workspace::notification::did_hide_app(),
+            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+        ),
+        (
+            ns::workspace::notification::did_unhide_app(),
+            app_core::native_capture::privacy::PrivacyRefreshReason::WorkspaceAppChanged,
+        ),
+    ] {
+        guards.push(center.add_observer_guard(notification, None, None, {
+            let app_handle = app_handle.clone();
+            move |_notification| {
+                crate::native_capture::privacy::request_privacy_filter_refresh(&app_handle, reason);
+            }
+        }));
+    }
+
+    replace_metadata_notifier_guards(
+        app_handle
+            .state::<crate::native_capture::MetadataNotifierState>()
+            .inner(),
+        guards,
+    );
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_metadata_notifier(_app_handle: tauri::AppHandle) {}
+
+#[cfg(target_os = "macos")]
+fn replace_metadata_notifier_guards(
+    slot: &crate::native_capture::MetadataNotifierState,
+    guards: Vec<cidre::ns::NotificationGuard>,
+) {
+    slot.replace(guards);
 }
 
 pub const SYSTEM_DID_WAKE_EVENT: &str = "system_did_wake";
@@ -229,7 +285,6 @@ impl AppNotificationsRuntime {
 }
 
 pub type AppNotificationsState = Mutex<AppNotificationsRuntime>;
-pub use metadata::{start_metadata_notifier, CaptureMetadataState};
 
 #[tauri::command]
 pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
@@ -2652,7 +2707,7 @@ pub fn open_browser_url_accessibility_settings(app_handle: tauri::AppHandle) -> 
 pub fn get_capture_health(
     app_handle: tauri::AppHandle,
     state: tauri::State<'_, NativeCaptureState>,
-) -> capture_health::CaptureHealthDto {
+) -> app_core::native_capture::capture_health::CaptureHealthDto {
     capture_health::capture_health_snapshot(&state, &app_handle)
 }
 
@@ -3166,12 +3221,12 @@ fn finish_recording_settings_update(
     if metadata_changed {
         privacy::request_privacy_filter_refresh(
             app_handle,
-            privacy::PrivacyRefreshReason::MetadataSettingsMutation,
+            app_core::native_capture::privacy::PrivacyRefreshReason::MetadataSettingsMutation,
         );
     } else if privacy_changed {
         privacy::request_privacy_filter_refresh(
             app_handle,
-            privacy::PrivacyRefreshReason::StaticAppRuleMutation,
+            app_core::native_capture::privacy::PrivacyRefreshReason::StaticAppRuleMutation,
         );
     }
     crate::status_bar::refresh(app_handle);
@@ -3606,8 +3661,11 @@ fn stop_native_capture_with_state(
             return Err(error);
         }
     };
-    if let Some(metadata_state) = app_handle.try_state::<CaptureMetadataState>() {
-        metadata::reset_recording_session_privacy_state(metadata_state.inner());
+    if let Some(metadata_state) = app_handle
+        .state::<std::sync::Arc<app_core::AppCore>>()
+        .try_state::<CaptureMetadataState>()
+    {
+        metadata::reset_recording_session_privacy_state(&metadata_state);
     }
 
     debug_log::log_info(format!(

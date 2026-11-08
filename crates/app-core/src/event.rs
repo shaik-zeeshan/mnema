@@ -11,10 +11,12 @@ use serde_json::Value;
 use crate::app_infra::frame_preview::ScrubPreviewCacheChangedPayload;
 use crate::app_infra::TimelineDataChangedPayload;
 use crate::audio_transcription_models::AudioTranscriptionModelDownloadProgressDto;
+use crate::native_capture::microphone::MicrophoneAutoDisconnectTransitionFailedEvent;
 use crate::ocr_models::OcrModelDownloadProgressDto;
 use crate::speaker_analysis_models::SpeakerAnalysisModelDownloadProgressDto;
 use crate::semantic_search_models::SemanticSearchModelDownloadProgressDto;
 use crate::updates::AppUpdateStatus;
+use capture_types::MicrophoneControllerState;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
@@ -35,8 +37,8 @@ pub enum CoreEvent {
     RecordingSettingsChanged(Value),
     RecordingSettingsDomainChanged(Value),
     AppNotificationsChanged(Value),
-    MicrophoneControllerChanged(Value),
-    MicrophoneAutoDisconnectTransitionFailed(Value),
+    MicrophoneControllerChanged(MicrophoneControllerState),
+    MicrophoneAutoDisconnectTransitionFailed(MicrophoneAutoDisconnectTransitionFailedEvent),
     OpenAppNotifications,
     LicenseStatus(Value),
     LicenseDeepLink(Value),
