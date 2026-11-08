@@ -426,7 +426,7 @@ pub(crate) fn selected_audio_transcription_model_available(
         // ADR 0047: Deepgram availability = an API key is present (the manifest
         // entry is OsManaged, so `detect_model_status` reports it always installed).
         return Ok(deepgram_available_for_enqueue(
-            app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT),
+            app_infra::has_ai_provider_key(app_core::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT),
         ));
     }
 
@@ -1166,7 +1166,7 @@ fn model_status_dto(
         // ADR 0047: availability = API key present. The OsManaged entry reports
         // always-installed, so key presence is the real gate.
         let (deepgram_available, deepgram_failure) = deepgram_status_fields(
-            app_infra::has_ai_provider_key(crate::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT),
+            app_infra::has_ai_provider_key(app_core::transcription_deepgram::DEEPGRAM_KEY_ACCOUNT),
         );
         available = deepgram_available;
         if failure_message.is_none() {

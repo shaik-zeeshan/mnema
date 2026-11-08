@@ -9,11 +9,11 @@
 //! `Revoked`/Read-Only is live (capture stops at the next seam and the
 //! in-flight segment commits normally).
 
-use tauri::Manager;
+use std::sync::Arc;
 
-use app_core::AppInfraState;
-use app_core::licensing::adapter;
-use app_core::debug_log;
+use crate::debug_log;
+use crate::licensing::adapter;
+use crate::{AppCore, AppInfraState};
 
 /// CI-baked fresh-install floor: release CI fetches the live prod CRL
 /// (`https://license.mnema.day/v1/crl/mnema`) and exports the signed wire as
@@ -30,33 +30,37 @@ fn baked_floor_wire() -> Option<&'static str> {
 /// Fire-and-forget: seed the baked floor into the cache (same monotonic accept
 /// as a fetch, so it never downgrades a newer cache), then one fetch + apply.
 /// Never blocks the caller.
-pub fn spawn_crl_refresh(app_handle: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
+pub fn spawn_crl_refresh(core: Arc<AppCore>) {
+    let task_core = Arc::clone(&core);
+    core.spawn(async move {
+        let core = task_core;
         if let Some(wire) = baked_floor_wire() {
-            apply_candidate(&app_handle, wire, "baked floor").await;
+            apply_candidate(&core, wire, "baked floor").await;
         }
-        refresh_once(app_handle).await;
+        refresh_once(core).await;
     });
 }
 
 /// Refresh every 24h. Mnema runs 24/7, so launch-only checks could lag weeks.
-pub fn start_daily_crl_timer(app_handle: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
+pub fn start_daily_crl_timer(core: Arc<AppCore>) {
+    let task_core = Arc::clone(&core);
+    core.spawn(async move {
+        let core = task_core;
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(24 * 60 * 60));
         // The first tick fires immediately; startup already did an initial
         // fetch, so consume it and only act on subsequent daily ticks.
         interval.tick().await;
         loop {
             interval.tick().await;
-            refresh_once(app_handle.clone()).await;
+            refresh_once(core.clone()).await;
             // Piggyback the daily tick to retry once-per-machine activation
             // (no-op once a receipt is stored, or when there's nothing to activate).
-            crate::licensing::maybe_spawn_activation(&app_handle);
+            crate::licensing::maybe_spawn_activation(&core);
         }
     });
 }
 
-async fn refresh_once(app_handle: tauri::AppHandle) {
+async fn refresh_once(core: Arc<AppCore>) {
     // Anonymous GET — fetch_crl sends no auth header and no identifier.
     let wire = match adapter::client().fetch_crl(adapter::product_slug()).await {
         Ok(wire) => wire,
@@ -65,7 +69,7 @@ async fn refresh_once(app_handle: tauri::AppHandle) {
             return;
         }
     };
-    apply_candidate(&app_handle, &wire, "fetched").await;
+    apply_candidate(&core, &wire, "fetched").await;
 }
 
 /// Serializes load → supersedes → store so concurrent appliers (startup spawn,
@@ -80,12 +84,12 @@ static CRL_APPLY_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(()
 /// Verify one candidate wire, gate it on monotonic freshness against the
 /// cache, store it verbatim, and recompute the license gate so a newly-revoked
 /// active key flips to Read-Only live. Any failure keeps the cache.
-async fn apply_candidate(app_handle: &tauri::AppHandle, wire: &str, source: &str) {
+async fn apply_candidate(core: &AppCore, wire: &str, source: &str) {
     let _guard = CRL_APPLY_LOCK.lock().await;
-    let Some(infra) = app_handle.try_state::<AppInfraState>() else {
+    let Some(infra) = core.try_state::<AppInfraState>() else {
         return;
     };
-    let infra = infra.inner().clone();
+    let infra = (*infra).clone();
     let pool = infra.pool();
 
     let Some(candidate) = crate::licensing::verify_crl_wire(wire) else {
@@ -111,7 +115,7 @@ async fn apply_candidate(app_handle: &tauri::AppHandle, wire: &str, source: &str
         candidate.issued_at,
         candidate.revoked_license_ids.len()
     ));
-    crate::licensing::compute_license_status(pool, app_handle, crate::licensing::now_ms()).await;
+    crate::licensing::compute_license_status(pool, core, crate::licensing::now_ms()).await;
 }
 
 /// Whether a verified candidate replaces the cached wire: yes when the cache

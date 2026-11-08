@@ -15,7 +15,7 @@ use serde::Serialize;
 use tauri::Manager;
 
 use crate::app_infra::StartupReport;
-use crate::debug_status::{
+use app_core::debug_status::{
     get_semantic_index_status, SemanticIndexStatusDto, SemanticWorkerHealthState,
 };
 use crate::native_capture::capture_health::{capture_health_snapshot, CaptureHealthDto};
@@ -284,7 +284,7 @@ pub async fn get_debug_health(
         .processing_pipeline_status()
         .await
         .map_err(|error| format!("failed to read processing pipeline status: {error}"))?;
-    let semantic = get_semantic_index_status(infra.clone(), worker_health).await?;
+    let semantic = get_semantic_index_status(infra.inner(), worker_health.inner()).await?;
     let startup = crate::app_infra::startup_report();
     let now = now_ms();
 

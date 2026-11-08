@@ -304,10 +304,11 @@ fn current_model(app: &tauri::AppHandle) -> StatusBarMenuModel {
     );
     // `cached_status` is `None` until the deferred license gate runs once; unknown
     // reads as allow (never lock the tray on unknown).
-    let status = crate::licensing::cached_status(app);
+    let status =
+        app_core::licensing::cached_status(&app.state::<std::sync::Arc<app_core::AppCore>>());
     let blocked = status
         .as_ref()
-        .is_some_and(|status| !status.capture_allowed_at(crate::licensing::now_ms()));
+        .is_some_and(|status| !status.capture_allowed_at(app_core::licensing::now_ms()));
     apply_read_only_status(&mut model, blocked, status.as_ref());
     model.update_item = crate::app_updates::tray_update_item(app);
     model

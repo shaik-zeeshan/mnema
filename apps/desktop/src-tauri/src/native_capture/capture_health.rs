@@ -12,9 +12,9 @@ use capture_microphone as microphone_capture;
 use serde::Serialize;
 use tauri::Manager;
 
-use super::disk_space::{self, RESERVE_FLOOR_BYTES};
 use super::runtime::NativeCaptureRuntime;
 use super::NativeCaptureState;
+use app_core::disk_space::{self, RESERVE_FLOOR_BYTES};
 
 /// A system-audio rebuild this recent reads as "reconnecting". A tunable
 /// ceiling: a rebuild finishes inside one tick, so this is how long the lane

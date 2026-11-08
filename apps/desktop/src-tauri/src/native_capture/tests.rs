@@ -10716,7 +10716,7 @@ fn browser_url_accessibility_status_lists_only_gecko_browsers() {
 #[cfg(target_os = "macos")]
 mod low_disk {
     use super::*;
-    use crate::native_capture::disk_space;
+    use app_core::disk_space;
 
     thread_local! {
         static SCRIPTED_FREE_BYTES: std::cell::RefCell<Vec<u64>> =

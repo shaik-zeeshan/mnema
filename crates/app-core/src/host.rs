@@ -13,7 +13,9 @@ pub trait Host: Send + Sync + 'static {
     fn message(&self, req: MessageDialog);
     /// Ask the user to confirm. Resolves `true` on OK; a dropped sender reads as cancel.
     fn confirm(&self, req: ConfirmDialog) -> oneshot::Receiver<bool>;
-    fn open_url(&self, url: &str);
+    /// Open a URL, or an absolute file/folder path (starts with `/`) with its default app.
+    /// `Err` carries the OS's reason when the host can tell synchronously.
+    fn open_url(&self, target: &str) -> Result<(), String>;
     /// Rebuild the status-bar menu from current state.
     fn refresh_tray(&self);
     fn open_window(&self, req: WindowRequest);

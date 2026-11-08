@@ -12,10 +12,11 @@ use crate::{
     WindowSignal,
 };
 
-/// Records every emit; confirms answer yes; everything else is a no-op.
+/// Records every emit and opened URL; confirms answer yes; everything else is a no-op.
 #[derive(Default)]
 pub(crate) struct FakeHost {
     pub(crate) events: Mutex<Vec<CoreEvent>>,
+    pub(crate) opened_urls: Mutex<Vec<String>>,
 }
 
 impl Host for FakeHost {
@@ -28,7 +29,10 @@ impl Host for FakeHost {
         let _ = tx.send(true);
         rx
     }
-    fn open_url(&self, _url: &str) {}
+    fn open_url(&self, url: &str) -> Result<(), String> {
+        self.opened_urls.lock().unwrap().push(url.to_string());
+        Ok(())
+    }
     fn refresh_tray(&self) {}
     fn open_window(&self, _req: WindowRequest) {}
     fn window_signal(&self, _signal: WindowSignal) {}
@@ -44,4 +48,21 @@ pub(crate) fn core_in(host: Arc<FakeHost>, dir: &Path) -> AppCore {
         log: dir.join("log"),
     };
     AppCore::new(host, paths).expect("runtime starts")
+}
+
+/// Pins the process-global secret vault slot to one shared, file-key-backed
+/// scratch vault so tests of the `app_infra` secret store never touch the real
+/// keychain. One per test process (the slot is process-wide), so tests must use
+/// accounts/ids unique to themselves. Same as the desktop crate's copy.
+pub(crate) fn install_shared_test_secret_vault() {
+    static INSTALLED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    INSTALLED.get_or_init(|| {
+        let dir =
+            std::env::temp_dir().join(format!("mnema-app-core-test-vault-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("shared test vault dir should be created");
+        app_infra::install_process_secret_vault(app_infra::SecretVaultHandle::with_source(
+            &dir,
+            Arc::new(app_infra::FileMasterKeySource::new(dir.join("master.key"))),
+        ));
+    });
 }

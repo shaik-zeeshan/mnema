@@ -616,9 +616,9 @@ async fn live_resolve_failure_surfaces(force: bool) {
     // no network involved.
     let provider_id = format!("chatgpt-digest-live-resolve-{unique}");
     crate::secret_vault_test_support::install_shared_test_secret_vault();
-    crate::chatgpt_auth::store_token_set(
+    app_core::chatgpt_auth::store_token_set(
         &provider_id,
-        &crate::chatgpt_auth::ChatgptTokenSet {
+        &app_core::chatgpt_auth::ChatgptTokenSet {
             access_token: "expired-access-token".to_string(),
             refresh_token: None,
             expires_at: Some(0),

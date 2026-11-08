@@ -3,7 +3,6 @@ pub(crate) mod capture_health;
 #[cfg(target_os = "macos")]
 #[path = "native_capture_browser_url_ax.rs"]
 pub(crate) mod browser_url_ax;
-pub(crate) mod disk_space;
 mod lifecycle;
 #[path = "native_capture_metadata.rs"]
 pub(crate) mod metadata;
@@ -2313,16 +2312,19 @@ fn start_native_capture_inner(
     // there is nothing to stamp. Fire-and-forget off the DB pool, matching the
     // spawn pattern used elsewhere in this file.
     if !matches!(
-        crate::licensing::cached_status(&app_handle),
+        app_core::licensing::cached_status(&app_handle.state::<std::sync::Arc<app_core::AppCore>>()),
         Some(capture_types::LicenseStatus::Licensed { .. })
     ) {
         if let Some(infra) = app_handle.try_state::<app_core::AppInfraState>() {
             let infra = std::sync::Arc::clone(&*infra);
-            let trial_app_handle = app_handle.clone();
+            let trial_core = app_handle
+                .state::<std::sync::Arc<app_core::AppCore>>()
+                .inner()
+                .clone();
             tauri::async_runtime::spawn(async move {
-                crate::licensing::ensure_trial_started(
+                app_core::licensing::ensure_trial_started(
                     infra.pool(),
-                    &trial_app_handle,
+                    &trial_core,
                     runtime::now_unix_ms() as i64,
                 )
                 .await;
@@ -2434,10 +2436,12 @@ pub struct SystemAudioAccessHint {
 /// dismissible rather than blocking.
 #[tauri::command]
 pub fn get_system_audio_access_hint(app_handle: tauri::AppHandle) -> SystemAudioAccessHint {
-    let dismissed = crate::one_time_prompts::current_state(&app_handle)
-        .prompts
-        .get(SYSTEM_AUDIO_BLOCKED_PROMPT_ID)
-        .is_some_and(|record| record.dismissed_at.is_some());
+    let dismissed = app_core::one_time_prompts::current_state(
+        &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+    )
+    .prompts
+    .get(SYSTEM_AUDIO_BLOCKED_PROMPT_ID)
+    .is_some_and(|record| record.dismissed_at.is_some());
     // Evidence outlives the switch: a user who turned system audio off after a
     // silent session must not keep being warned about a source they no longer
     // record.

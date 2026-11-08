@@ -69,6 +69,9 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
         }
         // Surface entities subscribe to theirs as S8+ land.
         HostMsg::Event(_) => {}
+        HostMsg::OpenUrl(target) if target.starts_with('/') => {
+            cx.open_with_system(std::path::Path::new(&target))
+        }
         HostMsg::OpenUrl(url) => cx.open_url(&url),
         HostMsg::Exit(ExitKind::Quit) => cx.quit(),
         HostMsg::Exit(ExitKind::Restart) => cx.restart(),

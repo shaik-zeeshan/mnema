@@ -180,13 +180,13 @@ pub struct NativeCaptureRuntime {
     pub capture_suspension: Option<CaptureSuspension>,
     /// Injectable free-space probe used by the low-disk preflight, the rotation
     /// boundary check, and the suspension recovery driver. `None` means "use the
-    /// production default" ([`super::disk_space::default_free_space_probe`], which
+    /// production default" ([`app_core::disk_space::default_free_space_probe`], which
     /// reads `fs2::available_space`); tests set a scripted probe so the
     /// suspend/resume logic is exercisable without a real full disk. Kept as an
     /// `Option` so the struct keeps deriving `Default` (a bare `fn` pointer does
     /// not implement `Default`).
     #[cfg(target_os = "macos")]
-    pub free_space_probe: Option<super::disk_space::FreeSpaceProbe>,
+    pub free_space_probe: Option<app_core::disk_space::FreeSpaceProbe>,
     /// Injectable "is the Mac away" probe, read wherever the microphone could
     /// open: `None` means the live lock and display state
     /// ([`super::microphone_away::mac_is_away`]). Tests script it, since they can lock
@@ -213,9 +213,9 @@ impl NativeCaptureRuntime {
     /// Resolve the effective free-space probe: the injected one if a test set it,
     /// otherwise the production default. Kept here so the `None`-means-default
     /// convention lives in one place.
-    pub(super) fn free_space_probe(&self) -> super::disk_space::FreeSpaceProbe {
+    pub(super) fn free_space_probe(&self) -> app_core::disk_space::FreeSpaceProbe {
         self.free_space_probe
-            .unwrap_or(super::disk_space::default_free_space_probe)
+            .unwrap_or(app_core::disk_space::default_free_space_probe)
     }
 }
 

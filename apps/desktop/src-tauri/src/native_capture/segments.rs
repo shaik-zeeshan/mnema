@@ -4,7 +4,8 @@ use app_core::native_capture_output::{
     set_current_system_audio_output_file, strip_live_system_audio_output_file,
 };
 use app_core::recording_settings::compute_effective_screen_bitrate_bps;
-use super::{disk_space, metadata, privacy};
+use super::{metadata, privacy};
+use app_core::disk_space;
 use capture_microphone as microphone_capture;
 use capture_runtime::{
     parse_audio_restart_started_at_unix_ms, CaptureClock, RuntimeController, RuntimeSignal,
@@ -5572,7 +5573,7 @@ pub(super) fn start_capture_runtime(
                 None
             };
             let recordings_root =
-                crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+                app_core::managed_storage_layout::ManagedStorageLayout::from_save_directory(
                     &settings.save_directory,
                 )
                 .recordings_root();

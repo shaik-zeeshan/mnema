@@ -4,7 +4,7 @@
 //! refresh half stays in the parent module.
 
 use super::*;
-use tauri::Emitter;
+use crate::{AppCore, CoreEvent};
 
 #[derive(Debug, Deserialize)]
 pub(super) struct DeviceCodeResponse {
@@ -66,7 +66,7 @@ pub(super) struct ChatgptLoginUpdate {
 /// one `chatgpt_login_update` event; a login superseded by a newer
 /// `begin_login` for the same provider emits nothing.
 pub async fn begin_login(
-    app: tauri::AppHandle,
+    core: &AppCore,
     provider_id: String,
 ) -> Result<ChatgptLoginPrompt, String> {
     // Reserve this login's generation BEFORE the device-code round trip, not
@@ -108,14 +108,15 @@ pub async fn begin_login(
         verify_url: DEVICE_VERIFY_URL.to_string(),
     };
 
-    tauri::async_runtime::spawn(async move {
+    let host = core.host().clone();
+    core.spawn(async move {
         let outcome = poll_and_store(&client, &device, &provider_id, generation).await;
         if !login_generation_is_current(&provider_id, generation) {
             return;
         }
         let update = match outcome {
             Ok(()) => {
-                tauri_plugin_log::log::info!("chatgpt-auth: {provider_id} connected");
+                log::info!("chatgpt-auth: {provider_id} connected");
                 ChatgptLoginUpdate {
                     provider_id: provider_id.clone(),
                     connected: true,
@@ -123,7 +124,7 @@ pub async fn begin_login(
                 }
             }
             Err(error) => {
-                tauri_plugin_log::log::error!(
+                log::error!(
                     "chatgpt-auth: login for {provider_id} failed: {}",
                     super::oauth_failure_log_kind(&error)
                 );
@@ -134,8 +135,9 @@ pub async fn begin_login(
                 }
             }
         };
-        if let Err(error) = app.emit("chatgpt_login_update", &update) {
-            tauri_plugin_log::log::warn!("chatgpt-auth: emitting login update failed: {error}");
+        match serde_json::to_value(&update) {
+            Ok(payload) => host.emit(CoreEvent::ChatgptLoginUpdate(payload)),
+            Err(error) => log::warn!("chatgpt-auth: emitting login update failed: {error}"),
         }
     });
 
@@ -269,9 +271,10 @@ async fn sleep_until_next_poll(
 /// The code-for-token exchange, injected for the same reason [`RefreshCall`]
 /// is: it is the only network hop between "the user approved" and "the vault
 /// holds a token set", so without a seam the whole login path is untestable.
-type ExchangeCall = fn(
-    DeviceTokenResponse,
-) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, OAuthError>> + Send>>;
+type ExchangeCall =
+    fn(
+        DeviceTokenResponse,
+    ) -> Pin<Box<dyn Future<Output = Result<OAuthTokenResponse, OAuthError>> + Send>>;
 
 fn exchange_authorization_code(
     code: DeviceTokenResponse,
@@ -315,7 +318,7 @@ async fn exchange_with_retry(
         match exchange(code.clone()).await {
             Ok(tokens) => return Ok(tokens),
             Err(error) if error.transient => {
-                tauri_plugin_log::log::warn!(
+                log::warn!(
                     "chatgpt-auth: the code exchange did not reach OpenAI (attempt {attempt}): {}",
                     super::oauth_failure_log_kind(&error.message)
                 );
@@ -413,7 +416,9 @@ pub(super) fn persist_token_set_if_current(
     // The generation lock is held across the vault write, so a concurrent
     // disconnect either bumps first (we skip) or clears afterwards — it can
     // never interleave into "cleared, then written back".
-    let map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
+    let map = LOGIN_GENERATIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     if map
         .as_ref()
         .and_then(|m| m.get(provider_id))
@@ -421,9 +426,7 @@ pub(super) fn persist_token_set_if_current(
         .unwrap_or(0)
         != generation
     {
-        tauri_plugin_log::log::debug!(
-            "chatgpt-auth: dropping a token set from a superseded login for {provider_id}"
-        );
+        log::debug!("chatgpt-auth: dropping a token set from a superseded login for {provider_id}");
         return Ok(());
     }
     store_token_set(provider_id, set)

@@ -88,6 +88,10 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
     - GPUI can't blur inside a window (titlebar 82% + blur 20);
     - GPUI has no letter-spacing (kicker 0.12em).
   - The `terminate:` swizzle lives at git f45ddec5 `apps/desktop-gpui/src/spike/native.rs`, for S7.
+- **S2 B2 + B5 merged:**
+  - B5 left `broker_authorization_channel` for B6 (see the B6 seams).
+  - `Host::open_url` now returns `Result` and opens absolute paths with `open_path`. This fixes a B2 regression where "open log" lost its error toast.
+  - app-core now depends on `global-hotkey 0.7` (the Tauri plugin's version) for shortcut validation, while the GPUI app pins 0.9. Reconcile in S7: app-core validates strings, and each host converts.
 
 ## T0 · Tooling (orchestrator, before S0)
 
@@ -259,7 +263,10 @@ Also add a test that every `CoreEvent` variant maps to exactly its old event nam
   - crl_refresh;
   - broker_authorization_channel (`windows` → `Host::open_window`);
   - the keyboard_bindings model (parse, validate, persist; registration stays host-side).
-- **B6:** app_infra (+frame_preview, quick_recall) and cli_access. `windows::is_graceful_exit_in_progress` and `shutdown_background_workers_for_app_exit` go behind AppCore's exit coordinator.
+- **B6:** app_infra (+frame_preview, quick_recall) and cli_access, plus `broker_authorization_channel` (deferred from B5) with these seams (orchestrator ruling, 2026-11-08):
+  - `Host::open_window` returns `Result<(), String>`, so a failed open cancels the request as `closed`, as today;
+  - `WindowSignal::CloseCliAccessRequest` → the Tauri host `destroy()`s the window (not `close()`, which would fire the CloseRequested cancel);
+  - `OnboardingStateStore` (+ `current_onboarding_state_for_app`) moves out of `windows.rs` into app-core state instead of becoming a host query. `windows::is_graceful_exit_in_progress` and `shutdown_background_workers_for_app_exit` go behind AppCore's exit coordinator.
 
 Each module's moves:
 - `&AppHandle` → `&AppCore`;

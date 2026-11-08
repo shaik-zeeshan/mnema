@@ -8,9 +8,12 @@
 //! lapsed background cadence (`receipt_refresh`) covers the rest.
 
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use capture_types::LicenseStatus;
+
+use crate::AppCore;
 
 /// Dedup for the poll loop: the `renewed` deep link is web-fireable at zero
 /// cost, and stacked loops could rate-limit us against the server (ADR 0055).
@@ -33,13 +36,13 @@ fn window_open(status: Option<&LicenseStatus>) -> bool {
     )
 }
 
-/// Renewed deep-link entry point (spawned by `dispatch_deep_link` in
-/// `lib.rs`). Success surfaces through the recomputed status /
+/// Renewed deep-link entry point (spawned by the host's deep-link
+/// dispatch). Success surfaces through the recomputed status /
 /// `license_status` event — the extended window shows up in Settings with
 /// nothing to paste.
-pub async fn renewed_from_deep_link(app_handle: tauri::AppHandle) {
+pub async fn renewed_from_deep_link(core: Arc<AppCore>) {
     if POLL_RUNNING.swap(true, Ordering::AcqRel) {
-        tauri_plugin_log::log::debug!(target: "mnema_lib::licensing", "renewed deep link: poll already running, ignoring");
+        log::debug!(target: "mnema_lib::licensing", "renewed deep link: poll already running, ignoring");
         return;
     }
     struct Reset;
@@ -50,19 +53,19 @@ pub async fn renewed_from_deep_link(app_handle: tauri::AppHandle) {
     }
     let _reset = Reset;
     for attempt in 1..=RENEWED_POLL_ATTEMPTS {
-        let reached = super::activation::refresh_receipt(app_handle.clone()).await;
-        if window_open(super::cached_status(&app_handle).as_ref()) {
-            tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "renewed deep link: update window open after {attempt} refresh attempt(s)");
+        let reached = super::activation::refresh_receipt(core.clone()).await;
+        if window_open(super::cached_status(&core).as_ref()) {
+            log::info!(target: "mnema_lib::licensing", "renewed deep link: update window open after {attempt} refresh attempt(s)");
             return;
         }
-        tauri_plugin_log::log::debug!(target: "mnema_lib::licensing", "renewed deep link: attempt {attempt}/{RENEWED_POLL_ATTEMPTS}, window still closed (server reached: {reached})");
+        log::debug!(target: "mnema_lib::licensing", "renewed deep link: attempt {attempt}/{RENEWED_POLL_ATTEMPTS}, window still closed (server reached: {reached})");
         if attempt < RENEWED_POLL_ATTEMPTS {
             tokio::time::sleep(RENEWED_POLL_INTERVAL).await;
         }
     }
-    tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "renewed deep link: window still closed after {RENEWED_POLL_ATTEMPTS} attempts; the background cadence takes over");
+    log::info!(target: "mnema_lib::licensing", "renewed deep link: window still closed after {RENEWED_POLL_ATTEMPTS} attempts; the background cadence takes over");
     super::emit_deep_link_done(
-        &app_handle,
+        &core,
         "failed",
         Some(
             "We couldn't confirm your renewal yet — it will apply automatically \

@@ -8,11 +8,10 @@
 
 use std::time::Duration;
 
-use tauri::Manager;
-use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+use std::sync::Arc;
 
-use app_core::licensing::adapter;
-use app_core::AppInfraState;
+use super::adapter;
+use crate::{AppCore, AppInfraState, DialogKind, MessageDialog};
 
 /// Poll budget: the Polar webhook usually lands within seconds; 15 × 2s ≈ 30s
 /// covers the lag without holding a task open toward the 30-day claim window —
@@ -57,14 +56,14 @@ fn classify_claim(
     }
 }
 
-/// Claim deep-link entry point (spawned by `dispatch_deep_link` in `lib.rs`).
+/// Claim deep-link entry point (spawned by the host's deep-link dispatch).
 /// Success surfaces through the recomputed status / `license_status` event —
 /// the UI flips to Licensed with no paste; the fallback is the email dialog.
-pub async fn claim_from_deep_link(app_handle: tauri::AppHandle, checkout_id: String) {
-    let Some(state) = app_handle.try_state::<AppInfraState>() else {
+pub async fn claim_from_deep_link(core: Arc<AppCore>, checkout_id: String) {
+    let Some(state) = core.try_state::<AppInfraState>() else {
         return;
     };
-    let infra = std::sync::Arc::clone(&*state);
+    let infra = Arc::clone(&*state);
     let pool = infra.pool();
 
     for attempt in 1..=CLAIM_POLL_ATTEMPTS {
@@ -74,34 +73,34 @@ pub async fn claim_from_deep_link(app_handle: tauri::AppHandle, checkout_id: Str
                 // a different, healthy license asks first (CONTEXT.md
                 // 2026-07-18). Declining is a deliberate stop, not the email
                 // fallback.
-                if super::deep_link_replacement_needs_confirm(&app_handle, &key)
-                    && !super::confirm_license_replacement(&app_handle).await
+                if super::deep_link_replacement_needs_confirm(&core, &key)
+                    && !super::confirm_license_replacement(&core).await
                 {
-                    tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "claim license replacement declined by the user");
-                    super::emit_deep_link_done(&app_handle, "closed", None);
+                    log::info!(target: "mnema_lib::licensing", "claim license replacement declined by the user");
+                    super::emit_deep_link_done(&core, "closed", None);
                     return;
                 }
                 // Same chain as a paste: verify+vet → store → first_seen stamp
                 // → recompute → background activation (non-macOS installs the
                 // key too; activation there is a no-op that maps to Activated).
-                match super::install_license_key(pool, &app_handle, &key).await {
+                match super::install_license_key(pool, &core, &key).await {
                     Ok(_) => {
-                        tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "claim delivered the license key; installed and chaining activation");
+                        log::info!(target: "mnema_lib::licensing", "claim delivered the license key; installed and chaining activation");
                         return;
                     }
                     Err(error) => {
                         // The server minted a key this build rejects (revoked,
                         // or product/config mismatch): retrying won't help.
-                        tauri_plugin_log::log::error!(target: "mnema_lib::licensing", "claimed key could not be installed: {error}");
+                        log::error!(target: "mnema_lib::licensing", "claimed key could not be installed: {error}");
                         break;
                     }
                 }
             }
             ClaimDisposition::KeepPolling { reason } => {
-                tauri_plugin_log::log::debug!(target: "mnema_lib::licensing", "claim attempt {attempt}/{CLAIM_POLL_ATTEMPTS}: {reason}");
+                log::debug!(target: "mnema_lib::licensing", "claim attempt {attempt}/{CLAIM_POLL_ATTEMPTS}: {reason}");
             }
             ClaimDisposition::GiveUp { reason } => {
-                tauri_plugin_log::log::error!(target: "mnema_lib::licensing", "claim gave up: {reason} (from {})", adapter::base_url());
+                log::error!(target: "mnema_lib::licensing", "claim gave up: {reason} (from {})", adapter::base_url());
                 break;
             }
         }
@@ -111,22 +110,20 @@ pub async fn claim_from_deep_link(app_handle: tauri::AppHandle, checkout_id: Str
     }
     // The native dialog is the surface here; the receipt modal just stops
     // spinning instead of duplicating it.
-    super::emit_deep_link_done(&app_handle, "closed", None);
-    email_fallback_dialog(&app_handle);
+    super::emit_deep_link_done(&core, "closed", None);
+    email_fallback_dialog(&core);
 }
 
 /// The durable fallback: every purchase emails the key, so a claim that never
 /// resolves inside the poll budget is a "check your email" note, not an error.
-fn email_fallback_dialog(app_handle: &tauri::AppHandle) {
-    app_handle
-        .dialog()
-        .message(
-            "Thanks for your purchase! We couldn't fetch your license key automatically yet — \
-             it's on its way to your email. Paste it in Settings → License when it arrives.",
-        )
-        .kind(MessageDialogKind::Info)
-        .title("Check your email for the key")
-        .show(|_| {});
+fn email_fallback_dialog(core: &AppCore) {
+    core.host().message(MessageDialog {
+        title: "Check your email for the key".to_string(),
+        message: "Thanks for your purchase! We couldn't fetch your license key automatically yet — \
+             it's on its way to your email. Paste it in Settings → License when it arrives."
+            .to_string(),
+        kind: DialogKind::Info,
+    });
 }
 
 #[cfg(test)]

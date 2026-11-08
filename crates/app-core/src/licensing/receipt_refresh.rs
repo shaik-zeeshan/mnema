@@ -9,12 +9,12 @@
 //! receipt's own `update_through` (lapse instant = window end), which the
 //! computed status already carries as `update_through_ms`.
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use capture_types::LicenseStatus;
-use tauri::Manager;
 
-use app_core::AppInfraState;
+use crate::{AppCore, AppInfraState};
 
 /// First 14 days after lapse: renewals cluster near lapse.
 const DENSE_LAPSE_MS: i64 = 14 * 24 * 60 * 60 * 1000;
@@ -28,20 +28,22 @@ const IDLE_RECHECK: Duration = DENSE_INTERVAL;
 /// Started once from deferred startup, beside the daily CRL timer. Consults
 /// the current computed status on EVERY tick decision; a heal during the
 /// sleep stops the refresh.
-pub fn start_receipt_refresh_timer(app_handle: tauri::AppHandle) {
-    tauri::async_runtime::spawn(async move {
+pub fn start_receipt_refresh_timer(core: Arc<AppCore>) {
+    let task_core = Arc::clone(&core);
+    core.spawn(async move {
+        let core = task_core;
         loop {
-            let Some(interval) = tick_decision(&app_handle).await else {
+            let Some(interval) = tick_decision(&core).await else {
                 tokio::time::sleep(IDLE_RECHECK).await;
                 continue;
             };
-            tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "receipt refresh scheduled in {}h (update window lapsed)", interval.as_secs() / 3600);
+            log::info!(target: "mnema_lib::licensing", "receipt refresh scheduled in {}h (update window lapsed)", interval.as_secs() / 3600);
             tokio::time::sleep(interval).await;
-            if tick_decision(&app_handle).await.is_some() {
-                tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "receipt refresh tick: update window still lapsed, re-activating");
-                super::activation::refresh_receipt(app_handle.clone()).await;
+            if tick_decision(&core).await.is_some() {
+                log::info!(target: "mnema_lib::licensing", "receipt refresh tick: update window still lapsed, re-activating");
+                super::activation::refresh_receipt(core.clone()).await;
             } else {
-                tauri_plugin_log::log::debug!(target: "mnema_lib::licensing", "receipt refresh tick skipped: no longer lapsed");
+                log::debug!(target: "mnema_lib::licensing", "receipt refresh tick skipped: no longer lapsed");
             }
         }
     });
@@ -50,10 +52,10 @@ pub fn start_receipt_refresh_timer(app_handle: tauri::AppHandle) {
 /// One tick decision: recompute the status (fresh, not the cache — nothing
 /// else recomputes when the window lapses on a quietly running machine) and
 /// pick the cadence. `None` = do not refresh.
-async fn tick_decision(app_handle: &tauri::AppHandle) -> Option<Duration> {
-    let infra = app_handle.try_state::<AppInfraState>()?.inner().clone();
+async fn tick_decision(core: &AppCore) -> Option<Duration> {
+    let infra = (*core.try_state::<AppInfraState>()?).clone();
     let now = super::now_ms();
-    let status = super::compute_license_status(infra.pool(), app_handle, now).await;
+    let status = super::compute_license_status(infra.pool(), core, now).await;
     let has_receipt = app_infra::load_activation_receipt().ok().flatten().is_some();
     cadence_interval(&status, has_receipt, now)
 }

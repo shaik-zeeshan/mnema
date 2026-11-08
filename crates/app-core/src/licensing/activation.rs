@@ -7,32 +7,30 @@
 //! license's extended dates land in a fresh receipt. A failed refresh changes
 //! nothing — the stored receipt stays; refresh can only improve state.
 
-use tauri::Manager;
+use std::sync::Arc;
 
-use super::{ensure_first_seen, is_key_revoked, load_effective_crl, now_ms};
-use app_core::licensing::adapter;
-use app_core::AppInfraState;
+use super::{adapter, ensure_first_seen, is_key_revoked, load_effective_crl, now_ms};
 use crate::licensing::ActivationHint;
+use crate::{AppCore, AppInfraState};
 
-fn set_over_cap_hint(app_handle: &tauri::AppHandle, reset_url: String, buy_url: String) {
-    if let Some(hint) = app_handle.try_state::<ActivationHint>() {
+fn set_over_cap_hint(core: &AppCore, reset_url: String, buy_url: String) {
+    if let Some(hint) = core.try_state::<ActivationHint>() {
         if let Ok(mut slot) = hint.0.lock() {
             *slot = Some((reset_url, buy_url));
         }
     }
 }
 
-fn clear_over_cap_hint(app_handle: &tauri::AppHandle) {
-    if let Some(hint) = app_handle.try_state::<ActivationHint>() {
+fn clear_over_cap_hint(core: &AppCore) {
+    if let Some(hint) = core.try_state::<ActivationHint>() {
         if let Ok(mut slot) = hint.0.lock() {
             *slot = None;
         }
     }
 }
 
-pub(super) fn read_over_cap_hint(app_handle: &tauri::AppHandle) -> Option<(String, String)> {
-    app_handle
-        .try_state::<ActivationHint>()
+pub(super) fn read_over_cap_hint(core: &AppCore) -> Option<(String, String)> {
+    core.try_state::<ActivationHint>()
         .and_then(|hint| hint.0.lock().ok().and_then(|slot| slot.clone()))
 }
 
@@ -40,21 +38,22 @@ pub(super) fn read_over_cap_hint(app_handle: &tauri::AppHandle) -> Option<(Strin
 /// no-op (already activated, no key and no pending trial, or revoked) just
 /// returns early inside the task. Safe to call repeatedly — the daily CRL tick
 /// and the capture-refusal recompute do.
-pub(crate) fn maybe_spawn_activation(app_handle: &tauri::AppHandle) {
-    let app_handle = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
+pub fn maybe_spawn_activation(core: &Arc<AppCore>) {
+    let task_core = Arc::clone(core);
+    core.spawn(async move {
+        let core = task_core;
         // Keyless with a pending trial issuance: retry the mint first (it
         // chains activation itself). This is how issuance retries piggyback
         // the launch gate, the daily CRL tick, and refused capture starts.
         if super::trial::pending_issuance() {
-            let Some(state) = app_handle.try_state::<AppInfraState>() else {
+            let Some(state) = core.try_state::<AppInfraState>() else {
                 return;
             };
-            let infra = std::sync::Arc::clone(&*state);
-            super::trial::ensure_trial_started(infra.pool(), &app_handle, now_ms()).await;
+            let infra = Arc::clone(&*state);
+            super::trial::ensure_trial_started(infra.pool(), &core, now_ms()).await;
             return;
         }
-        run_activation(app_handle).await;
+        run_activation(core).await;
     });
 }
 
@@ -124,8 +123,8 @@ fn skip_network(already_activated: bool, forced_refresh: bool) -> bool {
     already_activated && !forced_refresh
 }
 
-pub(super) async fn run_activation(app_handle: tauri::AppHandle) {
-    activate_machine(app_handle, false).await;
+pub(super) async fn run_activation(core: Arc<AppCore>) {
+    activate_machine(core, false).await;
 }
 
 /// Receipt Refresh (ADR 0055): forced re-activation — always calls `activate`,
@@ -135,8 +134,8 @@ pub(super) async fn run_activation(app_handle: tauri::AppHandle) {
 /// failure (offline/`Retry` disposition) so the manual button can say
 /// "failed to reach the server"; any definitive answer — or nothing to
 /// refresh — is `true`.
-pub(crate) async fn refresh_receipt(app_handle: tauri::AppHandle) -> bool {
-    activate_machine(app_handle, true).await
+pub(crate) async fn refresh_receipt(core: Arc<AppCore>) -> bool {
+    activate_machine(core, true).await
 }
 
 /// The shared activation core behind both entry points. `forced_refresh`
@@ -145,16 +144,16 @@ pub(crate) async fn refresh_receipt(app_handle: tauri::AppHandle) -> bool {
 /// Returns `false` only for the transient `Retry` disposition — every other
 /// path (definitive server answer, or an early return with nothing to do)
 /// is `true`. State is never changed on `false`.
-async fn activate_machine(app_handle: tauri::AppHandle, forced_refresh: bool) -> bool {
+async fn activate_machine(core: Arc<AppCore>, forced_refresh: bool) -> bool {
     let op = if forced_refresh {
         "receipt refresh"
     } else {
         "activation"
     };
-    let Some(state) = app_handle.try_state::<AppInfraState>() else {
+    let Some(state) = core.try_state::<AppInfraState>() else {
         return true;
     };
-    let infra = std::sync::Arc::clone(&*state);
+    let infra = Arc::clone(&*state);
     let pool = infra.pool();
 
     // Need a stored, authentic, non-revoked key — else nothing to activate.
@@ -177,7 +176,7 @@ async fn activate_machine(app_handle: tauri::AppHandle, forced_refresh: bool) ->
         Ok(uuid) => uuid,
         Err(error) => {
             // Non-macOS / no fingerprint: compute already treats this as Activated.
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} skipped: cannot read hardware uuid: {error}");
+            log::warn!(target: "mnema_lib::licensing", "{op} skipped: cannot read hardware uuid: {error}");
             return true;
         }
     };
@@ -205,7 +204,7 @@ async fn activate_machine(app_handle: tauri::AppHandle, forced_refresh: bool) ->
     // tell a license's devices apart — never the personal computer name
     // (ADR 0055).
     let device_label = app_infra::hardware_model().ok();
-    tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "{op}: activating license {license_id}");
+    log::info!(target: "mnema_lib::licensing", "{op}: activating license {license_id}");
     let result = adapter::client()
         .activate(&license_id, &machine_hash, device_label.as_deref())
         .await;
@@ -218,33 +217,33 @@ async fn activate_machine(app_handle: tauri::AppHandle, forced_refresh: bool) ->
     match classify_activation(result, verify) {
         ActivationDisposition::StoreReceipt(receipt_wire) => {
             if let Err(error) = app_infra::store_activation_receipt(&receipt_wire) {
-                tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} failed: could not store receipt: {error}");
+                log::warn!(target: "mnema_lib::licensing", "{op} failed: could not store receipt: {error}");
                 // A failed local persist is not success: return false so a
                 // manual refresh surfaces an error (retryable — activate is
                 // idempotent for a known machine hash) instead of a false "ok".
                 return false;
             }
-            clear_over_cap_hint(&app_handle);
-            tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "{op} succeeded: stored receipt for license {license_id}");
+            clear_over_cap_hint(&core);
+            log::info!(target: "mnema_lib::licensing", "{op} succeeded: stored receipt for license {license_id}");
             // Recompute → badge flips to Activated.
-            super::compute_license_status(pool, &app_handle, now_ms()).await;
+            super::compute_license_status(pool, &core, now_ms()).await;
             true
         }
         ActivationDisposition::Recompute => {
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} refused: license {license_id} reported dead by the server; the offline evaluation enforces it");
-            super::compute_license_status(pool, &app_handle, now_ms()).await;
+            log::warn!(target: "mnema_lib::licensing", "{op} refused: license {license_id} reported dead by the server; the offline evaluation enforces it");
+            super::compute_license_status(pool, &core, now_ms()).await;
             true
         }
         ActivationDisposition::SetOverCap { reset_url, buy_url } => {
-            set_over_cap_hint(&app_handle, reset_url, buy_url);
-            super::compute_license_status(pool, &app_handle, now_ms()).await;
+            set_over_cap_hint(&core, reset_url, buy_url);
+            super::compute_license_status(pool, &core, now_ms()).await;
             true
         }
         ActivationDisposition::Retry { reason } => {
             // Leave the Provisional Window running; the daily tick (or the
             // refresh cadence) retries. On a refresh the stored receipt stays
             // untouched — staleness never locks.
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "{op} failed: {reason} (from {})", adapter::base_url());
+            log::warn!(target: "mnema_lib::licensing", "{op} failed: {reason} (from {})", adapter::base_url());
             false
         }
     }

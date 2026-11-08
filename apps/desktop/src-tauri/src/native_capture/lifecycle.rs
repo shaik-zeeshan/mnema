@@ -37,6 +37,7 @@ use capture_types::{
     CaptureErrorResponse, CaptureSources, NativeCaptureSession, RecordingSettings,
 };
 use capture_vad::MicrophoneVadFallbackNotice;
+use tauri::Manager;
 
 /// The tap-start retry band, mirroring the zero-watchdog's backoff (ADR 0052):
 /// often enough that a coreaudiod restart heals within a segment, rarely enough
@@ -185,7 +186,7 @@ impl RecordingLifecycle {
     // `capture_suspension` nor share its codes/copy. `None` block (allowed or
     // gate-not-yet-run) → no refusal; never lock on unknown.
     fn refuse_start_for_license_block(
-        block: Option<crate::licensing::LicenseBlock>,
+        block: Option<app_core::licensing::LicenseBlock>,
     ) -> Option<CaptureErrorResponse> {
         let block = block?;
         Some(CaptureErrorResponse {
@@ -201,7 +202,7 @@ impl RecordingLifecycle {
     fn stop_for_license_block_at_rotation(
         &mut self,
         app_handle: Option<&tauri::AppHandle>,
-        block: Option<crate::licensing::LicenseBlock>,
+        block: Option<app_core::licensing::LicenseBlock>,
     ) -> Option<TickOutcome> {
         let block = block?;
         super::segments::graceful_stop_for_license_block(
@@ -263,15 +264,16 @@ impl RecordingLifecycle {
         // `capture_allowed_at` also refuses a cached `Trial` whose window has
         // since lapsed (the cache only recomputes on gate events, so without
         // the time check the first start after expiry slips through).
-        let gate_now_ms = crate::licensing::now_ms();
-        let block = crate::licensing::license_block(
-            crate::licensing::cached_status(&app_handle).as_ref(),
+        let core = app_handle.state::<std::sync::Arc<app_core::AppCore>>();
+        let gate_now_ms = app_core::licensing::now_ms();
+        let block = app_core::licensing::license_block(
+            app_core::licensing::cached_status(&core).as_ref(),
             gate_now_ms,
         );
         if let Some(refusal) = Self::refuse_start_for_license_block(block) {
             // Recompute async so the cache/tray/Settings flip from the stale
             // `Trial` to `ReadOnly`; the refusal itself doesn't wait for it.
-            crate::licensing::recompute_status_async(&app_handle, gate_now_ms);
+            app_core::licensing::recompute_status_async(&core, gate_now_ms);
             app_core::debug_log::log_info(format!("capture refused: {}", refusal.code));
             return Err(refusal);
         }
@@ -1105,13 +1107,14 @@ impl RecordingLifecycle {
         // this, a session already recording when the trial expires would keep
         // recording until the user stops it. Commit the segment, end the
         // session, and recompute async so tray/Settings flip to Read-Only.
-        let rotation_now_ms = crate::licensing::now_ms();
-        let block = crate::licensing::license_block(
-            crate::licensing::cached_status(app_handle).as_ref(),
+        let core = app_handle.state::<std::sync::Arc<app_core::AppCore>>();
+        let rotation_now_ms = app_core::licensing::now_ms();
+        let block = app_core::licensing::license_block(
+            app_core::licensing::cached_status(&core).as_ref(),
             rotation_now_ms,
         );
         if block.is_some() {
-            crate::licensing::recompute_status_async(app_handle, rotation_now_ms);
+            app_core::licensing::recompute_status_async(&core, rotation_now_ms);
         }
         if let Some(outcome) = self.stop_for_license_block_at_rotation(Some(app_handle), block) {
             return outcome;
@@ -1750,7 +1753,7 @@ mod tests {
 
     #[test]
     fn license_block_at_start_refuses_with_the_gate_code_and_no_suspension() {
-        let block = crate::licensing::license_block(
+        let block = app_core::licensing::license_block(
             Some(&capture_types::LicenseStatus::ReadOnly),
             0,
         );
@@ -1758,7 +1761,7 @@ mod tests {
             .expect("read-only must refuse the start");
         assert_eq!(refusal.code, "capture_refused_read_only");
 
-        let block = crate::licensing::license_block(
+        let block = app_core::licensing::license_block(
             Some(&capture_types::LicenseStatus::Revoked),
             0,
         );
@@ -1771,7 +1774,7 @@ mod tests {
     fn license_block_at_start_never_refuses_on_unknown_status() {
         // The deferred gate hasn't run yet (cached status None) → allow.
         assert!(RecordingLifecycle::refuse_start_for_license_block(
-            crate::licensing::license_block(None, i64::MAX)
+            app_core::licensing::license_block(None, i64::MAX)
         )
         .is_none());
     }
@@ -1782,7 +1785,7 @@ mod tests {
         let screen_file = write_openable_screen_segment(&temp_dir);
         let mut lifecycle = lifecycle_after_unexpected_screen_stop(&screen_file);
 
-        let block = crate::licensing::license_block(
+        let block = app_core::licensing::license_block(
             Some(&capture_types::LicenseStatus::ReadOnly),
             0,
         );
@@ -1811,7 +1814,7 @@ mod tests {
 
         let outcome = lifecycle.stop_for_license_block_at_rotation(
             None,
-            crate::licensing::license_block(None, 0),
+            app_core::licensing::license_block(None, 0),
         );
 
         assert_eq!(outcome, None);

@@ -143,9 +143,12 @@ fn tick(app_handle: &tauri::AppHandle, runtime: &mut ReminderRuntime) {
     if !crate::windows::is_onboarding_complete(app_handle) {
         return;
     }
-    let license_now_ms = crate::licensing::now_ms();
-    if crate::licensing::license_block(
-        crate::licensing::cached_status(app_handle).as_ref(),
+    let license_now_ms = app_core::licensing::now_ms();
+    if app_core::licensing::license_block(
+        app_core::licensing::cached_status(
+            &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+        )
+        .as_ref(),
         license_now_ms,
     )
     .is_some()

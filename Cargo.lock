@@ -349,18 +349,23 @@ dependencies = [
  "cocoa 0.26.1",
  "core-graphics 0.25.0",
  "dirs 6.0.0",
+ "fs2",
+ "global-hotkey",
  "image",
  "licensegate",
  "log",
  "objc",
  "ocr",
+ "reqwest 0.12.28",
  "semantic-search",
  "serde",
  "serde_json",
  "speaker-analysis",
+ "sqlx",
  "tempfile",
  "time",
  "tokio",
+ "url",
 ]
 
 [[package]]

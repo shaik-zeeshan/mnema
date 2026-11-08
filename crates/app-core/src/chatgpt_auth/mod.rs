@@ -142,8 +142,7 @@ fn jwt_expiration_seconds(token: &str) -> Option<i64> {
 /// keychain prompt invites Disconnect, which destroys the access AND long-lived
 /// refresh token the vault merely declined to hand over.
 pub fn load_token_set(provider_id: &str) -> Result<Option<ChatgptTokenSet>, String> {
-    let Some(raw) = app_infra::load_ai_provider_key(provider_id).map_err(|e| e.to_string())?
-    else {
+    let Some(raw) = app_infra::load_ai_provider_key(provider_id).map_err(|e| e.to_string())? else {
         return Ok(None);
     };
     if raw.trim().is_empty() {
@@ -151,7 +150,7 @@ pub fn load_token_set(provider_id: &str) -> Result<Option<ChatgptTokenSet>, Stri
     }
     serde_json::from_str(&raw).map(Some).map_err(|error| {
         // Classification + position only: a serde error can quote slot content.
-        tauri_plugin_log::log::warn!(
+        log::warn!(
             "chatgpt-auth: the stored token set for {provider_id} is unreadable: {:?} at {}:{}",
             error.classify(),
             error.line(),
@@ -167,8 +166,8 @@ pub fn load_token_set(provider_id: &str) -> Result<Option<ChatgptTokenSet>, Stri
 #[cfg(test)]
 static WEDGED_VAULT_PROVIDER: Mutex<Option<String>> = Mutex::new(None);
 
-/// `pub(crate)` for tests in sibling modules that need a connected provider.
-pub(crate) fn store_token_set(provider_id: &str, set: &ChatgptTokenSet) -> Result<(), String> {
+/// `pub` for the desktop tests that need a connected provider.
+pub fn store_token_set(provider_id: &str, set: &ChatgptTokenSet) -> Result<(), String> {
     #[cfg(test)]
     if WEDGED_VAULT_PROVIDER
         .lock()
@@ -233,7 +232,9 @@ static PENDING_ROTATIONS: Mutex<Option<HashMap<String, (String, ChatgptTokenSet)
     Mutex::new(None);
 
 fn stash_pending_rotation(provider_id: &str, consumed_refresh_token: &str, set: &ChatgptTokenSet) {
-    let mut map = PENDING_ROTATIONS.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut map = PENDING_ROTATIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     map.get_or_insert_with(HashMap::new).insert(
         provider_id.to_string(),
         (consumed_refresh_token.to_string(), set.clone()),
@@ -241,7 +242,9 @@ fn stash_pending_rotation(provider_id: &str, consumed_refresh_token: &str, set: 
 }
 
 fn take_pending_rotation(provider_id: &str) -> Option<(String, ChatgptTokenSet)> {
-    let mut map = PENDING_ROTATIONS.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut map = PENDING_ROTATIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     map.as_mut().and_then(|m| m.remove(provider_id))
 }
 
@@ -258,7 +261,7 @@ fn recover_pending_rotation(provider_id: &str) -> Option<ChatgptTokenSet> {
     let (consumed, set) = take_pending_rotation(provider_id)?;
     match persist_refreshed_token_set(provider_id, &consumed, &set) {
         Ok(true) => {
-            tauri_plugin_log::log::info!(
+            log::info!(
                 "chatgpt-auth: recovered a rotation for {provider_id} that an earlier write lost"
             );
             None
@@ -267,7 +270,7 @@ fn recover_pending_rotation(provider_id: &str) -> Option<ChatgptTokenSet> {
         Err(error) => {
             // Still failing: keep holding it rather than throwing the only copy
             // of a live credential away.
-            tauri_plugin_log::log::warn!(
+            log::warn!(
                 "chatgpt-auth: re-persisting a held rotation for {provider_id} failed: {error}"
             );
             stash_pending_rotation(provider_id, &consumed, &set);
@@ -313,11 +316,17 @@ async fn fresh_access_token_with(
         load_token_set_off_thread(provider_id)
             .await
             .inspect_err(|error| {
-                tauri_plugin_log::log::warn!("chatgpt-auth: loading token set failed: {error}");
+                log::warn!("chatgpt-auth: loading token set failed: {error}");
             })?
             .ok_or_else(needs_reconnect)
-        // Already rejected: replaying the spent refresh token can only fail.
-        .and_then(|set| if set.rejected { Err(needs_reconnect()) } else { Ok(set) })
+            // Already rejected: replaying the spent refresh token can only fail.
+            .and_then(|set| {
+                if set.rejected {
+                    Err(needs_reconnect())
+                } else {
+                    Ok(set)
+                }
+            })
     };
 
     let set = load().await?;
@@ -361,9 +370,13 @@ async fn fresh_access_token_with(
     let tokens = match refresh(refresh_token.clone()).await {
         Ok(tokens) => tokens,
         Err(error) => {
-            tauri_plugin_log::log::warn!(
+            log::warn!(
                 "chatgpt-auth: token refresh failed for {provider_id} ({}): {}",
-                if error.transient { "unreachable" } else { "needs_reconnect" },
+                if error.transient {
+                    "unreachable"
+                } else {
+                    "needs_reconnect"
+                },
                 oauth_failure_log_kind(&error.message)
             );
             // Being offline is not being signed out. Telling a user with a
@@ -379,7 +392,10 @@ async fn fresh_access_token_with(
             // says "sign in again" from now on. Compare-and-swapped on the
             // consumed refresh token, so a newer login is never marked.
             let id = provider_id.to_string();
-            let marked = ChatgptTokenSet { rejected: true, ..set };
+            let marked = ChatgptTokenSet {
+                rejected: true,
+                ..set
+            };
             let _ = tokio::task::spawn_blocking(move || {
                 persist_refreshed_token_set(&id, &refresh_token, &marked)
             })
@@ -387,7 +403,7 @@ async fn fresh_access_token_with(
             .map_err(|e| e.to_string())
             .and_then(|r| r)
             .inspect_err(|error| {
-                tauri_plugin_log::log::warn!("chatgpt-auth: marking the login rejected failed: {error}");
+                log::warn!("chatgpt-auth: marking the login rejected failed: {error}");
             });
             return Err(needs_reconnect());
         }
@@ -405,7 +421,7 @@ async fn fresh_access_token_with(
     .await
     .map_err(|e| e.to_string())?
     .map_err(|error| {
-        tauri_plugin_log::log::warn!("chatgpt-auth: persisting refreshed token set failed: {error}");
+        log::warn!("chatgpt-auth: persisting refreshed token set failed: {error}");
         // OpenAI has already consumed the old refresh token, so the slot now
         // holds a dead credential. Hold the rotation in memory and hand the
         // caller a transient code: the next call retries the write, and the
@@ -474,7 +490,9 @@ fn token_set_from_grant(
 
 /// The client for every `auth.openai.com` round trip.
 fn oauth_http_client() -> reqwest::Client {
-    http_client_with_timeout(std::time::Duration::from_secs(OAUTH_REQUEST_TIMEOUT_SECONDS))
+    http_client_with_timeout(std::time::Duration::from_secs(
+        OAUTH_REQUEST_TIMEOUT_SECONDS,
+    ))
 }
 
 fn http_client_with_timeout(timeout: std::time::Duration) -> reqwest::Client {
@@ -497,7 +515,10 @@ pub struct OAuthError {
 
 impl OAuthError {
     fn transport(error: impl std::fmt::Display) -> Self {
-        Self { transient: true, message: error.to_string() }
+        Self {
+            transient: true,
+            message: error.to_string(),
+        }
     }
 }
 
@@ -526,7 +547,10 @@ async fn oauth_token_request(form: &[(&str, &str)]) -> Result<OAuthTokenResponse
         .finish();
     let response = oauth_http_client()
         .post(OAUTH_TOKEN_URL)
-        .header(reqwest::header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+        .header(
+            reqwest::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
         .body(body)
         .send()
         .await
@@ -551,14 +575,18 @@ static LOGIN_GENERATION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn bump_login_generation(provider_id: &str) -> u64 {
     let generation = LOGIN_GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
-    let mut map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut map = LOGIN_GENERATIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     map.get_or_insert_with(HashMap::new)
         .insert(provider_id.to_string(), generation);
     generation
 }
 
 fn login_generation_is_current(provider_id: &str, generation: u64) -> bool {
-    let map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
+    let map = LOGIN_GENERATIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     map.as_ref().and_then(|m| m.get(provider_id)) == Some(&generation)
 }
 
@@ -586,7 +614,9 @@ fn persist_refreshed_token_set(
 ) -> Result<bool, String> {
     // Held across the read-compare-write so a login's own check-then-write
     // cannot interleave into it.
-    let _map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
+    let _map = LOGIN_GENERATIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let holds_it = match load_token_set(provider_id) {
         Ok(Some(stored)) => stored.refresh_token.as_deref() == Some(consumed_refresh_token),
         Ok(None) => false,
@@ -598,7 +628,7 @@ fn persist_refreshed_token_set(
         Err(error) => return Err(error),
     };
     if !holds_it {
-        tauri_plugin_log::log::debug!(
+        log::debug!(
             "chatgpt-auth: dropping a refreshed token set for {provider_id}: the stored credential changed under it"
         );
         return Ok(false);
@@ -621,7 +651,9 @@ fn persist_refreshed_token_set(
 /// token set. Bumping the generation without also holding it across the delete
 /// reopens exactly that window.
 pub fn revoke_provider_credential(provider_id: &str) -> Result<(), String> {
-    let mut map = LOGIN_GENERATIONS.lock().unwrap_or_else(PoisonError::into_inner);
+    let mut map = LOGIN_GENERATIONS
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner);
     let generation = LOGIN_GENERATION_COUNTER.fetch_add(1, Ordering::SeqCst);
     map.get_or_insert_with(HashMap::new)
         .insert(provider_id.to_string(), generation);

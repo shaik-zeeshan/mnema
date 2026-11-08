@@ -516,7 +516,7 @@ fn local_endpoint(provider: &AiProviderConfig) -> String {
 fn chatgpt_engine_config(
     provider_id: &str,
     model: &str,
-    loaded: Result<Option<crate::chatgpt_auth::ChatgptTokenSet>, String>,
+    loaded: Result<Option<app_core::chatgpt_auth::ChatgptTokenSet>, String>,
 ) -> Result<ai_engine::EngineConfig, String> {
     let needs_reconnect = || format!("needs_reconnect:{provider_id}");
     // `load_token_set` already reports a broken credential as the reconnect
@@ -555,7 +555,7 @@ fn chatgpt_engine_config(
 /// [`chatgpt_engine_config`] does.
 fn chatgpt_static_models(
     provider_id: &str,
-    loaded: Result<Option<crate::chatgpt_auth::ChatgptTokenSet>, String>,
+    loaded: Result<Option<app_core::chatgpt_auth::ChatgptTokenSet>, String>,
 ) -> Result<Vec<DiscoveredModel>, String> {
     let needs_reconnect = || format!("needs_reconnect:{provider_id}");
     // Same split as `chatgpt_engine_config`: a broken credential arrives as the
@@ -570,7 +570,7 @@ fn chatgpt_static_models(
     if !connected {
         return Err(needs_reconnect());
     }
-    Ok(crate::chatgpt_auth::CHATGPT_MODEL_IDS
+    Ok(app_core::chatgpt_auth::CHATGPT_MODEL_IDS
         .iter()
         .map(|id| DiscoveredModel {
             id: (*id).to_string(),
@@ -617,7 +617,7 @@ fn engine_config_for_ref(
         return chatgpt_engine_config(
             provider_id,
             model,
-            crate::chatgpt_auth::load_token_set(provider_id),
+            app_core::chatgpt_auth::load_token_set(provider_id),
         );
     }
     let api_key = app_infra::load_ai_provider_key(provider_id)
@@ -732,7 +732,7 @@ pub(crate) async fn resolve_engine_ref_live(
         ..
     } = &mut config
     {
-        *api_key = crate::chatgpt_auth::fresh_access_token(&provider_id).await?;
+        *api_key = app_core::chatgpt_auth::fresh_access_token(&provider_id).await?;
     }
     Ok((provider_id, config))
 }
@@ -827,7 +827,7 @@ pub async fn ai_runtime_clear_provider_key(
     // refresh's compare-and-swap also holds. Clearing the slot beside that lock
     // lets a refresh write the token set straight back into it.
     tokio::task::spawn_blocking(move || {
-        crate::chatgpt_auth::revoke_provider_credential(&provider)
+        app_core::chatgpt_auth::revoke_provider_credential(&provider)
     })
     .await
     .map_err(|error| error.to_string())?
@@ -883,14 +883,14 @@ fn key_ending(key: &str) -> Option<String> {
 /// in the same vault slot — and "is connected" is [`ai_runtime_has_provider_key`].
 #[tauri::command]
 pub async fn ai_runtime_chatgpt_begin_login(
-    app: tauri::AppHandle,
+    core: tauri::State<'_, std::sync::Arc<app_core::AppCore>>,
     request: AiRuntimeProviderRequest,
-) -> Result<crate::chatgpt_auth::ChatgptLoginPrompt, String> {
+) -> Result<app_core::chatgpt_auth::ChatgptLoginPrompt, String> {
     let provider = request.provider.trim().to_string();
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    crate::chatgpt_auth::begin_login(app, provider).await
+    app_core::chatgpt_auth::begin_login(&core, provider).await
 }
 
 /// Abandon a ChatGPT device login the user walked away from.
@@ -908,7 +908,7 @@ pub async fn ai_runtime_chatgpt_cancel_login(
     if provider.is_empty() {
         return Err("a provider id is required".to_string());
     }
-    crate::chatgpt_auth::cancel_login(provider);
+    app_core::chatgpt_auth::cancel_login(provider);
     Ok(())
 }
 
@@ -1139,7 +1139,7 @@ async fn list_models_for_provider(
     if provider.kind == AiProviderKind::Chatgpt {
         return chatgpt_static_models(
             &provider.id,
-            crate::chatgpt_auth::load_token_set(&provider.id),
+            app_core::chatgpt_auth::load_token_set(&provider.id),
         );
     }
 

@@ -1,10 +1,10 @@
 use super::*;
 use crate::app_infra::StartupReport;
 use crate::debug_health::{AiEngineInputs, UserContextInputs};
-use crate::debug_status::SemanticIndexStatusDto;
 use crate::native_capture::capture_health::{
     CaptureHealthDto, CaptureSuspensionDto, DiskHealthDto,
 };
+use app_core::debug_status::SemanticIndexStatusDto;
 
 const NOW: i64 = 1_800_000_000_000;
 const GIB: u64 = 1024 * 1024 * 1024;

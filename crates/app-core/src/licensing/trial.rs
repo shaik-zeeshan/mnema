@@ -12,12 +12,14 @@
 //! compared against the guarded now, so winding the clock back never stretches
 //! the pre-issuance window.
 
+use std::sync::Arc;
+
 use capture_types::{Activation, LicenseStatus};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
-use super::activation;
-use app_core::licensing::adapter;
+use super::{activation, adapter};
+use crate::AppCore;
 
 /// 7 days: the one grace policy shared with the Provisional Window — pre-issuance
 /// offline rides the same leash as never-finished activation.
@@ -137,14 +139,14 @@ pub(super) fn pending_issuance() -> bool {
 /// this — capture never waits on it.
 pub async fn ensure_trial_started(
     pool: &SqlitePool,
-    app_handle: &tauri::AppHandle,
+    core: &Arc<AppCore>,
     now_ms: i64,
 ) -> LicenseStatus {
-    attempt_issuance(pool, app_handle, now_ms).await;
-    super::compute_license_status(pool, app_handle, now_ms).await
+    attempt_issuance(pool, core, now_ms).await;
+    super::compute_license_status(pool, core, now_ms).await
 }
 
-async fn attempt_issuance(pool: &SqlitePool, app_handle: &tauri::AppHandle, now_ms: i64) {
+async fn attempt_issuance(pool: &SqlitePool, core: &Arc<AppCore>, now_ms: i64) {
     // Dev builds are never gated and must not hit the server on every capture.
     if cfg!(debug_assertions) && std::env::var_os("MNEMA_LICENSE_ENFORCE").is_none() {
         return;
@@ -184,24 +186,24 @@ async fn attempt_issuance(pool: &SqlitePool, app_handle: &tauri::AppHandle, now_
     match classify_trial(result, |wire| verifier.verify_license(wire).is_ok()) {
         TrialDisposition::Install(key_wire) => {
             if let Err(error) = app_infra::store_license_key(&key_wire) {
-                tauri_plugin_log::log::error!(target: "mnema_lib::licensing", "trial key issued but could not be stored: {error}");
+                log::error!(target: "mnema_lib::licensing", "trial key issued but could not be stored: {error}");
                 return;
             }
-            tauri_plugin_log::log::info!(target: "mnema_lib::licensing", "trial issued; chaining activation");
+            log::info!(target: "mnema_lib::licensing", "trial issued; chaining activation");
             // One breath: mint → activate. `run_activation` stamps first_seen
             // and stores the receipt; a failure here just leaves the ordinary
             // 7-day Provisional Window running (daily tick retries).
-            activation::run_activation(app_handle.clone()).await;
+            activation::run_activation(core.clone()).await;
         }
         TrialDisposition::MarkUsed => {
             store_stamp(&TrialIssuance {
                 used: true,
                 ..stamp
             });
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "trial refused: already used on this machine");
+            log::warn!(target: "mnema_lib::licensing", "trial refused: already used on this machine");
         }
         TrialDisposition::Retry { reason } => {
-            tauri_plugin_log::log::warn!(target: "mnema_lib::licensing", "trial issuance failed: {reason} (from {}); capture stays available until the offline ceiling", adapter::base_url());
+            log::warn!(target: "mnema_lib::licensing", "trial issuance failed: {reason} (from {}); capture stays available until the offline ceiling", adapter::base_url());
         }
     }
 }

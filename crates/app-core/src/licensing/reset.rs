@@ -5,10 +5,12 @@
 //! never a device list: the published privacy commitment ("no device names
 //! sent or stored") stays true word-for-word.
 
+use std::sync::Arc;
+
 use capture_types::{LicenseDevices, ResetDevicesOutcome};
 
-use super::activation;
-use app_core::licensing::adapter;
+use super::{activation, adapter};
+use crate::AppCore;
 
 /// What to do with the reset call's outcome — pure and IO-free
 /// (`reset_license_devices` is the shell that executes it).
@@ -65,10 +67,7 @@ fn devices_in(
 /// possession), then immediately re-run the same activation chain the paste /
 /// launch / daily-tick paths use, so the freed slot is reclaimed by this
 /// machine in the same breath and the `license_status` event flips the UI.
-#[tauri::command]
-pub async fn reset_license_devices(
-    app_handle: tauri::AppHandle,
-) -> Result<ResetDevicesOutcome, String> {
+pub async fn reset_license_devices(core: Arc<AppCore>) -> Result<ResetDevicesOutcome, String> {
     let Some(key_wire) = app_infra::load_license_key().ok().flatten() else {
         return Err("No license key is stored on this device.".to_string());
     };
@@ -76,7 +75,7 @@ pub async fn reset_license_devices(
         ResetDisposition::RetryActivation => {
             // Awaited (not spawned) so a same-breath success returns with the
             // receipt already stored and the status already republished.
-            activation::run_activation(app_handle.clone()).await;
+            activation::run_activation(core.clone()).await;
             Ok(ResetDevicesOutcome::Reset)
         }
         ResetDisposition::RateLimited { retry_at_ms } => {
@@ -89,7 +88,6 @@ pub async fn reset_license_devices(
 /// Device count for the Settings licensing panel, fetched lazily when the
 /// panel shows. `Ok(None)` — render nothing — when there is no stored key,
 /// the server is unreachable, or the key didn't resolve to a license.
-#[tauri::command]
 pub async fn get_license_devices() -> Result<Option<LicenseDevices>, String> {
     let Some(key_wire) = app_infra::load_license_key().ok().flatten() else {
         return Ok(None);

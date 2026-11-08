@@ -48,8 +48,10 @@ impl Host for GpuiHost {
         rx
     }
 
-    fn open_url(&self, url: &str) {
-        self.send(HostMsg::OpenUrl(url.to_string()));
+    fn open_url(&self, target: &str) -> Result<(), String> {
+        // GPUI opens asynchronously on the main thread and reports no failure.
+        self.send(HostMsg::OpenUrl(target.to_string()));
+        Ok(())
     }
 
     fn refresh_tray(&self) {

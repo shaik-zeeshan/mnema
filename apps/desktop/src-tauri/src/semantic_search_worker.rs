@@ -46,7 +46,7 @@ use tokio::sync::watch;
 
 use app_core::AppInfraState;
 use crate::app_infra::{shutdown_aware_sleep, BackgroundWorkersState};
-use crate::debug_status::SemanticWorkerHealth;
+use app_core::debug_status::SemanticWorkerHealth;
 use crate::semantic_search_models::{
     SemanticSearchModelDownloadProgressDto, SemanticSearchModelDownloadStatusDto,
     SEMANTIC_SEARCH_MODEL_DOWNLOAD_PROGRESS_EVENT,
@@ -537,8 +537,8 @@ pub fn spawn_semantic_index_backfill_worker(
     // the sweep publishes a snapshot of its otherwise task-local health here after
     // every pass. Write-only from the worker's side — nothing here feeds back into
     // the sweep.
-    let health: crate::debug_status::SemanticWorkerHealthState =
-        app_handle.state::<crate::debug_status::SemanticWorkerHealthState>().inner().clone();
+    let health: app_core::debug_status::SemanticWorkerHealthState =
+        app_handle.state::<app_core::debug_status::SemanticWorkerHealthState>().inner().clone();
 
     let handle = tauri::async_runtime::spawn(async move {
         let infra = Arc::clone(&infra);

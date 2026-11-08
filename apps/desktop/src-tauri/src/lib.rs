@@ -4,10 +4,8 @@ mod app_updates;
 mod ask_ai;
 mod audio_transcription_models;
 mod broker_authorization_channel;
-mod chatgpt_auth;
 mod cli_access;
 mod conversation;
-mod crl_refresh;
 mod debug_health;
 mod debug_pipeline;
 mod debug_status;
@@ -327,7 +325,11 @@ fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
         announce_license_deep_link(app_handle, "activate");
         let app_handle = app_handle.clone();
         tauri::async_runtime::spawn(async move {
-            licensing::activate_from_deep_link(app_handle.clone(), key).await;
+            app_core::licensing::activate_from_deep_link(
+                app_handle.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
+                key,
+            )
+            .await;
             let _ = windows::open_main_window(&app_handle);
         });
     } else if let Some(checkout_id) = claim_checkout_id_from_url(url) {
@@ -337,7 +339,11 @@ fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
             // Surface the app before polling — the buyer was just bounced back
             // from the browser and the claim poll can take ~30s.
             let _ = windows::open_main_window(&app_handle);
-            licensing::claim_from_deep_link(app_handle, checkout_id).await;
+            app_core::licensing::claim_from_deep_link(
+                app_handle.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
+                checkout_id,
+            )
+            .await;
         });
     } else if is_license_renewed_url(url) {
         announce_license_deep_link(app_handle, "renewed");
@@ -346,7 +352,10 @@ fn dispatch_deep_link(app_handle: &tauri::AppHandle, url: &url::Url) {
             // Surface the app before polling — the buyer was just bounced back
             // from the browser and the refresh poll can take up to ~60s.
             let _ = windows::open_main_window(&app_handle);
-            licensing::renewed_from_deep_link(app_handle).await;
+            app_core::licensing::renewed_from_deep_link(
+                app_handle.state::<std::sync::Arc<app_core::AppCore>>().inner().clone(),
+            )
+            .await;
         });
     } else if is_oauth_callback_url(url) {
         app_handle
@@ -462,9 +471,10 @@ fn run_deferred_startup(app_handle: &tauri::AppHandle, onboarding_complete: bool
     }
     // CRL refresh is anonymous and harmless without onboarding — kick off an
     // initial fetch plus the daily timer regardless of onboarding state.
-    crl_refresh::spawn_crl_refresh(app_handle.clone());
-    crl_refresh::start_daily_crl_timer(app_handle.clone());
-    licensing::receipt_refresh::start_receipt_refresh_timer(app_handle.clone());
+    let core = app_handle.state::<std::sync::Arc<app_core::AppCore>>();
+    app_core::crl_refresh::spawn_crl_refresh(core.inner().clone());
+    app_core::crl_refresh::start_daily_crl_timer(core.inner().clone());
+    app_core::licensing::receipt_refresh::start_receipt_refresh_timer(core.inner().clone());
     // Checks onboarding itself each tick, so it also covers a same-session finish.
     native_capture::not_recording_reminder::spawn_not_recording_reminder(app_handle.clone());
     if onboarding_complete {
@@ -515,6 +525,9 @@ fn hydrate_system_audio_permission_evidence(_app_handle: &tauri::AppHandle) {}
 pub fn run() {
     let context = tauri::generate_context!();
     let (host, core) = tauri_host::start_core(&context.config().identifier);
+    core.manage(app_core::one_time_prompts::OneTimePromptStateStore::default());
+    core.manage(app_core::licensing::LicenseGate(Mutex::new(None)));
+    core.manage(app_core::licensing::ActivationHint(Mutex::new(None)));
     tauri::Builder::default()
         .manage(core)
         .manage(native_capture::NativeCaptureState::default())
@@ -525,12 +538,9 @@ pub fn run() {
         .manage(native_capture::MetadataNotifierState::default())
         .manage(native_capture::PrivacyFilterRefreshState::default())
         .manage(app_core::recording_settings::RecordingSettingsState::default())
-        .manage(one_time_prompts::OneTimePromptStateStore::default())
         .manage(native_capture::CaptureMetadataState::default())
         .manage(status_bar::StatusBarState::default())
         .manage(keyboard_bindings::KeyboardBindingsState::default())
-        .manage(licensing::LicenseGate(Mutex::new(None)))
-        .manage(licensing::ActivationHint(Mutex::new(None)))
         .manage(native_capture::AppNotificationsState::default())
         .manage(app_updates::AppUpdateSettingsState::default())
         .manage(app_updates::AppUpdateRuntimeState::default())
@@ -549,7 +559,7 @@ pub fn run() {
         // The Semantic Index Backfill worker's health, published each sweep pass and
         // read by the debug surface's `get_semantic_index_status`. Registered here
         // (not in the worker) so the state exists before deferred startup spawns it.
-        .manage(debug_status::SemanticWorkerHealthState::default())
+        .manage(app_core::debug_status::SemanticWorkerHealthState::default())
         // MCP tool connectors (Workstream C, ADR 0048): persistent connection
         // manager. Lazy — nothing connects here at launch; it dials on first use.
         .manage(ask_ai::mcp::McpManager::default())
@@ -641,8 +651,8 @@ pub fn run() {
             licensing::start_trial,
             licensing::activate_license,
             licensing::refresh_license_now,
-            licensing::reset::reset_license_devices,
-            licensing::reset::get_license_devices,
+            licensing::reset_license_devices,
+            licensing::get_license_devices,
             app_infra::preview_retention_cleanup,
             app_infra::run_retention_cleanup_now,
             app_infra::get_retention_cleanup_status,
@@ -888,7 +898,9 @@ pub fn run() {
             windows::install_macos_terminate_handler(app.handle());
             native_capture::initialize_recording_settings_from_disk(app.handle());
             app_updates::initialize(app.handle());
-            one_time_prompts::initialize(app.handle());
+            app_core::one_time_prompts::initialize(
+                &app.state::<std::sync::Arc<app_core::AppCore>>(),
+            );
             status_bar::initialize(app.handle())?;
             keyboard_bindings::initialize(app.handle());
             app_core::debug_log::install_panic_hook();

@@ -569,7 +569,7 @@ fn engine_config_for_ref_binds_first_party_ids_on_the_egress_path() {
 
 #[test]
 fn a_rejected_chatgpt_login_reports_needs_reconnect_without_a_send() {
-    let rejected = crate::chatgpt_auth::ChatgptTokenSet {
+    let rejected = app_core::chatgpt_auth::ChatgptTokenSet {
         access_token: "a".to_string(),
         refresh_token: Some("r".to_string()),
         expires_at: Some(4_000_000_000),
@@ -603,7 +603,7 @@ fn chatgpt_token_set_maps_to_an_access_token_config_or_needs_reconnect() {
     let connected = chatgpt_engine_config(
         "chatgpt",
         "gpt-5.6-terra",
-        Ok(Some(crate::chatgpt_auth::ChatgptTokenSet {
+        Ok(Some(app_core::chatgpt_auth::ChatgptTokenSet {
             access_token: "the-access-token".to_string(),
             refresh_token: Some("r".to_string()),
             expires_at: Some(4_000_000_000),
@@ -778,7 +778,7 @@ fn the_chatgpt_model_gate_is_the_provider_verification_signal() {
 
     let connected = chatgpt_static_models(
         "chatgpt",
-        Ok(Some(crate::chatgpt_auth::ChatgptTokenSet {
+        Ok(Some(app_core::chatgpt_auth::ChatgptTokenSet {
             access_token: "a".to_string(),
             refresh_token: Some("r".to_string()),
             expires_at: Some(4_000_000_000),
@@ -788,7 +788,7 @@ fn the_chatgpt_model_gate_is_the_provider_verification_signal() {
     .expect("a connected instance lists its catalog");
     assert_eq!(
         connected.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(),
-        crate::chatgpt_auth::CHATGPT_MODEL_IDS.to_vec(),
+        app_core::chatgpt_auth::CHATGPT_MODEL_IDS.to_vec(),
         "the picker gets the static catalog verbatim"
     );
     assert!(
@@ -955,9 +955,9 @@ async fn the_live_resolver_refreshes_the_pinned_instance_not_the_default() {
     // Only the SECOND instance is connected, and with a long-lived token so
     // resolving it needs no network.
     let _ = app_infra::delete_ai_provider_key("chatgpt");
-    crate::chatgpt_auth::store_token_set(
+    app_core::chatgpt_auth::store_token_set(
         "chatgpt-2",
-        &crate::chatgpt_auth::ChatgptTokenSet {
+        &app_core::chatgpt_auth::ChatgptTokenSet {
             access_token: "second-account-token".to_string(),
             refresh_token: Some("r".to_string()),
             expires_at: Some(4_000_000_000),

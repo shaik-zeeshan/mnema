@@ -1536,7 +1536,7 @@ fn desktop_processing_registry(
                     // Denied ≠ missing (ADR 0048 amendment): a vault-denied read
                     // surfaces as Err and parks the job as transient liveness;
                     // only Ok(None) means "no key configured".
-                    Arc::new(crate::transcription_deepgram::load_deepgram_key),
+                    Arc::new(app_core::transcription_deepgram::load_deepgram_key),
                     deepgram_auth_status.clone(),
                 )) as Arc<dyn audio_transcription::TranscriptionProvider>,
             ]),
@@ -1646,7 +1646,7 @@ pub fn initialize(app: &mut tauri::App) -> Result<(), AppInfraInitializeError> {
         ));
     }
 
-    if !app.manage(crate::transcription_deepgram::DeepgramAuthStatusState(
+    if !app.manage(app_core::transcription_deepgram::DeepgramAuthStatusState(
         deepgram_auth_status,
     )) {
         app_core::debug_log::log_error(
@@ -1954,7 +1954,7 @@ pub(crate) fn run_deferred_startup_blocking(app_handle: &tauri::AppHandle) {
     // cache it for synchronous reads (capture-stop, status bar), and emit the
     // `license_status` event the frontend listens for. Runs here on the
     // deferred-startup seam (after the window opens) — it never gates launch.
-    crate::licensing::run_license_gate(app_handle);
+    app_core::licensing::run_license_gate(&app_handle.state::<Arc<app_core::AppCore>>());
 
     spawn_processing_worker(infra, base_dir, app_handle.clone(), background_workers);
 
@@ -2468,7 +2468,7 @@ fn run_hidden_segment_workspace_repair_startup_pass(
     app_handle: &tauri::AppHandle,
 ) -> Option<u64> {
     let recordings_root =
-        crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir.to_path_buf())
+        app_core::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir.to_path_buf())
             .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
@@ -2717,7 +2717,7 @@ fn spawn_hidden_segment_workspace_repair_worker(
     background_workers: BackgroundWorkersState,
 ) {
     let recordings_root =
-        crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir)
+        app_core::managed_storage_layout::ManagedStorageLayout::from_base_dir(base_dir)
             .recordings_root();
     let recordings_root_display = recordings_root.display().to_string();
 
@@ -3156,7 +3156,7 @@ async fn process_pending_speaker_analysis_jobs_once(
 
 fn resolve_base_dir(app_handle: &tauri::AppHandle) -> Result<ResolvedAppInfraBaseDir, String> {
     let settings = app_core::recording_settings::load_recording_settings_or_default(&app_handle.state::<std::sync::Arc<app_core::AppCore>>());
-    let base_dir = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+    let base_dir = app_core::managed_storage_layout::ManagedStorageLayout::from_save_directory(
         &settings.save_directory,
     )
     .base_dir()
@@ -6473,7 +6473,7 @@ mod tests {
 
     #[test]
     fn resolve_base_dir_from_save_directory_uses_save_directory_as_base_dir() {
-        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+        let layout = app_core::managed_storage_layout::ManagedStorageLayout::from_save_directory(
             "/tmp/mnema-recordings",
         );
 
@@ -6550,7 +6550,7 @@ mod tests {
 
     #[test]
     fn recordings_root_dir_nests_under_dot_z() {
-        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+        let layout = app_core::managed_storage_layout::ManagedStorageLayout::from_save_directory(
             "/tmp/mnema-recordings",
         );
 
@@ -6562,7 +6562,7 @@ mod tests {
 
     #[test]
     fn recordings_root_dir_is_child_of_base_dir() {
-        let layout = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
+        let layout = app_core::managed_storage_layout::ManagedStorageLayout::from_save_directory(
             "/tmp/mnema-recordings",
         );
         let base_dir = layout.base_dir().clone();
@@ -7814,7 +7814,7 @@ mod tests {
                 .await
                 .expect("app infra should initialize");
             let recordings_root =
-                crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
+                app_core::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
                     .recordings_root();
             let day_dir = recordings_root.join("2026/04/12");
             let workspace_dir = day_dir.join(".session-repair-safe-segment-0001");
@@ -7850,7 +7850,7 @@ mod tests {
                 .await
                 .expect("app infra should initialize");
             let recordings_root =
-                crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
+                app_core::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
                     .recordings_root();
             let workspace_dir =
                 recordings_root.join("2026/04/12/.session-repair-preserve-segment-0001");
@@ -7886,7 +7886,7 @@ mod tests {
                 .await
                 .expect("app infra should initialize");
             let recordings_root =
-                crate::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
+                app_core::managed_storage_layout::ManagedStorageLayout::from_base_dir(dir.path())
                     .recordings_root();
             let day_dir = recordings_root.join("2026/04/12");
             let workspace_dir = day_dir.join(".active-screen-session-segment-0001");

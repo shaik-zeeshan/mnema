@@ -130,11 +130,13 @@ fn exclusion_state(settings: &RecordingSettings, bundle_id: &str) -> Recommended
 }
 
 fn prompt_not_closed(app: &tauri::AppHandle) -> bool {
-    crate::one_time_prompts::current_state(app)
-        .prompts
-        .get(RECOMMENDED_EXCLUSIONS_PROMPT_ID)
-        .map(|record| record.dismissed_at.is_none() && record.completed_at.is_none())
-        .unwrap_or(true)
+    app_core::one_time_prompts::current_state(&tauri::Manager::state::<
+        std::sync::Arc<app_core::AppCore>,
+    >(app))
+    .prompts
+    .get(RECOMMENDED_EXCLUSIONS_PROMPT_ID)
+    .map(|record| record.dismissed_at.is_none() && record.completed_at.is_none())
+    .unwrap_or(true)
 }
 
 #[tauri::command]

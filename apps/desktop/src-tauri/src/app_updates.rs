@@ -451,7 +451,10 @@ fn apply_running_build_window_gate(
 ) -> AppUpdateState {
     running_build_window_gate(
         state,
-        crate::licensing::cached_status(app_handle).as_ref(),
+        app_core::licensing::cached_status(
+            &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+        )
+        .as_ref(),
         running_build_date_ms(),
     )
 }
@@ -782,7 +785,10 @@ async fn run_update_check(
             // `pending_update = None` so it can't be installed — the UI directs the
             // owner to renew. Perpetual Fallback: their current build keeps working.
             let out_of_window = build_out_of_window(
-                crate::licensing::cached_status(app_handle).as_ref(),
+                app_core::licensing::cached_status(
+                    &app_handle.state::<std::sync::Arc<app_core::AppCore>>(),
+                )
+                .as_ref(),
                 update_release_date_ms(&update),
             );
             let decision = decide_remote_update(out_of_window, notify_available);
@@ -972,7 +978,12 @@ pub fn get_app_update_status(app_handle: tauri::AppHandle) -> AppUpdateStatus {
 #[tauri::command]
 pub async fn check_for_app_update(app_handle: tauri::AppHandle) -> AppUpdateStatus {
     // Piggyback the CRL refresh on a manual "check for updates" (ADR 0056).
-    crate::crl_refresh::spawn_crl_refresh(app_handle.clone());
+    app_core::crl_refresh::spawn_crl_refresh(
+        app_handle
+            .state::<std::sync::Arc<app_core::AppCore>>()
+            .inner()
+            .clone(),
+    );
     run_update_check(&app_handle, false).await
 }
 

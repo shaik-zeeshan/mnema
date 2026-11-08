@@ -26,7 +26,7 @@ use std::path::{Component, Path, PathBuf};
 
 /// The reserve floor that protects the app's own storage (SQLite DB, OCR output,
 /// previews) and the OS. 1 GiB.
-pub(crate) const RESERVE_FLOOR_BYTES: u64 = 1024 * 1024 * 1024;
+pub const RESERVE_FLOOR_BYTES: u64 = 1024 * 1024 * 1024;
 
 /// Per-second audio byte rate folded into the next-segment estimate when *any*
 /// audio source (microphone and/or system audio) is requested. ~48 KB/s ≈
@@ -34,13 +34,13 @@ pub(crate) const RESERVE_FLOOR_BYTES: u64 = 1024 * 1024 * 1024;
 /// audio combined (real AAC is ~128 kbps/source), so audio-only capture reserves
 /// almost nothing while the screen bitrate dominates whenever screen is on. When
 /// neither audio source is requested the estimate uses `0` instead.
-pub(crate) const AUDIO_BYTES_PER_SEC: u64 = 48_000;
+pub const AUDIO_BYTES_PER_SEC: u64 = 48_000;
 
 /// The audio byte rate to fold into [`next_segment_estimate_bytes`] for a given
 /// audio-source request: a single [`AUDIO_BYTES_PER_SEC`] headroom figure when
 /// any audio source is on, `0` when neither is. (We do not scale by source count;
 /// the constant already covers mic + system audio together.)
-pub(crate) fn audio_bytes_per_sec_for_sources(
+pub fn audio_bytes_per_sec_for_sources(
     capture_microphone: bool,
     capture_system_audio: bool,
 ) -> u64 {
@@ -56,7 +56,7 @@ pub(crate) fn audio_bytes_per_sec_for_sources(
 /// floor and threshold math, which are all powers of two. There is no shared
 /// byte formatter in the codebase, so this small helper lives beside the
 /// thresholds it formats.
-pub(crate) fn human_bytes(bytes: u64) -> String {
+pub fn human_bytes(bytes: u64) -> String {
     const KIB: f64 = 1024.0;
     const MIB: f64 = KIB * 1024.0;
     const GIB: f64 = MIB * 1024.0;
@@ -75,7 +75,7 @@ pub(crate) fn human_bytes(bytes: u64) -> String {
 /// The critical floor below which the session can no longer protect its own
 /// storage and must stop gracefully. Equal to the reserve floor by design — the
 /// reserve floor *is* the critical threshold.
-pub(crate) const CRITICAL_FLOOR_BYTES: u64 = RESERVE_FLOOR_BYTES;
+pub const CRITICAL_FLOOR_BYTES: u64 = RESERVE_FLOOR_BYTES;
 
 /// Estimated size in bytes of the next segment file, given the effective screen
 /// bitrate, the audio byte rate, and the segment duration:
@@ -84,7 +84,7 @@ pub(crate) const CRITICAL_FLOOR_BYTES: u64 = RESERVE_FLOOR_BYTES;
 ///
 /// Saturating throughout so implausible inputs clamp to `u64::MAX` instead of
 /// overflowing. For audio-only capture pass `effective_screen_bitrate_bps = 0`.
-pub(crate) fn next_segment_estimate_bytes(
+pub fn next_segment_estimate_bytes(
     effective_screen_bitrate_bps: u64,
     audio_bytes_per_sec: u64,
     segment_duration_seconds: u64,
@@ -96,7 +96,7 @@ pub(crate) fn next_segment_estimate_bytes(
 
 /// Pause/preflight threshold: free space must stay at or above
 /// `RESERVE_FLOOR_BYTES + estimate` for a new segment to be opened. Saturating.
-pub(crate) fn pause_threshold_bytes(estimate_bytes: u64) -> u64 {
+pub fn pause_threshold_bytes(estimate_bytes: u64) -> u64 {
     RESERVE_FLOOR_BYTES.saturating_add(estimate_bytes)
 }
 
@@ -104,13 +104,13 @@ pub(crate) fn pause_threshold_bytes(estimate_bytes: u64) -> u64 {
 /// space reaches `RESERVE_FLOOR_BYTES + 2 * estimate`. The extra estimate of
 /// headroom over the pause threshold prevents flapping between pause and resume.
 /// Saturating.
-pub(crate) fn resume_threshold_bytes(estimate_bytes: u64) -> u64 {
+pub fn resume_threshold_bytes(estimate_bytes: u64) -> u64 {
     RESERVE_FLOOR_BYTES.saturating_add(estimate_bytes.saturating_mul(2))
 }
 
 /// Critical threshold: below `CRITICAL_FLOOR_BYTES` the session stops gracefully.
 /// Exposed as a helper so call sites stay uniform with the other thresholds.
-pub(crate) fn critical_threshold_bytes() -> u64 {
+pub fn critical_threshold_bytes() -> u64 {
     CRITICAL_FLOOR_BYTES
 }
 
@@ -122,7 +122,7 @@ pub(crate) fn critical_threshold_bytes() -> u64 {
 /// - `Critical`: free space is below the critical floor; stop gracefully (app
 ///   storage is now at risk).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum LowDiskDecision {
+pub enum LowDiskDecision {
     Sufficient,
     Pause,
     Critical,
@@ -133,7 +133,7 @@ pub(crate) enum LowDiskDecision {
 /// `Critical` if `free < critical`; else `Pause` if `free < pause_threshold`;
 /// else `Sufficient`. (The critical floor is at or below the pause threshold,
 /// so the ordering of these checks is total.)
-pub(crate) fn classify_free_space(free_bytes: u64, estimate_bytes: u64) -> LowDiskDecision {
+pub fn classify_free_space(free_bytes: u64, estimate_bytes: u64) -> LowDiskDecision {
     if free_bytes < critical_threshold_bytes() {
         LowDiskDecision::Critical
     } else if free_bytes < pause_threshold_bytes(estimate_bytes) {
@@ -146,7 +146,7 @@ pub(crate) fn classify_free_space(free_bytes: u64, estimate_bytes: u64) -> LowDi
 /// Whether a suspended session may resume: `free >= resume_threshold`. The
 /// resume threshold sits one estimate above the pause threshold (hysteresis), so
 /// a reading that merely cleared the pause threshold does not yet resume.
-pub(crate) fn can_resume(free_bytes: u64, estimate_bytes: u64) -> bool {
+pub fn can_resume(free_bytes: u64, estimate_bytes: u64) -> bool {
     free_bytes >= resume_threshold_bytes(estimate_bytes)
 }
 
@@ -154,12 +154,12 @@ pub(crate) fn can_resume(free_bytes: u64, estimate_bytes: u64) -> bool {
 /// non-privileged process on that path's volume. Defaults to
 /// [`default_free_space_probe`]; tests inject a stub so suspend/resume/preflight
 /// logic is exercisable without a real full disk.
-pub(crate) type FreeSpaceProbe = fn(&Path) -> std::io::Result<u64>;
+pub type FreeSpaceProbe = fn(&Path) -> std::io::Result<u64>;
 
 /// The production [`FreeSpaceProbe`]: `fs2::available_space`, which reports the
 /// space available to a non-privileged process — the right bound for capture
 /// writing into a user-space directory.
-pub(crate) fn default_free_space_probe(path: &Path) -> std::io::Result<u64> {
+pub fn default_free_space_probe(path: &Path) -> std::io::Result<u64> {
     fs2::available_space(path)
 }
 
@@ -196,7 +196,7 @@ fn volume_root(path: &Path) -> Option<PathBuf> {
 /// block capture. That covers "no existing ancestor to stat", "the volume is
 /// gone", and "the probe returned `Err`". Only a `Some(free)` reading that a
 /// threshold then finds short is allowed to act.
-pub(crate) fn measure_free_space(root: &Path, probe: FreeSpaceProbe) -> Option<u64> {
+pub fn measure_free_space(root: &Path, probe: FreeSpaceProbe) -> Option<u64> {
     let floor = volume_root(root);
     let probe_path = root
         .ancestors()
@@ -233,7 +233,7 @@ mod tests {
         let expected = (screen_bitrate_bps / 8 + AUDIO_BYTES_PER_SEC) * SEGMENT_SECONDS;
         assert_eq!(estimate, expected);
         assert_eq!(estimate, 304_800_000); // ~290 MB
-        // Between a few hundred MB and a GB for an 8 Mbps preset.
+                                           // Between a few hundred MB and a GB for an 8 Mbps preset.
         assert!(estimate > 256 * 1024 * 1024);
         assert!(estimate < 1024 * 1024 * 1024);
     }
@@ -264,7 +264,10 @@ mod tests {
     #[test]
     fn thresholds_derive_from_estimate_and_floor() {
         let estimate = 2_000_000_000; // 2 GB
-        assert_eq!(pause_threshold_bytes(estimate), RESERVE_FLOOR_BYTES + estimate);
+        assert_eq!(
+            pause_threshold_bytes(estimate),
+            RESERVE_FLOOR_BYTES + estimate
+        );
         assert_eq!(
             resume_threshold_bytes(estimate),
             RESERVE_FLOOR_BYTES + 2 * estimate
@@ -313,7 +316,10 @@ mod tests {
     fn classify_sufficient_at_or_above_pause_threshold() {
         let estimate = 500_000_000;
         let pause = pause_threshold_bytes(estimate);
-        assert_eq!(classify_free_space(pause, estimate), LowDiskDecision::Sufficient);
+        assert_eq!(
+            classify_free_space(pause, estimate),
+            LowDiskDecision::Sufficient
+        );
         assert_eq!(
             classify_free_space(pause + 1, estimate),
             LowDiskDecision::Sufficient
@@ -358,7 +364,7 @@ mod tests {
     fn audio_bytes_per_sec_for_sources_folds_in_only_when_audio_requested() {
         // NB: the test module shadows the production constant with a smaller
         // audio-only baseline, so reference the production figure by its path.
-        let headroom = crate::native_capture::disk_space::AUDIO_BYTES_PER_SEC;
+        let headroom = crate::disk_space::AUDIO_BYTES_PER_SEC;
         assert_eq!(audio_bytes_per_sec_for_sources(false, false), 0);
         assert_eq!(audio_bytes_per_sec_for_sources(true, false), headroom);
         assert_eq!(audio_bytes_per_sec_for_sources(false, true), headroom);

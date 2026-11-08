@@ -3,7 +3,7 @@
 //! through the existing `windows`/`status_bar` code. Nothing calls it yet; S2/S3
 //! route moved modules through it.
 
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use app_core::{
     AppCore, ConfirmDialog, CoreEvent, DialogKind, ExitKind, Host, MessageDialog, Paths,
@@ -15,7 +15,7 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 use tauri_plugin_opener::OpenerExt;
 use tokio::sync::oneshot;
 
-use crate::{status_bar, windows};
+use crate::{app_updates, status_bar, windows};
 use app_core::debug_log::{log, log_warn};
 
 /// Built before the Tauri app exists (the runtime must be set first), so the
@@ -23,11 +23,25 @@ use app_core::debug_log::{log, log_warn};
 #[derive(Default)]
 pub(crate) struct TauriHost {
     app: OnceLock<AppHandle>,
+    /// The last `license_status` payload delivered, so the update re-check runs
+    /// only when the status changed (licensing's old in-gate comparison).
+    last_license_status: Mutex<Option<Value>>,
 }
 
 impl TauriHost {
     pub(crate) fn attach(&self, app: AppHandle) {
         let _ = self.app.set(app);
+    }
+
+    /// Records `status` as the latest license status; `true` when it differs
+    /// from the previous one.
+    fn license_status_changed(&self, status: &Value) -> bool {
+        let Ok(mut last) = self.last_license_status.lock() else {
+            return false;
+        };
+        let changed = last.as_ref() != Some(status);
+        *last = Some(status.clone());
+        changed
     }
 
     fn app(&self) -> Option<&AppHandle> {
@@ -101,8 +115,22 @@ fn dialog_kind(kind: DialogKind) -> MessageDialogKind {
 impl Host for TauriHost {
     fn emit(&self, event: CoreEvent) {
         let Some(app) = self.app() else { return };
+        let license_changed = match &event {
+            CoreEvent::LicenseStatus(status) => Some(self.license_status_changed(status)),
+            _ => None,
+        };
         let (name, payload) = tauri_event(event);
         let _ = app.emit(name, payload);
+        // Licensing publishes; the updater and the tray react here, in the order
+        // licensing used to call them: re-check updates on a change (the update
+        // gate reads the status), then rebuild the tray (Read-Only Mode flips its
+        // header + Start-Recording enablement).
+        if let Some(changed) = license_changed {
+            if changed {
+                app_updates::spawn_update_check(app);
+            }
+            status_bar::refresh(app);
+        }
     }
 
     fn message(&self, req: MessageDialog) {
@@ -135,11 +163,17 @@ impl Host for TauriHost {
         rx
     }
 
-    fn open_url(&self, url: &str) {
-        let Some(app) = self.app() else { return };
-        if let Err(error) = app.opener().open_url(url, None::<String>) {
-            log_warn(format!("failed to open a URL: {error}"));
-        }
+    fn open_url(&self, target: &str) -> Result<(), String> {
+        let Some(app) = self.app() else {
+            return Err("app is not ready".to_string());
+        };
+        let opener = app.opener();
+        let result = if target.starts_with('/') {
+            opener.open_path(target, None::<String>)
+        } else {
+            opener.open_url(target, None::<String>)
+        };
+        result.map_err(|error| error.to_string())
     }
 
     fn refresh_tray(&self) {
@@ -278,8 +312,8 @@ mod tests {
             app_infra::frame_preview::SCRUB_PREVIEW_CACHE_CHANGED_EVENT,
             audio_transcription_models::AUDIO_TRANSCRIPTION_MODEL_DOWNLOAD_PROGRESS_EVENT,
             conversation::commands::CONVERSATION_CHANGED_EVENT,
-            licensing::LICENSE_DEEP_LINK_DONE_EVENT,
-            licensing::LICENSE_STATUS_EVENT,
+            app_core::licensing::LICENSE_DEEP_LINK_DONE_EVENT,
+            app_core::licensing::LICENSE_STATUS_EVENT,
             native_capture::APP_NOTIFICATIONS_CHANGED_EVENT,
             native_capture::AUDIO_SEGMENTS_CHANGED_EVENT,
             native_capture::NATIVE_CAPTURE_SESSION_CHANGED_EVENT,
