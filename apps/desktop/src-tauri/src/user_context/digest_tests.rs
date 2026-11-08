@@ -47,6 +47,11 @@ fn digest_preamble_leads_with_the_guardrail_and_bans_markdown() {
     assert!(preamble.starts_with(guardrail::SENSITIVE_GUARDRAIL_INSTRUCTION));
     assert!(preamble.contains("second person"));
     assert!(preamble.contains("Do NOT use markdown"));
+    // The read is a quick 2-3 line take, not a recap of the range.
+    assert!(preamble.contains("at most 2 short sentences, 40 words in total at most"));
+    assert!(preamble.contains("do not recount the days"));
+    // The turn is the headline's: the narrative must not take it over.
+    assert!(preamble.contains("is the headline's turn, not the narrative's"));
     // The headline ask rides the same preamble: a dash-free sentence + turn.
     assert!(preamble.contains("headline for the range: a full sentence"));
     assert!(preamble.contains("Never put a dash in the headline"));
@@ -512,6 +517,33 @@ fn normalize_narrative_trims_and_rejects_empty() {
     );
     assert_eq!(normalize_narrative("   \n\t"), None);
     assert_eq!(normalize_narrative(""), None);
+}
+
+/// An engine that ignores the 40-word ask: whole sentences that fit the cap
+/// are kept; with no sentence end inside the cap, a word cut ending in "…".
+#[test]
+fn normalize_narrative_caps_long_answers_at_a_sentence_end() {
+    // At the cap exactly: untouched.
+    let exact = "x".repeat(NARRATIVE_CHAR_CAP);
+    assert_eq!(normalize_narrative(&exact), Some(exact.clone()));
+
+    // Two sentences fit, the third crosses the cap: kept up to the 2nd period.
+    // "v0.1" inside the first sentence is not taken for a sentence end.
+    let first = format!("You shipped v0.1 of the {}.", "pipeline ".repeat(10).trim_end());
+    let second = format!("Then {}.", "calls ".repeat(10).trim_end());
+    let third = format!("And {}.", "review ".repeat(40).trim_end());
+    let long = format!("{first} {second} {third}");
+    assert!(long.chars().count() > NARRATIVE_CHAR_CAP);
+    assert_eq!(
+        normalize_narrative(&long),
+        Some(format!("{first} {second}"))
+    );
+
+    // One run-on sentence past the cap: word cut + ellipsis, still under the cap.
+    let run_on = "word ".repeat(80);
+    let cut = normalize_narrative(&run_on).expect("narrative");
+    assert!(cut.chars().count() <= NARRATIVE_CHAR_CAP);
+    assert!(cut.ends_with("word…"), "{cut}");
 }
 
 /// Headline post-validation: trim; empty/whitespace → `None` (NOT a
