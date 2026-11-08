@@ -108,8 +108,7 @@ T0 tooling ─┬─ S0 spike ── STOP: show founder ──┬─ S1 ─ S2 (
 ### Progress report (founder rule, 2026-11-08)
 After **every** merged slice/feature:
 1. update `docs/gpui/report/data.json` (now / done / next / metrics / screenshots);
-2. run `python3 docs/gpui/report/build.py`;
-3. run `npx -y postplan@latest upload target/gpui-report/index.html --draft d9ymz3pr4vyt`.
+2. run `python3 docs/gpui/report/build.py --publish`. It uploads one screenshots page per group plus the index; draft ids live in `docs/gpui/report/drafts.json`, so every page keeps its URL. Postplan caps a page at 4 MiB, so never put all the screenshots on one page.
 
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
