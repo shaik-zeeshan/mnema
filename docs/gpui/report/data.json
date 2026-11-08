@@ -1,6 +1,6 @@
 {
-  "updated": "2026-11-08 20:20",
-  "verdict": "About a third done. Timeline and Chat are built (screenshots waiting for your sign-off), every shared control and the main window are approved, and ~45% of the backend has moved. Next: the recording engine move, Settings and Insights.",
+  "updated": "2026-11-08 20:35",
+  "verdict": "Paused. About a third done: Timeline and Chat are built (screenshots waiting for your sign-off), the main window and all shared controls are approved, and the backend move's first stage (S2) is complete. Recording-engine move, Settings and Insights were in progress and are saved to resume.",
   "metrics": [
     {
       "label": "Overall",
@@ -56,19 +56,9 @@
   ],
   "now": [
     {
-      "id": "S3a",
-      "title": "Recording engine move — part 1 of 4",
-      "detail": "The capture leaf modules: metadata, activity, capture health, system audio, microphone (+ away), privacy filter. Parts 2–4 follow one after another (segments, lifecycle, Ask AI)."
-    },
-    {
-      "id": "S13",
-      "title": "Settings screen",
-      "detail": "Rail with search, save status, one scroll column with scroll-spy, all 20 sections, the autosave engine (450 / 0 / 250 ms) with timing tests."
-    },
-    {
-      "id": "S12",
-      "title": "Insights screen",
-      "detail": "Overview, Journal with the receipt viewer, Subjects with the evidence drawer and the 5-second Undo, Context, and the six chart types."
+      "id": "Paused",
+      "title": "Work paused at your request",
+      "detail": "Recording-engine move part 1, Settings and Insights stopped mid-way when the usage limit hit; their work is saved and will resume when you say so."
     }
   ],
   "done": [

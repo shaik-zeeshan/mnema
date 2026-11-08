@@ -114,11 +114,14 @@ After **every** merged slice/feature:
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
 ### Next up (orchestrator queue; keep current)
-1. **Running:**
-   - S3a capture leaves (slot 3). S3 is split into a → b (`segments.rs`) → c (lifecycle + `native_capture.rs` root + reminder) → d (ask_ai / conversation / debug_health + the S3 leftovers), run one after another.
-   - S13 Settings (slot 1) and S12 Insights (slot 2).
-   - Done: S8 2a17488a, S11 bc38c3bb, B6b 26e994bb. **S2 is complete.**
+1. **PAUSED by the founder (2026-11-08, ~20:30)** after the usage limit hit. Three agents stopped mid-work; their partial work is saved in these worktrees (salvage it or relaunch the slice):
+   - S3a capture leaves: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-ac2748086a4bbf839`
+   - S13 Settings: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-aef107fcd394658f0`
+   - S12 Insights: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-acad0b6ce3e5374fa`
+   - Done before the pause: S8 2a17488a, S11 bc38c3bb, B6b 26e994bb. **S2 is complete.**
+   - Waiting for founder sign-off: Timeline (10 new) + Chat (10 new) + shell (12 changed) baselines.
    - Queued, no slot yet: the S8 perf pass (fix the frame-time metric to work-per-frame + dropped frames, and chase the scrub stutters up to 170 ms); drop the "pressed primary" gallery cell; S15 small windows; S10 Quick Recall (needs S7); S9 AudioDrawer.
+   - The hourly auto-resume cron was cancelled at the founder's request. Resume only when asked.
 2. **Waiting for S3** (all in src-tauri): app_infra startup/retention/processing workers + `run_deferred_startup_blocking` (read NativeCaptureState), voice_enrollment, select_semantic_search_model, wipe_user_context, the privacy-exclusion apply step, the installed-app list.
 3. **UI waves:** S13 Settings next, then S12 Insights, S10 Quick Recall and S15 small windows.
 5. **Docs debt:** `AGENTS.md` and `docs/user-context/CONTEXT.md` still name src-tauri paths for ai_runtime and user_context. Update them in one pass after S3.
