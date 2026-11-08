@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-09 05:00",
-  "verdict": "About 60% done. The GPUI app now starts, quits and works with macOS end to end in a dev bundle (tray, hotkeys, links, Dock, ⌘Q). Six of eight screens are built; Quick Recall and the audio drawer are building now.",
+  "updated": "2026-11-09 06:00",
+  "verdict": "About 65% done. The GPUI app works end to end in a dev bundle; seven of eight screens are built (the audio drawer just landed). Quick Recall is measuring its summon speed; Onboarding is building.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~60%",
+      "value": "~65%",
       "note": "of the whole build"
     },
     {
@@ -14,8 +14,8 @@
     },
     {
       "label": "Screens built",
-      "value": "6 of 8",
-      "note": "shell, Timeline, Chat, Settings, Insights, small windows"
+      "value": "7 of 8",
+      "note": "+ audio drawer; Quick Recall and Onboarding in progress"
     },
     {
       "label": "Tests passing",
@@ -24,8 +24,8 @@
     },
     {
       "label": "Screenshots",
-      "value": "108 ✓ · 42 waiting",
-      "note": "small windows new"
+      "value": "108 ✓ · 66 waiting",
+      "note": "small windows 42, drawer 8, 16 frame-resampling refreshes"
     }
   ],
   "bars": [
@@ -43,7 +43,7 @@
     },
     {
       "label": "Screens (S5, S6, S8–S15)",
-      "pct": 78
+      "pct": 85
     },
     {
       "label": "Packaging + updater (S16)",
@@ -58,12 +58,12 @@
     {
       "id": "S10",
       "title": "Quick Recall panel",
-      "detail": "The ⌘⌥Space floating panel: search, filters, ghost completion, results, QuickLook, Ask with streaming answers; summon latency target ≤ 50 ms."
+      "detail": "Built and checked side by side; now measuring hotkey-to-panel speed (target ≤ 50 ms)."
     },
     {
-      "id": "S9",
-      "title": "Audio drawer + image memory",
-      "detail": "Transcript reader with karaoke, speaker-coloured waveform, speaker repair, native playback; plus cutting the Timeline image cache from gigabytes to megabytes."
+      "id": "S14",
+      "title": "Onboarding",
+      "detail": "The 8-step setup window: welcome, permissions and storage (the two hard gates), settings, model downloads that never block, voice, and a finale that starts recording."
     }
   ],
   "done": [
@@ -222,14 +222,15 @@
       "title": "Timeline smoothness",
       "what": "A correct frame-time measurement; scrubbing now costs ~2–6 ms of work per frame (budget 8), Chat streaming ~2.5 ms. Remaining drops come from system memory pressure.",
       "commit": "c365b475"
+    },
+    {
+      "id": "S9",
+      "title": "Audio drawer + leaner image cache",
+      "what": "Transcript with word-by-word karaoke, speaker-coloured waveform, speaker repair, native playback, drawer keys. The Timeline image cache now keeps compressed frames like today's app: memory 1.2 GB → 0.33 GB.",
+      "commit": "9ce0e7a2"
     }
   ],
   "next": [
-    {
-      "id": "S13 · S12 · S10 · S15 · S9 · S14",
-      "title": "The remaining screens",
-      "detail": "Settings, Insights, Quick Recall, small windows, audio drawer, onboarding: three at a time, each with screenshots for your sign-off."
-    },
     {
       "id": "S16",
       "title": "Packaging + updater",
@@ -280,6 +281,16 @@
         "update-install-failed",
         "update-ready",
         "update-uptodate"
+      ]
+    },
+    {
+      "title": "Audio drawer — new, waiting for sign-off",
+      "note": "Peek, expanded reader, speaker repair, not-transcribed; dark/light. (Also refreshes 16 Timeline/shell images by a few edge pixels inside the frame.)",
+      "files": [
+        "timeline-drawer-peek",
+        "timeline-drawer-expanded",
+        "timeline-drawer-repair",
+        "timeline-drawer-no-transcript"
       ]
     },
     {
