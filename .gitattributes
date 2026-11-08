@@ -1,0 +1,1 @@
+apps/desktop-gpui/tests/visual/baselines/*.png filter=lfs diff=lfs merge=lfs -text
