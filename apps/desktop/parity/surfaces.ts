@@ -21,6 +21,10 @@ export interface Surface {
   mockViewport?: { width: number; height: number };
   /** Optional click on the Tauri side after load, for views the route can't address by URL. */
   click?: string;
+  /** Per-state clicks in order (overrides `click`), e.g. a tab then a row. */
+  stateClick?: Record<string, string[]>;
+  /** Per-state fixture name under parity/fixtures/<surface>/ (defaults to the state). */
+  stateFixture?: Record<string, string>;
   /** Per-state override of `route` (a state that opens a record by URL, e.g. `/chat?c=<id>`). */
   stateRoute?: Record<string, string>;
   /** Per-state mockup `#hash` (pages that pick a section by anchor, e.g. settings.html). */
@@ -46,6 +50,22 @@ const insights = (tab: string, label: string, ids: string): Surface => ({
   click: tab === "overview" ? undefined : `.in-bar button:has-text("${label}")`,
   states: { default: "", ...q("state", `${INSIGHTS_ANY} ${ids}`) },
 });
+
+const tabClick = (label: string) => `.in-bar button:has-text("${label}")`;
+/** Insights parity states: `[state, mockup anchor, Tauri clicks, mockup query]` (mirrors
+ *  `insights::fixture::STATES`). */
+const INSIGHTS_SET: [string, string, string[], string][] = [
+  ["overview", "overview", [], ""],
+  ["overview-empty", "overview", [], "state=new-user"],
+  ["journal", "journal", [tabClick("Journal")], ""],
+  ["journal-empty", "journal", [tabClick("Journal")], "state=new-user"],
+  ["subjects", "subjects", [tabClick("Subjects")], ""],
+  ["subjects-empty", "subjects", [tabClick("Subjects")], "state=new-user"],
+  ["context", "context", [tabClick("Context")], ""],
+  ["context-empty", "context", [tabClick("Context")], "state=new-user"],
+  ["subject", "subjects", [tabClick("Subjects"), ".in-map__row", ".sd-row"], "state=detail"],
+  ["receipt", "journal", [tabClick("Journal"), 'button:has-text("Receipt")'], ""],
+];
 
 /** Settings parity states: `[state, ?tab=, mockup anchor]` (mirrors `settings::fixture::STATES`). */
 const SETTINGS_SETS: [string, string, string][] = [
@@ -130,6 +150,21 @@ export const SURFACES: Record<string, Surface> = {
     "none-yet sparse no-match updated load-error detail detail-loading detail-empty detail-error",
   ),
   "insights-context": insights("context", "Context", "empty load-error adding add-error over-cap"),
+  // The S12 set (fixtures/insights/{populated,empty}.json): every tab x {populated, empty},
+  // a subject page with its evidence drawer, and a Journal card with its receipt open.
+  insights: {
+    route: "/insights",
+    label: "main",
+    viewport: MAIN,
+    page: "insights.html",
+    selector: WIN,
+    stateFixture: Object.fromEntries(
+      INSIGHTS_SET.map(([state]) => [state, state.endsWith("-empty") ? "empty" : "populated"]),
+    ),
+    stateClick: Object.fromEntries(INSIGHTS_SET.map(([state, , clicks]) => [state, clicks])),
+    stateHash: Object.fromEntries(INSIGHTS_SET.map(([state, tab]) => [state, tab])),
+    states: Object.fromEntries(INSIGHTS_SET.map(([state, , , mock]) => [state, mock])),
+  },
   chat: {
     route: "/chat",
     label: "main",

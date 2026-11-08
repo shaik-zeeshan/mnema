@@ -7,7 +7,7 @@ use capture_types::{
     RuntimeSourcesStatus,
 };
 
-/// The main window's four surfaces (placeholders until S8/S11/S12/S13).
+/// The main window's four surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
     Timeline,

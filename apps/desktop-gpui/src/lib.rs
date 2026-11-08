@@ -10,6 +10,7 @@ pub mod bridge {
 pub mod feel;
 pub mod gallery;
 pub mod host;
+pub mod insights;
 pub mod keymap;
 pub mod logging;
 pub mod native;

@@ -76,6 +76,12 @@ The plan is `docs/gpui/PLAN.md`; the brief and founder rulings are `docs/gpui/BU
 - **Confirms** go through `settings::confirm` → `Host::confirm`; the GPUI host drops confirms (reads as Cancel) until S7.
 - **Goldens:** `settings-<state>-<theme>.png` for `settings::fixture::STATES` (group tops + deeper sections reached by `open_tab`), all from `parity/fixtures/settings/default.json`, shell not recording.
 
+## Insights *(set by S12)*
+- **Data:** `insights::data::Backend` (sync, run on the background executor; every method has a "nothing / no app core" default, so `NoBackend` is empty). `CoreBackend` calls app-core's `user_context`, `usage_charts`, `app_infra` and `ai_runtime` directly; `insights::fixture::FixtureBackend::load(<set>)` serves `parity/fixtures/insights/{populated,empty}.json` and records writes (`calls()`). Loads use per-slot generation tokens, so a stale answer never lands.
+- **Charts** live in `insights/charts/` (stacked bar, heatmap, focus split, sparkline + line chart on canvas paths, mini bars, confidence bar, spec rows): reuse them, don't redraw.
+- **Delayed-commit Dismiss:** `insights::undo::DelayedDismiss` (5000 ms). Any navigation away (tab, back, another subject, the shell leaving Insights) calls `Insights::leave`, which commits now.
+- **Shell:** Insights emits `InsightsEvent::{Ask, OpenTimeline}`; the shell routes ⌘J and Esc to it first, and bare keys (`[` `]` ↑ ↓) through `insights::register_keys` on its root.
+
 ## Tests
 - **Behaviour:**
   - `#[gpui::test]` with `TestAppContext` / `VisualTestContext`;

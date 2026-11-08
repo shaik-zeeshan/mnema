@@ -13,6 +13,8 @@ mod chat;
 mod compare;
 #[path = "visual/gallery.rs"]
 mod gallery;
+#[path = "visual/insights.rs"]
+mod insights;
 #[path = "visual/settings.rs"]
 mod settings;
 #[path = "visual/timeline.rs"]
@@ -210,6 +212,15 @@ fn run() -> anyhow::Result<()> {
             let model = model_for(FixtureId::Populated).unwrap();
             return chat::parity(&mut cx, &dir, &state, setting.clone(), model);
         }
+        if !filters.is_empty() && filters.iter().all(|f| "insights".contains(f.as_str())) {
+            let state = std::env::var("PARITY_STATE")?;
+            let theme_name = std::env::var("PARITY_THEME")?;
+            let (_, setting) = THEMES
+                .iter()
+                .find(|(t, _)| *t == theme_name)
+                .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
+            return insights::parity(&mut cx, &dir, &state, setting.clone());
+        }
         if !filters.is_empty() && filters.iter().all(|f| "settings".contains(f.as_str())) {
             let state = std::env::var("PARITY_STATE")?;
             let theme_name = std::env::var("PARITY_THEME")?;
@@ -277,6 +288,7 @@ fn run() -> anyhow::Result<()> {
     failures.extend(chat::goldens(&mut cx, &filters, &THEMES, &populated)?);
     let idle = model_for(FixtureId::Empty).unwrap();
     failures.extend(settings::goldens(&mut cx, &filters, &THEMES, &idle)?);
+    failures.extend(insights::goldens(&mut cx, &filters, &THEMES)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

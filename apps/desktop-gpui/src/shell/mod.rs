@@ -7,7 +7,6 @@ pub mod data;
 pub mod fixture;
 pub mod model;
 mod notifications_pop;
-mod placeholder;
 mod shortcuts_pop;
 mod status_bar;
 mod status_pop;
@@ -47,8 +46,9 @@ pub struct Shell {
     pub timeline: Entity<crate::timeline::TimelineView>,
     pub chat: Entity<crate::chat::Chat>,
     pub settings: Entity<crate::settings::Settings>,
+    pub insights: Entity<crate::insights::Insights>,
     focus: FocusHandle,
-    _subscriptions: [Subscription; 2],
+    _subscriptions: [Subscription; 3],
     tick: Option<Task<()>>,
 }
 
@@ -69,8 +69,15 @@ impl Shell {
         let timeline = cx.new(|cx| crate::timeline::TimelineView::new(source, cx));
         let chat = cx.new(|cx| crate::chat::Chat::new(window, cx));
         let settings = cx.new(|cx| crate::settings::Settings::new(window, cx));
+        let backend: std::sync::Arc<dyn crate::insights::data::Backend> =
+            match crate::chat::core(cx) {
+                Some(core) => std::sync::Arc::new(crate::insights::data::CoreBackend(core)),
+                None => std::sync::Arc::new(crate::insights::data::NoBackend),
+            };
+        let insights = cx.new(|cx| crate::insights::Insights::new(backend, window, cx));
         let subscriptions = [
             cx.subscribe_in(&command, window, Self::on_command),
+            cx.subscribe_in(&insights, window, Self::on_insights),
             // System appearance follows the OS (theme::set_system ignores it when pinned).
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::set_system(window.appearance(), cx)
@@ -90,6 +97,7 @@ impl Shell {
             timeline,
             chat,
             settings,
+            insights,
             focus,
             _subscriptions: subscriptions,
             tick: None,
@@ -136,6 +144,13 @@ impl Shell {
             return;
         }
         self.ink_from = self.surface;
+        // Leaving Insights commits a pending Dismiss now; arriving re-reads it.
+        if self.surface == Surface::Insights {
+            self.insights.update(cx, |i, cx| i.leave(cx));
+        }
+        if surface == Surface::Insights {
+            self.insights.update(cx, |i, cx| i.reload(cx));
+        }
         if matches!(surface, Surface::Timeline | Surface::Insights) {
             self.last_main = surface;
         }
@@ -186,6 +201,24 @@ impl Shell {
         }
     }
 
+    fn on_insights(
+        &mut self,
+        _: &Entity<crate::insights::Insights>,
+        event: &crate::insights::InsightsEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            crate::insights::InsightsEvent::Ask(q) => {
+                let q = Some(q.clone());
+                self.chat
+                    .update(cx, |chat, cx| chat.new_chat(q, true, window, cx));
+                self.go(Surface::Chat, cx);
+            }
+            crate::insights::InsightsEvent::OpenTimeline => self.go(Surface::Timeline, cx),
+        }
+    }
+
     fn focus_field(&mut self, mode: Mode, window: &mut Window, cx: &mut Context<Self>) {
         if self.surface == Surface::Settings {
             return; // no titlebar on Settings
@@ -216,7 +249,11 @@ impl Shell {
         )
         .on_action(cx.listener(|this, _: &keymap::FocusAsk, w, cx| {
             // ⌘J on Chat = a new chat in place; elsewhere it focuses Ask.
-            if this.surface == Surface::Chat {
+            let insights_ask = this.surface == Surface::Insights
+                && this.insights.update(cx, |i, cx| i.ask_query(cx)).is_some();
+            if insights_ask {
+                this.insights.update(cx, |i, cx| i.ask(cx));
+            } else if this.surface == Surface::Chat {
                 this.chat
                     .update(cx, |chat, cx| chat.new_chat(None, false, w, cx));
             } else {
@@ -253,6 +290,9 @@ impl Shell {
                 cx.notify();
             } else if this.surface == Surface::Settings {
                 this.go(this.last_main, cx);
+            } else if this.surface == Surface::Insights
+                && this.insights.update(cx, |i, cx| i.close_top(cx))
+            {
             } else if this.surface == Surface::Timeline
                 && this.timeline.update(cx, |t, cx| t.close_top(cx))
             {
@@ -302,6 +342,9 @@ impl Render for Shell {
         let timeline = (self.surface == Surface::Timeline).then(|| self.timeline.clone());
         self.register_actions(root, cx)
             .when_some(timeline, |el, t| crate::timeline::register_actions(el, &t))
+            .when(self.surface == Surface::Insights, |el| {
+                crate::insights::register_keys(el, &self.insights)
+            })
             .when(chrome, |el| {
                 el.child(titlebar::render(self, &p, window, cx))
             })
@@ -309,7 +352,7 @@ impl Render for Shell {
                 Surface::Timeline => el.child(self.timeline.clone()),
                 Surface::Chat => el.child(self.chat.clone()),
                 Surface::Settings => el.child(self.settings.clone()),
-                _ => el.child(placeholder::render(self, &p, cx)),
+                Surface::Insights => el.child(self.insights.clone()),
             })
             .when(chrome, |el| {
                 el.child(status_bar::render(self, &p, window, cx))

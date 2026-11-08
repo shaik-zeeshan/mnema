@@ -40,6 +40,8 @@ icon_assets!(
         Shield,
         Link,
         Speech,
+        CornerDownRight,
+        List,
     ]
 );
 

@@ -81,9 +81,12 @@ async function shootTauri(
   const errors: string[] = [];
   tauri.on("pageerror", (e) => errors.push(e.message));
   await tauri.clock.setFixedTime(NOW);
-  await installTauriStub(tauri, { label: s.label, map: fixture(surfaceId, state) });
+  await installTauriStub(tauri, { label: s.label, map: fixture(surfaceId, s.stateFixture?.[state] ?? state) });
   await tauri.goto(`${VITE}${s.stateRoute?.[state] ?? s.route}`, { waitUntil: "networkidle" });
-  if (s.click) await tauri.locator(s.click).first().click();
+  for (const click of s.stateClick?.[state] ?? (s.click ? [s.click] : [])) {
+    await tauri.locator(click).first().click();
+    await tauri.waitForTimeout(400); // the next target renders after this click's invokes resolve
+  }
   await tauri.evaluate(() => document.fonts.ready);
   await tauri.waitForTimeout(800); // let $effects settle after the stubbed invokes resolve
   await tauri.screenshot({ path: join(out, "tauri.png"), animations: "disabled" });
