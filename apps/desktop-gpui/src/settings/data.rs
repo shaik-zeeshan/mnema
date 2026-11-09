@@ -178,6 +178,17 @@ pub trait Backend: Send + Sync + 'static {
         &self,
         state: &MicrophoneControllerState,
     ) -> Result<MicrophoneControllerState, String>;
+    /// `ai_runtime_set_provider_key` into the vault, by instance id; answers the
+    /// stored key's last 4 (`ai_runtime_provider_key_ending`). Never logs the key.
+    fn save_key(&self, provider: &str, key: &str) -> Result<Option<String>, String> {
+        let _ = (provider, key);
+        Err("no app core".into())
+    }
+    /// `ai_runtime_clear_provider_key` (also revokes a ChatGPT token set).
+    fn clear_key(&self, provider: &str) -> Result<(), String> {
+        let _ = provider;
+        Err("no app core".into())
+    }
 }
 
 pub struct CoreBackend(pub Arc<AppCore>);
@@ -209,6 +220,25 @@ impl Backend for CoreBackend {
     fn save_mic(&self, _: &MicrophoneControllerState) -> Result<MicrophoneControllerState, String> {
         // shortcut: update_microphone_controller drives the capture runtime (src-tauri) until S3.
         Err("update_microphone_controller isn't in app-core until S3".into())
+    }
+
+    fn save_key(&self, provider: &str, key: &str) -> Result<Option<String>, String> {
+        use app_core::ai_runtime::{ai_runtime_provider_key_ending, ai_runtime_set_provider_key};
+        let request = serde_json::from_value(json!({ "provider": provider, "key": key }))
+            .map_err(|_| "couldn't build the key request".to_string())?;
+        self.0.block_on(ai_runtime_set_provider_key(request))?;
+        let ending = serde_json::from_value(json!({ "provider": provider }))
+            .ok()
+            .and_then(|r| self.0.block_on(ai_runtime_provider_key_ending(r)).ok())
+            .flatten();
+        Ok(ending)
+    }
+
+    fn clear_key(&self, provider: &str) -> Result<(), String> {
+        let request =
+            serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
+        self.0
+            .block_on(app_core::ai_runtime::ai_runtime_clear_provider_key(request))
     }
 }
 

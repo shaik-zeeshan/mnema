@@ -8,6 +8,7 @@
 //! = the parity JSON). Screens render in `screens/*`; the step machine, the
 //! storage verdict, downloads and the voice take are pure modules.
 
+pub mod ai;
 pub mod data;
 pub mod downloads;
 #[cfg(feature = "fixtures")]
@@ -21,6 +22,8 @@ mod actions;
 mod screens;
 
 pub use actions::EVIDENCE_POLL;
+#[cfg(test)]
+mod ai_tests;
 #[cfg(test)]
 mod tests;
 
@@ -122,6 +125,7 @@ pub struct Onboarding {
     pub native_pixels: Option<f64>,
     // Change settings
     pub tab: usize,
+    pub ai: ai::AiSetup,
     pub undo: Option<(Features, String)>,
     // Setup
     pub dl: Downloads,
@@ -185,6 +189,7 @@ impl Onboarding {
             probe_seq: 0,
             native_pixels: None,
             tab: 0,
+            ai: ai::AiSetup::default(),
             undo: None,
             dl: Downloads::default(),
             take: Take::default(),
@@ -241,6 +246,7 @@ impl Onboarding {
                     }
                     s.loaded = true;
                     s.resolve();
+                    s.ai_loaded(cx);
                     s.entered(cx);
                 }
                 Err(e) => s.error = Some(e),
@@ -319,10 +325,6 @@ impl Onboarding {
             return false;
         }
         flow::can_continue(self.step, self.capture_block().as_deref())
-    }
-
-    pub fn ai_ready(&self) -> bool {
-        self.draft.ai_runtime.default_model.is_some() && !self.draft.ai_runtime.providers.is_empty()
     }
 
     // ── Navigation ─────────────────────────────────────────────────────────
@@ -518,9 +520,15 @@ pub fn open(cx: &mut App) {
     }
 }
 
-/// Route a `CoreEvent` the open onboarding window cares about (download progress).
+/// Route a `CoreEvent` the open onboarding window cares about (download
+/// progress, the ChatGPT sign-in outcome).
 pub fn on_event(event: &app_core::CoreEvent, cx: &mut App) {
     use app_core::CoreEvent as E;
+    if let (E::ChatgptLoginUpdate(v), Some(Open(_, view))) = (event, cx.try_global::<Open>()) {
+        let view = view.clone();
+        let _ = view.update(cx, |o, cx| o.on_chatgpt_update(v, cx));
+        return;
+    }
     let payload = match event {
         E::AudioTranscriptionModelDownloadProgress(p) => serde_json::to_value(p),
         E::SpeakerAnalysisModelDownloadProgress(p) => serde_json::to_value(p),

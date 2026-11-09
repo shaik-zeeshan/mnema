@@ -75,6 +75,16 @@ const INSIGHTS_SET: [string, string, string[], string][] = [
 const obBtn = (label: string) => `.ob-foot button:has-text("${label}")`;
 const OB_TO_CAPTURE = ['button:has-text("Begin setup")', obBtn("Continue"), obBtn("Capture & Storage")];
 const OB_TO_SETUP = [...OB_TO_CAPTURE, obBtn("Your settings"), obBtn("Start")];
+/** Change settings › AI features, "I have a key". */
+const OB_TO_AI = [
+  ...OB_TO_CAPTURE,
+  obBtn("Your settings"),
+  obBtn("Change settings"),
+  '.tabs button:has-text("AI features")',
+  '.mx-choice__opt:has-text("I have a key")',
+];
+const OB_AI_KEY = [...OB_TO_AI, "select:.ob-select=anthropic", 'input[aria-label="API key"]'];
+const OB_AI_TYPED = ["s", "k", "-", "a", "n", "t", "-", "1", "2", "3"];
 const OB_SET: [string, string, string[]][] = [
   ["welcome", "default", []],
   ["permissions", "default", ['button:has-text("Begin setup")']],
@@ -88,7 +98,21 @@ const OB_SET: [string, string, string[]][] = [
   ["setup-done", "installed", OB_TO_SETUP],
   ["voice", "installed", [...OB_TO_SETUP, obBtn("Continue")]],
   ["finale", "finale", [...OB_TO_SETUP, obBtn("Continue"), obBtn("Skip")]],
+  // AI setup (S14b). The stub answers instantly, so "verifying" lands live on the Tauri side.
+  ["ai-choose", "granted", OB_TO_AI],
+  ["ai-key", "granted", OB_AI_KEY],
+  ["ai-verifying", "granted", OB_AI_KEY],
+  ["ai-ready", "granted", OB_AI_KEY],
+  ["ai-invalid", "ai-invalid", OB_AI_KEY],
+  ["ai-chatgpt", "granted", [...OB_TO_AI, "select:.ob-select=chatgpt", 'button:has-text("Sign in with ChatGPT")']],
 ];
+/** Typed keys after the clicks (the key field verifies itself 650 ms after the last one). */
+const OB_KEYS: Record<string, string[]> = {
+  "ai-key": OB_AI_TYPED.slice(0, 5),
+  "ai-verifying": OB_AI_TYPED,
+  "ai-ready": OB_AI_TYPED,
+  "ai-invalid": OB_AI_TYPED,
+};
 
 /** Settings parity states: `[state, ?tab=, mockup anchor]` (mirrors `settings::fixture::STATES`). */
 const SETTINGS_SETS: [string, string, string][] = [
@@ -295,8 +319,13 @@ export const SURFACES: Record<string, Surface> = {
       OB_SET.map(([state, file]) => [state, file]),
     ),
     stateClick: Object.fromEntries(OB_SET.map(([state, , clicks]) => [state, clicks])),
+    stateKeys: OB_KEYS,
     states: {
       ...q("step", "welcome permissions capture settings change setup voice finale"),
+      // AI states the mockup doesn't draw borrow its nearest one.
+      "ai-choose": "state=ai-held",
+      "ai-key": "state=ai-verifying",
+      "ai-chatgpt": "state=ai-held",
       "permissions-granted": "step=permissions&perm=sysaudio",
       "permissions-denied": "state=perm-denied",
       "capture-blocked": "step=capture&folder=tiny",

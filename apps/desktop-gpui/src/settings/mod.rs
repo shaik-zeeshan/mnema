@@ -15,7 +15,7 @@ pub mod model;
 mod rail;
 pub mod reload;
 pub mod row;
-mod sections;
+pub(crate) mod sections;
 #[cfg(test)]
 mod tests;
 mod view;
@@ -76,6 +76,8 @@ pub struct Ui {
     /// The provider whose Manage fields are open.
     pub provider_open: Option<String>,
     pub add_provider_open: bool,
+    /// The last provider key save / clear failure, in words.
+    pub key_error: Option<String>,
     pub mcp_picker_open: bool,
     pub delete_window: usize,
     /// The shortcut row listening for keys.
@@ -232,7 +234,11 @@ impl Settings {
             idle_unload: input(window, cx, ""),
             chunk: input(window, cx, ""),
             whitelist: input(window, cx, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"),
-            provider_key: input(window, cx, "Paste your provider API key"),
+            provider_key: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("Paste your provider API key")
+            }),
             deepgram_key: input(window, cx, "Paste your Deepgram API key"),
             license_key: input(window, cx, "Paste your license key"),
         };

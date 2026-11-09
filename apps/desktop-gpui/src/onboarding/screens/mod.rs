@@ -1,6 +1,7 @@
 //! One file per step; each adds an `impl Onboarding` block that returns the
 //! step's main column and its footer.
 
+mod ai;
 mod capture;
 mod change;
 mod finale;

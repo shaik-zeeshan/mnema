@@ -7,12 +7,13 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use capture_types::AppearanceSetting;
+use capture_types::{AiProviderConfig, AiProviderKind, AppearanceSetting};
 use gpui_kit::base::Root;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     px, size, transparent_black, AnyWindowHandle, AppContext, Entity, VisualTestAppContext,
 };
+use mnema_gpui::onboarding::ai::Check;
 use mnema_gpui::onboarding::data::Backend;
 use mnema_gpui::onboarding::fixture::{FixtureBackend, STATES};
 use mnema_gpui::onboarding::flow::Step;
@@ -60,6 +61,57 @@ fn progress(
     });
 }
 
+/// Change settings › AI features, "I have a key", then each state's input.
+fn ai_state(
+    o: &Entity<Onboarding>,
+    cx: &mut VisualTestAppContext,
+    window: AnyWindowHandle,
+    state: &str,
+) -> anyhow::Result<()> {
+    let kind = match state {
+        "ai-choose" => AiProviderKind::Ollama,
+        "ai-chatgpt" => AiProviderKind::Chatgpt,
+        _ => AiProviderKind::Anthropic,
+    };
+    cx.update(|cx| {
+        o.update(cx, |o, cx| {
+            o.tab = 3;
+            o.ai_set_mode(true, cx);
+            o.ai_set_kind(kind, cx);
+        })
+    });
+    // The key field is made on the first render of the pane.
+    settle(cx, window)?;
+    cx.update_window(window, |_, window, cx| {
+        o.update(cx, |o, cx| {
+            let key = o.ai.key.clone().expect("key field");
+            match state {
+                "ai-key" => key.update(cx, |s, cx| s.set_value("sk-ant-api03-7Hq2", window, cx)),
+                "ai-ready" | "ai-invalid" => {
+                    key.update(cx, |s, cx| s.set_value("sk-ant-api03-7Hq2", window, cx));
+                    o.ai_connect_cloud(window, cx);
+                }
+                // A verify still in flight (the fixture answers at once).
+                "ai-verifying" => {
+                    o.draft.ai_runtime.providers.push(AiProviderConfig {
+                        id: "anthropic".into(),
+                        kind: AiProviderKind::Anthropic,
+                        label: String::new(),
+                        base_url: String::new(),
+                    });
+                    o.ai.keys_saved.insert("anthropic".into());
+                    o.ai.focus = Some("anthropic".into());
+                    o.ai.checks.insert("anthropic".into(), Check::Checking);
+                    cx.notify();
+                }
+                "ai-chatgpt" => o.ai_chatgpt_sign_in(cx),
+                _ => {}
+            }
+        })
+    })?;
+    Ok(())
+}
+
 pub fn render(
     cx: &mut VisualTestAppContext,
     state: &str,
@@ -88,13 +140,16 @@ pub fn render(
         s if s.starts_with("permissions") => Step::Permissions,
         s if s.starts_with("capture") => Step::Capture,
         "settings" => Step::YourSettings,
-        "change" => Step::Change,
+        s if s == "change" || s.starts_with("ai-") => Step::Change,
         s if s.starts_with("setup") => Step::Setup,
         "voice" => Step::Voice,
         _ => Step::Finale,
     };
     cx.update(|cx| o.update(cx, |o, cx| o.go(step, cx)));
     settle(cx, window)?;
+    if state.starts_with("ai-") {
+        ai_state(&o, cx, window, state)?;
+    }
     match state {
         "setup" => progress(
             &o,

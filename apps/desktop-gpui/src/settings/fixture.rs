@@ -97,6 +97,9 @@ pub enum Call {
     Keyboard,
     Mic,
     Privacy,
+    /// A provider key went to the vault (the key itself is never recorded).
+    SaveKey(String),
+    ClearKey(String),
 }
 
 /// Saves succeed (echoing the draft) unless `fail` is set; every call is recorded.
@@ -139,5 +142,12 @@ impl Backend for FixtureBackend {
         state: &MicrophoneControllerState,
     ) -> Result<MicrophoneControllerState, String> {
         self.record(Call::Mic).map(|_| state.clone())
+    }
+    fn save_key(&self, provider: &str, _key: &str) -> Result<Option<String>, String> {
+        self.record(Call::SaveKey(provider.into()))
+            .map(|_| Some("9f2a".into()))
+    }
+    fn clear_key(&self, provider: &str) -> Result<(), String> {
+        self.record(Call::ClearKey(provider.into()))
     }
 }

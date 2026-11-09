@@ -14,7 +14,7 @@ use super::flow::WorkItem;
 use super::storage::Probe;
 
 /// Golden / parity states: `(state, fixture file)`.
-pub const STATES: [(&str, &str); 12] = [
+pub const STATES: [(&str, &str); 18] = [
     ("welcome", "default"),
     ("permissions", "default"),
     ("permissions-granted", "granted"),
@@ -27,6 +27,13 @@ pub const STATES: [(&str, &str); 12] = [
     ("setup-done", "granted"),
     ("voice", "installed"),
     ("finale", "finale"),
+    // Change settings › AI features (S14b).
+    ("ai-choose", "granted"),
+    ("ai-key", "granted"),
+    ("ai-verifying", "granted"),
+    ("ai-ready", "granted"),
+    ("ai-invalid", "ai-invalid"),
+    ("ai-chatgpt", "granted"),
 ];
 
 pub struct FixtureBackend {
@@ -36,6 +43,8 @@ pub struct FixtureBackend {
     pub enrollment: Mutex<Enrollment>,
     /// `finish` fails with this, when set.
     pub finish_error: Mutex<Option<String>>,
+    /// Instance ids with a key "in the vault".
+    keys: Mutex<Vec<String>>,
 }
 
 impl FixtureBackend {
@@ -45,6 +54,7 @@ impl FixtureBackend {
             calls: Mutex::new(Vec::new()),
             enrollment: Mutex::new(Enrollment::Enrolled),
             finish_error: Mutex::new(None),
+            keys: Mutex::new(Vec::new()),
         }
     }
 
@@ -217,5 +227,57 @@ impl Backend for FixtureBackend {
 
     fn relaunch(&self) {
         self.log("relaunch");
+    }
+
+    // The key itself is never recorded: only that one was saved, and for whom.
+    fn save_key(&self, provider: &str, _key: &str) -> Result<(), String> {
+        self.log(format!("save_key:{provider}"));
+        self.keys.lock().unwrap().push(provider.to_string());
+        Ok(())
+    }
+
+    fn clear_key(&self, provider: &str) -> Result<(), String> {
+        self.log(format!("clear_key:{provider}"));
+        self.keys.lock().unwrap().retain(|k| k != provider);
+        Ok(())
+    }
+
+    fn has_key(&self, provider: &str) -> bool {
+        self.keys.lock().unwrap().iter().any(|k| k == provider)
+    }
+
+    /// `verify_ai_provider` answers every provider the same; `{"__reject": why}`
+    /// fails it (the stub's convention, so the Tauri side fails the same way).
+    fn verify(
+        &self,
+        provider: &str,
+        _: &[capture_types::AiProviderConfig],
+    ) -> Result<(Vec<String>, u64), String> {
+        self.log(format!("verify:{provider}"));
+        let v = &self.map["verify_ai_provider"];
+        if let Some(why) = v["__reject"].as_str() {
+            return Err(why.to_string());
+        }
+        if v.is_null() {
+            return Err("unreachable".into());
+        }
+        Ok(data::verified_from(v))
+    }
+
+    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
+        self.log(format!("chatgpt_begin:{provider}"));
+        let v = &self.map["ai_runtime_chatgpt_begin_login"];
+        match (v["userCode"].as_str(), v["verifyUrl"].as_str()) {
+            (Some(c), Some(u)) => Ok((c.into(), u.into())),
+            _ => Err("no device code in fixture".into()),
+        }
+    }
+
+    fn chatgpt_cancel(&self, provider: &str) {
+        self.log(format!("chatgpt_cancel:{provider}"));
+    }
+
+    fn open_url(&self, url: &str) {
+        self.log(format!("open_url:{url}"));
     }
 }

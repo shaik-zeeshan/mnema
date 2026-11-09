@@ -13,7 +13,7 @@ mod microphone;
 mod model_row;
 mod ocr;
 mod privacy;
-mod providers;
+pub(crate) mod providers;
 mod semantic_search;
 mod shortcuts;
 mod sources;

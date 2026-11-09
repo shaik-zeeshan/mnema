@@ -84,7 +84,10 @@ async function shootTauri(
   await installTauriStub(tauri, { label: s.label, map: fixture(surfaceId, s.stateFixture?.[state] ?? state) });
   await tauri.goto(`${VITE}${s.stateRoute?.[state] ?? s.route}`, { waitUntil: "networkidle" });
   for (const click of s.stateClick?.[state] ?? (s.click ? [s.click] : [])) {
-    await tauri.locator(click).first().click();
+    // `select:<selector>=<value>` picks a native <select> option instead of clicking.
+    const pick = click.match(/^select:(.+)=([^=]+)$/);
+    if (pick) await tauri.locator(pick[1]).first().selectOption(pick[2]);
+    else await tauri.locator(click).first().click();
     await tauri.waitForTimeout(400); // the next target renders after this click's invokes resolve
   }
   for (const key of s.stateKeys?.[state] ?? []) {

@@ -60,7 +60,10 @@ function stub({ label, map }: StubOptions) {
     invoke: async (cmd: string) => {
       const mocked = Object.prototype.hasOwnProperty.call(map, cmd);
       calls.push({ cmd, mocked });
-      return structuredClone(mocked ? map[cmd] : fallback(cmd));
+      const value = mocked ? map[cmd] : fallback(cmd);
+      // `{ "__reject": "<reason>" }` makes the command fail with that reason.
+      if (value && typeof value === "object" && "__reject" in value) throw (value as { __reject: string }).__reject;
+      return structuredClone(value);
     },
     transformCallback: (callback: (v: unknown) => void, once = false) => {
       const id = ++nextCallback;

@@ -294,6 +294,7 @@ impl Onboarding {
                     vec![
                         button("ob-ai-connect", "Connect a provider", cx, |this, _, cx| {
                             this.tab = 3;
+                            this.ai.mode = Some(true);
                             cx.notify();
                         })
                         .sm()
@@ -516,41 +517,9 @@ impl Onboarding {
         v
     }
 
-    fn ai_pane(&self, cx: &mut Context<Self>, p: &Palette) -> Vec<AnyElement> {
-        let on = self.features.ai_features;
-        let mut v = vec![head(vec![
-            kicker(if on { "AI features \u{b7} optional" } else { "AI features \u{b7} off" }, p).into_any_element(),
-            fine("Ask AI, daily digests and User Context need a reasoning engine. Recording, search, transcription and speaker names do not.", p).into_any_element(),
-        ])
-        .into_any_element()];
-        if on && !self.ai_ready() {
-            v.push(notice(Tone::Warn, "icons/triangle-alert.svg", "The AI features row is on, with nothing to run it", Some("Connect a provider in Settings \u{2192} Intelligence once Mnema opens, or switch the row off.".into()), vec![], p).into_any_element());
-        }
-        let opts = vec![
-            ChoiceOption::new("Set this up later").desc("Skipping downloads nothing and needs no account."),
-            ChoiceOption::new("Turn AI features on").desc("Connect a local engine or your own cloud account in Settings \u{2192} Intelligence."),
-        ];
-        v.push(
-            div()
-                .w_full()
-                .child(
-                    Choice::new("ob-ai-fork", "AI features", opts, on as usize).on_change(on_ix(
-                        cx,
-                        |this, ix, cx| {
-                            if (ix == 1) != this.features.ai_features {
-                                this.toggle(Feature::AiFeatures, cx);
-                            }
-                        },
-                    )),
-                )
-                .into_any_element(),
-        );
-        v
-    }
-
     pub(in crate::onboarding) fn change(
         &mut self,
-        _: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> (AnyElement, Option<AnyElement>) {
         let p = theme::tokens(cx);
@@ -577,7 +546,7 @@ impl Onboarding {
             0 => self.features_pane(cx, &p),
             1 => self.engines_pane(cx, &p),
             2 => self.models_pane(cx, &p),
-            _ => self.ai_pane(cx, &p),
+            _ => self.ai_pane(window, cx, &p),
         });
         let back_btn = if at == 0 {
             button("ob-back", "Back to your settings", cx, |this, _, cx| {

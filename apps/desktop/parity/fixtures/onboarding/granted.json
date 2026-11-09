@@ -1383,5 +1383,18 @@
   "shouldShowExistingUserPrompt": false,
   "browserDisclosures": []
  },
- "get_account_owner_person_id": null
+ "get_account_owner_person_id": null,
+ "verify_ai_provider": {
+  "provider": "anthropic",
+  "models": [
+   "claude-sonnet-4-5",
+   "claude-haiku-4-5",
+   "claude-opus-4-1"
+  ],
+  "latencyMs": 340
+ },
+ "ai_runtime_chatgpt_begin_login": {
+  "userCode": "WXYZ-1234",
+  "verifyUrl": "https://auth.openai.com/codex/device"
+ }
 }

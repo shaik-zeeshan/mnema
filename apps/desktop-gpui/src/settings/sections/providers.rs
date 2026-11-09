@@ -4,7 +4,7 @@
 
 use capture_types::{AiEngineRef, AiProviderConfig, AiProviderKind};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, AnyElement, Context, SharedString, Window};
+use gpui_kit::{div, px, AnyElement, ClickEvent, Context, SharedString, Window};
 
 use crate::chat::format::{kind_label, provider_instance_label, provider_label_by_id, url_host};
 use crate::settings::model::Json;
@@ -31,7 +31,7 @@ fn cloud(kind: AiProviderKind) -> bool {
     !kind.is_local()
 }
 
-fn local_default(kind: AiProviderKind) -> &'static str {
+pub(crate) fn local_default(kind: AiProviderKind) -> &'static str {
     match kind {
         AiProviderKind::Ollama => "http://localhost:11434",
         AiProviderKind::Llamafile => "http://localhost:8080",
@@ -67,7 +67,7 @@ fn row_state(pv: &AiProviderConfig, key_saved: bool, reason: &str) -> (&'static 
 }
 
 /// `allocateProviderId`: the first instance keeps `id == kind`, then `kind-2`, `kind-3`…
-fn new_id(kind: AiProviderKind, providers: &[AiProviderConfig]) -> String {
+pub(crate) fn new_id(kind: AiProviderKind, providers: &[AiProviderConfig]) -> String {
     let base = serde_json::to_value(kind)
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
@@ -172,6 +172,7 @@ fn provider_row(
         p,
     ));
     let r = if open {
+        let (save_id, clear_id) = (pv.id.clone(), pv.id.clone());
         let fields = div()
             .flex()
             .flex_col()
@@ -187,15 +188,23 @@ fn provider_row(
                             "API key",
                             &s.inputs.provider_key,
                         )))
-                        // shortcut: ai_runtime_set_provider_key / _clear_provider_key are app-core
-                        // async commands; the key field writes land with the vault round-trip test (S13 follow-up).
-                        .child(Button::new("pv-save-key", "Save key").disabled(true))
+                        .child(Button::new("pv-save-key", "Save key").on_click(cx.listener(
+                            move |s, _: &ClickEvent, window, cx| {
+                                s.save_provider_key(save_id.clone(), window, cx)
+                            },
+                        )))
                         .child(
                             Button::new("pv-clear-key", "Clear")
                                 .ghost()
-                                .disabled(!key_saved),
+                                .disabled(!key_saved)
+                                .on_click(click(cx, move |s, cx| {
+                                    s.clear_provider_key(clear_id.clone(), cx)
+                                })),
                         ),
                 )
+            })
+            .when_some(s.ui.key_error.clone(), |d, e| {
+                d.child(line(Tone::Danger, icons::ALERT, e, p))
             });
         r.full().aside(ctl).control(fields)
     } else {

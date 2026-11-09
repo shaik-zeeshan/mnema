@@ -260,3 +260,44 @@ fn every_group_renders(cx: &mut TestAppContext) {
         frame(cx, window);
     }
 }
+
+#[gpui_kit::test]
+fn a_provider_key_saves_to_the_vault_and_clears_live(cx: &mut TestAppContext) {
+    let (window, v, backend) = open(cx, false);
+    cx.update_window(window.into(), |_, window, cx| {
+        v.update(cx, |s, cx| {
+            let input = s.inputs.provider_key.clone();
+            input.update(cx, |i, cx| {
+                i.set_value("sk-test-0123456789abcd", window, cx)
+            });
+            s.save_provider_key("openai-2".into(), window, cx);
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    v.read_with(cx, |s, cx| {
+        assert!(s.data.keys_saved.contains("openai-2"));
+        assert_eq!(
+            s.data.key_endings.get("openai-2").map(String::as_str),
+            Some("9f2a")
+        );
+        assert_eq!(
+            s.inputs.provider_key.read(cx).value().as_ref(),
+            "",
+            "the field forgets the key"
+        );
+    });
+    v.update(cx, |s, cx| s.clear_provider_key("openai-2".into(), cx));
+    cx.run_until_parked();
+    v.read_with(cx, |s, _| {
+        assert!(!s.data.keys_saved.contains("openai-2"));
+        assert!(!s.data.key_endings.contains_key("openai-2"));
+    });
+    assert_eq!(
+        backend.calls(),
+        vec![
+            Call::SaveKey("openai-2".into()),
+            Call::ClearKey("openai-2".into())
+        ]
+    );
+}

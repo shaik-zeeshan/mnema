@@ -488,6 +488,7 @@ fn every_fixture_parses_into_real_settings() {
         "tiny",
         "installed",
         "finale",
+        "ai-invalid",
     ] {
         let map = crate::shell::fixture::load("onboarding", file).unwrap();
         let s: Result<RecordingSettings, _> =

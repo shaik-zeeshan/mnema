@@ -6,7 +6,8 @@ use std::sync::Arc;
 
 use app_core::{AppCore, AppInfraState};
 use capture_types::{
-    CapturePermissionState, CapturePermissions, RecordingSettings, StartNativeCaptureRequest,
+    AiProviderConfig, CapturePermissionState, CapturePermissions, RecordingSettings,
+    StartNativeCaptureRequest,
 };
 use serde_json::{json, Value};
 
@@ -89,6 +90,26 @@ pub trait Backend: Send + Sync + 'static {
     fn evidence(&self, after: Option<i64>) -> Option<Evidence>;
     fn newest_frame_id(&self) -> Option<i64>;
     fn relaunch(&self);
+
+    // AI provider setup. Keys live in the app vault, keyed by instance id.
+    /// Store a typed API key in the vault. The key is never logged or kept.
+    fn save_key(&self, provider: &str, key: &str) -> Result<(), String>;
+    /// Revoke an instance's credential (an API key or a ChatGPT token set).
+    fn clear_key(&self, provider: &str) -> Result<(), String>;
+    fn has_key(&self, provider: &str) -> bool;
+    /// `verify_ai_provider` against the DRAFT list: the chat models it listed
+    /// just now and the round trip in ms, or the short failure reason
+    /// (`unreachable`, `authentication failed`, `needs_reconnect:<id>`, …).
+    fn verify(
+        &self,
+        provider: &str,
+        providers: &[AiProviderConfig],
+    ) -> Result<(Vec<String>, u64), String>;
+    /// Start the ChatGPT device login: `(user code, verify url)`. The outcome
+    /// arrives later as `CoreEvent::ChatgptLoginUpdate`.
+    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String>;
+    fn chatgpt_cancel(&self, provider: &str);
+    fn open_url(&self, url: &str);
 }
 
 pub struct CoreBackend(pub Arc<AppCore>);
@@ -490,6 +511,82 @@ impl Backend for CoreBackend {
     fn relaunch(&self) {
         self.0.shutdown(app_core::ExitKind::Restart);
     }
+
+    fn save_key(&self, provider: &str, key: &str) -> Result<(), String> {
+        let request = serde_json::from_value(json!({ "provider": provider, "key": key }))
+            .map_err(|_| "couldn't build the key request".to_string())?;
+        self.0
+            .block_on(app_core::ai_runtime::ai_runtime_set_provider_key(request))
+    }
+
+    fn clear_key(&self, provider: &str) -> Result<(), String> {
+        let request =
+            serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
+        self.0
+            .block_on(app_core::ai_runtime::ai_runtime_clear_provider_key(request))
+    }
+
+    fn has_key(&self, provider: &str) -> bool {
+        serde_json::from_value(json!({ "provider": provider }))
+            .ok()
+            .is_some_and(|r| {
+                self.0
+                    .block_on(app_core::ai_runtime::ai_runtime_has_provider_key(r))
+                    == Ok(true)
+            })
+    }
+
+    fn verify(
+        &self,
+        provider: &str,
+        providers: &[AiProviderConfig],
+    ) -> Result<(Vec<String>, u64), String> {
+        let request =
+            serde_json::from_value(json!({ "provider": provider, "providers": providers }))
+                .map_err(|e| e.to_string())?;
+        let result = self
+            .0
+            .block_on(app_core::ai_runtime::verify_ai_provider(&self.0, request))?;
+        Ok(verified_from(&to_json(result)))
+    }
+
+    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
+        let request =
+            serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
+        let p = self
+            .0
+            .block_on(app_core::ai_runtime::ai_runtime_chatgpt_begin_login(
+                &self.0, request,
+            ))?;
+        Ok((p.user_code, p.verify_url))
+    }
+
+    fn chatgpt_cancel(&self, provider: &str) {
+        if let Ok(request) = serde_json::from_value(json!({ "provider": provider })) {
+            let _ = self
+                .0
+                .block_on(app_core::ai_runtime::ai_runtime_chatgpt_cancel_login(
+                    request,
+                ));
+        }
+    }
+
+    fn open_url(&self, url: &str) {
+        if let Err(e) = self.0.host().open_url(url) {
+            log::warn!("onboarding: couldn't open the ChatGPT sign-in page: {e}");
+        }
+    }
+}
+
+/// `AiRuntimeVerifyResult`'s camelCase JSON: `(models, latencyMs)`.
+pub fn verified_from(v: &Value) -> (Vec<String>, u64) {
+    let models = v["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| m.as_str().map(str::to_string))
+        .collect();
+    (models, v["latencyMs"].as_u64().unwrap_or(0))
 }
 
 fn gecko(v: Value) -> Option<(bool, Vec<String>)> {
