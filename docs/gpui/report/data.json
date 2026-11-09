@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-09 09:45",
+  "updated": "2026-11-09 08:05",
   "verdict": "About 85% done. Every screen and window is built, the backend is shared, the app works with macOS end to end, and the updater is in. What's left: a final side-by-side sweep, a docs pass, your hands-on checks, and the cut-over on your go.",
   "metrics": [
     {
@@ -57,13 +57,13 @@
   "now": [
     {
       "id": "Sweep",
-      "title": "Side-by-side sweep of every screen",
-      "detail": "One pass over all surfaces in both themes against today's app and the mockups; produces the final gap list."
+      "title": "Side-by-side sweep (resumed after the usage limit)",
+      "detail": "5 of 13 screens done (shell, Timeline, gallery, Chat, Settings); continuing with the rest."
     },
     {
       "id": "Gap",
-      "title": "AI provider setup inside Onboarding",
-      "detail": "Adding provider + key setup with a live key check to the onboarding AI step, as today's app does."
+      "title": "AI provider setup inside Onboarding (resumed)",
+      "detail": "Provider + key setup with a real key check, so ‘AI ready’ means verified."
     }
   ],
   "done": [
@@ -246,14 +246,15 @@
       "title": "Packaging + updater",
       "what": "A bundle script that builds and signs Mnema.app with the CLI helper and notarisation; the update flow (signature, Apple same-team check, swap with rollback, relaunch); an opt-in CI job. No Homebrew libraries in the release binary.",
       "commit": "f31d8bcd"
-    }
-  ],
-  "next": [
+    },
     {
       "id": "Docs",
       "title": "Docs pass",
-      "detail": "AGENTS.md and the capture/Ask AI notes still point at src-tauri paths; update them to app-core."
-    },
+      "what": "AGENTS.md and the capture / Ask AI notes now point at crates/app-core, with a line on the shared AppCore / Host seam.",
+      "commit": "72d74dd7"
+    }
+  ],
+  "next": [
     {
       "id": "S17",
       "title": "Cut-over",
