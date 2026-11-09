@@ -120,7 +120,9 @@ The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never
    - whether to fix the Tauri Finale bug (`frame.ocrText` doesn't exist on `FrameDto`, so the first OCR words never show).
    - **Never build `--release` before S17:** it is the real `day.mnema` app on `~/.mnema`.
    - Accepted drift (Tauri-only, deleted at S17): asset-grant failures log at Warn, not Error, and app icons are returned even if their grant fails.
-   - Next: the W3 parity sweep; the docs pass (AGENTS.md / capture-pipeline / ask-ai-streaming paths → app-core); AI provider setup inside onboarding (medium gap); S17 on the founder's go.
+   - **W3 sweep done (2026-11-09):** 1 high (disabled/busy primary-button label: opacity applied per layer), 13 med, ~18 low. Composites are in worktree agent-ac0c05d6817e8f7c6/target/parity.
+   - **Running:** the W3 polish pass (slot 1, everything except onboarding) and onboarding AI setup (slot 2). Docs pass done (72d74dd7).
+   - **Next:** onboarding polish (capture +, voice card, change rows, dot grid), then S17 on the founder's go.
    - Old worktrees (all removed):
    - S3a capture leaves: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-ac2748086a4bbf839`
    - S13 Settings: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-aef107fcd394658f0`
