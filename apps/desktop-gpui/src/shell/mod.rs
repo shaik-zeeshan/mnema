@@ -210,9 +210,10 @@ impl Shell {
                     .update(cx, |chat, cx| chat.new_chat(q, true, window, cx));
                 self.go(Surface::Chat, cx);
             }
-            // shortcut: Quick Recall is S10; until then ↵ in recall keeps the text.
-            CommandFieldEvent::Recall(_) => {
-                log::debug!("command field: recall submitted (Quick Recall lands in S10)")
+            // `summon_quick_recall_window_command { query }`: the panel takes the text.
+            CommandFieldEvent::Recall(text) => {
+                let text = text.clone();
+                cx.defer(move |cx| crate::quick_recall::panel::summon_with_query(text, cx));
             }
         }
     }

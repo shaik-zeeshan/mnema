@@ -1,0 +1,625 @@
+{
+  "system_uses_24_hour_time": false,
+  "get_recording_settings": {
+    "captureScreen": true,
+    "captureMicrophone": true,
+    "captureSystemAudio": true,
+    "segmentDurationSeconds": 300,
+    "screenFrameRate": 1.0,
+    "screenResolution": {
+      "mode": "preset",
+      "preset": "original"
+    },
+    "videoBitrate": {
+      "mode": "preset",
+      "preset": "medium",
+      "customMbps": null
+    },
+    "saveDirectory": "/Users/ana/.mnema",
+    "autoStart": true,
+    "developerOptionsEnabled": false,
+    "previewCacheTtlSeconds": 3600,
+    "followTimelineLive": false,
+    "retentionPolicy": "never",
+    "appearance": "system",
+    "timeFormat": "system",
+    "ocr": {
+      "enabled": true,
+      "provider": "apple_vision",
+      "modelId": null,
+      "language": null,
+      "recognitionMode": "fast",
+      "languageCorrection": false,
+      "tesseractPageSegmentationMode": "single_block",
+      "tesseractPreprocessMode": "grayscale",
+      "tesseractUpscaleFactor": 1,
+      "tesseractCharWhitelist": null
+    },
+    "transcription": {
+      "enabled": true,
+      "microphoneEnabled": true,
+      "systemAudioEnabled": false,
+      "provider": "local_whisper",
+      "modelId": "base",
+      "language": "auto",
+      "memoryMode": "balanced",
+      "idleUnloadSeconds": 300,
+      "chunkSeconds": 30
+    },
+    "speakerAnalysis": {
+      "separateSpeakers": false,
+      "recognizeSavedPeople": false,
+      "autoLabelOwner": true,
+      "provider": "speakrs",
+      "modelId": "pyannote-community-1-wespeaker",
+      "timeoutSeconds": 600
+    },
+    "audioSpeechDetection": {
+      "detector": "silero"
+    },
+    "metadata": {
+      "enabled": true,
+      "browserUrlMode": "sanitized"
+    },
+    "privacy": {
+      "excludedApps": [],
+      "filterSystemAudio": true
+    },
+    "access": {
+      "askAiEnabled": true,
+      "askAiMaxToolCalls": 12,
+      "askAiWebFetchEnabled": false,
+      "askAiModel": null,
+      "askAiModelProvider": null,
+      "quickRecallAutoAnswer": "always"
+    },
+    "aiRuntime": {
+      "enabled": true,
+      "providers": [
+        {
+          "id": "anthropic",
+          "kind": "anthropic",
+          "label": "",
+          "baseUrl": ""
+        }
+      ],
+      "defaultModel": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5"
+      },
+      "mcpServers": [],
+      "favoriteModels": [],
+      "recentModels": []
+    },
+    "userContext": {
+      "enabled": false,
+      "derivationBudgetTier": "balanced",
+      "backfillWindowDays": 30,
+      "backfillGoDeeper": false
+    },
+    "semanticSearch": {
+      "enabled": true,
+      "provider": "local",
+      "modelId": "nomic-embed-text-v1.5"
+    },
+    "pauseCaptureOnInactivity": true,
+    "idleTimeoutSeconds": 10,
+    "microphoneActivitySensitivity": 50,
+    "systemAudioActivitySensitivity": 50,
+    "activityMode": "system_input_or_screen"
+  },
+  "get_capture_permissions": {
+    "permissions": {
+      "screen": "granted",
+      "microphone": "granted",
+      "systemAudio": "assumed_working"
+    },
+    "session": {
+      "isRunning": true,
+      "requestedSources": {
+        "screen": true,
+        "microphone": true,
+        "systemAudio": true
+      },
+      "outputFiles": null,
+      "sourceSessions": {
+        "screen": {
+          "sessionId": "sess-1104",
+          "startedAtUnixMs": 1793776973000
+        },
+        "microphone": {
+          "sessionId": "sess-1104",
+          "startedAtUnixMs": 1793776973000
+        },
+        "systemAudio": {
+          "sessionId": "sess-1104",
+          "startedAtUnixMs": 1793776973000
+        }
+      },
+      "isInactivityPaused": false,
+      "isUserPaused": false,
+      "isLowDiskSuspended": false
+    }
+  },
+  "ask_ai_availability": {
+    "available": true,
+    "reason": null
+  },
+  "get_quick_recall_index_status": {
+    "queuedFrames": 0,
+    "oldestQueuedMs": null,
+    "semanticBuilding": false,
+    "semanticIndexedPercent": 100
+  },
+  "list_searchable_apps": [
+    {
+      "bundleId": "company.thebrowser.Browser",
+      "name": "Arc"
+    },
+    {
+      "bundleId": "com.linear",
+      "name": "Linear"
+    },
+    {
+      "bundleId": "com.figma.Desktop",
+      "name": "Figma"
+    },
+    {
+      "bundleId": "dev.zed.Zed",
+      "name": "Zed"
+    },
+    {
+      "bundleId": "com.tinyspeck.slackmacgap",
+      "name": "Slack"
+    }
+  ],
+  "get_quick_recall_recent_queries": [],
+  "take_quick_recall_query": "what did Ana say about retention?",
+  "search_capture": {
+    "normalizedQuery": "pricing page",
+    "snapshotDocumentId": 1,
+    "frames": [
+      {
+        "rank": 0.1,
+        "groupKey": "f4801",
+        "representativeFrame": {
+          "id": 4801,
+          "sessionId": "sess-1104",
+          "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+          "capturedAt": "2026-11-04T08:42:15.000Z",
+          "width": 2880,
+          "height": 1800,
+          "appBundleId": "company.thebrowser.Browser",
+          "appName": "Arc",
+          "windowTitle": "Pricing — Mnema",
+          "url": "mnema.day/pricing",
+          "equivalenceHint": null,
+          "createdAt": "2026-11-04T08:42:15.000Z",
+          "updatedAt": "2026-11-04T08:42:15.000Z"
+        },
+        "groupStartAt": "2026-11-04T08:42:15.000Z",
+        "groupEndAt": "2026-11-04T08:54:00.000Z",
+        "matchCount": 3,
+        "snippet": "Draft <mark>pricing</mark> <mark>page</mark> — not linked from the nav yet",
+        "appBundleId": "company.thebrowser.Browser",
+        "appName": "Arc",
+        "windowTitle": "Pricing — Mnema",
+        "url": "mnema.day/pricing",
+        "thumbnailFrameId": 4801,
+        "textSourceKind": "direct",
+        "secretRedactionCount": 0,
+        "hasSecretRedactions": false,
+        "foundByMeaning": false,
+        "matchBoxes": [
+          {
+            "x": 0.12,
+            "y": 0.18,
+            "w": 0.16,
+            "h": 0.045,
+            "kind": "keyword"
+          },
+          {
+            "x": 0.12,
+            "y": 0.42,
+            "w": 0.22,
+            "h": 0.04,
+            "kind": "keyword"
+          }
+        ]
+      },
+      {
+        "rank": 0.3,
+        "groupKey": "f4702",
+        "representativeFrame": {
+          "id": 4702,
+          "sessionId": "sess-1104",
+          "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+          "capturedAt": "2026-11-03T11:40:00.000Z",
+          "width": 2880,
+          "height": 1800,
+          "appBundleId": "com.linear",
+          "appName": "Linear",
+          "windowTitle": "MNE-240 Pricing page copy",
+          "url": "linear.app/mnema/issue/MNE-240",
+          "equivalenceHint": null,
+          "createdAt": "2026-11-03T11:40:00.000Z",
+          "updatedAt": "2026-11-03T11:40:00.000Z"
+        },
+        "groupStartAt": "2026-11-03T11:40:00.000Z",
+        "groupEndAt": "2026-11-03T11:54:00.000Z",
+        "matchCount": 2,
+        "snippet": "<mark>Pricing</mark> <mark>page</mark> copy: lead with the one-time price",
+        "appBundleId": "com.linear",
+        "appName": "Linear",
+        "windowTitle": "MNE-240 Pricing page copy",
+        "url": "linear.app/mnema/issue/MNE-240",
+        "thumbnailFrameId": 4702,
+        "textSourceKind": "direct",
+        "secretRedactionCount": 0,
+        "hasSecretRedactions": false,
+        "foundByMeaning": false,
+        "matchBoxes": []
+      },
+      {
+        "rank": 0.5,
+        "groupKey": "f4655",
+        "representativeFrame": {
+          "id": 4655,
+          "sessionId": "sess-1104",
+          "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+          "capturedAt": "2026-11-02T04:50:00.000Z",
+          "width": 2880,
+          "height": 1800,
+          "appBundleId": "com.figma.Desktop",
+          "appName": "Figma",
+          "windowTitle": "Pricing page — v3",
+          "url": null,
+          "equivalenceHint": null,
+          "createdAt": "2026-11-02T04:50:00.000Z",
+          "updatedAt": "2026-11-02T04:50:00.000Z"
+        },
+        "groupStartAt": "2026-11-02T04:50:00.000Z",
+        "groupEndAt": "2026-11-02T05:30:00.000Z",
+        "matchCount": 1,
+        "snippet": "Plans · One-time purchase · 14-day trial · Compare",
+        "appBundleId": "com.figma.Desktop",
+        "appName": "Figma",
+        "windowTitle": "Pricing page — v3",
+        "url": null,
+        "thumbnailFrameId": 4655,
+        "textSourceKind": "direct",
+        "secretRedactionCount": 0,
+        "hasSecretRedactions": false,
+        "foundByMeaning": true,
+        "matchBoxes": []
+      },
+      {
+        "rank": 0.6,
+        "groupKey": "f4620",
+        "representativeFrame": {
+          "id": 4620,
+          "sessionId": "sess-1104",
+          "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+          "capturedAt": "2026-11-01T08:00:00.000Z",
+          "width": 2880,
+          "height": 1800,
+          "appBundleId": "dev.zed.Zed",
+          "appName": "Zed",
+          "windowTitle": "apps/web/src/routes/pricing/+page.svelte",
+          "url": null,
+          "equivalenceHint": null,
+          "createdAt": "2026-11-01T08:00:00.000Z",
+          "updatedAt": "2026-11-01T08:00:00.000Z"
+        },
+        "groupStartAt": "2026-11-01T08:00:00.000Z",
+        "groupEndAt": "2026-11-01T08:22:00.000Z",
+        "matchCount": 1,
+        "snippet": "// <mark>pricing</mark> <mark>page</mark>: one-time purchase, 12-month update window",
+        "appBundleId": "dev.zed.Zed",
+        "appName": "Zed",
+        "windowTitle": "apps/web/src/routes/pricing/+page.svelte",
+        "url": null,
+        "thumbnailFrameId": 4620,
+        "textSourceKind": "direct",
+        "secretRedactionCount": 0,
+        "hasSecretRedactions": false,
+        "foundByMeaning": false,
+        "matchBoxes": []
+      },
+      {
+        "rank": 0.7,
+        "groupKey": "f4600",
+        "representativeFrame": {
+          "id": 4600,
+          "sessionId": "sess-1104",
+          "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+          "capturedAt": "2026-10-31T04:35:00.000Z",
+          "width": 2880,
+          "height": 1800,
+          "appBundleId": "com.tinyspeck.slackmacgap",
+          "appName": "Slack",
+          "windowTitle": "#launch — Slack",
+          "url": null,
+          "equivalenceHint": null,
+          "createdAt": "2026-10-31T04:35:00.000Z",
+          "updatedAt": "2026-10-31T04:35:00.000Z"
+        },
+        "groupStartAt": "2026-10-31T04:35:00.000Z",
+        "groupEndAt": "2026-10-31T04:40:00.000Z",
+        "matchCount": 1,
+        "snippet": "can we put the trial length on the <mark>pricing</mark> <mark>page</mark>?",
+        "appBundleId": "com.tinyspeck.slackmacgap",
+        "appName": "Slack",
+        "windowTitle": "#launch — Slack",
+        "url": null,
+        "thumbnailFrameId": 4600,
+        "textSourceKind": "direct",
+        "secretRedactionCount": 0,
+        "hasSecretRedactions": false,
+        "foundByMeaning": false,
+        "matchBoxes": []
+      }
+    ],
+    "audio": [
+      {
+        "rank": 0.4,
+        "groupKey": "a77-245000",
+        "audioSegment": {
+          "id": 77,
+          "sourceKind": "microphone",
+          "sourceSessionId": "sess-1103",
+          "segmentIndex": 4,
+          "filePath": "",
+          "startedAt": "2026-11-03T06:00:00.000Z",
+          "endedAt": "2026-11-03T06:30:20.000Z",
+          "createdAt": "2026-11-03T06:00:00.000Z",
+          "updatedAt": "2026-11-03T06:30:20.000Z"
+        },
+        "sourceKind": "microphone",
+        "spanStartMs": 245000,
+        "spanEndMs": 252000,
+        "absoluteStartAt": "2026-11-03T06:04:05.000Z",
+        "absoluteEndAt": "2026-11-03T06:04:12.000Z",
+        "matchCount": 1,
+        "snippet": "let's not touch <mark>pricing</mark> until we see the retention numbers",
+        "alignedFrame": null,
+        "secretRedactionCount": 0,
+        "hasSecretRedactions": false,
+        "foundByMeaning": false
+      }
+    ],
+    "hasMoreFrames": false,
+    "hasMoreAudio": false,
+    "appliedRefinements": {
+      "dateRange": null,
+      "apps": [],
+      "windowTitle": null,
+      "audioSources": [],
+      "screenSource": false
+    },
+    "residualQuery": "pricing page",
+    "parseErrors": [],
+    "indexEmpty": false,
+    "semanticDegraded": false,
+    "untranscribedSegmentsInRange": 0
+  },
+  "get_frame_scrub_previews": {
+    "previews": [
+      {
+        "frameId": 4801,
+        "preview": {
+          "mimeType": "image/webp",
+          "filePath": "$REPO/apps/web/src/assets/shots/timeline-light.webp",
+          "sourceKind": "scrub_preview",
+          "hasSecretRedactions": false,
+          "secretRedactionCount": 0
+        },
+        "missingReason": null
+      },
+      {
+        "frameId": 4702,
+        "preview": {
+          "mimeType": "image/webp",
+          "filePath": "$REPO/apps/web/src/assets/shots/insights-light.webp",
+          "sourceKind": "scrub_preview",
+          "hasSecretRedactions": false,
+          "secretRedactionCount": 0
+        },
+        "missingReason": null
+      },
+      {
+        "frameId": 4655,
+        "preview": {
+          "mimeType": "image/webp",
+          "filePath": "$REPO/apps/web/src/assets/shots/chat-light.webp",
+          "sourceKind": "scrub_preview",
+          "hasSecretRedactions": false,
+          "secretRedactionCount": 0
+        },
+        "missingReason": null
+      },
+      {
+        "frameId": 4620,
+        "preview": {
+          "mimeType": "image/webp",
+          "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+          "sourceKind": "scrub_preview",
+          "hasSecretRedactions": false,
+          "secretRedactionCount": 0
+        },
+        "missingReason": null
+      },
+      {
+        "frameId": 4600,
+        "preview": {
+          "mimeType": "image/webp",
+          "filePath": "$REPO/apps/web/src/assets/shots/chat-dark.webp",
+          "sourceKind": "scrub_preview",
+          "hasSecretRedactions": false,
+          "secretRedactionCount": 0
+        },
+        "missingReason": null
+      }
+    ]
+  },
+  "list_frame_summaries_in_range": [
+    {
+      "id": 4795,
+      "capturedAt": "2026-11-04T08:40:45.000Z"
+    },
+    {
+      "id": 4796,
+      "capturedAt": "2026-11-04T08:41:00.000Z"
+    },
+    {
+      "id": 4797,
+      "capturedAt": "2026-11-04T08:41:15.000Z"
+    },
+    {
+      "id": 4798,
+      "capturedAt": "2026-11-04T08:41:30.000Z"
+    },
+    {
+      "id": 4799,
+      "capturedAt": "2026-11-04T08:41:45.000Z"
+    },
+    {
+      "id": 4800,
+      "capturedAt": "2026-11-04T08:42:00.000Z"
+    },
+    {
+      "id": 4801,
+      "capturedAt": "2026-11-04T08:42:15.000Z"
+    },
+    {
+      "id": 4802,
+      "capturedAt": "2026-11-04T08:42:30.000Z"
+    },
+    {
+      "id": 4803,
+      "capturedAt": "2026-11-04T08:42:45.000Z"
+    },
+    {
+      "id": 4804,
+      "capturedAt": "2026-11-04T08:43:00.000Z"
+    },
+    {
+      "id": 4805,
+      "capturedAt": "2026-11-04T08:43:15.000Z"
+    },
+    {
+      "id": 4806,
+      "capturedAt": "2026-11-04T08:43:30.000Z"
+    },
+    {
+      "id": 4807,
+      "capturedAt": "2026-11-04T08:43:45.000Z"
+    }
+  ],
+  "list_processing_results": [
+    {
+      "id": 9001,
+      "jobId": 1,
+      "subjectType": "frame",
+      "subjectId": 4801,
+      "processor": "ocr",
+      "resultText": "Pricing\nDraft pricing page — not linked from the nav yet\nMnema · one-time purchase · $49\nIncludes 12 months of updates, then keep what you have\nFree 14-day trial · no account needed\nCompare with Rewind and Screenpipe →",
+      "structuredPayloadJson": null,
+      "processorVersion": null,
+      "createdAt": "2026-11-04T08:42:20.000Z"
+    }
+  ],
+  "get_frame_match_boxes": [
+    {
+      "x": 0.12,
+      "y": 0.18,
+      "w": 0.16,
+      "h": 0.045,
+      "kind": "keyword"
+    },
+    {
+      "x": 0.12,
+      "y": 0.42,
+      "w": 0.22,
+      "h": 0.04,
+      "kind": "keyword"
+    }
+  ],
+  "count_search_facet": {
+    "facet": "app",
+    "total": 9,
+    "capped": false,
+    "buckets": [
+      {
+        "key": "company.thebrowser.Browser",
+        "label": "Arc",
+        "count": 5
+      },
+      {
+        "key": "com.linear",
+        "label": "Linear",
+        "count": 2
+      },
+      {
+        "key": "com.figma.Desktop",
+        "label": "Figma",
+        "count": 1
+      },
+      {
+        "key": "dev.zed.Zed",
+        "label": "Zed",
+        "count": 1
+      }
+    ]
+  },
+  "ask_ai_snapshot": {
+    "conversationId": "qr-fixture",
+    "version": 6,
+    "view": {
+      "turnIndex": 0,
+      "question": "what did Ana say about retention?",
+      "phase": "streaming",
+      "blocks": [
+        {
+          "kind": "prose",
+          "markdown": "Ana wants to **hold off on pricing changes** until the retention numbers are in [1]. In #launch "
+        }
+      ],
+      "reasoning": null,
+      "toolActivities": [],
+      "liveActivity": null,
+      "sources": [
+        {
+          "kind": "audio",
+          "frameId": null,
+          "audioSegmentId": 77,
+          "spanStartMs": 245000,
+          "alignedFrameId": null,
+          "appName": null,
+          "windowTitle": "Weekly sync",
+          "url": null,
+          "snippet": "let's not touch <mark>pricing</mark> until we see the <mark>retention</mark> numbers",
+          "startedAt": "2026-11-03T06:04:05.000Z",
+          "endedAt": "2026-11-03T06:04:12.000Z",
+          "sourceKind": "microphone"
+        },
+        {
+          "kind": "frame",
+          "frameId": 4600,
+          "audioSegmentId": null,
+          "appName": "Slack",
+          "windowTitle": "#launch — Slack",
+          "url": null,
+          "snippet": "and link the <mark>retention</mark> post from the FAQ",
+          "startedAt": "2026-10-31T04:35:00.000Z",
+          "endedAt": "2026-10-31T04:40:00.000Z",
+          "sourceKind": null
+        }
+      ],
+      "errorMessage": null,
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5",
+      "contextTokens": null
+    }
+  }
+}

@@ -65,6 +65,14 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             }
         }
         HostMsg::Event(event) if touches_shell(&event) => {
+            // Ask AI's switch / model / auto-answer and meaning search re-probe the bar.
+            if matches!(
+                event,
+                CoreEvent::RecordingSettingsDomainChanged(_)
+                    | CoreEvent::NativeCaptureSessionChanged(_)
+            ) {
+                crate::quick_recall::panel::settings_changed(cx);
+            }
             if let Some(shell) = shell.upgrade() {
                 reload_shell(&shell, cx);
             }
@@ -74,6 +82,7 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             }
         }
         HostMsg::Event(CoreEvent::AskAiUpdate(ev)) => {
+            crate::quick_recall::panel::ask_update(ev.clone(), cx);
             if let Some(shell) = shell.upgrade() {
                 let chat = shell.read(cx).chat.clone();
                 chat.update(cx, |chat, cx| chat.on_update(ev, cx));

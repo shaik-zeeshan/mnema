@@ -47,6 +47,11 @@ icon_assets!(
         ShieldCheck,
         Minimize2,
         Maximize2,
+        RotateCcwClock,
+        Code,
+        ImageOff,
+        ChartNoAxesGantt,
+        Speaker,
     ]
 );
 

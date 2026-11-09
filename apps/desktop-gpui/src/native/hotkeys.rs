@@ -213,8 +213,10 @@ pub fn pressed(core: &Arc<AppCore>, id: u32, cx: &mut App) {
         }),
         Some(Action::PauseResumeRecording) => off_main(core, crate::native::toggle_pause),
         Some(Action::ToggleMainWindow) => crate::window::toggle_main(cx),
-        // shortcut: the Quick Recall panel is S10; the shortcut registers but does nothing yet.
-        Some(Action::ToggleQuickRecall) => log::debug!("quick recall shortcut: panel lands in S10"),
+        Some(Action::ToggleQuickRecall) => {
+            crate::feel::summon_started();
+            crate::quick_recall::panel::toggle(cx)
+        }
         None => {}
     }
 }

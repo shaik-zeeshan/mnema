@@ -14,6 +14,7 @@ pub mod insights;
 pub mod keymap;
 pub mod logging;
 pub mod native;
+pub mod quick_recall;
 pub mod settings;
 pub mod shell;
 pub mod small;

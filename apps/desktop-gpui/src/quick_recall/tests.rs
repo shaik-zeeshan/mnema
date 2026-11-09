@@ -1,0 +1,322 @@
+//! Layer 2 for Quick Recall: every §5 constant on both sides of its boundary
+//! through the real view (typing goes through the keystroke interceptor and the
+//! InputState), plus the keymap's main paths. Data: the parity fixtures.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use capture_types::AppearanceSetting;
+use gpui_kit::base::Root;
+use gpui_kit::test::TestWindowExt as _;
+use gpui_kit::{
+    point, px, size, AppContext as _, Bounds, Entity, TestAppContext, WindowAppearance,
+    WindowBounds, WindowHandle, WindowOptions,
+};
+use time::macros::datetime;
+
+use super::fixture::{Call, FixtureBackend};
+use super::tokens::{Forced, Pill};
+use super::*;
+use crate::theme;
+
+const MS: Duration = Duration::from_millis(1);
+
+fn open(
+    cx: &mut TestAppContext,
+    state: &str,
+) -> (WindowHandle<Root>, Entity<QuickRecall>, Arc<FixtureBackend>) {
+    let backend = Arc::new(FixtureBackend::load(state).expect("fixture"));
+    let b = backend.clone();
+    let (window, view) = cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(AppearanceSetting::Dark, WindowAppearance::Dark, cx);
+        crate::ui::clock::freeze(Some(datetime!(2026-11-04 14:32 +05:30)), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: point(px(0.), px(0.)),
+                size: size(px(WIDTH), px(CAP_H)),
+            })),
+            ..Default::default()
+        };
+        let (window, view) = gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| QuickRecall::new(b, window, cx))
+        })
+        .expect("window");
+        (window.downcast::<Root>().expect("root"), view)
+    });
+    cx.run_until_parked();
+    frame(cx, window);
+    let input = view.read_with(cx, |qr, _| qr.input.clone());
+    cx.update_window(window.into(), |_, window, cx| {
+        input.update(cx, |i, cx| i.focus(window, cx))
+    })
+    .unwrap();
+    frame(cx, window);
+    (window, view, backend)
+}
+
+fn frame(cx: &mut TestAppContext, window: WindowHandle<Root>) {
+    cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn advance(cx: &mut TestAppContext, d: Duration) {
+    cx.executor().advance_clock(d);
+    cx.run_until_parked();
+}
+
+/// Type `text` key by key, as the user would.
+fn typed(cx: &mut TestAppContext, window: WindowHandle<Root>, text: &str) {
+    let keys: Vec<String> = text
+        .chars()
+        .map(|c| {
+            if c == ' ' {
+                "space".into()
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    cx.simulate_keystrokes(window.into(), &keys.join(" "));
+    cx.run_until_parked();
+}
+
+fn keys(cx: &mut TestAppContext, window: WindowHandle<Root>, k: &str) {
+    cx.simulate_keystrokes(window.into(), k);
+    cx.run_until_parked();
+}
+
+fn searches(b: &FixtureBackend) -> Vec<String> {
+    b.calls()
+        .into_iter()
+        .filter_map(|c| match c {
+            Call::Search(q) => Some(q),
+            _ => None,
+        })
+        .collect()
+}
+
+fn asks(b: &FixtureBackend) -> usize {
+    b.calls()
+        .iter()
+        .filter(|c| matches!(c, Call::AskStart(_)))
+        .count()
+}
+
+#[gpui_kit::test]
+fn search_runs_250ms_after_the_last_keystroke(cx: &mut TestAppContext) {
+    let (w, v, b) = open(cx, "results");
+    typed(cx, w, "pricing");
+    assert_eq!(v.read_with(cx, |qr, _| qr.text.clone()), "pricing");
+    advance(cx, SEARCH_DEBOUNCE - MS);
+    assert!(searches(&b).is_empty(), "249 ms: no search yet");
+    advance(cx, MS);
+    assert_eq!(searches(&b), ["pricing"], "250 ms: the search runs");
+    assert!(v.read_with(cx, |qr, _| qr.results.has_results()));
+    // A keystroke restarts the wait.
+    typed(cx, w, "s");
+    advance(cx, SEARCH_DEBOUNCE - MS);
+    assert_eq!(searches(&b).len(), 1);
+    advance(cx, MS);
+    assert_eq!(searches(&b).last().map(String::as_str), Some("pricings"));
+}
+
+#[gpui_kit::test]
+fn phrases_lift_into_pills_700ms_after_typing_pauses(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, "results");
+    typed(cx, w, "notes in Arc");
+    advance(cx, COMMIT - MS);
+    v.read_with(cx, |qr, _| {
+        assert!(qr.pills.is_empty(), "699 ms: still tinted text");
+        assert_eq!(qr.parse.spans.len(), 1);
+        assert_eq!(qr.operator_query(), "notes app:Arc");
+    });
+    advance(cx, MS);
+    v.read_with(cx, |qr, _| {
+        assert_eq!(qr.pills, vec![Pill::App("Arc".into())], "700 ms: a pill");
+        assert_eq!(qr.text, "notes ");
+        assert_eq!(qr.operator_query(), "notes app:Arc");
+    });
+}
+
+#[gpui_kit::test]
+fn a_question_answers_750ms_after_typing_pauses(cx: &mut TestAppContext) {
+    let (w, v, b) = open(cx, "ask-done");
+    typed(cx, w, "what did ana say");
+    assert_eq!(v.read_with(cx, |qr, _| qr.mode()), Mode::Ask);
+    advance(cx, ASK_PAUSE - MS);
+    assert_eq!(asks(&b), 0, "749 ms: not asked yet");
+    advance(cx, MS);
+    assert_eq!(asks(&b), 1, "750 ms: asked");
+    assert_eq!(
+        v.read_with(cx, |qr, _| qr.ask.phase().map(String::from)),
+        Some("thinking".into())
+    );
+    // An edit cancels the turn in flight and waits again.
+    typed(cx, w, "?");
+    advance(cx, ASK_PAUSE);
+    assert_eq!(asks(&b), 1, "the final ? asks the same question: no re-ask");
+    typed(cx, w, " no");
+    advance(cx, ASK_PAUSE - MS);
+    assert!(
+        b.calls()
+            .iter()
+            .any(|c| matches!(c, Call::AskCancel(_, true))),
+        "the edit discards the old turn"
+    );
+    assert_eq!(asks(&b), 1);
+    advance(cx, MS);
+    assert_eq!(asks(&b), 2);
+}
+
+#[gpui_kit::test]
+fn a_forced_ask_waits_for_return(cx: &mut TestAppContext) {
+    let (w, v, b) = open(cx, "results");
+    typed(cx, w, "pricing page");
+    keys(cx, w, "tab");
+    assert_eq!(v.read_with(cx, |qr, _| qr.forced), Some(Forced::Ask));
+    advance(cx, ASK_PAUSE * 2);
+    assert_eq!(asks(&b), 0, "Tab-forced: nothing sends on its own");
+    keys(cx, w, "enter");
+    assert_eq!(asks(&b), 1);
+}
+
+#[gpui_kit::test]
+fn blur_within_300ms_of_summon_keeps_the_panel(cx: &mut TestAppContext) {
+    let (_, v, _) = open(cx, "idle");
+    let summon = |cx: &mut TestAppContext| {
+        v.update(cx, |qr, cx| {
+            qr.summoned(cx.background_executor().now());
+            qr.on_activation(true, cx);
+        })
+    };
+    let blur = |cx: &mut TestAppContext| v.update(cx, |qr, cx| qr.on_activation(false, cx));
+    summon(cx);
+    advance(cx, BLUR_GRACE - MS);
+    blur(cx);
+    assert_eq!(
+        v.read_with(cx, |qr, _| (qr.dismissals, qr.visible)),
+        (0, true),
+        "299 ms: setup blur"
+    );
+    summon(cx);
+    advance(cx, BLUR_GRACE);
+    blur(cx);
+    assert_eq!(
+        v.read_with(cx, |qr, _| (qr.dismissals, qr.visible)),
+        (1, false),
+        "300 ms: dismissed"
+    );
+    // A one-shot suppress keeps it through the next blur only.
+    summon(cx);
+    advance(cx, BLUR_GRACE * 2);
+    v.update(cx, |qr, _| qr.suppress_next_blur());
+    blur(cx);
+    assert_eq!(v.read_with(cx, |qr, _| qr.dismissals), 1);
+    summon(cx);
+    advance(cx, BLUR_GRACE * 2);
+    blur(cx);
+    assert_eq!(v.read_with(cx, |qr, _| qr.dismissals), 2);
+}
+
+#[gpui_kit::test]
+fn state_resets_5s_after_hide(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, "results");
+    typed(cx, w, "pricing");
+    advance(cx, SEARCH_DEBOUNCE);
+    v.update(cx, |qr, cx| qr.on_activation(false, cx));
+    advance(cx, RESET_AFTER_HIDE - MS);
+    v.read_with(cx, |qr, _| {
+        assert_eq!(qr.text, "pricing", "4999 ms: kept for a quick resume");
+        assert!(qr.results.has_results());
+    });
+    advance(cx, MS);
+    v.read_with(cx, |qr, _| {
+        assert_eq!(qr.text, "", "5000 ms: back to the empty bar");
+        assert!(!qr.results.has_results());
+        assert!(!qr.show_body());
+    });
+    // Coming back before 5 s keeps everything.
+    typed(cx, w, "pricing");
+    advance(cx, SEARCH_DEBOUNCE);
+    v.update(cx, |qr, cx| qr.on_activation(false, cx));
+    advance(cx, RESET_AFTER_HIDE - MS);
+    v.update(cx, |qr, cx| qr.on_activation(true, cx));
+    advance(cx, RESET_AFTER_HIDE);
+    assert_eq!(v.read_with(cx, |qr, _| qr.text.clone()), "pricing");
+}
+
+#[gpui_kit::test]
+fn down_on_the_empty_bar_opens_recent_then_returns_uses_a_row(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, "recent");
+    keys(cx, w, "down");
+    v.read_with(cx, |qr, _| {
+        assert!(qr.show_recent());
+        assert_eq!(qr.recent.list.len(), 3);
+        assert_eq!(qr.recent_count(), 6, "3 recent + 3 try");
+    });
+    keys(cx, w, "down enter");
+    assert_eq!(
+        v.read_with(cx, |qr, _| qr.text.clone()),
+        "what did Ana say about retention?"
+    );
+    assert!(!v.read_with(cx, |qr, _| qr.show_recent()));
+}
+
+#[gpui_kit::test]
+fn esc_clears_then_closes_and_ctrl_f_opens_the_pill(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, "results");
+    v.update(cx, |qr, _| qr.visible = true);
+    typed(cx, w, "notes in Arc");
+    advance(cx, COMMIT);
+    keys(cx, w, "ctrl-f");
+    assert!(
+        v.read_with(cx, |qr, _| qr.filters.popover),
+        "Ctrl+F: the pill's popover"
+    );
+    keys(cx, w, "escape");
+    assert!(!v.read_with(cx, |qr, _| qr.filters.popover));
+    assert_eq!(
+        v.read_with(cx, |qr, _| qr.filters.pill),
+        Some(0),
+        "the pill stays pressed"
+    );
+    keys(cx, w, "escape");
+    assert_eq!(
+        v.read_with(cx, |qr, _| qr.filters.pill),
+        None,
+        "then lets go"
+    );
+    keys(cx, w, "escape");
+    v.read_with(cx, |qr, _| {
+        assert!(qr.text.is_empty() && qr.pills.is_empty())
+    });
+    keys(cx, w, "escape");
+    assert_eq!(
+        v.read_with(cx, |qr, _| qr.dismissals),
+        1,
+        "Esc on the empty bar closes it"
+    );
+}
+
+#[gpui_kit::test]
+fn arrows_move_and_space_looks(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, "results");
+    typed(cx, w, "pricing page");
+    advance(cx, SEARCH_DEBOUNCE);
+    assert_eq!(
+        v.read_with(cx, |qr, _| qr.results.selected),
+        Some(0),
+        "the top hit is lit"
+    );
+    keys(cx, w, "down");
+    assert_eq!(v.read_with(cx, |qr, _| qr.results.selected), Some(1));
+    keys(cx, w, "space");
+    assert!(
+        v.read_with(cx, |qr, _| qr.look.is_some()),
+        "Space looks once arrowed in"
+    );
+    keys(cx, w, "escape");
+    assert!(v.read_with(cx, |qr, _| qr.look.is_none()));
+}

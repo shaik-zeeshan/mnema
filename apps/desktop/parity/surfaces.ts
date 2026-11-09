@@ -23,6 +23,8 @@ export interface Surface {
   click?: string;
   /** Per-state clicks in order (overrides `click`), e.g. a tab then a row. */
   stateClick?: Record<string, string[]>;
+  /** Per-state key presses on the Tauri side after the clicks (Playwright key names). */
+  stateKeys?: Record<string, string[]>;
   /** Per-state fixture name under parity/fixtures/<surface>/ (defaults to the state). */
   stateFixture?: Record<string, string>;
   /** Per-state override of `route` (a state that opens a record by URL, e.g. `/chat?c=<id>`). */
@@ -241,8 +243,17 @@ export const SURFACES: Record<string, Surface> = {
     page: "recall.html",
     selector: "#rc",
     mockViewport: MAIN,
+    // The S10 set (fixtures/quick-recall/<state>.json): `take_quick_recall_query` types the
+    // query; Quick Look and the pill popover take a click, Recent a ↓. The Tauri side can't
+    // stream an answer (no `ask_ai_update` events in the stub), so its ask states stop at
+    // "Thinking…"; the mockup carries the answer.
+    stateClick: { quicklook: ['.rc-hero button:has-text("Quick Look")'], filter: [".rc-tok"] },
+    stateKeys: { recent: ["ArrowDown"] },
     states: {
       idle: "",
+      quicklook: "state=look",
+      "ask-done": "state=ask",
+      filter: "q=pricing%20page%20in%20Arc&pill=app",
       ...q(
         "state",
         `recent results first-run loading indexing semantic-off semantic-building error parse-error no-results

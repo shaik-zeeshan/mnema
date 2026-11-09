@@ -7,7 +7,7 @@ use std::sync::Arc;
 use gpui_kit::{px, Context, Resource, ScrollEvent, Window};
 
 use super::data::Source;
-use super::model::{audio_moment, SLOT_W};
+use super::model::{audio_moment, Landing, SLOT_W};
 use super::paging::{self, AfterPoll, HEAD_POLL, PAGE_SIZE, POLL_PAGE};
 use super::scrub_engine::Effect;
 use super::TimelineView;
@@ -101,6 +101,14 @@ impl TimelineView {
         if !(self.paging.loading || self.paging.loading_more || self.jumper.jumping) {
             self.reload(cx);
         }
+    }
+
+    /// A Quick Recall hand-off: land on its frame with the matched words outlined.
+    pub fn land(&mut self, landing: Landing, cx: &mut Context<Self>) {
+        let id = landing.frame_id;
+        self.match_boxes.clear();
+        self.landing = Some(landing);
+        self.jump_to(id, cx);
     }
 
     /// Focus the window around `frame_id` (jumper commit, Recall landing).

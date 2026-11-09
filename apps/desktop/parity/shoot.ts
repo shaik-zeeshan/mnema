@@ -87,6 +87,10 @@ async function shootTauri(
     await tauri.locator(click).first().click();
     await tauri.waitForTimeout(400); // the next target renders after this click's invokes resolve
   }
+  for (const key of s.stateKeys?.[state] ?? []) {
+    await tauri.keyboard.press(key);
+    await tauri.waitForTimeout(400);
+  }
   await tauri.evaluate(() => document.fonts.ready);
   await tauri.waitForTimeout(800); // let $effects settle after the stubbed invokes resolve
   await tauri.screenshot({ path: join(out, "tauri.png"), animations: "disabled" });
