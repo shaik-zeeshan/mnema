@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-09 06:00",
-  "verdict": "About 65% done. The GPUI app works end to end in a dev bundle; seven of eight screens are built (the audio drawer just landed). Quick Recall is measuring its summon speed; Onboarding is building.",
+  "updated": "2026-11-09 07:00",
+  "verdict": "About 70% done. All eight screens except Onboarding are built; Quick Recall appears ~18 ms after the hotkey. Onboarding and the packaging + updater step are running.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~65%",
+      "value": "~70%",
       "note": "of the whole build"
     },
     {
@@ -14,8 +14,8 @@
     },
     {
       "label": "Screens built",
-      "value": "7 of 8",
-      "note": "+ audio drawer; Quick Recall and Onboarding in progress"
+      "value": "8 of 9",
+      "note": "Onboarding in progress"
     },
     {
       "label": "Tests passing",
@@ -24,8 +24,8 @@
     },
     {
       "label": "Screenshots",
-      "value": "108 ✓ · 66 waiting",
-      "note": "small windows 42, drawer 8, 16 frame-resampling refreshes"
+      "value": "108 ✓ · 80 waiting",
+      "note": "small windows 42, drawer 8, Quick Recall 14, 16 refreshes"
     }
   ],
   "bars": [
@@ -43,7 +43,7 @@
     },
     {
       "label": "Screens (S5, S6, S8–S15)",
-      "pct": 85
+      "pct": 90
     },
     {
       "label": "Packaging + updater (S16)",
@@ -56,14 +56,14 @@
   ],
   "now": [
     {
-      "id": "S10",
-      "title": "Quick Recall panel",
-      "detail": "Built and checked side by side; now measuring hotkey-to-panel speed (target ≤ 50 ms)."
-    },
-    {
       "id": "S14",
       "title": "Onboarding",
       "detail": "The 8-step setup window: welcome, permissions and storage (the two hard gates), settings, model downloads that never block, voice, and a finale that starts recording."
+    },
+    {
+      "id": "S16",
+      "title": "Packaging + updater",
+      "detail": "A repo script that builds and signs Mnema.app (CLI helper, entitlements, notarisation), and the full update flow: download, signature check, Apple install gate, atomic replace with rollback, relaunch."
     }
   ],
   "done": [
@@ -228,6 +228,12 @@
       "title": "Audio drawer + leaner image cache",
       "what": "Transcript with word-by-word karaoke, speaker-coloured waveform, speaker repair, native playback, drawer keys. The Timeline image cache now keeps compressed frames like today's app: memory 1.2 GB → 0.33 GB.",
       "commit": "9ce0e7a2"
+    },
+    {
+      "id": "S10",
+      "title": "Quick Recall panel",
+      "what": "The ⌘⌥Space floating panel: search with filter pills and ghost completion, best moment, Quick Look strip, Ask with streaming answers and citations, recent rows. Appears ~18 ms after the hotkey (target 50).",
+      "commit": "675f8439"
     }
   ],
   "next": [
@@ -281,6 +287,19 @@
         "update-install-failed",
         "update-ready",
         "update-uptodate"
+      ]
+    },
+    {
+      "title": "Quick Recall — new, waiting for sign-off",
+      "note": "Idle, results, Quick Look, Ask streaming and done, recent, filter popover; dark/light.",
+      "files": [
+        "quick-recall-idle",
+        "quick-recall-results",
+        "quick-recall-quicklook",
+        "quick-recall-ask-streaming",
+        "quick-recall-ask-done",
+        "quick-recall-recent",
+        "quick-recall-filter"
       ]
     },
     {

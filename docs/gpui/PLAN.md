@@ -113,7 +113,7 @@ After **every** merged slice/feature:
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
 ### Next up (orchestrator queue; keep current)
-1. **Running, two at a time:** S10 Quick Recall (slot 1, measuring summon) and S14 Onboarding (slot 2). Done: S9 9ce0e7a2 (image cache: 192 encoded entries plus ~9 decoded; RSS 1.2 GB → 0.33 GB). Not yet run: `startup-log-diff.sh` (needs the founder's real Mnema quit).
+1. **Running, two at a time:** S14 Onboarding (slot 2) and the rest of S16, packaging + the updater flow (slot 1). Done: S10 675f8439 (summon p50 17.7 ms). Not yet run: `startup-log-diff.sh` (needs the founder's real Mnema quit).
    - Accepted drift (Tauri-only, deleted at S17): asset-grant failures log at Warn, not Error, and app icons are returned even if their grant fails.
    - Next: S16 rest (packaging + updater flow), the W3 parity sweep, the docs pass (AGENTS.md / capture-pipeline paths), S17 on the founder's go.
    - Old worktrees (all removed):
