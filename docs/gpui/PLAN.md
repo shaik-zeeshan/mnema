@@ -113,9 +113,14 @@ After **every** merged slice/feature:
 The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never put secrets, keys, private paths or real user data in it.
 
 ### Next up (orchestrator queue; keep current)
-1. **Running, two at a time:** S14 Onboarding (slot 2) and the rest of S16, packaging + the updater flow (slot 1). Done: S10 675f8439 (summon p50 17.7 ms). Not yet run: `startup-log-diff.sh` (needs the founder's real Mnema quit).
+1. **All slices built** through S16: S14 cbc83041, S16 f31d8bcd. Waiting on the founder:
+   - the 24 onboarding baselines;
+   - the hands-on checklists in the report (native layer, onboarding TCC, updater with their identity, `--dev` only);
+   - `startup-log-diff.sh` (needs their real Mnema quit);
+   - whether to fix the Tauri Finale bug (`frame.ocrText` doesn't exist on `FrameDto`, so the first OCR words never show).
+   - **Never build `--release` before S17:** it is the real `day.mnema` app on `~/.mnema`.
    - Accepted drift (Tauri-only, deleted at S17): asset-grant failures log at Warn, not Error, and app icons are returned even if their grant fails.
-   - Next: S16 rest (packaging + updater flow), the W3 parity sweep, the docs pass (AGENTS.md / capture-pipeline paths), S17 on the founder's go.
+   - Next: the W3 parity sweep; the docs pass (AGENTS.md / capture-pipeline / ask-ai-streaming paths → app-core); AI provider setup inside onboarding (medium gap); S17 on the founder's go.
    - Old worktrees (all removed):
    - S3a capture leaves: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-ac2748086a4bbf839`
    - S13 Settings: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-aef107fcd394658f0`

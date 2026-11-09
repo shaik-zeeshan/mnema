@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-09 07:20",
-  "verdict": "About 70% done. All eight screens except Onboarding are built; Quick Recall appears ~18 ms after the hotkey. Onboarding and the packaging + updater step are running.",
+  "updated": "2026-11-09 09:30",
+  "verdict": "About 85% done. Every screen and window is built, the backend is shared, the app works with macOS end to end, and the updater is in. What's left: a final side-by-side sweep, a docs pass, your hands-on checks, and the cut-over on your go.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~70%",
+      "value": "~85%",
       "note": "of the whole build"
     },
     {
@@ -14,18 +14,18 @@
     },
     {
       "label": "Screens built",
-      "value": "8 of 9",
-      "note": "Onboarding in progress"
+      "value": "9 of 9",
+      "note": "all screens and windows"
     },
     {
       "label": "Tests passing",
-      "value": "1,534",
-      "note": "1,307 shared + 71 Tauri + 156 GPUI, 0 failing"
+      "value": "1,623",
+      "note": "1,338 shared + 71 Tauri + 214 GPUI, 0 failing"
     },
     {
-      "label": "Screenshots approved",
-      "value": "188",
-      "note": "every screen built so far"
+      "label": "Screenshots",
+      "value": "188 ✓ · 24 waiting",
+      "note": "Onboarding"
     }
   ],
   "bars": [
@@ -39,15 +39,15 @@
     },
     {
       "label": "Native layer (S7)",
-      "pct": 85
+      "pct": 95
     },
     {
       "label": "Screens (S5, S6, S8–S15)",
-      "pct": 90
+      "pct": 100
     },
     {
       "label": "Packaging + updater (S16)",
-      "pct": 30
+      "pct": 90
     },
     {
       "label": "Cut-over (S17)",
@@ -56,14 +56,9 @@
   ],
   "now": [
     {
-      "id": "S14",
-      "title": "Onboarding",
-      "detail": "The 8-step setup window: welcome, permissions and storage (the two hard gates), settings, model downloads that never block, voice, and a finale that starts recording."
-    },
-    {
-      "id": "S16",
-      "title": "Packaging + updater",
-      "detail": "A repo script that builds and signs Mnema.app (CLI helper, entitlements, notarisation), and the full update flow: download, signature check, Apple install gate, atomic replace with rollback, relaunch."
+      "id": "Next",
+      "title": "Final sweep and docs",
+      "detail": "A side-by-side pass over every screen against today's app, then updating AGENTS.md and the capture notes to the new code paths."
     }
   ],
   "done": [
@@ -234,18 +229,40 @@
       "title": "Quick Recall panel",
       "what": "The ⌘⌥Space floating panel: search with filter pills and ghost completion, best moment, Quick Look strip, Ask with streaming answers and citations, recent rows. Appears ~18 ms after the hotkey (target 50).",
       "commit": "675f8439"
+    },
+    {
+      "id": "S14",
+      "title": "Onboarding",
+      "what": "The 8-step setup window; only Capture & Storage blocks (your ruling); downloads never block; Voice 15 s; Finale starts recording and shows the first frame + OCR. Main never opens before setup is done.",
+      "commit": "cbc83041"
+    },
+    {
+      "id": "S16",
+      "title": "Packaging + updater",
+      "what": "A bundle script that builds and signs Mnema.app with the CLI helper and notarisation; the update flow (signature, Apple same-team check, swap with rollback, relaunch); an opt-in CI job. No Homebrew libraries in the release binary.",
+      "commit": "f31d8bcd"
     }
   ],
   "next": [
     {
-      "id": "S16",
-      "title": "Packaging + updater",
-      "detail": "Bundle script, signing, notarisation, download → verify → replace → relaunch."
+      "id": "Sweep",
+      "title": "Side-by-side sweep of every screen",
+      "detail": "One parity pass across all surfaces in both themes, producing a final gap list for you."
+    },
+    {
+      "id": "Docs",
+      "title": "Docs pass",
+      "detail": "AGENTS.md and the capture/Ask AI notes still point at src-tauri paths; update them to app-core."
+    },
+    {
+      "id": "Gap",
+      "title": "AI provider setup inside Onboarding",
+      "detail": "Today it sends you to Settings › Intelligence; the current app sets the provider and key in onboarding."
     },
     {
       "id": "S17",
       "title": "Cut-over",
-      "detail": "On your go: GPUI becomes Mnema, Tauri and Svelte are deleted."
+      "detail": "On your go: GPUI becomes Mnema (day.mnema), Tauri and Svelte are deleted, CI and docs updated."
     }
   ],
   "rulings": [
@@ -263,6 +280,24 @@
     "Screens may need several fix rounds to match pixel-for-pixel; the Timeline will show how many."
   ],
   "shots": [
+    {
+      "title": "Onboarding — new, waiting for sign-off",
+      "note": "All 8 steps incl. permissions granted/denied, storage blocked, setup done; dark/light.",
+      "files": [
+        "onboarding-capture",
+        "onboarding-capture-blocked",
+        "onboarding-change",
+        "onboarding-finale",
+        "onboarding-permissions",
+        "onboarding-permissions-denied",
+        "onboarding-permissions-granted",
+        "onboarding-settings",
+        "onboarding-setup",
+        "onboarding-setup-done",
+        "onboarding-voice",
+        "onboarding-welcome"
+      ]
+    },
     {
       "title": "Small windows — approved",
       "note": "Access request, update window, permission helper, developer window and mini mode; dark/light.",
@@ -440,6 +475,16 @@
         "try": "A settings change that needs a restart",
         "right": "The app relaunches by itself.",
         "tag": "dev bundle"
+      },
+      {
+        "try": "Onboarding with real permissions (signed build)",
+        "right": "Delete the dev onboarding state, open the signed build: onboarding opens, not main. Screen: Allow → relaunch notice → resumes. Deny → recovery + permission helper; focusing re-checks. Mic ticks; system audio shows ‘Sound is arriving’ (never a tick). Voice 15 s enrols. Finale starts recording and shows a real frame + OCR. Closing early quits.",
+        "tag": "signed build"
+      },
+      {
+        "try": "Updater with your identity (dev bundle only)",
+        "right": "Run the ignored gate tests with MNEMA_TEST_SIGNING_IDENTITY. Build A (0.1.27) and B (0.1.28) with --dev and a local test feed; A updates to B and relaunches. A tampered archive and an ad-hoc (wrong-team) re-sign are both refused with ‘This update isn't signed by Mnema.’ and the old app stays. mnema-cli status works. Never build --release before cut-over: it is the real app on your real data.",
+        "tag": "signed build"
       }
     ]
   }
