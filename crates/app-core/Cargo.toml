@@ -41,6 +41,11 @@ futures-util = "0.3"
 global-hotkey = "0.7"
 licensegate = "0.2"
 fs2 = "0.4"
+# The GPUI updater: unpack the .app.tar.gz, verify its minisign signature (the
+# same verifier tauri-plugin-updater uses), compare feed versions.
+flate2 = "1"
+minisign-verify = "0.2"
+semver = "1"
 log = "0.4"
 ocr = { path = "../ocr" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
@@ -91,6 +96,8 @@ security-framework = "3"
 security-framework-sys = "2"
 
 [dev-dependencies]
+# Signs throwaway update archives in the updater flow tests.
+ed25519-dalek = "2"
 tokio = { version = "1", features = ["macros"] }
 
 [[example]]

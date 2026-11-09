@@ -100,6 +100,13 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             }
         }
         HostMsg::Event(CoreEvent::AppUpdateStatusChanged(status)) => {
+            if let (Some(shell), Ok(v)) = (shell.upgrade(), serde_json::to_value(&status)) {
+                let settings = shell.read(cx).settings.clone();
+                settings.update(cx, |s, cx| {
+                    s.data.update = Some(v);
+                    cx.notify();
+                });
+            }
             crate::small::update::status_changed(status, cx);
             native::tray::refresh(cx);
         }
@@ -156,8 +163,11 @@ fn window_signal(signal: WindowSignal, cx: &mut App) {
         WindowSignal::NotRecordingReminder { post: false } => native::notification::remove(cx),
         // GPUI parks no views; asset grants are filtered out in `GpuiHost`.
         WindowSignal::RefreshParkedViews | WindowSignal::AllowAssetPath { .. } => {}
-        // shortcut: the GPUI updater (feed check every 2 h) is S16.
-        WindowSignal::StartUpdateCheckTimer => log::debug!("update check timer: lands with S16"),
+        WindowSignal::StartUpdateCheckTimer => {
+            if let Some(core) = cx.try_global::<Core>().map(|c| c.0.clone()) {
+                app_core::updates::start_update_check_timer(&core);
+            }
+        }
         // Handled by `small::signal`.
         WindowSignal::CloseCliAccessRequest => {}
     }

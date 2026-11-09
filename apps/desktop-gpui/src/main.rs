@@ -19,6 +19,9 @@ use mnema_gpui::{assets::MnemaAssets, feel, keymap, logging, theme, window, BUND
 
 actions!(app, [Quit]);
 
+/// Outside a bundle only; a bundle's `CFBundleShortVersionString` wins.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 const ALREADY_RUNNING_MESSAGE: &str =
     "Mnema is already running. Close the existing Mnema window before opening it again.";
 
@@ -26,7 +29,10 @@ fn main() {
     // Must run first: the speaker-analysis worker re-execs this binary as a helper.
     app_core::speaker_analysis_runtime::maybe_run_subprocess_helper_and_exit();
     feel::mark_start();
-    let paths = Paths::from_env(BUNDLE_ID);
+    // The bundle names the identity (`day.mnema` release, `day.mnema.gpui-dev`
+    // dev); a bare `cargo run` binary has none and runs as the dev app.
+    let updater = app_core::updates::UpdaterConfig::for_main_bundle(BUNDLE_ID, VERSION);
+    let paths = Paths::from_env(&updater.app.identifier);
     logging::init(&paths.log);
     log::info!("mnema-gpui starting");
 
@@ -62,6 +68,7 @@ fn main() {
             }
         };
         app_core::startup::manage_default_states(&core);
+        core.manage(app_core::updates::Updater::new(updater));
         mnema_gpui::bridge::tokio::init_from_handle(cx, core.runtime_handle());
         cx.set_global(Core(core.clone()));
         native::quit::install(core.clone());

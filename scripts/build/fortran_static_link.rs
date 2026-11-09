@@ -1,5 +1,5 @@
-// `include!`d by each desktop binary's build.rs (`apps/desktop/src-tauri/build.rs`,
-// and the GPUI app's once it links speakrs). Build scripts only: it prints cargo directives.
+// `include!`d by each desktop binary's build.rs (`apps/desktop/src-tauri/build.rs`
+// and `apps/desktop-gpui/build.rs`). Build scripts only: it prints cargo directives.
 //
 // Why: OpenBLAS (speakrs' diarization engine) is built from source with a Fortran
 // LAPACK, and `openblas-src` re-emits the gfortran/quadmath runtime as dynamic

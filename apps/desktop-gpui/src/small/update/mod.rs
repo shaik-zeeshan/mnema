@@ -72,18 +72,39 @@ impl UpdateWindow {
     }
 
     pub fn set_status(&mut self, status: Value, cx: &mut Context<Self>) {
+        // An install in flight ends in a relaunch; anything else re-arms the buttons.
+        let state = status.str_at(&["state"]);
+        if !matches!(
+            state,
+            Some("downloading" | "installing" | "restartRequired")
+        ) {
+            self.acting = false;
+        }
         self.status = Some(status);
         cx.notify();
     }
 
     fn primary(&mut self, cx: &mut Context<Self>) {
+        self.action_error = None;
         match model::key(self.status.as_ref()) {
             Key::Expired => cx.open_url(RENEWAL_CHECKOUT_URL),
-            // shortcut: install_app_update / restart_after_app_update need the GPUI
-            // updater (S16: feed, signature verify, bundle swap, relaunch).
-            Key::Ready => log::debug!("update: restart lands with the S16 updater"),
-            _ => log::debug!("update: install lands with the S16 updater"),
+            Key::Ready => {
+                let Some(core) = crate::chat::core(cx) else {
+                    return;
+                };
+                self.acting = true;
+                if let Err(e) = app_core::updates::restart_after_app_update(&core) {
+                    self.action_error = Some(e.message);
+                    self.acting = false;
+                }
+            }
+            // The failure shows here, as the window's own Failed state.
+            _ => {
+                self.acting = true;
+                install(false, cx);
+            }
         }
+        cx.notify();
     }
 
     fn identity(&self, k: Key, cx: &App, p: &Palette) -> AnyElement {
@@ -505,11 +526,35 @@ pub fn status_changed(status: app_core::updates::AppUpdateStatus, cx: &mut App) 
     }
 }
 
+/// "Check for Updates" (Settings).
+pub fn check(cx: &App) {
+    if let Some(core) = crate::chat::core(cx) {
+        let task_core = core.clone();
+        core.spawn(async move {
+            app_core::updates::check_for_app_update(&task_core).await;
+        });
+    }
+}
+
+/// Install, then relaunch (the window, Settings and the tray row). The tray has
+/// no window to show a failure in, so it asks for an alert.
+pub fn install(alert_on_failure: bool, cx: &App) {
+    if let Some(core) = crate::chat::core(cx) {
+        app_core::updates::install_and_restart(&core, alert_on_failure);
+    }
+}
+
 pub fn open(cx: &mut App) {
     let status = cx.try_global::<LastStatus>().and_then(|s| s.0.clone());
-    let license = crate::chat::core(cx).and_then(|core| app_core::licensing::cached_status(&core));
-    // shortcut: no GPUI updater yet (S16), so with no published status the
-    // window shows "Checking for updates" until one arrives.
+    let core = crate::chat::core(cx);
+    let license = core
+        .as_ref()
+        .and_then(|core| app_core::licensing::cached_status(core));
+    let status = status.or_else(|| {
+        core.as_ref()
+            .and_then(|core| app_core::updates::current_status(core))
+            .and_then(|s| serde_json::to_value(s).ok())
+    });
     super::open_or_focus::<UpdateWindow>(
         super::Kind::Update,
         cx,

@@ -1,15 +1,35 @@
 //! The GPUI app's own updater (BUILD-PROMPT §9.2), shared with the Tauri app:
 //! the channel + settings, the status/state machine payload and its pure
 //! decisions (license Update Window gate, `latest.json` size lookup), and the
-//! install gate. The Tauri host keeps the `tauri_plugin_updater` I/O.
+//! install gate. The GPUI host manages an [`Updater`] and runs [`flow`]; the
+//! Tauri host keeps its `tauri_plugin_updater` I/O.
 
+#[cfg(target_os = "macos")]
+pub mod bundle;
+pub mod feed;
+#[cfg(target_os = "macos")]
+pub mod flow;
 #[cfg(target_os = "macos")]
 pub mod install_gate;
+#[cfg(target_os = "macos")]
+pub mod runtime;
 mod settings;
 mod status;
+pub mod verify;
 
 #[cfg(target_os = "macos")]
+pub use bundle::MainBundle;
+pub use feed::{RemoteRelease, GPUI_PLATFORM_KEY};
+#[cfg(target_os = "macos")]
+pub use flow::{
+    check_for_app_update, current_status, install_and_restart, install_app_update, installable,
+    restart_after_app_update, run_update_check, set_app_update_channel, spawn_update_check,
+    start_update_check_timer,
+};
+#[cfg(target_os = "macos")]
 pub use install_gate::{check_update_bundle, GateRefusal, OwnIdentity};
+#[cfg(target_os = "macos")]
+pub use runtime::{Updater, UpdaterConfig, NOT_SIGNED_BY_MNEMA};
 pub use settings::{
     current_settings, initialize, load_app_update_settings_from_path, persist_settings,
     AppUpdateChannel, AppUpdateSettings, AppUpdateSettingsRuntime, AppUpdateSettingsState,

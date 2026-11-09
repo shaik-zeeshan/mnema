@@ -173,9 +173,7 @@ fn current_model(core: &AppCore, operation: StatusBarOperation, cx: &App) -> Sta
     apply_read_only_status(&mut model, blocked, status.as_ref());
     model.update_item = crate::small::update::last_status(cx).and_then(|s| {
         let version = s.update.as_ref().map(|u| u.version.as_str());
-        // shortcut: GPUI has no updater runtime until S16, so "installable" is
-        // "the feed named a version"; the row opens the Update window.
-        tray_update_menu_item(s.state, version, version.is_some())
+        tray_update_menu_item(s.state, version, app_core::updates::installable(core))
     });
     model
 }
@@ -276,9 +274,8 @@ pub fn handle(id: &str, cx: &mut App) {
         DELETE_LAST_1_MINUTE_ID => delete_recent(core, 60),
         DELETE_LAST_5_MINUTES_ID => delete_recent(core, 300),
         DELETE_LAST_15_MINUTES_ID => delete_recent(core, 900),
-        UPDATE_ID => {
-            let _ = core.host().open_window(app_core::WindowRequest::Update);
-        }
+        // Install / Retry / Restart to Finish (a staged restart just relaunches).
+        UPDATE_ID => crate::small::update::install(true, cx),
         QUIT_ID => core.shutdown(app_core::ExitKind::Quit),
         _ => {}
     }

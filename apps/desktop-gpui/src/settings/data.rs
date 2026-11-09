@@ -101,8 +101,7 @@ pub async fn load(core: &AppCore) -> SettingsData {
     // and get_system_audio_access_hint are native_capture (src-tauri) until S3; the mic
     // section shows "Couldn't load microphone state" and the permission rows hide.
     // shortcut: ask_ai_availability is src-tauri ask_ai until S3; Ask AI reads "Checking…".
-    // shortcut: get_app_update_status needs the updater runtime (src-tauri app_updates.rs)
-    // until S16; Updates shows "checking…".
+    d.update = app_core::updates::current_status(core).and_then(to_json);
     // shortcut: get_account_owner_person_id is src-tauri voice_enrollment until S3.
     // shortcut: list_privacy_app_candidates is native_capture until S3 (Add app… lists nothing).
     d

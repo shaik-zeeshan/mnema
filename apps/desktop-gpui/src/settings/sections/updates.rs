@@ -172,8 +172,11 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
                 .items_center()
                 .gap(space::S2)
                 .child(chip(state_label(u), ChipKind::Neutral, p))
-                // shortcut: check_for_app_update / install_app_update need the S16 updater runtime.
-                .child(Button::new("update-check", "Check for Updates").sm()),
+                .child(
+                    Button::new("update-check", "Check for Updates")
+                        .sm()
+                        .on_click(click(cx, |_, cx| crate::small::update::check(cx))),
+                ),
         )
         .child(
             div()
@@ -208,7 +211,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
         .child(
             div().child(
                 Button::new("update-install", "Install Update")
-                    .disabled(u.and_then(|u| u.str_at(&["state"])) != Some("available")),
+                    .disabled(u.and_then(|u| u.str_at(&["state"])) != Some("available"))
+                    .on_click(click(cx, |_, cx| crate::small::update::install(false, cx))),
             ),
         );
     let updates = section(

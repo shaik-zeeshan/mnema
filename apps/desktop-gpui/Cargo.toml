@@ -5,6 +5,11 @@ edition = "2021"
 publish = false
 
 [features]
+# The on-device diarization engine in the speaker-analysis helper this binary
+# re-execs (same default-on forwarding feature as the Tauri app). It links
+# OpenBLAS statically; build.rs force-links the static Fortran runtime.
+default = ["speaker-analysis-speakrs"]
+speaker-analysis-speakrs = ["app-core/speaker-analysis-speakrs"]
 # Parity JSON -> shell models, plus app-core's fixture seed. Tests turn it on
 # through the self dev-dependency below; the shipped binary leaves it off.
 fixtures = ["app-core/fixtures"]

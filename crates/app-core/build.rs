@@ -16,4 +16,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_PK_TOKEN");
     println!("cargo:rerun-if-env-changed=MNEMA_LICENSE_BASE_URL");
     println!("cargo:rerun-if-env-changed=MNEMA_TRIAL_LEN_DAYS");
+    // A test update feed for the GPUI updater (`updates::runtime`), baked in by
+    // whoever builds; release CI never sets it.
+    println!("cargo:rerun-if-env-changed=MNEMA_UPDATE_FEED_URL");
 }

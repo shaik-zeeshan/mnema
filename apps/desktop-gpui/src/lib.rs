@@ -24,5 +24,6 @@ pub mod timeline;
 pub mod ui;
 pub mod window;
 
-/// The GPUI dev app's bundle id (S16 settles release identities).
+/// The GPUI dev app's bundle id, used when the binary runs outside a bundle.
+/// A bundle's own id wins (`bundle-gpui-app.sh`: `day.mnema` for --release).
 pub const BUNDLE_ID: &str = "day.mnema.gpui-dev";
