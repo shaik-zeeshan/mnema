@@ -17,6 +17,8 @@ mod gallery;
 mod insights;
 #[path = "visual/quick_recall.rs"]
 mod quick_recall;
+#[path = "visual/onboarding.rs"]
+mod onboarding;
 #[path = "visual/settings.rs"]
 mod settings;
 #[path = "visual/small.rs"]
@@ -245,6 +247,15 @@ fn run() -> anyhow::Result<()> {
                 .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
             return quick_recall::parity(&mut cx, &dir, &state, setting.clone());
         }
+        if !filters.is_empty() && filters.iter().all(|f| "onboarding".contains(f.as_str())) {
+            let state = std::env::var("PARITY_STATE")?;
+            let theme_name = std::env::var("PARITY_THEME")?;
+            let (_, setting) = THEMES
+                .iter()
+                .find(|(t, _)| *t == theme_name)
+                .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
+            return onboarding::parity(&mut cx, &dir, &state, setting.clone());
+        }
         if let [f] = filters.as_slice() {
             if small::SURFACES.contains(&f.as_str()) {
                 let state = std::env::var("PARITY_STATE")?;
@@ -315,6 +326,7 @@ fn run() -> anyhow::Result<()> {
     failures.extend(insights::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(small::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(quick_recall::goldens(&mut cx, &filters, &THEMES)?);
+    failures.extend(onboarding::goldens(&mut cx, &filters, &THEMES)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

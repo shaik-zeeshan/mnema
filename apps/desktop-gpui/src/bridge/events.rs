@@ -45,10 +45,15 @@ fn touches_shell(event: &CoreEvent) -> bool {
     )
 }
 
-pub fn spawn(rx: async_channel::Receiver<HostMsg>, shell: WeakEntity<Shell>, cx: &mut App) {
+/// Main may not exist yet (onboarding runs first), so the shell is looked up per message.
+pub fn spawn(rx: async_channel::Receiver<HostMsg>, cx: &mut App) {
     cx.spawn(async move |cx| {
         while let Ok(msg) = rx.recv().await {
-            let _ = cx.update(|cx| handle(msg, &shell, cx));
+            let _ = cx.update(|cx| {
+                let shell = crate::window::shell(cx)
+                    .map_or_else(WeakEntity::new_invalid, |s| s.downgrade());
+                handle(msg, &shell, cx)
+            });
         }
     })
     .detach();
@@ -109,8 +114,8 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 reload_shell(&shell, cx);
             }
         }
-        // Surface entities subscribe to theirs as S8+ land.
-        HostMsg::Event(_) => {}
+        // Surface entities subscribe to theirs as S8+ land; onboarding takes download progress.
+        HostMsg::Event(event) => crate::onboarding::on_event(&event, cx),
         HostMsg::OpenWindow(req) if crate::small::open_request(&req, cx) => {}
         HostMsg::OpenWindow(WindowRequest::Main) => {
             crate::window::show_main(cx);

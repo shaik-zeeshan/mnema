@@ -69,6 +69,29 @@ pub fn open_main(model: ShellModel, cx: &mut App) -> anyhow::Result<Entity<Shell
     Ok(shell)
 }
 
+/// Open main if it isn't yet (onboarding just finished), then show it.
+pub fn ensure_main(cx: &mut App) -> Option<AnyWindowHandle> {
+    if !cx.has_global::<Main>() {
+        // Main never appears before onboarding is done.
+        if !crate::onboarding::is_complete(cx) {
+            crate::onboarding::open(cx);
+            return None;
+        }
+        let model = ShellModel {
+            developer_options: crate::shell::developer_options(cx),
+            ..Default::default()
+        };
+        match open_main(model, cx) {
+            Ok(shell) => crate::bridge::events::reload_shell(&shell, cx),
+            Err(e) => {
+                log::error!("main window failed to open: {e:#}");
+                return None;
+            }
+        }
+    }
+    show_main(cx)
+}
+
 pub fn shell(cx: &App) -> Option<Entity<Shell>> {
     cx.try_global::<Main>().and_then(|m| m.shell.upgrade())
 }
@@ -104,7 +127,7 @@ pub fn toggle_main(cx: &mut App) {
 
 /// Show main on Settings, optionally at a tab (`focus_main_and_open_settings`).
 pub fn open_settings(tab: Option<&str>, cx: &mut App) {
-    show_main(cx);
+    ensure_main(cx);
     let Some(shell) = shell(cx) else {
         return;
     };

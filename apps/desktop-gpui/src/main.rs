@@ -36,9 +36,10 @@ fn main() {
     app.on_open_urls(move |urls| {
         let _ = url_tx.try_send(urls);
     });
-    // A Dock click or Finder relaunch with nothing visible opens main.
+    // A Dock click or Finder relaunch with nothing visible opens main
+    // (onboarding, while it isn't done: `ensure_main`).
     app.on_reopen(|cx| {
-        window::show_main(cx);
+        window::ensure_main(cx);
     });
 
     app.run(move |cx| {
@@ -106,25 +107,31 @@ fn main() {
         // sharingType is decided before the first show, from the saved setting.
         let developer = native::developer_options(&core);
         cx.set_global(DeveloperOptions(developer));
-        // shortcut: the onboarding window is S14; main opens either way until then.
-        let shell = match window::open_main(
-            ShellModel {
-                developer_options: developer,
-                ..Default::default()
-            },
-            cx,
-        ) {
-            Ok(shell) => shell,
-            Err(e) => {
-                log::error!("main window failed to open: {e:#}");
-                native::quit::exit_now();
-            }
-        };
-        feel::milestone("main_window_opened");
+        // Before onboarding completes, the onboarding window opens instead of main;
+        // its Finale opens main (`window::ensure_main`).
+        if report.onboarding_complete {
+            let shell = match window::open_main(
+                ShellModel {
+                    developer_options: developer,
+                    ..Default::default()
+                },
+                cx,
+            ) {
+                Ok(shell) => shell,
+                Err(e) => {
+                    log::error!("main window failed to open: {e:#}");
+                    native::quit::exit_now();
+                }
+            };
+            feel::milestone("main_window_opened");
+            events::reload_shell(&shell, cx);
+        } else {
+            mnema_gpui::onboarding::open(cx);
+            feel::milestone("onboarding_window_opened");
+        }
         core.spawn_deferred_startup(&report);
         tray::refresh(cx);
-        events::spawn(host_rx, shell.downgrade(), cx);
-        events::reload_shell(&shell, cx);
+        events::spawn(host_rx, cx);
         deep_links::spawn(core, url_rx, cx);
     });
 }

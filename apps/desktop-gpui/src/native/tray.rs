@@ -252,9 +252,10 @@ pub fn handle(id: &str, cx: &mut App) {
         return;
     };
     match id {
-        // shortcut: the onboarding window is S14; Complete Setup opens main until then.
-        COMPLETE_SETUP_ID | OPEN_MAIN_ID => {
-            crate::window::show_main(cx);
+        COMPLETE_SETUP_ID => crate::onboarding::open(cx),
+        // `ensure_main` lands on onboarding while it isn't done.
+        OPEN_MAIN_ID => {
+            crate::window::ensure_main(cx);
         }
         OPEN_SETTINGS_ID => crate::window::open_settings(None, cx),
         RECORDING_TOGGLE_ID => recording_toggle(core, cx),

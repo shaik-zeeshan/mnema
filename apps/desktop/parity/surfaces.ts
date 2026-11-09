@@ -70,6 +70,26 @@ const INSIGHTS_SET: [string, string, string[], string][] = [
   ["receipt", "journal", [tabClick("Journal"), 'button:has-text("Receipt")'], ""],
 ];
 
+/** Onboarding parity states: `[state, fixture, Tauri clicks]` (mirrors `onboarding::fixture::STATES`).
+ *  Permissions with screen + mic granted stops at system audio, then Accessibility (Zen is installed). */
+const obBtn = (label: string) => `.ob-foot button:has-text("${label}")`;
+const OB_TO_CAPTURE = ['button:has-text("Begin setup")', obBtn("Continue"), obBtn("Capture & Storage")];
+const OB_TO_SETUP = [...OB_TO_CAPTURE, obBtn("Your settings"), obBtn("Start")];
+const OB_SET: [string, string, string[]][] = [
+  ["welcome", "default", []],
+  ["permissions", "default", ['button:has-text("Begin setup")']],
+  ["permissions-granted", "granted", ['button:has-text("Begin setup")']],
+  ["permissions-denied", "denied", ['button:has-text("Begin setup")']],
+  ["capture", "granted", OB_TO_CAPTURE],
+  ["capture-blocked", "tiny", OB_TO_CAPTURE],
+  ["settings", "granted", [...OB_TO_CAPTURE, obBtn("Your settings")]],
+  ["change", "granted", [...OB_TO_CAPTURE, obBtn("Your settings"), obBtn("Change settings")]],
+  ["setup", "granted", OB_TO_SETUP],
+  ["setup-done", "installed", OB_TO_SETUP],
+  ["voice", "installed", [...OB_TO_SETUP, obBtn("Continue")]],
+  ["finale", "finale", [...OB_TO_SETUP, obBtn("Continue"), obBtn("Skip")]],
+];
+
 /** Settings parity states: `[state, ?tab=, mockup anchor]` (mirrors `settings::fixture::STATES`). */
 const SETTINGS_SETS: [string, string, string][] = [
   ["general", "appearance", "s-appearance"],
@@ -263,14 +283,24 @@ export const SURFACES: Record<string, Surface> = {
     },
   },
   // `?state=` presets, plus the plain steps (`?step=`, with `&perm` / `&folder` where the step reads them).
+  // The S14 set (mirrors `onboarding::fixture::STATES`): the Svelte route always opens on Welcome,
+  // so each step is reached by the same clicks a user makes, over parity/fixtures/onboarding/*.json.
   onboarding: {
     route: "/onboarding",
     label: "onboarding",
     viewport: { width: 1120, height: 800 },
     page: "onboarding.html",
     selector: "#ob-win",
+    stateFixture: Object.fromEntries(
+      OB_SET.map(([state, file]) => [state, file]),
+    ),
+    stateClick: Object.fromEntries(OB_SET.map(([state, , clicks]) => [state, clicks])),
     states: {
       ...q("step", "welcome permissions capture settings change setup voice finale"),
+      "permissions-granted": "step=permissions&perm=sysaudio",
+      "permissions-denied": "state=perm-denied",
+      "capture-blocked": "step=capture&folder=tiny",
+      "setup-done": "state=setup-done",
       "permissions-mic-denied": "step=permissions&perm=mic-denied",
       "permissions-sysaudio": "step=permissions&perm=sysaudio",
       "permissions-done": "step=permissions&perm=done",

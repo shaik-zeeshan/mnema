@@ -1,0 +1,1330 @@
+{
+ "get_onboarding_state": {
+  "schemaVersion": 1,
+  "completedAtUnixMs": null,
+  "recordingSettingsEverSaved": false
+ },
+ "get_recording_settings": {
+  "captureScreen": true,
+  "captureMicrophone": true,
+  "captureSystemAudio": true,
+  "segmentDurationSeconds": 300,
+  "screenFrameRate": 0.5,
+  "screenResolution": {
+   "mode": "preset",
+   "preset": "720p"
+  },
+  "videoBitrate": {
+   "mode": "preset",
+   "preset": "medium",
+   "customMbps": null
+  },
+  "saveDirectory": "",
+  "autoStart": true,
+  "developerOptionsEnabled": false,
+  "previewCacheTtlSeconds": 3600,
+  "followTimelineLive": false,
+  "retentionPolicy": "never",
+  "appearance": "system",
+  "timeFormat": "system",
+  "ocr": {
+   "enabled": true,
+   "provider": "apple_vision",
+   "modelId": null,
+   "language": null,
+   "recognitionMode": "fast",
+   "languageCorrection": false,
+   "tesseractPageSegmentationMode": "single_block",
+   "tesseractPreprocessMode": "grayscale",
+   "tesseractUpscaleFactor": 1,
+   "tesseractCharWhitelist": null
+  },
+  "transcription": {
+   "enabled": true,
+   "microphoneEnabled": true,
+   "systemAudioEnabled": false,
+   "provider": "local_whisper",
+   "modelId": "base",
+   "language": "auto",
+   "memoryMode": "balanced",
+   "idleUnloadSeconds": 300,
+   "chunkSeconds": 30
+  },
+  "speakerAnalysis": {
+   "separateSpeakers": true,
+   "recognizeSavedPeople": false,
+   "autoLabelOwner": true,
+   "provider": "speakrs",
+   "modelId": "pyannote-community-1-wespeaker",
+   "timeoutSeconds": 600
+  },
+  "audioSpeechDetection": {
+   "detector": "silero"
+  },
+  "metadata": {
+   "enabled": true,
+   "browserUrlMode": "sanitized"
+  },
+  "privacy": {
+   "excludedApps": [],
+   "filterSystemAudio": true
+  },
+  "access": {
+   "askAiEnabled": true,
+   "askAiMaxToolCalls": 12,
+   "askAiWebFetchEnabled": false,
+   "askAiModel": null,
+   "askAiModelProvider": null,
+   "quickRecallAutoAnswer": "localOnly"
+  },
+  "aiRuntime": {
+   "enabled": false,
+   "providers": [],
+   "defaultModel": null,
+   "mcpServers": [
+    {
+     "id": "github",
+     "label": "GitHub",
+     "enabled": true,
+     "transport": "http",
+     "authMode": "bearer",
+     "command": null,
+     "args": [],
+     "env": [],
+     "url": "https://api.githubcopilot.com/mcp/",
+     "secretEnvName": null,
+     "enabledTools": null
+    }
+   ],
+   "favoriteModels": [],
+   "recentModels": []
+  },
+  "userContext": {
+   "enabled": true,
+   "derivationBudgetTier": "balanced",
+   "backfillWindowDays": 30,
+   "backfillGoDeeper": false
+  },
+  "semanticSearch": {
+   "enabled": true,
+   "provider": "local",
+   "modelId": "nomic-embed-text-v1.5"
+  },
+  "pauseCaptureOnInactivity": true,
+  "idleTimeoutSeconds": 10,
+  "microphoneActivitySensitivity": 50,
+  "systemAudioActivitySensitivity": 50,
+  "activityMode": "system_input_or_screen"
+ },
+ "get_capture_permissions": {
+  "permissions": {
+   "screen": "granted",
+   "microphone": "granted",
+   "systemAudio": "assumed_working"
+  }
+ },
+ "get_capture_support": {
+  "screen": true,
+  "microphone": true,
+  "systemAudio": true
+ },
+ "get_audio_transcription_model_status": {
+  "modelsDirectory": "/Users/ana/Library/Application Support/day.mnema/config/transcription-models",
+  "providers": [
+   {
+    "provider": "apple_speech_on_device",
+    "displayName": "Apple Speech (on-device)",
+    "models": [
+     {
+      "provider": "apple_speech_on_device",
+      "modelId": null,
+      "displayName": "Apple Speech (on-device)",
+      "description": "OS-managed on-device Apple Speech recognition executed through Speech.framework. No app-managed download.",
+      "management": "os_managed",
+      "status": "os_managed",
+      "available": false,
+      "availabilityStatus": "framework_unavailable",
+      "installPath": null,
+      "missingFiles": [],
+      "failureMessage": "Current macOS app bundle is missing NSSpeechRecognitionUsageDescription. Quit Mnema and launch a rebuilt .app bundle before requesting Apple Speech permission.",
+      "licenseLabel": null,
+      "sourceUrl": "https://developer.apple.com/documentation/speech",
+      "download": null
+     }
+    ]
+   },
+   {
+    "provider": "deepgram",
+    "displayName": "Deepgram (cloud)",
+    "models": [
+     {
+      "provider": "deepgram",
+      "modelId": "nova-3",
+      "displayName": "Deepgram Nova-3",
+      "description": "Deepgram's latest cloud model. Default. Multilingual detection via `language=multi`. Audio is uploaded to your Deepgram account.",
+      "management": "os_managed",
+      "status": "os_managed",
+      "available": false,
+      "availabilityStatus": null,
+      "installPath": null,
+      "missingFiles": [],
+      "failureMessage": "Add a Deepgram API key in Settings to enable cloud transcription.",
+      "licenseLabel": null,
+      "sourceUrl": "https://developers.deepgram.com/docs/models-languages-overview",
+      "download": null
+     },
+     {
+      "provider": "deepgram",
+      "modelId": "nova-2",
+      "displayName": "Deepgram Nova-2",
+      "description": "Deepgram cloud model with a broader per-language list (`detect_language`). Audio is uploaded to your Deepgram account.",
+      "management": "os_managed",
+      "status": "os_managed",
+      "available": false,
+      "availabilityStatus": null,
+      "installPath": null,
+      "missingFiles": [],
+      "failureMessage": "Add a Deepgram API key in Settings to enable cloud transcription.",
+      "licenseLabel": null,
+      "sourceUrl": "https://developers.deepgram.com/docs/models-languages-overview",
+      "download": null
+     }
+    ]
+   },
+   {
+    "provider": "local_whisper",
+    "displayName": "Local Whisper",
+    "models": [
+     {
+      "provider": "local_whisper",
+      "modelId": "tiny",
+      "displayName": "Whisper Tiny",
+      "description": "Smallest local Whisper model; fastest, lowest accuracy.",
+      "management": "app_managed",
+      "status": "missing",
+      "available": false,
+      "availabilityStatus": null,
+      "installPath": "/Users/ana/Library/Application Support/day.mnema/config/transcription-models/local_whisper/tiny",
+      "missingFiles": [
+       "ggml-tiny.bin"
+      ],
+      "failureMessage": null,
+      "licenseLabel": "MIT",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp",
+      "download": {
+       "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin",
+       "byteSize": 77691713,
+       "sha256": "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21",
+       "shape": {
+        "kind": "single_file",
+        "file_name": "ggml-tiny.bin"
+       }
+      }
+     },
+     {
+      "provider": "local_whisper",
+      "modelId": "base",
+      "displayName": "Whisper Base",
+      "description": "Default local Whisper model; balanced speed, size, and quality.",
+      "management": "app_managed",
+      "status": "installed",
+      "available": true,
+      "availabilityStatus": null,
+      "installPath": "/Users/ana/Library/Application Support/day.mnema/config/transcription-models/local_whisper/base",
+      "missingFiles": [],
+      "failureMessage": null,
+      "licenseLabel": "MIT",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp",
+      "download": {
+       "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base.bin",
+       "byteSize": 147951465,
+       "sha256": "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe",
+       "shape": {
+        "kind": "single_file",
+        "file_name": "ggml-base.bin"
+       }
+      }
+     },
+     {
+      "provider": "local_whisper",
+      "modelId": "small",
+      "displayName": "Whisper Small",
+      "description": "Higher quality local Whisper model with larger disk and CPU cost.",
+      "management": "app_managed",
+      "status": "missing",
+      "available": false,
+      "availabilityStatus": null,
+      "installPath": "/Users/ana/Library/Application Support/day.mnema/config/transcription-models/local_whisper/small",
+      "missingFiles": [
+       "ggml-small.bin"
+      ],
+      "failureMessage": null,
+      "licenseLabel": "MIT",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp",
+      "download": {
+       "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin",
+       "byteSize": 487601967,
+       "sha256": "1be3a9b2063867b937e64e2ec7483364a79917e157fa98c5d94b5c1fffea987b",
+       "shape": {
+        "kind": "single_file",
+        "file_name": "ggml-small.bin"
+       }
+      }
+     },
+     {
+      "provider": "local_whisper",
+      "modelId": "medium",
+      "displayName": "Whisper Medium",
+      "description": "Largest v1 local Whisper option; best quality, highest resource use.",
+      "management": "app_managed",
+      "status": "missing",
+      "available": false,
+      "availabilityStatus": null,
+      "installPath": "/Users/ana/Library/Application Support/day.mnema/config/transcription-models/local_whisper/medium",
+      "missingFiles": [
+       "ggml-medium.bin"
+      ],
+      "failureMessage": null,
+      "licenseLabel": "MIT",
+      "sourceUrl": "https://huggingface.co/ggerganov/whisper.cpp",
+      "download": {
+       "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-medium.bin",
+       "byteSize": 1533763059,
+       "sha256": "6c14d5adee5f86394037b4e4e8b59f1673b6cee10e3cf0b11bbdbee79c156208",
+       "shape": {
+        "kind": "single_file",
+        "file_name": "ggml-medium.bin"
+       }
+      }
+     }
+    ]
+   },
+   {
+    "provider": "parakeet",
+    "displayName": "Parakeet",
+    "models": [
+     {
+      "provider": "parakeet",
+      "modelId": "parakeet-tdt-0.6b-v3-onnx",
+      "displayName": "Parakeet TDT 0.6B v3 ONNX",
+      "description": "Local multilingual Parakeet TDT model executed with a Rust ONNX Runtime adapter. Highest memory use.",
+      "management": "app_managed",
+      "status": "missing",
+      "available": false,
+      "availabilityStatus": null,
+      "installPath": "/Users/ana/Library/Application Support/day.mnema/config/transcription-models/parakeet/parakeet-tdt-0.6b-v3-onnx",
+      "missingFiles": [
+       "config.json",
+       "nemo128.onnx",
+       "encoder-model.onnx",
+       "encoder-model.onnx.data",
+       "decoder_joint-model.onnx",
+       "vocab.txt"
+      ],
+      "failureMessage": null,
+      "licenseLabel": "CC-BY-4.0",
+      "sourceUrl": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx",
+      "download": {
+       "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx",
+       "byteSize": 2549945719,
+       "sha256": "",
+       "shape": {
+        "kind": "multi_file",
+        "files": [
+         {
+          "relativePath": "config.json",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/config.json",
+          "byteSize": 97,
+          "sha256": "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466"
+         },
+         {
+          "relativePath": "nemo128.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/nemo128.onnx",
+          "byteSize": 139764,
+          "sha256": "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f"
+         },
+         {
+          "relativePath": "encoder-model.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx",
+          "byteSize": 41770866,
+          "sha256": "98a74b21b4cc0017c1e7030319a4a96f4a9506e50f0708f3a516d02a77c96bb1"
+         },
+         {
+          "relativePath": "encoder-model.onnx.data",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.onnx.data",
+          "byteSize": 2435420160,
+          "sha256": "9a22d372c51455c34f13405da2520baefb7125bd16981397561423ed32d24f36"
+         },
+         {
+          "relativePath": "decoder_joint-model.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/decoder_joint-model.onnx",
+          "byteSize": 72520893,
+          "sha256": "e978ddf6688527182c10fde2eb4b83068421648985ef23f7a86be732be8706c1"
+         },
+         {
+          "relativePath": "vocab.txt",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/vocab.txt",
+          "byteSize": 93939,
+          "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+         }
+        ]
+       }
+      }
+     },
+     {
+      "provider": "parakeet",
+      "modelId": "parakeet-tdt-0.6b-v3-onnx-int8",
+      "displayName": "Parakeet TDT 0.6B v3 ONNX int8",
+      "description": "Memory-saving int8 Parakeet ONNX bundle. Smaller download and lower runtime weight memory; accuracy may differ from full precision.",
+      "management": "app_managed",
+      "status": "missing",
+      "available": false,
+      "availabilityStatus": null,
+      "installPath": "/Users/ana/Library/Application Support/day.mnema/config/transcription-models/parakeet/parakeet-tdt-0.6b-v3-onnx-int8",
+      "missingFiles": [
+       "config.json",
+       "nemo128.onnx",
+       "encoder-model.int8.onnx",
+       "decoder_joint-model.int8.onnx",
+       "vocab.txt"
+      ],
+      "failureMessage": null,
+      "licenseLabel": "CC-BY-4.0",
+      "sourceUrl": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx",
+      "download": {
+       "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx",
+       "byteSize": 670619803,
+       "sha256": "",
+       "shape": {
+        "kind": "multi_file",
+        "files": [
+         {
+          "relativePath": "config.json",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/config.json",
+          "byteSize": 97,
+          "sha256": "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466"
+         },
+         {
+          "relativePath": "nemo128.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/nemo128.onnx",
+          "byteSize": 139764,
+          "sha256": "a9fde1486ebfcc08f328d75ad4610c67835fea58c73ba57e3209a6f6cf019e9f"
+         },
+         {
+          "relativePath": "encoder-model.int8.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/encoder-model.int8.onnx",
+          "byteSize": 652183999,
+          "sha256": "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09"
+         },
+         {
+          "relativePath": "decoder_joint-model.int8.onnx",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/decoder_joint-model.int8.onnx",
+          "byteSize": 18202004,
+          "sha256": "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70"
+         },
+         {
+          "relativePath": "vocab.txt",
+          "url": "https://huggingface.co/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/main/vocab.txt",
+          "byteSize": 93939,
+          "sha256": "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "get_speaker_analysis_model_status": {
+  "modelsDirectory": "/Users/ana/Library/Application Support/day.mnema/config/speaker-analysis-models",
+  "providers": [
+   {
+    "provider": "speakrs",
+    "displayName": "On-device (CoreML)",
+    "models": [
+     {
+      "provider": "speakrs",
+      "modelId": "pyannote-community-1-wespeaker",
+      "displayName": "pyannote community-1 + WeSpeaker (CoreML)",
+      "description": "On-device speaker diarization: a pure-Rust pyannote community-1 segmentation pipeline paired with WeSpeaker VoxCeleb ResNet34 embeddings, accelerated natively with Apple CoreML.",
+      "status": "installed",
+      "available": true,
+      "installPath": "/Users/ana/Library/Application Support/day.mnema/config/speaker-analysis-models/speakrs/pyannote-community-1-wespeaker",
+      "missingFiles": [],
+      "failureMessage": null,
+      "licenseLabel": "CC-BY-4.0 (WeSpeaker VoxCeleb ResNet34) + MIT (pyannote segmentation-3.0)",
+      "sourceUrl": "https://huggingface.co/avencera/speakrs-models",
+      "download": {
+       "url": "https://huggingface.co/avencera/speakrs-models",
+       "byteSize": 419482724,
+       "sha256": null,
+       "shape": {
+        "kind": "multi_file",
+        "files": [
+         {
+          "relativePath": "plda_lda.npy",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/plda_lda.npy",
+          "byteSize": 131200,
+          "sha256": "e20c9b012bebd1aabda5a38a127e63a43cf35debdc502715fc143e2fb6bc3c4b"
+         },
+         {
+          "relativePath": "plda_tr.npy",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/plda_tr.npy",
+          "byteSize": 131200,
+          "sha256": "e700b68cb319de3fafb5fa093eb9222c23c447084741f8d3a533640d425510ee"
+         },
+         {
+          "relativePath": "plda_mu.npy",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/plda_mu.npy",
+          "byteSize": 1152,
+          "sha256": "d286d48acf99bbc1ed1502fed0a3e361ae5626ce1870c8be9f7397c5e47886c6"
+         },
+         {
+          "relativePath": "plda_psi.npy",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/plda_psi.npy",
+          "byteSize": 1152,
+          "sha256": "d7128c9ed2f28a9781971805131129f077c04f948e2df12e52dcdb99f2b4e5f5"
+         },
+         {
+          "relativePath": "plda_mean1.npy",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/plda_mean1.npy",
+          "byteSize": 2176,
+          "sha256": "e424c0c352182aa8e0f555dec1f3b30e29a20b9ed6b25d339f112af92e51e36f"
+         },
+         {
+          "relativePath": "plda_mean2.npy",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/plda_mean2.npy",
+          "byteSize": 640,
+          "sha256": "6f6fb708a2037197b5b84ffeaa8f140cb878088fbecd6ab042ad26a7691bd2cf"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34.min_num_samples.txt",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34.min_num_samples.txt",
+          "byteSize": 4,
+          "sha256": "e4df891c484d7abb985dadf539fa1883a646dab6337af5cae4159c587b7050cc"
+         },
+         {
+          "relativePath": "segmentation-3.0.onnx",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0.onnx",
+          "byteSize": 5916308,
+          "sha256": "038b971741ed623af9773ecafdefa4b7bc523520099c2a68f8568b24189e8ad9"
+         },
+         {
+          "relativePath": "segmentation-3.0-b32.onnx",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b32.onnx",
+          "byteSize": 6178495,
+          "sha256": "94deac93dacc90d3191511f87f6f4d8517e3b2f5e10a449a851bcbf0ba9cdc94"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34.onnx",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34.onnx",
+          "byteSize": 26894815,
+          "sha256": "203a4c67112167580ab1fcb62f4568c633499fb283805890aebe1c48564fcc0f"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34.onnx.data",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34.onnx.data",
+          "byteSize": 26673152,
+          "sha256": "dc105e7857156611381b95cc961b277d8e1e098e7af1c919a77c68c7257ce956"
+         },
+         {
+          "relativePath": "wespeaker-fbank.onnx",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank.onnx",
+          "byteSize": 110476,
+          "sha256": "67e4e9772eb344eafdbae0ca14b82129e67ade4bb980eb99e49f3d2a3c01a4a9"
+         },
+         {
+          "relativePath": "wespeaker-fbank-b32.onnx",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-b32.onnx",
+          "byteSize": 110476,
+          "sha256": "5cd98072f28a02358200213e2ff00551ecf170ed7f382a2131f5c8a745fc2263"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail.onnx",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail.onnx",
+          "byteSize": 26733283,
+          "sha256": "9e78a7566200700065c9d2ea677e7dbcd847420009a134aa5fa3ac656b09a45f"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b3.onnx",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b3.onnx",
+          "byteSize": 26774950,
+          "sha256": "824510137f407f4fa50f342445ded0f59a42cfdbf7352acc8f38302887d9421e"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b32.onnx",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b32.onnx",
+          "byteSize": 27369733,
+          "sha256": "f2aae56fd52fcb6afb0964e04ee6c81a4caec5d8a3bb1183f8fceb96855f1869"
+         },
+         {
+          "relativePath": "segmentation-3.0.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0.mlmodelc/model.mil",
+          "byteSize": 37089,
+          "sha256": "cb2ee400e54e7cd1ba1dfac3d60dc36c3d01f0152e5d4a559f7873eb7715d96f"
+         },
+         {
+          "relativePath": "segmentation-3.0.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0.mlmodelc/coremldata.bin",
+          "byteSize": 439,
+          "sha256": "ac710fb9bcd0310d0c40fd82f2350ca5287b18596da33470bf5185be148aad81"
+         },
+         {
+          "relativePath": "segmentation-3.0.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0.mlmodelc/weights/weight.bin",
+          "byteSize": 5959360,
+          "sha256": "c3189a64946c75bc24fcb98afe89ad78c52bdbadfdf65e857fb1b81e2cc9fbb2"
+         },
+         {
+          "relativePath": "segmentation-3.0.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "129d4f2316a01d29c2636cb72fea64880086685250918bd6a89ea2b770286e68"
+         },
+         {
+          "relativePath": "segmentation-3.0-b32.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b32.mlmodelc/model.mil",
+          "byteSize": 37089,
+          "sha256": "cb2ee400e54e7cd1ba1dfac3d60dc36c3d01f0152e5d4a559f7873eb7715d96f"
+         },
+         {
+          "relativePath": "segmentation-3.0-b32.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b32.mlmodelc/coremldata.bin",
+          "byteSize": 439,
+          "sha256": "ac710fb9bcd0310d0c40fd82f2350ca5287b18596da33470bf5185be148aad81"
+         },
+         {
+          "relativePath": "segmentation-3.0-b32.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b32.mlmodelc/weights/weight.bin",
+          "byteSize": 5959360,
+          "sha256": "c3189a64946c75bc24fcb98afe89ad78c52bdbadfdf65e857fb1b81e2cc9fbb2"
+         },
+         {
+          "relativePath": "segmentation-3.0-b32.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b32.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "129d4f2316a01d29c2636cb72fea64880086685250918bd6a89ea2b770286e68"
+         },
+         {
+          "relativePath": "segmentation-3.0-b64.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b64.mlmodelc/model.mil",
+          "byteSize": 26777,
+          "sha256": "d2d35b55977eb6631cfb456eb67e8a771e834ac972ae051196ec68e9cacd9bac"
+         },
+         {
+          "relativePath": "segmentation-3.0-b64.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b64.mlmodelc/coremldata.bin",
+          "byteSize": 150,
+          "sha256": "0460ffe22d22a0ae0dc86c0cc22d94c074f29bbd6be1434707a66b5e154796c8"
+         },
+         {
+          "relativePath": "segmentation-3.0-b64.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b64.mlmodelc/weights/weight.bin",
+          "byteSize": 6024960,
+          "sha256": "0b8ef91e4a97b435f0f3a4bb66ca647ff53820edc4cb747c242413045a4aaa56"
+         },
+         {
+          "relativePath": "segmentation-3.0-b64.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/segmentation-3.0-b64.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "7497fe39c383a49061eae9ebb3052a59360752ee96deeee46ae701f9afbd6e4d"
+         },
+         {
+          "relativePath": "wespeaker-fbank.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank.mlmodelc/model.mil",
+          "byteSize": 7997,
+          "sha256": "acee98c155b533afa6a7eb3d5e2158cb4005f85999be06f12276f94c7fab9d34"
+         },
+         {
+          "relativePath": "wespeaker-fbank.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank.mlmodelc/coremldata.bin",
+          "byteSize": 168,
+          "sha256": "4241bd2543b6face59368f98e9cb7a049c46db8cc5ebd70a12814d3382324ede"
+         },
+         {
+          "relativePath": "wespeaker-fbank.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank.mlmodelc/weights/weight.bin",
+          "byteSize": 1778432,
+          "sha256": "27396cb0afdd09164a9d6b2dbd10688bed15230948b3e0a6692ec490c03ae4d7"
+         },
+         {
+          "relativePath": "wespeaker-fbank.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "b4a6a692403029bf4d417d17ba0e43ab89482e9d862d4ed7d897b309d7455910"
+         },
+         {
+          "relativePath": "wespeaker-fbank-b32.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-b32.mlmodelc/model.mil",
+          "byteSize": 7997,
+          "sha256": "acee98c155b533afa6a7eb3d5e2158cb4005f85999be06f12276f94c7fab9d34"
+         },
+         {
+          "relativePath": "wespeaker-fbank-b32.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-b32.mlmodelc/coremldata.bin",
+          "byteSize": 168,
+          "sha256": "4241bd2543b6face59368f98e9cb7a049c46db8cc5ebd70a12814d3382324ede"
+         },
+         {
+          "relativePath": "wespeaker-fbank-b32.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-b32.mlmodelc/weights/weight.bin",
+          "byteSize": 1778432,
+          "sha256": "27396cb0afdd09164a9d6b2dbd10688bed15230948b3e0a6692ec490c03ae4d7"
+         },
+         {
+          "relativePath": "wespeaker-fbank-b32.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-b32.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "b4a6a692403029bf4d417d17ba0e43ab89482e9d862d4ed7d897b309d7455910"
+         },
+         {
+          "relativePath": "wespeaker-fbank-30s.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-30s.mlmodelc/model.mil",
+          "byteSize": 7131,
+          "sha256": "34a76696a6318312ce0557b93e0d4defabfdbc540a682ae5dfbdc80d1f52f52d"
+         },
+         {
+          "relativePath": "wespeaker-fbank-30s.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-30s.mlmodelc/coremldata.bin",
+          "byteSize": 153,
+          "sha256": "d52fb49c6521e14c9366e0194e1e91f4550d8ba39d31e03e72bfe014b1e826fe"
+         },
+         {
+          "relativePath": "wespeaker-fbank-30s.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-30s.mlmodelc/weights/weight.bin",
+          "byteSize": 1778432,
+          "sha256": "27396cb0afdd09164a9d6b2dbd10688bed15230948b3e0a6692ec490c03ae4d7"
+         },
+         {
+          "relativePath": "wespeaker-fbank-30s.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-fbank-30s.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "413a9d484295f712f6a496624abd9a663e72149d2fe43f8ad101dc1dc09981d0"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail.mlmodelc/model.mil",
+          "byteSize": 60706,
+          "sha256": "630709365400a429358025104c67a240ae9dc5c555dd9f9c72203be33ca51fc6"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail.mlmodelc/coremldata.bin",
+          "byteSize": 218,
+          "sha256": "7e35919b7985082e3fe0fa8554679632383ef815f863f29a133a23a0bf17898a"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail.mlmodelc/weights/weight.bin",
+          "byteSize": 26525120,
+          "sha256": "18f777be6e47d2d9d5792d475457add3b71a677814ac66cadc90e5410d14b252"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "07abd12d7cdb8af793b6d439b40bd9e5c1f44b9eb69cbb3d3d272f494a77a556"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b3.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b3.mlmodelc/model.mil",
+          "byteSize": 60706,
+          "sha256": "630709365400a429358025104c67a240ae9dc5c555dd9f9c72203be33ca51fc6"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b3.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b3.mlmodelc/coremldata.bin",
+          "byteSize": 218,
+          "sha256": "7e35919b7985082e3fe0fa8554679632383ef815f863f29a133a23a0bf17898a"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b3.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b3.mlmodelc/weights/weight.bin",
+          "byteSize": 26525120,
+          "sha256": "18f777be6e47d2d9d5792d475457add3b71a677814ac66cadc90e5410d14b252"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b3.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b3.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "07abd12d7cdb8af793b6d439b40bd9e5c1f44b9eb69cbb3d3d272f494a77a556"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b32.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b32.mlmodelc/model.mil",
+          "byteSize": 60706,
+          "sha256": "630709365400a429358025104c67a240ae9dc5c555dd9f9c72203be33ca51fc6"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b32.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b32.mlmodelc/coremldata.bin",
+          "byteSize": 218,
+          "sha256": "7e35919b7985082e3fe0fa8554679632383ef815f863f29a133a23a0bf17898a"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b32.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b32.mlmodelc/weights/weight.bin",
+          "byteSize": 26525120,
+          "sha256": "18f777be6e47d2d9d5792d475457add3b71a677814ac66cadc90e5410d14b252"
+         },
+         {
+          "relativePath": "wespeaker-voxceleb-resnet34-tail-b32.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-voxceleb-resnet34-tail-b32.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "07abd12d7cdb8af793b6d439b40bd9e5c1f44b9eb69cbb3d3d272f494a77a556"
+         },
+         {
+          "relativePath": "wespeaker-multimask-tail-b32.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-multimask-tail-b32.mlmodelc/model.mil",
+          "byteSize": 61635,
+          "sha256": "15af971119deecf2729de0c32a9f9af17cf6769cf3a10d45ada114ddd7c54d3b"
+         },
+         {
+          "relativePath": "wespeaker-multimask-tail-b32.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-multimask-tail-b32.mlmodelc/coremldata.bin",
+          "byteSize": 201,
+          "sha256": "5e5467edd5d317c287cfa06474216990b8dfff1b7f6e725fb2e238a2264d8b16"
+         },
+         {
+          "relativePath": "wespeaker-multimask-tail-b32.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-multimask-tail-b32.mlmodelc/weights/weight.bin",
+          "byteSize": 26525120,
+          "sha256": "18f777be6e47d2d9d5792d475457add3b71a677814ac66cadc90e5410d14b252"
+         },
+         {
+          "relativePath": "wespeaker-multimask-tail-b32.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-multimask-tail-b32.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "77b60e64442b2140adebed82813bf619f76d92c9f419639093a50a27744ac14b"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w22.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w22.mlmodelc/model.mil",
+          "byteSize": 66382,
+          "sha256": "9661d1d90e55b67baddd7ebb5425bf8bc022f1f4501fc401416533edb22776a0"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w22.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w22.mlmodelc/coremldata.bin",
+          "byteSize": 170,
+          "sha256": "b9d52f76d5063a5afa2617f9f116d871feb43465d04d794807782e1da7a39fb8"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w22.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w22.mlmodelc/weights/weight.bin",
+          "byteSize": 27212096,
+          "sha256": "760c74421515a9407815321f45096a6b3c347fc79e8af69177a69700d7689acc"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w22.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w22.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "aafa741516f6315fbf1aa462506532b29ade3735288894546ae6416fb3c43ce9"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w37.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w37.mlmodelc/model.mil",
+          "byteSize": 66449,
+          "sha256": "b9c1c547d5be9da2156372b45e7f458277212e83303efb70e4c34c728412552c"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w37.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w37.mlmodelc/coremldata.bin",
+          "byteSize": 170,
+          "sha256": "0ad9d4580fa5349282e6d02f2c471c459045fe9c90f79242565c3e55ad6b80bb"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w37.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w37.mlmodelc/weights/weight.bin",
+          "byteSize": 27680448,
+          "sha256": "cab4592f768a3490f709dd95e0405fa85b9c1d63c26d47cba73394841a7b5d07"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w37.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w37.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "b2b90333ff02abd2deac8f5681908b07c8e4b288f2cbe92ecd2b7b220f8c184f"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w53.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w53.mlmodelc/model.mil",
+          "byteSize": 66449,
+          "sha256": "e4a31d06da147b7a2f4abc41190878ffd951a5c5815e19966aed4bfb73f4abc8"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w53.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w53.mlmodelc/coremldata.bin",
+          "byteSize": 172,
+          "sha256": "8338f256e91562a68acaa7dd585f8975ee5ebf259471a0b8fbca0a02c3adb958"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w53.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w53.mlmodelc/weights/weight.bin",
+          "byteSize": 28179968,
+          "sha256": "b8f5a65793ccd84603497c550af0b107f3227102a564831e20c81adaa831c414"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w53.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w53.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "1f28514f1515e416f69935b2a391ccab7a1c9daab40899c447952be67045ab70"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w84.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w84.mlmodelc/model.mil",
+          "byteSize": 66470,
+          "sha256": "878c317466fdc5f1e5ff3d4aa646847531d8ab70564fc53ac4c30cd05e9e49a5"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w84.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w84.mlmodelc/coremldata.bin",
+          "byteSize": 172,
+          "sha256": "d0347bea7234fb8a60519a05c6a150b5523fb86f0a50340f3dd30036e0ac1e7e"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w84.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w84.mlmodelc/weights/weight.bin",
+          "byteSize": 29147776,
+          "sha256": "e2fe670276b392230ae0fad72c4fbce5b6bd6fd0002905e6f352b65afde0e7cf"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w84.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w84.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "2baaac92ab37ced0a14006989e23748cbedfd58d3a3858da4ae0c77f3649a47a"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w116.mlmodelc/model.mil",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w116.mlmodelc/model.mil",
+          "byteSize": 66496,
+          "sha256": "8652083af9ed07a337dba438ae0c810dbd968e10e1f0b5b6f7c3b126e5f15f50"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w116.mlmodelc/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w116.mlmodelc/coremldata.bin",
+          "byteSize": 172,
+          "sha256": "dd2d8e8773a78800cd638b44748de4d7e1860f3b2727e49b199def03fd01f6d2"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w116.mlmodelc/weights/weight.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w116.mlmodelc/weights/weight.bin",
+          "byteSize": 30146816,
+          "sha256": "369991f2f7eff6dd7e89dd804fff843e4e1a576b40fda757f819db0907cf2688"
+         },
+         {
+          "relativePath": "wespeaker-chunk-emb-s12-w116.mlmodelc/analytics/coremldata.bin",
+          "url": "https://huggingface.co/avencera/speakrs-models/resolve/main/wespeaker-chunk-emb-s12-w116.mlmodelc/analytics/coremldata.bin",
+          "byteSize": 243,
+          "sha256": "68234b4f7e8b542bd61d973184fc0c750af22085f8e5eb2d8be85514951da818"
+         }
+        ]
+       }
+      }
+     }
+    ]
+   }
+  ]
+ },
+ "get_semantic_search_model_status": {
+  "modelsDirectory": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models",
+  "models": [
+   {
+    "provider": "local",
+    "modelId": "nomic-embed-text-v1.5",
+    "displayName": "Nomic Embed Text v1.5 (English)",
+    "description": "Default English tier: long-context (8192 tokens), Apache-2.0, 768-dimensional. The permissive license keeps the default path obligation-free.",
+    "tier": "english",
+    "dimension": 768,
+    "maxTokens": 8192,
+    "modelCode": "nomic-ai/nomic-embed-text-v1.5",
+    "approxDownloadBytes": 548000000,
+    "licenseLabel": "Apache-2.0",
+    "status": "installed",
+    "available": true,
+    "installPath": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models/local/nomic-embed-text-v1.5",
+    "missingFiles": []
+   },
+   {
+    "provider": "local",
+    "modelId": "multilingual-e5-small",
+    "displayName": "Multilingual E5 Small (Multilingual)",
+    "description": "Multilingual tier: covers 100+ languages, non-gated (MIT), 384-dimensional. A non-English user is guided here rather than silently degraded by the English default, and it serves English well too.",
+    "tier": "multilingual",
+    "dimension": 384,
+    "maxTokens": 512,
+    "modelCode": "intfloat/multilingual-e5-small",
+    "approxDownloadBytes": 488000000,
+    "licenseLabel": "MIT",
+    "status": "missing",
+    "available": false,
+    "installPath": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models/local/multilingual-e5-small",
+    "missingFiles": [
+     "model.safetensors",
+     "config.json",
+     "tokenizer.json"
+    ]
+   },
+   {
+    "provider": "local",
+    "modelId": "bge-m3",
+    "displayName": "BGE-M3 (Multilingual, Custom)",
+    "description": "Custom multilingual option (BAAI/bge-m3), 1024-dimensional, 8192-token, CLS-pooled. Available via the Custom picker.",
+    "tier": "custom",
+    "dimension": 1024,
+    "maxTokens": 8192,
+    "modelCode": "BAAI/bge-m3",
+    "approxDownloadBytes": 2289000000,
+    "licenseLabel": "MIT",
+    "status": "missing",
+    "available": false,
+    "installPath": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models/local/bge-m3",
+    "missingFiles": [
+     "pytorch_model.bin",
+     "config.json",
+     "tokenizer.json"
+    ]
+   },
+   {
+    "provider": "local",
+    "modelId": "stella_en_400M_v5",
+    "displayName": "Stella 400M v5 (English, Custom)",
+    "description": "Custom English option (NovaSearch/stella_en_400M_v5), 2048-dimensional, MIT. Stronger English retrieval than the default Nomic; larger per-vector storage (2048-dim).",
+    "tier": "custom",
+    "dimension": 2048,
+    "maxTokens": 8192,
+    "modelCode": "NovaSearch/stella_en_400M_v5",
+    "approxDownloadBytes": 1750000000,
+    "licenseLabel": "MIT",
+    "status": "missing",
+    "available": false,
+    "installPath": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models/local/stella_en_400M_v5",
+    "missingFiles": [
+     "model.safetensors",
+     "2_Dense_2048/model.safetensors",
+     "config.json",
+     "tokenizer.json"
+    ]
+   },
+   {
+    "provider": "local",
+    "modelId": "snowflake-arctic-embed-l-v2.0",
+    "displayName": "Snowflake Arctic Embed L v2.0 (Multilingual, Custom)",
+    "description": "Custom multilingual option (Snowflake/snowflake-arctic-embed-l-v2.0), Matryoshka-truncated to 256-dimensional, Apache-2.0, CLS-pooled. bge-m3-class multilingual retrieval at a quarter of the per-vector storage.",
+    "tier": "custom",
+    "dimension": 256,
+    "maxTokens": 8192,
+    "modelCode": "Snowflake/snowflake-arctic-embed-l-v2.0",
+    "approxDownloadBytes": 2289000000,
+    "licenseLabel": "Apache-2.0",
+    "status": "missing",
+    "available": false,
+    "installPath": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models/local/snowflake-arctic-embed-l-v2.0",
+    "missingFiles": [
+     "model.safetensors",
+     "config.json",
+     "tokenizer.json"
+    ]
+   },
+   {
+    "provider": "local",
+    "modelId": "gte-modernbert-base",
+    "displayName": "GTE ModernBERT Base (English, Custom)",
+    "description": "Custom English option (Alibaba-NLP/gte-modernbert-base), 768-dimensional, Apache-2.0, CLS-pooled. Matches the default Nomic tier's retrieval quality on real capture data at roughly half the disk (~302 MB vs ~548 MB), but embeds slower AND — like every ModernBERT option here — uses more memory running than it does on disk (~596 MB resident against Nomic's ~273 MB, because candle cannot run ModernBERT in half precision). Pick it to save disk, not memory, speed or quality.",
+    "tier": "custom",
+    "dimension": 768,
+    "maxTokens": 8192,
+    "modelCode": "Alibaba-NLP/gte-modernbert-base",
+    "approxDownloadBytes": 301625980,
+    "licenseLabel": "Apache-2.0",
+    "status": "missing",
+    "available": false,
+    "installPath": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models/local/gte-modernbert-base",
+    "missingFiles": [
+     "model.safetensors",
+     "config.json",
+     "tokenizer.json"
+    ]
+   },
+   {
+    "provider": "local",
+    "modelId": "granite-embedding-english-r2",
+    "displayName": "Granite Embedding English R2 (English, Custom)",
+    "description": "Custom English option (ibm-granite/granite-embedding-english-r2), 768-dimensional, Apache-2.0, CLS-pooled. Same ~302 MB footprint as GTE ModernBERT (and the same ~596 MB resident while running) and competitive on screen text, but measurably worse on audio transcripts — prefer GTE ModernBERT unless you index screen text only.",
+    "tier": "custom",
+    "dimension": 768,
+    "maxTokens": 8192,
+    "modelCode": "ibm-granite/granite-embedding-english-r2",
+    "approxDownloadBytes": 301626231,
+    "licenseLabel": "Apache-2.0",
+    "status": "missing",
+    "available": false,
+    "installPath": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models/local/granite-embedding-english-r2",
+    "missingFiles": [
+     "model.safetensors",
+     "config.json",
+     "tokenizer.json"
+    ]
+   },
+   {
+    "provider": "local",
+    "modelId": "granite-embedding-small-english-r2",
+    "displayName": "Granite Embedding Small English R2 (English, Custom)",
+    "description": "Custom English option (ibm-granite/granite-embedding-small-english-r2), 384-dimensional, Apache-2.0, CLS-pooled. The low-disk, high-throughput end: ~99 MB on disk (~191 MB resident while running) and roughly 2.4× the indexing speed of the default, paying for it with clearly weaker retrieval — especially on audio transcripts.",
+    "tier": "custom",
+    "dimension": 384,
+    "maxTokens": 8192,
+    "modelCode": "ibm-granite/granite-embedding-small-english-r2",
+    "approxDownloadBytes": 98916591,
+    "licenseLabel": "Apache-2.0",
+    "status": "missing",
+    "available": false,
+    "installPath": "/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models/local/granite-embedding-small-english-r2",
+    "missingFiles": [
+     "model.safetensors",
+     "config.json",
+     "tokenizer.json"
+    ]
+   }
+  ]
+ },
+ "list_semantic_search_supported_models": [
+  {
+   "modelId": "nomic-embed-text-v1.5",
+   "displayName": "Nomic Embed Text v1.5 (English)",
+   "modelCode": "nomic-ai/nomic-embed-text-v1.5",
+   "dimension": 768,
+   "description": "Default English tier: long-context (8192 tokens), Apache-2.0, 768-dimensional. The permissive license keeps the default path obligation-free.",
+   "multilingual": false,
+   "approxDownloadBytes": null
+  },
+  {
+   "modelId": "multilingual-e5-small",
+   "displayName": "Multilingual E5 Small (Multilingual)",
+   "modelCode": "intfloat/multilingual-e5-small",
+   "dimension": 384,
+   "description": "Multilingual tier: covers 100+ languages, non-gated (MIT), 384-dimensional. A non-English user is guided here rather than silently degraded by the English default, and it serves English well too.",
+   "multilingual": true,
+   "approxDownloadBytes": null
+  },
+  {
+   "modelId": "bge-m3",
+   "displayName": "BGE-M3 (Multilingual, Custom)",
+   "modelCode": "BAAI/bge-m3",
+   "dimension": 1024,
+   "description": "Custom multilingual option (BAAI/bge-m3), 1024-dimensional, 8192-token, CLS-pooled. Available via the Custom picker.",
+   "multilingual": true,
+   "approxDownloadBytes": null
+  },
+  {
+   "modelId": "stella_en_400M_v5",
+   "displayName": "Stella 400M v5 (English, Custom)",
+   "modelCode": "NovaSearch/stella_en_400M_v5",
+   "dimension": 2048,
+   "description": "Custom English option (NovaSearch/stella_en_400M_v5), 2048-dimensional, MIT. Stronger English retrieval than the default Nomic; larger per-vector storage (2048-dim).",
+   "multilingual": false,
+   "approxDownloadBytes": null
+  },
+  {
+   "modelId": "snowflake-arctic-embed-l-v2.0",
+   "displayName": "Snowflake Arctic Embed L v2.0 (Multilingual, Custom)",
+   "modelCode": "Snowflake/snowflake-arctic-embed-l-v2.0",
+   "dimension": 256,
+   "description": "Custom multilingual option (Snowflake/snowflake-arctic-embed-l-v2.0), Matryoshka-truncated to 256-dimensional, Apache-2.0, CLS-pooled. bge-m3-class multilingual retrieval at a quarter of the per-vector storage.",
+   "multilingual": true,
+   "approxDownloadBytes": null
+  },
+  {
+   "modelId": "gte-modernbert-base",
+   "displayName": "GTE ModernBERT Base (English, Custom)",
+   "modelCode": "Alibaba-NLP/gte-modernbert-base",
+   "dimension": 768,
+   "description": "Custom English option (Alibaba-NLP/gte-modernbert-base), 768-dimensional, Apache-2.0, CLS-pooled. Matches the default Nomic tier's retrieval quality on real capture data at roughly half the disk (~302 MB vs ~548 MB), but embeds slower AND — like every ModernBERT option here — uses more memory running than it does on disk (~596 MB resident against Nomic's ~273 MB, because candle cannot run ModernBERT in half precision). Pick it to save disk, not memory, speed or quality.",
+   "multilingual": false,
+   "approxDownloadBytes": null
+  },
+  {
+   "modelId": "granite-embedding-english-r2",
+   "displayName": "Granite Embedding English R2 (English, Custom)",
+   "modelCode": "ibm-granite/granite-embedding-english-r2",
+   "dimension": 768,
+   "description": "Custom English option (ibm-granite/granite-embedding-english-r2), 768-dimensional, Apache-2.0, CLS-pooled. Same ~302 MB footprint as GTE ModernBERT (and the same ~596 MB resident while running) and competitive on screen text, but measurably worse on audio transcripts — prefer GTE ModernBERT unless you index screen text only.",
+   "multilingual": false,
+   "approxDownloadBytes": null
+  },
+  {
+   "modelId": "granite-embedding-small-english-r2",
+   "displayName": "Granite Embedding Small English R2 (English, Custom)",
+   "modelCode": "ibm-granite/granite-embedding-small-english-r2",
+   "dimension": 384,
+   "description": "Custom English option (ibm-granite/granite-embedding-small-english-r2), 384-dimensional, Apache-2.0, CLS-pooled. The low-disk, high-throughput end: ~99 MB on disk (~191 MB resident while running) and roughly 2.4× the indexing speed of the default, paying for it with clearly weaker retrieval — especially on audio transcripts.",
+   "multilingual": false,
+   "approxDownloadBytes": null
+  }
+ ],
+ "get_ocr_model_status": {
+  "modelsDirectory": "/Users/ana/Library/Application Support/day.mnema/config/ocr-models",
+  "providers": [
+   {
+    "provider": "apple_vision",
+    "displayName": "Apple Vision",
+    "models": [
+     {
+      "provider": "apple_vision",
+      "modelId": null,
+      "displayName": "Apple Vision",
+      "description": "OS-managed Apple Vision OCR executed through Vision.framework. No app-managed download.",
+      "management": "os_managed",
+      "status": "os_managed",
+      "available": true,
+      "installPath": null,
+      "missingFiles": [],
+      "failureMessage": null,
+      "licenseLabel": null,
+      "sourceUrl": "https://developer.apple.com/documentation/vision",
+      "download": null,
+      "runtimeMessage": null
+     }
+    ]
+   },
+   {
+    "provider": "tesseract",
+    "displayName": "Tesseract",
+    "models": [
+     {
+      "provider": "tesseract",
+      "modelId": "tesseract-5.5.2",
+      "displayName": "Tesseract English",
+      "description": "Embedded Tesseract engine in the app build with Mnema-managed eng/osd tessdata downloads.",
+      "management": "app_managed",
+      "status": "missing",
+      "available": false,
+      "installPath": "/Users/ana/Library/Application Support/day.mnema/config/ocr-models/tesseract/tesseract-5.5.2",
+      "missingFiles": [
+       "tessdata/eng.traineddata",
+       "tessdata/osd.traineddata"
+      ],
+      "failureMessage": null,
+      "licenseLabel": "Apache-2.0",
+      "sourceUrl": "https://tesseract-ocr.github.io/tessdoc/Installation.html",
+      "download": {
+       "url": "https://github.com/tesseract-ocr/tessdata_fast",
+       "byteSize": 14675815,
+       "sha256": "02a21f73272441ac9f07b5e140b5362f63be60ff87dd84ec3d965f204bea9016",
+       "shape": {
+        "kind": "multi_file",
+        "files": [
+         {
+          "relativePath": "tessdata/eng.traineddata",
+          "url": "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/eng.traineddata",
+          "byteSize": 4113088,
+          "sha256": "7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2"
+         },
+         {
+          "relativePath": "tessdata/osd.traineddata",
+          "url": "https://github.com/tesseract-ocr/tessdata_fast/raw/4.1.0/osd.traineddata",
+          "byteSize": 10562727,
+          "sha256": "9cf5d576fcc47564f11265841e5ca839001e7e6f38ff7f7aacf46d15a96b00ff"
+         }
+        ]
+       }
+      },
+      "runtimeMessage": "Tesseract runtime execution is not enabled in this build yet."
+     }
+    ]
+   }
+  ]
+ },
+ "probe_storage_path": {
+  "path": "/Users/ana/.mnema",
+  "exists": true,
+  "writable": true,
+  "freeBytes": 312000000000
+ },
+ "get_browser_url_accessibility_status": {
+  "trusted": false,
+  "geckoBrowsers": [
+   {
+    "bundleId": "app.zen-browser.zen",
+    "displayName": "Zen",
+    "installed": true
+   },
+   {
+    "bundleId": "org.mozilla.firefox",
+    "displayName": "Firefox",
+    "installed": false
+   }
+  ]
+ },
+ "get_sensitive_capture_recommendations": {
+  "promptId": "recommended-exclusions",
+  "recommendedApps": [
+   {
+    "bundleId": "com.apple.Passwords",
+    "displayName": "Apple Passwords",
+    "category": "passwords",
+    "categoryLabel": "Passwords",
+    "running": false,
+    "iconPath": null,
+    "exclusionState": "missing"
+   },
+   {
+    "bundleId": "com.apple.keychainaccess",
+    "displayName": "Keychain Access",
+    "category": "passwords",
+    "categoryLabel": "Passwords",
+    "running": false,
+    "iconPath": null,
+    "exclusionState": "missing"
+   },
+   {
+    "bundleId": "com.1password.1password",
+    "displayName": "1Password",
+    "category": "passwords",
+    "categoryLabel": "Passwords",
+    "running": false,
+    "iconPath": null,
+    "exclusionState": "missing"
+   },
+   {
+    "bundleId": "com.bitwarden.desktop",
+    "displayName": "Bitwarden",
+    "category": "passwords",
+    "categoryLabel": "Passwords",
+    "running": false,
+    "iconPath": null,
+    "exclusionState": "missing"
+   }
+  ],
+  "actionableRecommendationCount": 4,
+  "shouldShowExistingUserPrompt": false,
+  "browserDisclosures": []
+ },
+ "get_account_owner_person_id": null,
+ "list_frames": [
+  {
+   "id": 9001,
+   "sessionId": "s-1",
+   "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+   "capturedAt": "2026-11-04T09:01:57Z",
+   "width": 1280,
+   "height": 800,
+   "appBundleId": "com.microsoft.VSCode",
+   "appName": "Code",
+   "windowTitle": null,
+   "url": null,
+   "ocrText": "Quarterly review — draft agenda · Q3 numbers, hiring plan, roadmap",
+   "processorVersion": null,
+   "equivalenceHint": null,
+   "createdAt": "2026-11-04T09:01:57Z",
+   "updatedAt": "2026-11-04T09:01:57Z"
+  }
+ ],
+ "get_frame_preview": {
+  "mimeType": "image/webp",
+  "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+  "sourceKind": "original_frame",
+  "hasSecretRedactions": false,
+  "secretRedactionCount": 0
+ }
+}

@@ -52,6 +52,8 @@ icon_assets!(
         ImageOff,
         ChartNoAxesGantt,
         Speaker,
+        Circle,
+        CircleDashed,
     ]
 );
 
