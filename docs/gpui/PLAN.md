@@ -114,7 +114,7 @@ The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never
 
 ### Next up (orchestrator queue; keep current)
 1. **All slices built** through S16: S14 cbc83041, S16 f31d8bcd. Waiting on the founder:
-   - the 24 onboarding baselines;
+   - ~~the 24 onboarding baselines~~ (approved 2026-11-09);
    - the hands-on checklists in the report (native layer, onboarding TCC, updater with their identity, `--dev` only);
    - `startup-log-diff.sh` (needs their real Mnema quit);
    - whether to fix the Tauri Finale bug (`frame.ocrText` doesn't exist on `FrameDto`, so the first OCR words never show).

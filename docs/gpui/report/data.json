@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-09 09:30",
+  "updated": "2026-11-09 09:45",
   "verdict": "About 85% done. Every screen and window is built, the backend is shared, the app works with macOS end to end, and the updater is in. What's left: a final side-by-side sweep, a docs pass, your hands-on checks, and the cut-over on your go.",
   "metrics": [
     {
@@ -23,9 +23,9 @@
       "note": "1,338 shared + 71 Tauri + 214 GPUI, 0 failing"
     },
     {
-      "label": "Screenshots",
-      "value": "188 ✓ · 24 waiting",
-      "note": "Onboarding"
+      "label": "Screenshots approved",
+      "value": "212",
+      "note": "every screen and window"
     }
   ],
   "bars": [
@@ -56,9 +56,14 @@
   ],
   "now": [
     {
-      "id": "Next",
-      "title": "Final sweep and docs",
-      "detail": "A side-by-side pass over every screen against today's app, then updating AGENTS.md and the capture notes to the new code paths."
+      "id": "Sweep",
+      "title": "Side-by-side sweep of every screen",
+      "detail": "One pass over all surfaces in both themes against today's app and the mockups; produces the final gap list."
+    },
+    {
+      "id": "Gap",
+      "title": "AI provider setup inside Onboarding",
+      "detail": "Adding provider + key setup with a live key check to the onboarding AI step, as today's app does."
     }
   ],
   "done": [
@@ -245,19 +250,9 @@
   ],
   "next": [
     {
-      "id": "Sweep",
-      "title": "Side-by-side sweep of every screen",
-      "detail": "One parity pass across all surfaces in both themes, producing a final gap list for you."
-    },
-    {
       "id": "Docs",
       "title": "Docs pass",
       "detail": "AGENTS.md and the capture/Ask AI notes still point at src-tauri paths; update them to app-core."
-    },
-    {
-      "id": "Gap",
-      "title": "AI provider setup inside Onboarding",
-      "detail": "Today it sends you to Settings › Intelligence; the current app sets the provider and key in onboarding."
     },
     {
       "id": "S17",
@@ -272,7 +267,8 @@
     "The titlebar section icons may stay the app's own drawings.",
     "12 shell and 20 control screenshots approved after viewing.",
     "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09).",
-    "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09)."
+    "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09).",
+    "Onboarding screenshots approved (2026-11-09)."
   ],
   "risks": [
     "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -281,7 +277,7 @@
   ],
   "shots": [
     {
-      "title": "Onboarding — new, waiting for sign-off",
+      "title": "Onboarding — approved",
       "note": "All 8 steps incl. permissions granted/denied, storage blocked, setup done; dark/light.",
       "files": [
         "onboarding-capture",
