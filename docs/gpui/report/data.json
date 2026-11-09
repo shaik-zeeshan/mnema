@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-09 07:00",
+  "updated": "2026-11-09 07:20",
   "verdict": "About 70% done. All eight screens except Onboarding are built; Quick Recall appears ~18 ms after the hotkey. Onboarding and the packaging + updater step are running.",
   "metrics": [
     {
@@ -23,9 +23,9 @@
       "note": "1,307 shared + 71 Tauri + 156 GPUI, 0 failing"
     },
     {
-      "label": "Screenshots",
-      "value": "108 ✓ · 80 waiting",
-      "note": "small windows 42, drawer 8, Quick Recall 14, 16 refreshes"
+      "label": "Screenshots approved",
+      "value": "188",
+      "note": "every screen built so far"
     }
   ],
   "bars": [
@@ -254,7 +254,8 @@
     "Solid tinted surfaces instead of in-window blur (titlebar, popovers).",
     "The titlebar section icons may stay the app's own drawings.",
     "12 shell and 20 control screenshots approved after viewing.",
-    "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09)."
+    "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09).",
+    "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09)."
   ],
   "risks": [
     "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -263,7 +264,7 @@
   ],
   "shots": [
     {
-      "title": "Small windows — new, waiting for sign-off",
+      "title": "Small windows — approved",
       "note": "Access request, update window, permission helper, developer window and mini mode; dark/light.",
       "files": [
         "access-granted",
@@ -290,7 +291,7 @@
       ]
     },
     {
-      "title": "Quick Recall — new, waiting for sign-off",
+      "title": "Quick Recall — approved",
       "note": "Idle, results, Quick Look, Ask streaming and done, recent, filter popover; dark/light.",
       "files": [
         "quick-recall-idle",
@@ -303,8 +304,8 @@
       ]
     },
     {
-      "title": "Audio drawer — new, waiting for sign-off",
-      "note": "Peek, expanded reader, speaker repair, not-transcribed; dark/light. (Also refreshes 16 Timeline/shell images by a few edge pixels inside the frame.)",
+      "title": "Audio drawer — approved",
+      "note": "Peek, expanded reader, speaker repair, not-transcribed; dark/light.",
       "files": [
         "timeline-drawer-peek",
         "timeline-drawer-expanded",

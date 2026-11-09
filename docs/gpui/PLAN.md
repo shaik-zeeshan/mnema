@@ -121,7 +121,7 @@ The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never
    - S13 Settings: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-aef107fcd394658f0`
    - S12 Insights: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-acad0b6ce3e5374fa`
    - Done before the pause: S8 2a17488a, S11 bc38c3bb, B6b 26e994bb. **S2 is complete.**
-   - **Approved by the founder 2026-11-09:** Timeline (10), Chat (10), Settings (24), Insights (20) and the changed shell (12) baselines.
+   - **Approved by the founder 2026-11-09:** Timeline (10), Chat (10), Settings (24), Insights (20), the changed shell (12), small windows (42), the audio drawer (8), Quick Recall (14), and the 16 frame-resampling refreshes.
    - Queued, no slot yet: the S8 perf pass (fix the frame-time metric to work-per-frame + dropped frames, and chase the scrub stutters up to 170 ms); drop the "pressed primary" gallery cell; S15 small windows; S10 Quick Recall (needs S7); S9 AudioDrawer.
    - The hourly auto-resume cron is off. Resume only when asked.
 2. **Waiting for S3** (all in src-tauri): app_infra startup/retention/processing workers + `run_deferred_startup_blocking` (read NativeCaptureState), voice_enrollment, select_semantic_search_model, wipe_user_context, the privacy-exclusion apply step, the installed-app list.
