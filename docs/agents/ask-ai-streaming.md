@@ -5,6 +5,11 @@ Deep-dive on the backend-owned chat streaming contract shared by both Ask AI doo
 [ADR 0033](../adr/0033-ask-ai-migrates-onto-shared-reasoning-engine.md) and
 [ADR 0031](../adr/0031-quick-recall-and-chat-share-one-persistent-conversation-store.md).
 
+The code lives in `crates/app-core/src/ask_ai/` (moved out of `src-tauri` in the GPUI
+rebuild). Below, `ask_ai.rs` means that module (`mod.rs`, `turn.rs`, `live.rs`, …), and
+`ask_ai/answer_view.rs` means `crates/app-core/src/ask_ai/answer_view.rs`. Both hosts
+receive the stream as the typed `CoreEvent::AskAiUpdate`.
+
 ---
 
 ## Ownership boundary (the core invariant)
