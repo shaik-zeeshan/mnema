@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-10 19:01",
+ "updated": "2026-11-10 19:14",
  "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. All six issues from today's hands-on test have a committed fix: one is wired and five are built. Capture health in the status bar is built and wired. A signed dev build with all of it was opened on 10 Nov at 18:15. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
@@ -57,13 +57,8 @@
  "now": [
   {
    "id": "Licence",
-   "title": "Licence banner and deep-link receipt",
-   "detail": "The banner in the main window and the receipt shown after a licence link. Agent working. Not built yet."
-  },
-  {
-   "id": "Centre",
-   "title": "Centring on large windows",
-   "detail": "Built by its agent; being re-tested before it is committed."
+   "title": "Licence banner and licence-link receipt",
+   "detail": "Built and wired by its agent; being re-tested before it is committed."
   }
  ],
  "done": [
@@ -312,6 +307,12 @@
    "title": "Status popover spacing",
    "what": "The \"Building meaning index\" row lines up with the rows around it and has the same gaps. Built; screenshot approved.",
    "commit": "0f148fa6"
+  },
+  {
+   "id": "Fix 7",
+   "title": "Large windows: Settings and onboarding centred",
+   "what": "On a wide window the content column sits in the middle (your ruling; Tauri pins it left). Nothing moves at the default or minimum sizes. Built; not driven.",
+   "commit": "e0b3e9f9"
   }
  ],
  "next": [
@@ -343,7 +344,8 @@
   "The 101 screenshots refreshed by the polish pass approved (2026-11-10).",
   "Capture-health status bar, the 20 Insights screens after the window-size fix, and the onboarding Models tab approved (2026-11-10).",
   "Large windows: Settings and onboarding are centred in GPUI, a deliberate difference from Tauri (2026-11-10).",
-  "Pictures for approval go on the report's \"Waiting for your approval\" page, not in Preview (2026-11-10)."
+  "Pictures for approval go on the report's \"Waiting for your approval\" page, not in Preview (2026-11-10).",
+  "Centred large-window layout approved as shown, incl. the onboarding top and bottom bars following the column (2026-11-10)."
  ],
  "risks": [
   "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -622,14 +624,14 @@
  ],
  "waiting": [
   {
-   "id": "Look",
-   "title": "Centred layout on large windows",
-   "detail": "Before and after at 2400 and 1600 wide are on the \"Waiting for your approval\" page. Say if the top-bar and bottom-bar alignment in onboarding should be different."
+   "id": "Approve",
+   "title": "Four new licence screenshots",
+   "detail": "Trial banner, lapsed banner, activated receipt and device-limit receipt, on the \"Waiting for your approval\" page."
   },
   {
    "id": "Drive",
    "title": "Hands-on test of the next signed dev build",
-   "detail": "A signed dev build with all six fixes and capture health was opened on 10 Nov at 18:15. None of it has been used in the real app yet. The checklist below lists what only a person can check."
+   "detail": "The dev app's data, settings, models and logs were wiped on 10 Nov so the next signed dev build starts as a true first run. None of today's work has been used in the real app yet. The checklist below lists what only a person can check."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -1024,15 +1026,78 @@
    "what": "No picture: this changes behaviour, not looks. Settings now shows the microphone, capture support and permissions at once, and the slower keychain and network checks follow, each given at most 10 seconds. A check that fails says \"couldn't check\" instead of showing \"Checking…\" forever. The stuck screen resolution and the microphone error in your screenshot were fixed earlier by 8a1fcb2d, which wired Settings to the real backend; your screenshot came from the build before it. Not driven yet."
   }
  ],
- "approve_verdict": "One thing to look at: the centred layout for large windows, which you asked for. No reference screenshot changes (the default sizes are untouched), so this is a look-and-say, not a formal approval. Everything else on this page is already approved.",
+ "approve_verdict": "One set needs your yes: the four new licence screenshots (two banners, two receipts). Everything else on this page is already approved, including the centred layout for large windows.",
  "approve": [
+  {
+   "anchor": "approve-licence",
+   "title": "Licence banner and licence-link receipt",
+   "toc": "Licence",
+   "commit": "being re-tested",
+   "state": "built and wired · awaiting your approval",
+   "awaiting": true,
+   "what": "Two new pieces. The banner sits under the titlebar: trial ending (more urgent at 7, 3 and 1 days), Read-Only Mode, revoked, activation lapsed with a Re-check button, activation pending, and low disk when no licence banner is showing. Only the trial and pending banners can be closed, and only for that day count. The receipt opens when you click a licence link: it starts as \"Setting up your license\" and then shows activated, pending, renewed, device limit or failed. A licence link no longer opens Settings › License on its own. Not checked: a real licence link or purchase, and whether the banner on the Settings screen runs under the window's traffic-light buttons.",
+   "rows": [
+    {
+     "heading": "Banner: trial ending in 2 days",
+     "shots": [
+      {
+       "file": "licence-banner-trial-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "licence-banner-trial-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Banner: activation lapsed",
+     "shots": [
+      {
+       "file": "licence-banner-lapsed-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "licence-banner-lapsed-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Receipt: activated",
+     "shots": [
+      {
+       "file": "licence-receipt-activated-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "licence-receipt-activated-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Receipt: device limit reached",
+     "shots": [
+      {
+       "file": "licence-receipt-overcap-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "licence-receipt-overcap-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  },
   {
    "anchor": "approve-centre",
    "title": "Large windows: Settings and onboarding centred",
    "toc": "Large windows",
-   "commit": "being re-tested",
-   "state": "built · please look",
-   "awaiting": true,
+   "commit": "e0b3e9f9",
+   "state": "built · you approved the look 10 Nov",
+   "awaiting": false,
    "what": "On a wide window the content column now sits in the middle instead of at the left. Nothing moves at the default or minimum window sizes: Settings stays as it is up to 1280 px wide and onboarding up to 1120 px, then the column slides toward the centre as the window grows, with no jump. Two choices to check: in Settings the breadcrumb and \"All changes saved\" follow the column; in onboarding the step name and the \"1 / 8\" counter in the top bar, and the Back / Continue buttons in the bottom bar, also line up with the column, so they don't end up far from the content. Only the dark theme was rendered.",
    "rows": [
     {
