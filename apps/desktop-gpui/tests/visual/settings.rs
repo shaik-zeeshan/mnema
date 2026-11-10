@@ -8,7 +8,7 @@ use std::path::Path;
 
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
-use gpui_kit::{px, size, AppContext, VisualTestAppContext};
+use gpui_kit::{AppContext, VisualTestAppContext};
 use mnema_gpui::settings::fixture::{settings_data, FixtureBackend, STATES};
 use mnema_gpui::shell::{Shell, ShellModel, Surface};
 use mnema_gpui::theme;
@@ -31,7 +31,7 @@ pub fn render(
     let data = settings_data()?;
     cx.update(|cx| theme::set_setting(setting, cx));
     let mut settings = None;
-    let window = cx.open_offscreen_window(size(px(VIEWPORT.0), px(VIEWPORT.1)), |window, cx| {
+    let window = cx.open_offscreen_window(compare::viewport(VIEWPORT), |window, cx| {
         let shell = cx.new(|cx| {
             let mut shell = Shell::new(shell_model, window, cx);
             shell.go(Surface::Settings, cx);

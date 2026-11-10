@@ -184,7 +184,7 @@ pub fn render(
     cx: &mut Context<Insights>,
 ) -> AnyElement {
     let Some(d) = this.overview.clone().filter(|_| this.status.loaded) else {
-        return loading(p).into_any_element();
+        return loading(this.width, p).into_any_element();
     };
     let f = figures(this, &d, cx);
     div()
@@ -193,6 +193,7 @@ pub fn render(
         .child(read(
             lede_col(this, &d, &f, p, cx),
             stat_cells(this, &d, &f, p),
+            this.width,
             p,
         ))
         .child(exhibits::exhibits(this, &d, &f, p, window, cx))
@@ -200,7 +201,7 @@ pub fn render(
         .into_any_element()
 }
 
-fn loading(p: &Palette) -> gpui_kit::Div {
+fn loading(width: gpui_kit::Pixels, p: &Palette) -> gpui_kit::Div {
     let lede = div()
         .flex()
         .flex_col()
@@ -237,7 +238,7 @@ fn loading(p: &Palette) -> gpui_kit::Div {
                 .into_any_element()
         })
         .collect();
-    div().child(read(lede, stats, p))
+    div().child(read(lede, stats, width, p))
 }
 
 fn lede_col(

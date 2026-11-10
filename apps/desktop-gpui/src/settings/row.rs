@@ -229,7 +229,15 @@ impl Row {
             .items_center()
             .gap(space::S2)
             .min_w_0()
-            .children(self.control);
+            .map(|d| {
+                if self.full {
+                    d.children(self.control)
+                } else {
+                    // Each control at its own width, so a `w_full` one (Select)
+                    // can't take the whole wrapped line.
+                    d.children(self.control.into_iter().map(|c| div().flex_none().child(c)))
+                }
+            });
         div()
             .py(px(14.))
             .min_w_0()
@@ -243,11 +251,24 @@ impl Row {
                         .child(main)
                         .child(control.w_full())
                 } else {
+                    // `flex: 1 1 240px`: when the copy would drop under 240 px the
+                    // control wraps onto its own line (right-aligned) instead of
+                    // squeezing the copy to a word a line.
                     d.flex()
+                        .flex_wrap()
                         .items_center()
-                        .gap(space::S6)
-                        .child(main)
-                        .child(control.flex_none().justify_end())
+                        .gap_x(space::S6)
+                        .gap_y(space::S3)
+                        .child(main.flex_basis(px(240.)))
+                        // `.setting-row__control`: its own items wrap at the row's width.
+                        .child(
+                            control
+                                .flex_none()
+                                .flex_wrap()
+                                .justify_end()
+                                .max_w_full()
+                                .ml_auto(),
+                        )
                 }
             })
     }
@@ -304,10 +325,21 @@ pub fn line(
     text_: impl Into<SharedString>,
     p: &Palette,
 ) -> Div {
+    // `.setting-row__below .mx-inline`: a long line wraps its text, not the
+    // icon onto a line of its own.
     crate::ui::notice::inline(
         tone,
-        Some(crate::ui::icon(icon_path, theme::size::ICON_SM).into_any_element()),
-        vec![div().child(text_.into()).into_any_element()],
+        Some(
+            div()
+                .flex_none()
+                .mt(px(3.))
+                .child(crate::ui::icon(icon_path, theme::size::ICON_SM))
+                .into_any_element(),
+        ),
+        vec![div().min_w_0().child(text_.into()).into_any_element()],
         p,
     )
+    .flex_nowrap()
+    .items_start()
+    .max_w_full()
 }

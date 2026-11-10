@@ -70,6 +70,8 @@ pub fn options(win: (f32, f32), min: (f32, f32), kind: WindowKind, cx: &App) -> 
         app_owns_titlebar_drag: true,
         window_background: WindowBackgroundAppearance::Transparent,
         window_min_size: Some(size(px(min.0), px(min.1))),
+        // The helper HUD is fixed-size, as Tauri's `.resizable(false)`.
+        is_resizable: kind != WindowKind::PopUp,
         is_minimizable: false,
         kind,
         focus: false,

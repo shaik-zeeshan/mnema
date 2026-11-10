@@ -11,7 +11,7 @@ use std::time::Duration;
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
 use gpui_kit::prelude::*;
-use gpui_kit::{px, size, transparent_black, AnyWindowHandle, AppContext, VisualTestAppContext};
+use gpui_kit::{transparent_black, AnyWindowHandle, AppContext, VisualTestAppContext};
 use mnema_gpui::shell::fixture;
 use mnema_gpui::small::access::{AccessBackend, AccessRequest, FixtureAccess};
 use mnema_gpui::small::debug::data::FixtureDebug;
@@ -100,7 +100,7 @@ pub fn render(
     cx.update(|cx| theme::set_setting(setting, cx));
     let vp = viewport(surface);
     let mut access_view = None;
-    let window = cx.open_offscreen_window(size(px(vp.0), px(vp.1)), |window, cx| {
+    let window = cx.open_offscreen_window(compare::viewport(vp), |window, cx| {
         let root =
             |view: gpui_kit::AnyView, window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
                 cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))

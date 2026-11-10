@@ -144,6 +144,20 @@ pub mod breakpoint {
     use super::*;
     pub const CMD_HINTS: Pixels = px(1000.);
     pub const STATUS_WIDE: Pixels = px(900.);
+    /// Insights' two-column grids (`.ex` / `.feed` / `.in-feed` / `.in-ex`) stack at or below.
+    pub const INSIGHTS_ONE_COL: Pixels = px(1180.);
+    /// `.in-read`: the stats drop under the headline, four across, at or below.
+    pub const READ_STACK: Pixels = px(1000.);
+    /// `.in-read` stats two across at or below; the subject page's first fold (`@container sd`).
+    pub const READ_NARROW: Pixels = px(760.);
+    /// The subject page's second fold (`@container sd`).
+    pub const SUBJECT_TIGHT: Pixels = px(560.);
+    /// Below this Insights pane width the evidence drawer covers the pane as a sheet.
+    pub const DRAWER_SHEET: Pixels = px(700.);
+    /// `TranscriptReader`: a turn's speaker stacks over its text at or below.
+    pub const TRANSCRIPT_STACK: Pixels = px(820.);
+    /// Settings: the rail narrows and the content padding tightens at or below.
+    pub const SETTINGS_TIGHT: Pixels = px(800.);
 }
 
 pub const DISABLED_OPACITY: f32 = 0.4;

@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use capture_types::{Activity, EvidenceStance};
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, Context, Role};
+use gpui_kit::{div, px, relative, AnyElement, Context, Pixels, Role};
 
 use super::detail::{flat, histories, TIERS};
 use super::tier_of;
@@ -17,7 +17,7 @@ use super::tiers::pct;
 use crate::insights::parts::{h2, label, sec};
 use crate::insights::stats::{self, humanize_ms};
 use crate::insights::Insights;
-use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::theme::{self, breakpoint, space, text, Palette, FONT_MONO};
 use crate::ui::{clock, icon, kicker, Button};
 
 /// ↑/↓ walk the conclusions and the drawer follows.
@@ -42,6 +42,33 @@ pub fn step(this: &mut Insights, d: i64, cx: &mut Context<Insights>) -> bool {
         cx.notify();
     }
     true
+}
+
+/// The drawer's share of the Insights pane.
+pub const SHARE: f32 = 0.44;
+/// `.in-view`'s max width.
+pub const PAGE_MAX: f32 = 1280.;
+
+/// Below `breakpoint::DRAWER_SHEET` the drawer covers the pane as a sheet
+/// (back arrow, no close) instead of pushing the page.
+pub fn sheet(this: &Insights) -> bool {
+    this.width < breakpoint::DRAWER_SHEET
+}
+
+/// `SubjectDetail.svelte`'s push: the drawer overlays the pane's right 44%,
+/// and the page column (centred, ≤1280) gains this much right padding so it
+/// stays put and clears the drawer by `PUSH_GAP`. Zero when nothing pushes.
+pub fn push(this: &Insights) -> Pixels {
+    const PUSH_GAP: Pixels = px(24.);
+    let open = this.open_conclusion.is_some()
+        && this.subject.is_some()
+        && this.tab == crate::insights::Tab::Subjects;
+    if !open || sheet(this) {
+        return px(0.);
+    }
+    let w = this.width;
+    let column_right = (w + w.min(px(PAGE_MAX))) / 2. - space::S7;
+    (column_right - w * (1. - SHARE) + PUSH_GAP).max(px(0.))
 }
 
 /// The push-drawer: pinned right under the bar, 44% of the pane.
@@ -75,10 +102,28 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
         Button::icon_only(id_, path, aria).ghost().sm()
     };
     let n = flat.len();
+    let sheet = sheet(this);
+    let close = |this: &mut Insights,
+                 _: &gpui_kit::ClickEvent,
+                 _: &mut gpui_kit::Window,
+                 cx: &mut Context<Insights>| {
+        this.open_conclusion = None;
+        cx.notify();
+    };
     let bar = div()
         .flex()
         .items_center()
         .gap(space::S1)
+        .when(sheet, |d| {
+            d.child(
+                icon_btn(
+                    "insights-drawer-back",
+                    IconName::ArrowLeft.path(),
+                    "Back to the subject",
+                )
+                .on_click(cx.listener(close)),
+            )
+        })
         .child(kicker(
             &format!("Conclusion · {} of {n} · {tier}", i + 1),
             p,
@@ -106,14 +151,12 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 step(this, 1, cx);
             })),
         )
-        .child(
-            icon_btn("insights-drawer-close", IconName::X.path(), "Close").on_click(cx.listener(
-                |this, _, _, cx| {
-                    this.open_conclusion = None;
-                    cx.notify();
-                },
-            )),
-        );
+        .when(!sheet, |d| {
+            d.child(
+                icon_btn("insights-drawer-close", IconName::X.path(), "Close")
+                    .on_click(cx.listener(close)),
+            )
+        });
     let pinned = c.pinned;
     let acts_row = div()
         .flex()
@@ -417,14 +460,24 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
         div()
             .id("insights-drawer")
             .role(Role::Complementary)
-            .w(relative(0.44))
-            .flex_none()
-            .h_full()
+            .map(|d| {
+                if sheet {
+                    // `.sd-drawer--sheet`: over the whole pane, on the page background.
+                    d.absolute().inset_0().bg(p.bg).px(space::S4).py(space::S5)
+                } else {
+                    // Over the pane (`position: fixed`), not beside it: see `push`.
+                    d.absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .w(relative(SHARE))
+                        .border_l_1()
+                        .border_color(p.border)
+                        .bg(p.surface)
+                        .p(space::S5)
+                }
+            })
             .overflow_y_scroll()
-            .border_l_1()
-            .border_color(p.border)
-            .bg(p.surface)
-            .p(space::S5)
             .flex()
             .flex_col()
             .gap(space::S4)

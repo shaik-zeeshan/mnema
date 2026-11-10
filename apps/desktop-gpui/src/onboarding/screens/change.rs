@@ -573,11 +573,19 @@ impl Onboarding {
             cx,
         )];
         if t_models.len() > 1 {
+            // `.ob-picker__ctl` is a flex row: the control hugs its options.
             v.push(
-                Segmented::new("ob-t-model", "Transcription build", t_models, t_sel)
-                    .on_change(on_ix(cx, |this, ix, cx| {
-                        this.set_transcription_model(ix, cx)
-                    }))
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(space::S3)
+                    .child(
+                        Segmented::new("ob-t-model", "Transcription build", t_models, t_sel)
+                            .on_change(on_ix(cx, |this, ix, cx| {
+                                this.set_transcription_model(ix, cx)
+                            })),
+                    )
                     .into_any_element(),
             );
         }

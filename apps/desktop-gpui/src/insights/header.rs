@@ -63,9 +63,11 @@ pub fn bar(this: &Insights, p: &Palette, window: &mut Window, cx: &mut Context<I
             })
             .on_click(cx.listener(move |this, _, _, cx| this.set_tab(t, cx)))
     });
+    // `.in-bar__in`: on a narrow window the view's controls wrap to a second
+    // row (right-aligned) instead of running off the edge. Like Tauri, the hairline
+    // sits under the 56 px row (57 in all).
     div()
         .flex_none()
-        .h(px(BAR_H))
         .border_b_1()
         .border_color(p.hairline)
         .bg(p.bg)
@@ -75,22 +77,25 @@ pub fn bar(this: &Insights, p: &Palette, window: &mut Window, cx: &mut Context<I
                 .max_w(px(1280.))
                 .mx_auto()
                 .px(space::S7)
-                .h_full()
+                .min_h(px(BAR_H))
                 .flex()
+                .flex_wrap()
                 .items_center()
-                .gap(space::S3)
+                .gap_x(space::S3)
                 .child(
                     div()
                         .id("insights-tabs")
                         .role(Role::TabList)
                         .flex()
-                        .h_full()
+                        .self_stretch()
+                        .min_h(px(BAR_H))
                         .gap(space::S5)
                         .children(tabs),
                 )
-                .child(div().flex_1())
                 .child(
                     div()
+                        .ml_auto()
+                        .py(space::S3)
                         .flex()
                         .items_center()
                         .gap(space::S3)

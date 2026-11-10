@@ -13,10 +13,10 @@ use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, Window};
 
-pub use drawer::{drawer, step as step_conclusion};
+pub use drawer::{drawer, push as drawer_push, step as step_conclusion};
 
 use super::charts::sparkline;
-use super::parts::{display, inset, label, lede, panel, prose, read, sec, stat_text};
+use super::parts::{display, inset, label, lede, panel, prose, read, sec, split, stat_text};
 use super::Insights;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
@@ -185,33 +185,33 @@ pub fn render(
     div()
         .flex()
         .flex_col()
-        .child(read(lede_el, stats, p))
-        .child(map(&listed, &q, p, cx))
+        .child(read(lede_el, stats, this.width, p))
+        .child(map(&listed, &q, this.width, p, cx))
         .child(
-            div()
-                .flex()
-                .items_start()
-                .gap(space::S6)
-                .child(
-                    div()
-                        .flex_grow(1.45)
-                        .flex_basis(px(0.))
-                        .min_w_0()
-                        .child(list(this, groups, rows.len(), p, cx)),
-                )
-                .child(
-                    side(&listed, p, cx)
-                        .flex_grow(1.)
-                        .flex_basis(px(0.))
-                        .min_w_0(),
-                ),
+            split(
+                div().child(list(this, groups, rows.len(), p, cx)),
+                side(&listed, p, cx),
+                this.width,
+            )
+            .items_start(),
         )
         .into_any_element()
 }
 
 /// `ConvictionMap.svelte`: bands, axis, and one row per subject (top 12).
-fn map(listed: &[&SubjectRow], q: &str, p: &Palette, cx: &mut Context<Insights>) -> AnyElement {
-    const NAME_W: f32 = 168.;
+fn map(
+    listed: &[&SubjectRow],
+    q: &str,
+    width: gpui_kit::Pixels,
+    p: &Palette,
+    cx: &mut Context<Insights>,
+) -> AnyElement {
+    // `--map-name`: 168 px, 128 px on a window ≤1000 px wide.
+    let name_w = if width <= crate::theme::breakpoint::READ_STACK {
+        128.
+    } else {
+        168.
+    };
     const VAL_W: f32 = 104.;
     let (floor, base, held) = (pct(DISPLAY_FLOOR), pct(INITIAL_BASE), pct(STRONGLY_HELD));
     let legend = div()
@@ -272,7 +272,7 @@ fn map(listed: &[&SubjectRow], q: &str, p: &Palette, cx: &mut Context<Insights>)
         .absolute()
         .top_0()
         .bottom_0()
-        .left(px(NAME_W))
+        .left(px(name_w))
         .right(px(VAL_W))
         .children(bands.map(|(a, b, l, fade, firm)| {
             div()
@@ -300,7 +300,7 @@ fn map(listed: &[&SubjectRow], q: &str, p: &Palette, cx: &mut Context<Insights>)
     let axis = div()
         .flex()
         .h(px(44.))
-        .child(div().w(px(NAME_W)).flex_none())
+        .child(div().w(px(name_w)).flex_none())
         .child(
             div()
                 .relative()
@@ -417,7 +417,7 @@ fn map(listed: &[&SubjectRow], q: &str, p: &Palette, cx: &mut Context<Insights>)
             .when(r.faded, |d| d.opacity(0.55))
             .child(
                 div()
-                    .w(px(NAME_W))
+                    .w(px(name_w))
                     .flex_none()
                     .pl(space::S3)
                     .flex()

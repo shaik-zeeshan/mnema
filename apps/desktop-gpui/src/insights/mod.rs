@@ -27,7 +27,8 @@ use capture_types::ActivityCategory;
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    div, px, Context, Entity, EventEmitter, Focusable, ScrollHandle, Subscription, Task, Window,
+    div, px, Context, Entity, EventEmitter, Focusable, Pixels, ScrollHandle, Subscription, Task,
+    Window,
 };
 use time::Date;
 
@@ -102,6 +103,8 @@ pub struct Insights {
     pub scroll: ScrollHandle,
     /// The shell's capture state: `(running, user paused)`.
     pub recording: (bool, bool),
+    /// The window's width this frame, for the Svelte page's `@media` rules.
+    pub width: Pixels,
     gens: [u64; 6],
     /// A Re-read (forced digest) is in flight.
     pub rereading: bool,
@@ -138,6 +141,7 @@ impl Insights {
             tab: Tab::Overview,
             status: Status::default(),
             recording: (false, false),
+            width: window.viewport_size().width,
             period: (today, Unit::Week),
             overview: None,
             modal: None,
@@ -616,6 +620,7 @@ impl Insights {
 impl Render for Insights {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::tokens(cx);
+        self.width = window.viewport_size().width;
         if self.status.loaded && !self.loaded_tab() {
             // A tab shown before its first load (e.g. tab switched by a test): load it.
             self.load_tab(cx);
@@ -633,6 +638,7 @@ impl Render for Insights {
                     .max_w(px(1280.))
                     .mx_auto()
                     .px(space::S7)
+                    .pr(space::S7 + subjects::drawer_push(self))
                     .pt(space::S6)
                     .pb(space::S8)
                     .children(header::notice(self, &p, cx))
@@ -653,7 +659,15 @@ impl Render for Insights {
             .min_h_0()
             .bg(p.bg)
             .child(header::bar(self, &p, window, cx))
-            .child(div().flex().flex_1().min_h_0().child(body).children(drawer))
+            .child(
+                div()
+                    .relative()
+                    .flex()
+                    .flex_1()
+                    .min_h_0()
+                    .child(body)
+                    .children(drawer),
+            )
             .children(overview::modal(self, &p, cx))
             .child(self.toasts.clone())
     }

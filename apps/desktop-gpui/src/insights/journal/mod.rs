@@ -214,6 +214,7 @@ pub fn render(
                 p,
                 off,
             ),
+            this.width,
             p,
         ))
         .child(spine::render(

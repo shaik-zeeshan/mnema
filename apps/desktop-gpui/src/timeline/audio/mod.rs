@@ -649,7 +649,12 @@ impl Render for AudioDrawer {
             .flex_1()
             .min_h_0()
             .child(match panel {
-                Panel::Reader => reader::render(self, &p, cx),
+                Panel::Reader => reader::render(
+                    self,
+                    window.viewport_size().width <= theme::breakpoint::TRANSCRIPT_STACK,
+                    &p,
+                    cx,
+                ),
                 other => panels::render(self, other, &p, cx),
             })
             .children(repair::render(self, &p, window, cx));

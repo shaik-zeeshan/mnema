@@ -11,7 +11,7 @@ use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, Window};
 use super::day::{self, Card, DayModel, Row};
 use crate::insights::charts::{bar, spec_rows, swatch};
 use crate::insights::model::JournalData;
-use crate::insights::parts::{h2, label, mono_label, sec};
+use crate::insights::parts::{h2, label, mono_label, sec, split};
 use crate::insights::stats::{
     self, category_color, category_label, focus_color, focus_label, humanize_ms,
 };
@@ -106,18 +106,8 @@ pub fn render(
         });
     }
     let side = side(this, j, shown, day_start, p, cx);
-    div()
-        .flex()
+    split(div().child(col), side, this.width)
         .items_start()
-        .gap(space::S6)
-        .child(
-            div()
-                .flex_grow(1.45)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .child(col),
-        )
-        .child(side.flex_grow(1.).flex_basis(px(0.)).min_w_0())
         .into_any_element()
 }
 

@@ -12,7 +12,7 @@ use crate::insights::charts::{
     self, focus_split, heatmap, sparkline, spec_rows, stacked_bar, swatch,
 };
 use crate::insights::model::OverviewData;
-use crate::insights::parts::{group_head, h2, label, mono_label, panel, prose, sec};
+use crate::insights::parts::{group_head, h2, label, mono_label, panel, prose, sec, split};
 use crate::insights::stats::{self, category_color, category_label, fmt_duration, CATEGORY_ORDER};
 use crate::insights::subjects::tiers::pct;
 use crate::insights::{Insights, Modal};
@@ -256,27 +256,13 @@ pub fn exhibits(
                 ))
                 .child(apps_body),
         );
-    div()
-        .flex()
-        .gap(space::S6)
-        .mb(space::S7)
-        .child(
-            div()
-                .flex_grow(1.45)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .flex()
-                .child(week),
-        )
-        .child(
-            div()
-                .flex_grow(1.)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .flex()
-                .child(side),
-        )
-        .into_any_element()
+    split(
+        div().flex().child(week),
+        div().flex().child(side),
+        this.width,
+    )
+    .mb(space::S7)
+    .into_any_element()
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -540,34 +526,24 @@ pub fn feed(
     };
     let untagged = (!attention.is_empty())
         .then(|| mono_label(format!("{} untagged", attention.len()), p).into_any_element());
-    div()
-        .flex()
-        .items_start()
-        .gap(space::S6)
-        .child(
-            div()
-                .flex_grow(1.45)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .child(sec(
-                    div()
-                        .flex()
-                        .items_end()
-                        .gap(space::S3)
-                        .child(h2("What changed", p))
-                        .child(label(format!("in your dossier {scope}"), p)),
-                    None,
-                ))
-                .child(changed),
-        )
-        .child(
-            panel(p)
-                .flex_grow(1.)
-                .flex_basis(px(0.))
-                .min_w_0()
-                .p(space::S5)
-                .child(sec(kicker("Needs attention", p), untagged))
-                .child(attn_body),
-        )
-        .into_any_element()
+    split(
+        div()
+            .child(sec(
+                div()
+                    .flex()
+                    .items_end()
+                    .gap(space::S3)
+                    .child(h2("What changed", p))
+                    .child(label(format!("in your dossier {scope}"), p)),
+                None,
+            ))
+            .child(changed),
+        panel(p)
+            .p(space::S5)
+            .child(sec(kicker("Needs attention", p), untagged))
+            .child(attn_body),
+        this.width,
+    )
+    .items_start()
+    .into_any_element()
 }

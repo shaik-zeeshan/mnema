@@ -10,11 +10,12 @@ use gpui_kit::{div, px, AnyElement, Context, Div, Hsla, MouseButton, SharedStrin
 use super::groups::{self, GroupId, SectionId};
 use super::Settings;
 use crate::shell::model::{self as shell_model, RecMod};
-use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
+use crate::theme::{self, breakpoint, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::{icon, kbd, mix, Button};
 use gpui_kit::component::input::Input;
 
 pub const RAIL_W: f32 = 252.;
+pub const RAIL_W_TIGHT: f32 = 200.;
 pub const DRAG_H: f32 = 52.;
 
 /// The tile tint per group (`TINT` in the rail).
@@ -33,6 +34,15 @@ fn drag_strip(h: f32) -> Div {
         .flex_none()
         .h(px(h))
         .on_mouse_down(MouseButton::Left, |_, window, _| window.start_window_move())
+}
+
+/// `.st-side`: 252 px, 200 px on a window ≤800 px wide.
+pub fn rail_w(window: &Window) -> f32 {
+    if window.viewport_size().width <= breakpoint::SETTINGS_TIGHT {
+        RAIL_W_TIGHT
+    } else {
+        RAIL_W
+    }
 }
 
 pub fn render(s: &Settings, window: &mut Window, cx: &mut Context<Settings>) -> AnyElement {
@@ -117,7 +127,7 @@ pub fn render(s: &Settings, window: &mut Window, cx: &mut Context<Settings>) -> 
         .flex()
         .flex_col()
         .flex_none()
-        .w(px(RAIL_W))
+        .w(px(rail_w(window)))
         .h_full()
         .bg(bg)
         .border_r_1()

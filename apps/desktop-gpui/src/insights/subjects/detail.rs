@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use capture_types::{Conclusion, ConclusionStatus, ConfidenceSnapshot, EvidenceStance};
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, Window};
+use gpui_kit::{div, px, relative, AnyElement, Context, Div, Pixels, Role, Window};
 
 use super::tier_of;
 use super::tiers::{derive_trend, fortnight_ago, interpolate, pct, Tier, DISPLAY_FLOOR};
@@ -19,7 +19,7 @@ use crate::insights::parts::{
 };
 use crate::insights::stats;
 use crate::insights::Insights;
-use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::theme::{self, breakpoint, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::{clock, icon, kicker, nid, Button, Tone};
 
@@ -89,6 +89,12 @@ fn ago(ms: i64, now: i64) -> (String, String) {
     }
 }
 
+/// The subject page's column (`@container sd`): `.in-view`'s content box
+/// (≤1280 less its padding) less the drawer's push.
+pub fn column_width(this: &Insights) -> Pixels {
+    this.width.min(px(super::drawer::PAGE_MAX)) - space::S7 * 2. - super::drawer::push(this)
+}
+
 pub fn render(
     this: &mut Insights,
     p: &Palette,
@@ -97,6 +103,8 @@ pub fn render(
 ) -> AnyElement {
     let subject = this.subject.clone().unwrap_or_default();
     let ask_ok = crate::insights::overview::engine_ready(&this.status);
+    // `@container sd (max-width: 560px)`: the crumb's Ask, the section notes go.
+    let tight = column_width(this) <= breakpoint::SUBJECT_TIGHT;
     let crumb = div()
         .flex()
         .items_center()
@@ -118,21 +126,23 @@ pub fn render(
                 .child(subject.clone()),
         )
         .child(div().flex_1())
-        .child(
-            Button::new("insights-subject-ask", format!("Ask about {subject}"))
-                .ghost()
-                .sm()
-                .icon(IconName::Sparkle.path())
-                .accent_icon()
-                .kbd("⌘J")
-                .soft_disabled(!ask_ok)
-                .tip(if ask_ok {
-                    "Opens Chat with this question"
-                } else {
-                    "Ask needs AI — turn it on in Settings"
-                })
-                .on_click(cx.listener(|this, _, _, cx| this.ask(cx))),
-        );
+        .when(!tight, |d| {
+            d.child(
+                Button::new("insights-subject-ask", format!("Ask about {subject}"))
+                    .ghost()
+                    .sm()
+                    .icon(IconName::Sparkle.path())
+                    .accent_icon()
+                    .kbd("⌘J")
+                    .soft_disabled(!ask_ok)
+                    .tip(if ask_ok {
+                        "Opens Chat with this question"
+                    } else {
+                        "Ask needs AI — turn it on in Settings"
+                    })
+                    .on_click(cx.listener(|this, _, _, cx| this.ask(cx))),
+            )
+        });
     let Some(d) = this.detail.clone() else {
         return div()
             .child(crumb)
@@ -284,7 +294,7 @@ pub fn render(
         }
         tiers_el = tiers_el.child(group_head(
             &format!("{title} · {}", rows.len()),
-            Some(label(note, p).text_size(text::SM).into_any_element()),
+            (!tight).then(|| label(note, p).text_size(text::SM).into_any_element()),
             p,
         ));
         for c in rows {
@@ -295,14 +305,14 @@ pub fn render(
         .flex()
         .flex_col()
         .child(crumb)
-        .child(read(lede_el, stats_el, p))
+        .child(read(lede_el, stats_el, column_width(this), p))
         .child(
             panel(p)
-                .p(space::S5)
+                .p(if tight { space::S4 } else { space::S5 })
                 .mb(space::S6)
                 .child(sec(
                     kicker("Confidence over time", p),
-                    Some(
+                    (!tight).then(|| {
                         label(
                             format!(
                                 "{} conclusion in bold · others in grey · ● evidence",
@@ -314,8 +324,8 @@ pub fn render(
                             ),
                             p,
                         )
-                        .into_any_element(),
-                    ),
+                        .into_any_element()
+                    }),
                 ))
                 .child(chart),
         )
@@ -452,6 +462,8 @@ fn row(
             .into_any_element();
     }
     let on = this.open_conclusion == Some(id);
+    // `@container sd`: ≤760 px drops the evidence count, ≤560 px the sparkline.
+    let cw = column_width(this);
     let pts: Vec<f64> = hist
         .get(&id)
         .filter(|h| h.len() > 1)
@@ -495,13 +507,19 @@ fn row(
                 .text_color(p.text)
                 .child(c.statement.clone()),
         )
-        .child(
-            div()
-                .w(px(80.))
-                .h(px(22.))
-                .flex_none()
-                .child(sparkline(vec![(p.text_subtle, false, pts)])),
-        )
+        .when(cw > breakpoint::SUBJECT_TIGHT, |d| {
+            d.child(
+                div()
+                    .w(px(if cw > breakpoint::READ_NARROW {
+                        80.
+                    } else {
+                        72.
+                    }))
+                    .h(px(22.))
+                    .flex_none()
+                    .child(sparkline(vec![(p.text_subtle, false, pts)])),
+            )
+        })
         .child(
             div()
                 .w(px(36.))
@@ -511,15 +529,17 @@ fn row(
                 .text_color(dcol)
                 .child(delta.unwrap_or_else(|| "new".into())),
         )
-        .child(
-            div()
-                .w(px(40.))
-                .text_right()
-                .font_family(FONT_MONO)
-                .text_size(text::SM)
-                .text_color(p.text_subtle)
-                .child(format!("{} ev", c.evidence.len())),
-        )
+        .when(cw > breakpoint::READ_NARROW, |d| {
+            d.child(
+                div()
+                    .w(px(40.))
+                    .text_right()
+                    .font_family(FONT_MONO)
+                    .text_size(text::SM)
+                    .text_color(p.text_subtle)
+                    .child(format!("{} ev", c.evidence.len())),
+            )
+        })
         .child(
             div()
                 .text_color(p.text_faint)

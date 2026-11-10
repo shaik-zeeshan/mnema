@@ -12,7 +12,7 @@ use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, Window};
 use super::charts::swatch;
 use super::model::ContextData;
 use super::parts::{
-    display, h2, inset, label, lede, mono_label, panel, prose, read, sec, stat_text,
+    display, h2, inset, label, lede, mono_label, panel, prose, read, sec, split, stat_text,
 };
 use super::subjects::tiers::pct;
 use super::Insights;
@@ -148,15 +148,8 @@ pub fn render(
     div()
         .flex()
         .flex_col()
-        .child(read(lede_el, stats, p))
-        .child(
-            div()
-                .flex()
-                .items_start()
-                .gap(space::S6)
-                .child(left.flex_grow(1.45).flex_basis(px(0.)).min_w_0())
-                .child(side(&d, p, cx).flex_grow(1.).flex_basis(px(0.)).min_w_0()),
-        )
+        .child(read(lede_el, stats, this.width, p))
+        .child(split(left, side(&d, p, cx), this.width).items_start())
         .into_any_element()
 }
 

@@ -10,9 +10,7 @@ use std::time::Duration;
 use capture_types::{AiProviderConfig, AiProviderKind, AppearanceSetting};
 use gpui_kit::base::Root;
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    px, size, transparent_black, AnyWindowHandle, AppContext, Entity, VisualTestAppContext,
-};
+use gpui_kit::{transparent_black, AnyWindowHandle, AppContext, Entity, VisualTestAppContext};
 use mnema_gpui::onboarding::ai::Check;
 use mnema_gpui::onboarding::data::Backend;
 use mnema_gpui::onboarding::fixture::{FixtureBackend, STATES};
@@ -124,14 +122,11 @@ pub fn render(
     cx.update(|cx| theme::set_setting(setting, cx));
     let backend: Arc<dyn Backend> = Arc::new(FixtureBackend::load(file)?);
     let mut view = None;
-    let window = cx.open_offscreen_window(
-        size(px(onboarding::SIZE.0), px(onboarding::SIZE.1)),
-        |window, cx| {
-            let v = cx.new(|cx| Onboarding::new(backend, |_, _| {}, cx));
-            view = Some(v.clone());
-            cx.new(|cx| Root::new(v, window, cx).bg(transparent_black()))
-        },
-    )?;
+    let window = cx.open_offscreen_window(compare::viewport(onboarding::SIZE), |window, cx| {
+        let v = cx.new(|cx| Onboarding::new(backend, |_, _| {}, cx));
+        view = Some(v.clone());
+        cx.new(|cx| Root::new(v, window, cx).bg(transparent_black()))
+    })?;
     let window: AnyWindowHandle = window.into();
     let o = view.expect("view");
     settle(cx, window)?;

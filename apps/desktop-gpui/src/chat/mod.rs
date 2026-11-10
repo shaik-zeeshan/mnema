@@ -43,7 +43,7 @@ pub const COPIED_REVERT: Duration = Duration::from_millis(1600);
 pub const DELETED_TOAST_TTL: Duration = Duration::from_secs(4);
 /// The failed pin/unpin toast with Retry.
 pub const PIN_FAIL_TOAST_TTL: Duration = Duration::from_secs(5);
-const COMPOSER_PLACEHOLDER: &str = "Ask about anything you've seen, heard, or worked on…";
+pub(crate) const COMPOSER_PLACEHOLDER: &str = "Ask about anything you've seen, heard, or worked on…";
 /// Titles are cut at this many chars (`TITLE_MAX`).
 pub const TITLE_MAX: usize = 80;
 /// Within this of the bottom counts as "at the bottom" (the pane follows the stream).
@@ -142,7 +142,6 @@ impl Chat {
             TextareaState::new(window, cx)
                 .auto_grow(2, 9)
                 .submit_on_enter(true)
-                .placeholder(COMPOSER_PLACEHOLDER)
         });
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search chats"));
         let rename_input = cx.new(|cx| InputState::new(window, cx));
@@ -476,15 +475,13 @@ impl Render for Chat {
         let docked = !self.is_new() && self.pane == Pane::Thread;
         if docked != self.docked_placeholder {
             self.docked_placeholder = docked;
-            let text = if docked {
-                "Ask a follow-up…"
-            } else {
-                COMPOSER_PLACEHOLDER
-            };
+            // Undocked, `composer::render` draws the placeholder itself: the
+            // kit's is one unwrapped line, cut off on a narrow window.
+            let text = if docked { "Ask a follow-up…" } else { "" };
             self.composer
                 .update(cx, |s, cx| s.set_placeholder(text, window, cx));
         }
-        let narrow = window.viewport_size().width < size::CHAT_LIST_BREAKPOINT;
+        let narrow = window.viewport_size().width <= size::CHAT_LIST_BREAKPOINT;
         div()
             .id("surface-chat")
             .role(gpui_kit::Role::Main)

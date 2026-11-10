@@ -22,6 +22,13 @@ use crate::ui::clock;
 const MS: Duration = Duration::from_millis(1);
 
 fn open(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Insights>, Arc<FixtureBackend>) {
+    open_at(cx, (1280., 800.))
+}
+
+fn open_at(
+    cx: &mut TestAppContext,
+    (w, h): (f32, f32),
+) -> (WindowHandle<Root>, Entity<Insights>, Arc<FixtureBackend>) {
     let backend = Arc::new(FixtureBackend::load("populated").expect("fixture"));
     let b = backend.clone();
     let (window, view) = cx.update(|cx| {
@@ -31,7 +38,7 @@ fn open(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Insights>, Arc<F
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(0.), px(0.)),
-                size: size(px(1280.), px(800.)),
+                size: size(px(w), px(h)),
             })),
             ..Default::default()
         };
@@ -63,6 +70,14 @@ fn dismisses(b: &FixtureBackend) -> usize {
 
 /// Open the first subject and dismiss its lead conclusion; returns its id.
 fn dismiss_lead(cx: &mut TestAppContext, v: &Entity<Insights>) -> i64 {
+    let id = open_lead(cx, v);
+    v.update(cx, |i, cx| i.dismiss(id, cx));
+    cx.run_until_parked();
+    id
+}
+
+/// Open the first subject; returns its lead conclusion's id.
+fn open_lead(cx: &mut TestAppContext, v: &Entity<Insights>) -> i64 {
     let subject = v
         .read_with(cx, |i, _| {
             i.subjects
@@ -93,8 +108,6 @@ fn dismiss_lead(cx: &mut TestAppContext, v: &Entity<Insights>) -> i64 {
             .conclusions[0]
             .id
     });
-    v.update(cx, |i, cx| i.dismiss(id, cx));
-    cx.run_until_parked();
     id
 }
 
@@ -194,4 +207,68 @@ fn cmd_j_asks_about_the_period_or_the_subject(cx: &mut TestAppContext) {
     dismiss_lead(cx, &v);
     let (q, s) = v.update(cx, |i, cx| (i.ask_query(cx), i.subject.clone()));
     assert_eq!(q, Some(format!("What do you know about {}?", s.unwrap())));
+}
+
+fn bounds(
+    cx: &mut TestAppContext,
+    window: WindowHandle<Root>,
+    id: &'static str,
+) -> Bounds<gpui_kit::Pixels> {
+    use gpui_kit::test::TestWindowExt;
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).bounds()
+    })
+    .expect("window")
+}
+
+#[gpui_kit::test]
+fn at_the_minimum_window_the_bar_controls_wrap_inside_it(cx: &mut TestAppContext) {
+    let (w, h) = crate::window::MAIN_MIN;
+    let (window, _, _) = open_at(cx, (w, h));
+    let ask = bounds(cx, window, "insights-ask");
+    let tab = bounds(cx, window, "insights-tab-overview");
+    assert!(
+        ask.right() <= px(w),
+        "Ask ends at {:?}, past the {w} px window",
+        ask.right()
+    );
+    assert!(
+        ask.top() >= tab.bottom(),
+        "the controls drop under the tabs (`.in-bar__in` wraps)"
+    );
+    // A wide window keeps them on the tab row.
+    let (window, _, _) = open(cx);
+    let ask = bounds(cx, window, "insights-ask");
+    let tab = bounds(cx, window, "insights-tab-overview");
+    assert!(ask.top() < tab.bottom(), "one row at 1280 px");
+}
+
+#[gpui_kit::test]
+fn the_evidence_drawer_overlays_and_the_page_stays_put(cx: &mut TestAppContext) {
+    // `SubjectDetail.svelte`: on a wide window the drawer covers the pane's right
+    // 44% and the centred page keeps its left edge; below 700 px it is a sheet.
+    let (window, v, _) = open_at(cx, (2400., 900.));
+    let id = open_lead(cx, &v);
+    let back = bounds(cx, window, "insights-subject-back");
+    v.update(cx, |i, cx| {
+        i.open_conclusion = Some(id);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let pushed = bounds(cx, window, "insights-subject-back");
+    assert_eq!(
+        pushed.left(),
+        back.left(),
+        "opening the drawer must not move the page"
+    );
+    // (2400 + 1280) / 2 − 48 − 2400 × 0.56 + 24 = 472
+    let push = v.read_with(cx, |i, _| super::subjects::drawer_push(i));
+    assert_eq!(push, px(472.));
+    v.update(cx, |i, _| i.width = px(699.));
+    assert_eq!(
+        v.read_with(cx, |i, _| super::subjects::drawer_push(i)),
+        px(0.),
+        "a sheet pushes nothing"
+    );
 }

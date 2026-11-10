@@ -21,8 +21,6 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         .flex()
         .flex_col()
         .gap(px(3.))
-        .flex_1()
-        .min_w(px(240.))
         .child(
             div()
                 .text_size(text::MD)
@@ -72,7 +70,19 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         .border_1()
         .border_color(p.danger_border)
         .bg(p.danger_bg_soft)
-        .child(div().flex().flex_wrap().items_center().gap(space::S6).py(px(14.)).child(copy).child(ctl))
+        .child(
+            // `.st-danger__row`: copy `flex: 1 1 240px`, the controls right-aligned
+            // and dropping to their own line before the copy squeezes.
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap_x(space::S6)
+                .gap_y(space::S3)
+                .py(px(14.))
+                .child(copy.flex_grow(1.).flex_shrink(1.).flex_basis(px(240.)).min_w_0())
+                .child(ctl.flex_none().flex_wrap().justify_end().max_w_full().ml_auto()),
+        )
         .child(
             div()
                 .pb(space::S3)

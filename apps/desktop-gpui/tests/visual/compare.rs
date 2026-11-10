@@ -34,6 +34,20 @@ fn output_dir() -> PathBuf {
         })
 }
 
+/// `VISUAL_VIEWPORT=<w>x<h>` renders every state at that window size instead of
+/// its golden size (a resize check: shots are saved, never compared).
+pub fn viewport_override() -> Option<(f32, f32)> {
+    let v = std::env::var("VISUAL_VIEWPORT").ok()?;
+    let (w, h) = v.split_once('x')?;
+    Some((w.parse().ok()?, h.parse().ok()?))
+}
+
+/// The window size a golden renders at: its own, unless `VISUAL_VIEWPORT` is set.
+pub fn viewport(golden: (f32, f32)) -> gpui_kit::Size<gpui_kit::Pixels> {
+    let (w, h) = viewport_override().unwrap_or(golden);
+    gpui_kit::size(gpui_kit::px(w), gpui_kit::px(h))
+}
+
 /// Saves `actual`, then compares it with (or, under `UPDATE_BASELINE`, writes) the baseline.
 pub fn check_golden(name: &str, actual: &RgbaImage) -> anyhow::Result<()> {
     let out = output_dir();
@@ -41,6 +55,9 @@ pub fn check_golden(name: &str, actual: &RgbaImage) -> anyhow::Result<()> {
     let actual_path = out.join(format!("{name}.png"));
     actual.save(&actual_path)?;
     println!("  {name}: actual saved to {}", actual_path.display());
+    if viewport_override().is_some() {
+        return Ok(());
+    }
 
     let baseline = baseline_path(name);
     if std::env::var_os("UPDATE_BASELINE").is_some() {

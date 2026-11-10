@@ -7,7 +7,7 @@ use gpui_kit::{div, point, px, AnyElement, Context, ScrollEvent, Window};
 
 use super::groups::{self, SectionId, SPY_LINE};
 use super::{bar, icons, rail, sections, Settings};
-use crate::theme::{self, space, text, FONT_UI};
+use crate::theme::{self, breakpoint, space, text, FONT_UI};
 use crate::ui::{notice, Button, Tone};
 
 /// `.settings-page`'s max width.
@@ -169,7 +169,14 @@ impl Render for Settings {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .pt(space::S4)
-            .px(space::S7)
+            // `.settings-scroll`: padding-inline S5 on a window ≤800 px wide.
+            .px(
+                if window.viewport_size().width <= breakpoint::SETTINGS_TIGHT {
+                    space::S5
+                } else {
+                    space::S7
+                },
+            )
             .on_scroll(cx.listener(|this, _: &ScrollEvent, _, cx| {
                 this.spy_suppressed = false;
                 cx.notify();

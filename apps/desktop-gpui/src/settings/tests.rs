@@ -26,6 +26,14 @@ fn open(
     cx: &mut TestAppContext,
     fail: bool,
 ) -> (WindowHandle<Root>, Entity<Settings>, Arc<FixtureBackend>) {
+    open_at(cx, fail, (1280., 800.))
+}
+
+fn open_at(
+    cx: &mut TestAppContext,
+    fail: bool,
+    (w, h): (f32, f32),
+) -> (WindowHandle<Root>, Entity<Settings>, Arc<FixtureBackend>) {
     let backend = Arc::new(FixtureBackend {
         fail,
         ..Default::default()
@@ -37,7 +45,7 @@ fn open(
         let options = WindowOptions {
             window_bounds: Some(WindowBounds::Windowed(Bounds {
                 origin: point(px(0.), px(0.)),
-                size: size(px(1280.), px(800.)),
+                size: size(px(w), px(h)),
             })),
             ..Default::default()
         };
@@ -299,5 +307,37 @@ fn a_provider_key_saves_to_the_vault_and_clears_live(cx: &mut TestAppContext) {
             Call::SaveKey("openai-2".into()),
             Call::ClearKey("openai-2".into())
         ]
+    );
+}
+
+#[gpui_kit::test]
+fn at_the_minimum_window_a_wide_control_wraps_inside_the_column(cx: &mut TestAppContext) {
+    // `.setting-row`: the copy keeps 240 px and the control drops under it,
+    // right-aligned; ≤800 px the rail is 200 wide and the padding 24.
+    let (w, h) = crate::window::MAIN_MIN;
+    let (window, v, _) = open_at(cx, false, (w, h));
+    v.update(cx, |s, cx| s.open_tab("video", cx));
+    cx.run_until_parked();
+    frame(cx, window);
+    let (rate, cat) = cx
+        .update_window(window.into(), |_, window, _| {
+            (
+                window.find("capture-rate").bounds(),
+                window.find("settings-cat-General").bounds(),
+            )
+        })
+        .unwrap();
+    assert!(
+        cat.right() <= px(super::rail::RAIL_W_TIGHT),
+        "the rail narrows to 200"
+    );
+    assert_eq!(
+        rate.right(),
+        px(w) - crate::theme::space::S5,
+        "right-aligned in the column"
+    );
+    assert!(
+        rate.left() >= px(super::rail::RAIL_W_TIGHT) + crate::theme::space::S5,
+        "inside the column"
     );
 }

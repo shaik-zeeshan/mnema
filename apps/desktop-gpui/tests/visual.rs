@@ -33,7 +33,7 @@ use app_core::fixtures::{self, FixtureId};
 use app_core::AppCore;
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
-use gpui_kit::{px, size, AppContext, VisualTestAppContext, WindowAppearance};
+use gpui_kit::{AppContext, VisualTestAppContext, WindowAppearance};
 use mnema_gpui::assets::MnemaAssets;
 use mnema_gpui::host::GpuiHost;
 use mnema_gpui::shell::{data, fixture, Overlay, Shell, ShellModel};
@@ -185,7 +185,7 @@ fn render(
     let source = Arc::new(FixtureSource::load(fixture)?);
     let mut timeline = None;
     let window = cx.open_offscreen_window(
-        size(px(state.viewport.0), px(state.viewport.1)),
+        compare::viewport(state.viewport),
         |window, cx| {
             let shell = cx.new(|cx| {
                 let mut shell = Shell::with_timeline_source(model, source, window, cx);

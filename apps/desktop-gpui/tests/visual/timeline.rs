@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
-use gpui_kit::{px, size, AppContext, Entity, VisualTestAppContext};
+use gpui_kit::{AppContext, Entity, VisualTestAppContext};
 use mnema_gpui::shell::{Shell, ShellModel};
 use mnema_gpui::theme;
 use mnema_gpui::timeline::audio::fixture::{FakePlayer, FixtureAudio};
@@ -224,14 +224,11 @@ fn shoot_with(
     let source = Arc::new(FixtureSource::load(state.fixture)?.with_icons(icons));
     let src = source.clone();
     let mut timeline = None;
-    let window = cx.open_offscreen_window(
-        size(px(state.viewport.0), px(state.viewport.1)),
-        |window, cx| {
-            let shell = cx.new(|cx| Shell::with_timeline_source(shell, src, window, cx));
-            timeline = Some(shell.read(cx).timeline.clone());
-            cx.new(|cx| Root::new(shell, window, cx))
-        },
-    )?;
+    let window = cx.open_offscreen_window(compare::viewport(state.viewport), |window, cx| {
+        let shell = cx.new(|cx| Shell::with_timeline_source(shell, src, window, cx));
+        timeline = Some(shell.read(cx).timeline.clone());
+        cx.new(|cx| Root::new(shell, window, cx))
+    })?;
     let timeline = timeline.expect("timeline");
     settle(cx, &timeline);
     if state.stale {

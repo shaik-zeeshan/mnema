@@ -3,9 +3,9 @@
 //! heads, panels, the h2 and the label voice.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, Div, Hsla, SharedString};
+use gpui_kit::{div, px, relative, AnyElement, Div, Hsla, Pixels, SharedString};
 
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::theme::{self, breakpoint, radius, space, text, Palette, FONT_MONO};
 use crate::ui::kicker;
 
 /// `.mx-display` (40/1.04 semibold, ~24ch) with an optional de-emphasised turn.
@@ -169,23 +169,68 @@ pub fn top_value(name: &str, c: Hsla, p: &Palette) -> Div {
 }
 
 /// `.in-read`: the lede on the left, the stats 2×2 on the right, hairline below.
-pub fn read(lede: impl IntoElement, stats: Vec<AnyElement>, p: &Palette) -> Div {
-    let mut grid = div().flex().flex_col().gap(space::S5).pb(px(4.));
-    let mut it = stats.into_iter();
-    while let Some(a) = it.next() {
-        grid = grid.child(div().flex().gap(space::S6).child(a).children(it.next()));
-    }
-    div()
-        .flex()
-        .items_end()
-        .gap(space::S7)
+/// `width` is what the Svelte rule queries (the window, or the subject page's
+/// column): at ≤1000 px the stats drop under the lede four across, at ≤760 px
+/// two across.
+pub fn read(lede: impl IntoElement, stats: Vec<AnyElement>, width: Pixels, p: &Palette) -> Div {
+    let base = div()
         .pt(space::S4)
         .pb(space::S6)
         .mb(space::S6)
         .border_b_1()
-        .border_color(p.hairline)
-        .child(div().flex_1().min_w_0().flex().flex_col().child(lede))
+        .border_color(p.hairline);
+    let lede = div().flex_1().min_w_0().flex().flex_col().child(lede);
+    if width > breakpoint::READ_STACK {
+        let mut grid = div().flex().flex_col().gap(space::S5).pb(px(4.));
+        let mut it = stats.into_iter();
+        while let Some(a) = it.next() {
+            grid = grid.child(div().flex().gap(space::S6).child(a).children(it.next()));
+        }
+        return base
+            .flex()
+            .items_end()
+            .gap(space::S7)
+            .child(lede)
+            .child(grid);
+    }
+    let per_row = if width > breakpoint::READ_NARROW {
+        4
+    } else {
+        2
+    };
+    let mut grid = div().flex().flex_col().gap(space::S4).pb(px(4.));
+    let mut it = stats.into_iter().peekable();
+    while it.peek().is_some() {
+        let mut row = div().flex().gap(space::S4);
+        for _ in 0..per_row {
+            // Equal cells (`repeat(n, minmax(0, 1fr))`), an empty one keeps a short row aligned.
+            row = row.child(div().flex_1().min_w_0().children(it.next()));
+        }
+        grid = grid.child(row);
+    }
+    base.flex()
+        .flex_col()
+        .gap(space::S5)
+        .child(lede)
         .child(grid)
+}
+
+/// `.ex` / `.feed` / `.in-feed` / `.in-ex`: `main` (1.45fr) beside `side` (1fr),
+/// gap S6; one column when the window is ≤1180 px wide.
+pub fn split(main: Div, side: Div, width: Pixels) -> Div {
+    if width <= breakpoint::INSIGHTS_ONE_COL {
+        return div()
+            .flex()
+            .flex_col()
+            .gap(space::S6)
+            .child(main.w_full())
+            .child(side.w_full());
+    }
+    div()
+        .flex()
+        .gap(space::S6)
+        .child(main.flex_grow(1.45).flex_basis(px(0.)).min_w_0())
+        .child(side.flex_grow(1.).flex_basis(px(0.)).min_w_0())
 }
 
 /// The lede column: kicker, then whatever follows.

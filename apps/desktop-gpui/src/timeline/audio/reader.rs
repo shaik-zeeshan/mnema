@@ -46,6 +46,7 @@ fn gutter(
     d: &AudioDrawer,
     ix: usize,
     g: &Group,
+    stacked: bool,
     p: &Palette,
     cx: &mut Context<AudioDrawer>,
 ) -> AnyElement {
@@ -175,7 +176,13 @@ fn gutter(
     let offset = crate::ui::clock::now(cx).offset();
     div()
         .flex_none()
-        .w(px(GUTTER_W))
+        .map(|el| {
+            if stacked {
+                el.w_full()
+            } else {
+                el.w(px(GUTTER_W))
+            }
+        })
         .min_w_0()
         .flex()
         .flex_col()
@@ -282,7 +289,14 @@ fn prose(
     }
 }
 
-pub fn render(d: &AudioDrawer, p: &Palette, cx: &mut Context<AudioDrawer>) -> AnyElement {
+/// `stacked`: the window is ≤820 px wide, so each turn puts its speaker over
+/// its text (`TranscriptReader.svelte`'s one-column `.turn`).
+pub fn render(
+    d: &AudioDrawer,
+    stacked: bool,
+    p: &Palette,
+    cx: &mut Context<AudioDrawer>,
+) -> AnyElement {
     let active = d.active_group();
     let playing = active.is_some();
     let sel = d.selected_cluster;
@@ -300,7 +314,13 @@ pub fn render(d: &AudioDrawer, p: &Palette, cx: &mut Context<AudioDrawer>) -> An
             let is_active = active == Some(ix);
             div()
                 .flex()
-                .gap(space::S5)
+                .map(|el| {
+                    if stacked {
+                        el.flex_col().gap(px(4.))
+                    } else {
+                        el.gap(space::S5)
+                    }
+                })
                 .pl(px(18.))
                 .pr(px(22.))
                 .py(space::S3)
@@ -312,8 +332,16 @@ pub fn render(d: &AudioDrawer, p: &Palette, cx: &mut Context<AudioDrawer>) -> An
                 .when(sel == Some(g.cluster_id) && !is_active, |el| el.bg(p.wash))
                 .when(fixing == Some(ix), |el| el.bg(p.wash_strong))
                 .when(g.overlaps, |el| el.border_l_2().border_color(p.warn_border))
-                .child(gutter(d, ix, g, p, cx))
-                .child(prose(d, ix, g, is_active, playing, p, cx))
+                .child(gutter(d, ix, g, stacked, p, cx))
+                .map(|el| {
+                    let text = prose(d, ix, g, is_active, playing, p, cx);
+                    // Stacked, the text's `flex_1` must not grow along the column.
+                    if stacked {
+                        el.child(div().w_full().child(text))
+                    } else {
+                        el.child(text)
+                    }
+                })
                 .into_any_element()
         })
         .collect();

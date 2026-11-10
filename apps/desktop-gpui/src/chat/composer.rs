@@ -367,6 +367,7 @@ pub fn render(
     }
     let streaming = chat.streaming;
     let focused = chat.composer.read(cx).focus_handle(cx).is_focused(window);
+    let empty = chat.composer.read(cx).value().is_empty();
     let today = crate::ui::clock::now(cx).date();
     let send_to = chat
         .pin
@@ -421,6 +422,7 @@ pub fn render(
         })
         .child(
             div()
+                .relative()
                 // 16 px (`--s-4`) less the kit textarea's own 10 px inset.
                 .px(space::S4 - px(10.))
                 .pt(if docked { space::S3 } else { space::S4 })
@@ -437,7 +439,20 @@ pub fn render(
                         .py_0()
                         .text_size(if docked { text::MD } else { text::LG })
                         .disabled(streaming),
-                ),
+                )
+                .when(!docked && empty, |d| {
+                    // The placeholder, wrapping (`<textarea placeholder>` does);
+                    // placed on the kit's text origin (10 px in, 4 px down).
+                    d.child(
+                        div()
+                            .absolute()
+                            .top(space::S4 + px(4.))
+                            .left(space::S4)
+                            .right(space::S4)
+                            .text_color(p.text_muted)
+                            .child(super::COMPOSER_PLACEHOLDER),
+                    )
+                }),
         )
         .child(
             div()
