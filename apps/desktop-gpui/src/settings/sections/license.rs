@@ -165,7 +165,22 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 } else {
                     "$69 one-time purchase \u{2014} includes a 1-year update window. Pay once, own it forever."
                 })
-                .control(Button::new("lic-buy", if out_of_window { "Renew ($29)" } else { "Buy ($69)" }).icon(icons::EXTERNAL).icon_after())
+                .control(
+                    Button::new("lic-buy", if out_of_window { "Renew ($29)" } else { "Buy ($69)" })
+                        .icon(icons::EXTERNAL)
+                        .icon_after()
+                        // `checkoutUrlFor`: lapsed owners renew, everyone else buys.
+                        .on_click(move |_, _, cx| {
+                            crate::ui::link::open(
+                                if out_of_window {
+                                    crate::small::update::RENEWAL_CHECKOUT_URL
+                                } else {
+                                    crate::licence::LICENSE_CHECKOUT_URL
+                                },
+                                cx,
+                            );
+                        }),
+                )
                 .build(p)
                 .into_any_element(),
         );

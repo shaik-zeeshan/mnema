@@ -235,7 +235,8 @@ fn reasoning(chat: &Chat, t: &ChatTurn, p: &Palette, cx: &mut Context<Chat>) -> 
                         .text_size(text::BASE)
                         .line_height(relative(1.55))
                         .text_color(p.text_subtle)
-                        .child(SharedString::from(r.to_string())),
+                        .child(SharedString::from(r.to_string()))
+                        .child(crate::ui::scroll::bar(&handle)),
                 )
             }),
     )

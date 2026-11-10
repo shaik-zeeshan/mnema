@@ -131,6 +131,12 @@ pub mod size {
     pub const CHAT_THREAD_MAX_W: Pixels = px(760.);
     pub const CHAT_COMPOSER_DOCKED_MAX_W: Pixels = px(696.);
     pub const CHAT_HEAD_H: Pixels = px(48.);
+    /// `::-webkit-scrollbar { width: 12px }` + a 3 px clear border on the
+    /// thumb (`+layout.svelte`): a 6 px pill in a 12 px strip.
+    pub const SCROLLBAR: Pixels = px(12.);
+    pub const SCROLL_THUMB: Pixels = px(6.);
+    /// The external-link arrow (`.about-link__arrow svg`).
+    pub const LINK_ICON: Pixels = px(12.);
 }
 
 /// Popovers: CSS `backdrop-filter: blur(22px) saturate(1.4)` over a 96% raised

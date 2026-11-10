@@ -194,7 +194,7 @@ fn main_outer(id: &'static str, top: bool, inset: Pixels) -> gpui_kit::Stateful<
 /// `.ob-main > .ob-split` (Voice): the split sits straight in the main area,
 /// no `.ob-col` cap, so its columns run to the gutters.
 pub fn main_split(id: &'static str, inset: Pixels, split: AnyElement) -> AnyElement {
-    main_outer(id, false, inset).child(split).into_any_element()
+    crate::ui::scroll::area(main_outer(id, false, inset).child(split)).into_any_element()
 }
 
 /// `.ob-stage`'s `mx-texture`: 1 px dots on an 18 px grid (centred on the grid
@@ -245,8 +245,8 @@ pub fn main_col(
     inset: Pixels,
     children: Vec<AnyElement>,
 ) -> AnyElement {
-    main_outer(id, top, inset)
-        .child(
+    crate::ui::scroll::area(
+        main_outer(id, top, inset).child(
             div()
                 .debug_selector(|| "ob-col".into())
                 .flex()
@@ -256,8 +256,9 @@ pub fn main_col(
                 .min_w_0()
                 .max_w(if wide { COL_W_WIDE } else { COL_W })
                 .children(children),
-        )
-        .into_any_element()
+        ),
+    )
+    .into_any_element()
 }
 
 /// `.ob-foot`: a state line on the left, the actions on the right.

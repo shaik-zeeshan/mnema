@@ -255,14 +255,16 @@ pub fn app_picker(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Opti
             .child("Listing installed apps\u{2026}")
             .into_any_element()
     } else {
-        div()
-            .id("excl-pick-list")
-            .flex()
-            .flex_col()
-            .max_h(px(360.))
-            .overflow_y_scroll()
-            .children(rows)
-            .into_any_element()
+        crate::ui::scroll::area(
+            div()
+                .id("excl-pick-list")
+                .flex()
+                .flex_col()
+                .max_h(px(360.))
+                .overflow_y_scroll()
+                .children(rows),
+        )
+        .into_any_element()
     };
     Some(
         Modal::new("excl-picker", "Never record an app")

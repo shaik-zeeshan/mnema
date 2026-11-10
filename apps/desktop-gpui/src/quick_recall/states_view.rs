@@ -479,7 +479,7 @@ impl QuickRecall {
                     .text_color(p.text_subtle)
                     .child(current.clone()),
             )
-            .child(
+            .child(crate::ui::scroll::area(
                 div()
                     .id("qr-pop-menu")
                     .role(Role::Menu)
@@ -488,7 +488,7 @@ impl QuickRecall {
                     .max_h(px(232.))
                     .overflow_y_scroll()
                     .child(div().flex().flex_col().children(items)),
-            )
+            ))
             .child(foot)
             .on_mouse_down_out(cx.listener(|qr, _, _, cx| {
                 qr.filters.popover = false;

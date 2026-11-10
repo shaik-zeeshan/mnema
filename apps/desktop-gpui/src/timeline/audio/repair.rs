@@ -566,7 +566,7 @@ pub fn render(
                 .text_color(p.text_subtle)
                 .child(vm::cluster_summary(cluster, &d.data.turns)),
         )
-        .child(
+        .child(crate::ui::scroll::area(
             div()
                 .id("repair-body")
                 .flex_1()
@@ -579,7 +579,7 @@ pub fn render(
                 .pt(px(14.))
                 .pb(space::S4)
                 .children(body),
-        )
+        ))
         .children(retry.map(|(w, e)| {
             div()
                 .px(space::S4)

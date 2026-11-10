@@ -420,7 +420,7 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
                 .text_color(p.text_strong)
                 .child(day_label(picked.with_time(Time::MIDNIGHT).assume_offset(o))),
         )
-        .child(
+        .child(crate::ui::scroll::area(
             div()
                 .id("jumper-hours")
                 .flex_1()
@@ -428,7 +428,7 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
                 .overflow_y_scroll()
                 .px(px(6.))
                 .children(hour_rows(v, picked, p, cx)),
-        )
+        ))
         .child(
             div()
                 .px(space::S3)

@@ -81,7 +81,7 @@ impl Group {
     /// ≤1000: taller offscreen windows get clamped to the display.
     pub fn viewport(self) -> (f32, f32) {
         match self {
-            Group::Buttons => (900., 440.),
+            Group::Buttons => (900., 500.),
             Group::Fields => (900., 700.),
             Group::Choice => (900., 640.),
             Group::Select => (900., 580.),

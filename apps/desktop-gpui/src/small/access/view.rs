@@ -601,6 +601,7 @@ impl Render for AccessRequest {
                 .child(self.who(now_ms, &p))
                 .child(self.scopes(cx, &p))
                 .child(self.standing(&p))
+                .child(crate::ui::scroll::bar(&self.body_scroll))
                 .into_any_element(),
         };
         let error = self

@@ -144,7 +144,7 @@ pub fn render(s: &Settings, window: &mut Window, cx: &mut Context<Settings>) -> 
                 .child(div().flex().ml(px(-6.)).child(back))
                 .child(search),
         )
-        .child(nav)
+        .child(crate::ui::scroll::area(nav))
         .child(footer(s, &p, window, cx))
         .into_any_element()
 }

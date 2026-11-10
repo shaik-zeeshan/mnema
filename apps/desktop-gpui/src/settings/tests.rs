@@ -371,3 +371,29 @@ fn on_a_wide_window_the_page_column_centres_right_of_the_rail(cx: &mut TestAppCo
     assert_eq!(width, 760.);
     assert!((left - right).abs() <= 1., "centred: {left} vs {right}");
 }
+
+#[gpui_kit::test]
+fn a_third_party_notice_opens_its_source_url(cx: &mut TestAppContext) {
+    // Tall enough that About's notices are on screen without scrolling.
+    let (w, v, _) = open_at(cx, false, (1280., 6000.));
+    v.update(cx, |s, cx| s.open_tab("about", cx));
+    frame(cx, w);
+    let (ix, url) = cx.read(|cx| {
+        let notices = v.read(cx).data.notices.clone().expect("notices");
+        notices["entries"]
+            .as_array()
+            .expect("entries")
+            .iter()
+            .enumerate()
+            .find_map(|(i, e)| Some((i, e["sourceUrl"].as_str()?.to_string())))
+            .expect("an entry with a source")
+    });
+    let id = crate::ui::nid("notice-source", ix as u64);
+    cx.update_window(w.into(), |_, window, cx| {
+        assert_eq!(window.find(id.clone()).role(), Some(gpui_kit::Role::Link));
+        window.click(id, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(cx.opened_url(), Some(url));
+}

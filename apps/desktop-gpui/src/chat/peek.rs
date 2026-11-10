@@ -17,6 +17,7 @@ use crate::timeline::stage::image_rect;
 use crate::timeline::{Ocr, OcrStatus};
 use crate::ui::dialog::Modal;
 use crate::ui::empty::{empty, EmptyLayout};
+use crate::ui::link::Link;
 use crate::ui::{Button, Tone};
 
 /// The hero's height (`.frame-hero`).
@@ -226,6 +227,16 @@ pub fn frame_modal(
                     .text_color(p.text_subtle)
                     .child(SharedString::from(when(s, cx))),
             )
+            // `openFrameUrl`: the guarded URL is scheme-less host/path, always
+            // http(s); re-add https.
+            .children(s.url.clone().map(|u| {
+                let href = if u.starts_with("http://") || u.starts_with("https://") {
+                    u.clone()
+                } else {
+                    format!("https://{u}")
+                };
+                Link::new("chat-frame-url", u, href).quiet()
+            }))
             .child(
                 div()
                     .flex()

@@ -23,6 +23,8 @@ struct Preset {
     url: Option<&'static str>,
     command: Option<(&'static str, &'static [&'static str])>,
     oauth: bool,
+    /// `helpUrl`: where to create the token the secret field asks for.
+    help: Option<&'static str>,
 }
 
 const PRESETS: [Preset; 5] = [
@@ -33,6 +35,7 @@ const PRESETS: [Preset; 5] = [
         url: Some("https://api.githubcopilot.com/mcp/"),
         command: None,
         oauth: false,
+        help: Some("https://github.com/settings/personal-access-tokens"),
     },
     Preset {
         id: "linear",
@@ -41,6 +44,7 @@ const PRESETS: [Preset; 5] = [
         url: Some("https://mcp.linear.app/mcp"),
         command: None,
         oauth: false,
+        help: Some("https://linear.app/settings/account/security"),
     },
     Preset {
         id: "stripe",
@@ -49,6 +53,7 @@ const PRESETS: [Preset; 5] = [
         url: Some("https://mcp.stripe.com"),
         command: None,
         oauth: false,
+        help: Some("https://dashboard.stripe.com/apikeys"),
     },
     Preset {
         id: "notion",
@@ -57,6 +62,7 @@ const PRESETS: [Preset; 5] = [
         url: Some("https://mcp.notion.com/mcp"),
         command: None,
         oauth: true,
+        help: None,
     },
     Preset {
         id: "filesystem",
@@ -72,8 +78,17 @@ const PRESETS: [Preset; 5] = [
             ],
         )),
         oauth: false,
+        help: None,
     },
 ];
+
+/// The preset a connector was added from (`github`, `github-2`…): its help link.
+fn help_url(id: &str) -> Option<&'static str> {
+    PRESETS
+        .iter()
+        .find(|p| id == p.id || id.strip_prefix(p.id).is_some_and(|n| n.starts_with('-')))
+        .and_then(|p| p.help)
+}
 
 /// `rowTag`: http rows show their auth mode, stdio its transport.
 fn tag(s: &McpServerConfig) -> &'static str {
@@ -256,6 +271,10 @@ fn configure(
                         &s.inputs.mcp_secret,
                     )),
             )
+            .children(help_url(&server.id).map(|url| {
+                // `.field-help`: small and muted; the kit arrow stands for its "→".
+                crate::ui::link::Link::new("mcp-secret-help", "Create one", url).quiet()
+            }))
             .child(
                 Button::new("mcp-secret-save", "Save secret")
                     .sm()

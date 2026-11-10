@@ -21,6 +21,8 @@ mod licence;
 mod onboarding;
 #[path = "visual/quick_recall.rs"]
 mod quick_recall;
+#[path = "visual/scroll.rs"]
+mod scroll;
 #[path = "visual/settings.rs"]
 mod settings;
 #[path = "visual/small.rs"]
@@ -376,6 +378,7 @@ fn run() -> anyhow::Result<()> {
     failures.extend(small::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(quick_recall::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(onboarding::goldens(&mut cx, &filters, &THEMES)?);
+    failures.extend(scroll::checks(&mut cx, &filters)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

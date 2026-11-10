@@ -10,7 +10,8 @@ use crate::settings::row::{hint, row, section};
 use crate::settings::{click, Settings};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
 use crate::ui::chip::{chip, ChipKind};
-use crate::ui::Button;
+use crate::ui::link::Link;
+use crate::ui::{nid, Button};
 
 /// `appUpdateStateLabel`.
 fn state_label(u: Option<&Value>) -> &'static str {
@@ -295,8 +296,9 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
             .children(
                 entries
                     .iter()
-                    .filter(|e| e.str_at(&["kind"]) == Some(k.as_str()))
-                    .map(|e| {
+                    .enumerate()
+                    .filter(|(_, e)| e.str_at(&["kind"]) == Some(k.as_str()))
+                    .map(|(i, e)| {
                         div()
                             .flex()
                             .flex_col()
@@ -314,11 +316,12 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
                                     )),
                             )
                             .children(e.str_at(&["sourceUrl"]).map(|u| {
-                                div()
-                                    .font_family(FONT_MONO)
-                                    .text_size(text::SM)
-                                    .text_color(p.text_muted)
-                                    .child(u.to_string())
+                                Link::new(
+                                    nid("notice-source", i as u64),
+                                    u.to_string(),
+                                    u.to_string(),
+                                )
+                                .quiet()
                             }))
                     }),
             )

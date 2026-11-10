@@ -385,7 +385,8 @@ pub fn render(
                         cx.notify();
                     }
                 }))
-                .children(rows),
+                .children(rows)
+                .child(crate::ui::scroll::bar(&d.scroll)),
         )
         .children(note.map(|(m, e)| foot(m, e)))
         .children(correction.map(|m| foot(m, true)))

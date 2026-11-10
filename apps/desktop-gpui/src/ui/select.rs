@@ -274,7 +274,7 @@ impl RenderOnce for Select {
         });
         let list = open.then(|| {
             let close = state.clone();
-            deferred(
+            deferred(crate::ui::scroll::area(
                 list_box(nid(&format!("{base}-listbox"), 0), &p)
                     .when(n == 0, |el| {
                         el.child(options_empty("Nothing to choose", &p))
@@ -286,7 +286,7 @@ impl RenderOnce for Select {
                             cx.notify();
                         })
                     }),
-            )
+            ))
             .with_priority(1)
         });
         let (toggle, keys) = (state.clone(), state.clone());

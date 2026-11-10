@@ -195,7 +195,7 @@ pub fn render(
                     p,
                 )),
         )
-        .child(
+        .child(crate::ui::scroll::area(
             div()
                 .id("chat-history")
                 .role(gpui_kit::Role::List)
@@ -207,7 +207,7 @@ pub fn render(
                 .px(space::S2)
                 .pb(space::S4)
                 .child(body),
-        )
+        ))
         .children(default.map(|(_, model)| {
             with_tip(
                 div()

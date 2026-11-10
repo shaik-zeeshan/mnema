@@ -23,7 +23,7 @@ pub const SIZE: (f32, f32) = (480., 520.);
 pub const MIN: (f32, f32) = (420., 240.);
 
 /// `lib/licensing.ts` `RENEWAL_CHECKOUT_URL` (default).
-const RENEWAL_CHECKOUT_URL: &str = "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_Tihx0GjXAe53ljFFHWh4wxUwb3u0KSVLBvJ5b00hFyi/redirect";
+pub(crate) const RENEWAL_CHECKOUT_URL: &str = "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_Tihx0GjXAe53ljFFHWh4wxUwb3u0KSVLBvJ5b00hFyi/redirect";
 
 /// The real bundle icon (`static/app-icon.png`, a copy of the 128@2x icon).
 pub const APP_ICON: Src = Src::Bundled(include_bytes!("../../../../desktop/static/app-icon.png"));
@@ -301,7 +301,7 @@ impl UpdateWindow {
             );
         }
         if let (true, Some(n)) = (show_notes, notes) {
-            band = band.child(
+            band = band.child(crate::ui::scroll::area(
                 inset_panel(p)
                     .id("up-notes")
                     .aria_label("Release notes")
@@ -317,10 +317,11 @@ impl UpdateWindow {
                     .child(match model::note_blocks(&n) {
                         Some(blocks) => notes_view(blocks, cx, p).into_any_element(),
                         None => TextView::markdown("up-notes-md", n)
+                            .on_link_click(crate::ui::link::prose_click)
                             .style(notes_style(p, theme::mode(cx) == theme::Mode::Dark))
                             .into_any_element(),
                     }),
-            );
+            ));
         }
         div()
             .flex_1()
@@ -566,7 +567,10 @@ fn notes_view(
                         .when(!open.is_empty(), |d| {
                             d.role(gpui_kit::Role::Link)
                                 .cursor_pointer()
-                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&open)))
+                                // Feed notes aren't covered by the update signature: gate the URL.
+                                .on_click(cx.listener(move |_, _, _, cx| {
+                                    crate::ui::link::open(&open, cx);
+                                }))
                         })
                         .into_any_element()
                 }

@@ -173,7 +173,8 @@ impl Render for QuickRecall {
                         }
                     })
                     .child(body);
-                d.child(scroll).child(self.foot(cx, &p).h(px(FOOT_H)))
+                d.child(crate::ui::scroll::area(scroll))
+                    .child(self.foot(cx, &p).h(px(FOOT_H)))
             })
             .child(measure);
         div().w_full().child(shell)

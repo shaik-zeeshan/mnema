@@ -6,6 +6,7 @@ use gpui_kit::{div, AnyElement, Context, Window};
 
 use super::{cell, row, Gallery};
 use crate::theme::{self, space};
+use crate::ui::link::Link;
 use crate::ui::{Button, Force, Variant};
 
 pub(super) fn render(_: &mut Gallery, _: &mut Window, cx: &mut Context<Gallery>) -> AnyElement {
@@ -147,5 +148,31 @@ pub(super) fn render(_: &mut Gallery, _: &mut Window, cx: &mut Context<Gallery>)
         .gap(space::S4)
         .children(rows)
         .child(row("action", actions, &p))
+        .child(row("link", links(&p), &p))
         .into_any_element()
+}
+
+/// `ui::link`: the prose link and About's quiet source link, at rest / hover / focus.
+fn links(p: &theme::Palette) -> Vec<AnyElement> {
+    let url = "https://mnema.day";
+    vec![
+        cell("prose", Link::new("lk-prose", "release notes", url), p),
+        cell(
+            "focus",
+            Link::new("lk-prose-focus", "release notes", url).force(Force::Focus),
+            p,
+        ),
+        cell(
+            "quiet",
+            Link::new("lk-quiet", "github.com/mnema", url).quiet(),
+            p,
+        ),
+        cell(
+            "quiet hover",
+            Link::new("lk-quiet-hover", "github.com/mnema", url)
+                .quiet()
+                .force(Force::Hover),
+            p,
+        ),
+    ]
 }

@@ -648,7 +648,8 @@ impl Render for Insights {
                         Tab::Subjects => subjects::render(self, &p, window, cx),
                         Tab::Context => context::render(self, &p, window, cx),
                     }),
-            );
+            )
+            .child(crate::ui::scroll::bar(&self.scroll));
         let drawer = subjects::drawer(self, &p, cx);
         div()
             .id("insights")

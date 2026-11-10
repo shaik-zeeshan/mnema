@@ -209,7 +209,8 @@ impl Render for Settings {
                     .when(ix < last, |d| d.pb(space::S7))
                     .when(ix == last, |d| d.pb(space::S8))
                     .child(el)
-            }));
+            }))
+            .child(crate::ui::scroll::bar(&self.scroll));
 
         div()
             .id("settings")

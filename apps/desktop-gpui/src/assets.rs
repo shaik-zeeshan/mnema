@@ -55,6 +55,7 @@ icon_assets!(
         Circle,
         CircleDashed,
         Rewind,
+        ArrowUpRight,
     ]
 );
 

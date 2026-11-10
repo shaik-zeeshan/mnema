@@ -184,7 +184,7 @@ impl RenderOnce for ModelPicker {
                             ),
                         ),
                 )
-                .child(
+                .child(crate::ui::scroll::area(
                     div()
                         .id(ElementId::Name(format!("{base}-list").into()))
                         .role(gpui_kit::Role::ListBox)
@@ -198,7 +198,7 @@ impl RenderOnce for ModelPicker {
                         .when(!self.spec.loading && rows.is_empty(), |el| {
                             el.child(note("No models yet.", &p))
                         }),
-                )
+                ))
                 .when_some(self.spec.foot.clone(), |el, foot| {
                     el.child(
                         div()

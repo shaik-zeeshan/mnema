@@ -88,7 +88,7 @@ impl QuickRecall {
                                 .child(format!("{n} lines")),
                         ),
                 )
-                .child(
+                .child(crate::ui::scroll::area(
                     div()
                         .id("qr-look-lines")
                         .flex_1()
@@ -101,7 +101,7 @@ impl QuickRecall {
                         .border_1()
                         .border_color(p.hairline)
                         .child(body),
-                )
+                ))
         };
         let copied = l.copied;
         match &l.result {

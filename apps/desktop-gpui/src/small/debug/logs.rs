@@ -272,7 +272,8 @@ pub fn tab(
         .text_size(text::SM)
         .line_height(relative(1.5))
         .text_color(p.text)
-        .children(content);
+        .children(content)
+        .child(crate::ui::scroll::bar(&w.log_scroll));
     div()
         .id("dv-body")
         .flex_1()

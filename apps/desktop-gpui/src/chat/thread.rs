@@ -420,7 +420,8 @@ pub fn render(
                 .map(|d| match thread_body {
                     Some(body) => d.child(body),
                     None => d.child(greeting(chat, p, window, cx)),
-                }),
+                })
+                .child(crate::ui::scroll::bar(&chat.scroll)),
         )
         .when(docked, |d| {
             d.child(

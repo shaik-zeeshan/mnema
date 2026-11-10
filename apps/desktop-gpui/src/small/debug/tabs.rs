@@ -475,5 +475,6 @@ pub fn body(
                 .child(line.clone())
         }))
         .children(children)
+        .child(crate::ui::scroll::bar(&w.body_scroll))
         .into_any_element()
 }

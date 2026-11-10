@@ -151,7 +151,7 @@ impl Onboarding {
                 )
                 .w(px(FIELD_W)),
             )
-            .child(deferred(list).with_priority(1))
+            .child(deferred(crate::ui::scroll::area(list)).with_priority(1))
             .into_any_element()
     }
 }

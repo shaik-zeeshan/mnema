@@ -457,48 +457,50 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 )
         }));
     Some(
-        div()
-            .id("insights-drawer")
-            .role(Role::Complementary)
-            .map(|d| {
-                if sheet {
-                    // `.sd-drawer--sheet`: over the whole pane, on the page background.
-                    d.absolute().inset_0().bg(p.bg).px(space::S4).py(space::S5)
-                } else {
-                    // Over the pane (`position: fixed`), not beside it: see `push`.
-                    d.absolute()
-                        .top_0()
-                        .bottom_0()
-                        .right_0()
-                        .w(relative(SHARE))
-                        .border_l_1()
-                        .border_color(p.border)
-                        .bg(p.surface)
-                        .p(space::S5)
-                }
-            })
-            .overflow_y_scroll()
-            .flex()
-            .flex_col()
-            .gap(space::S4)
-            .child(bar)
-            .child(h2(c.statement.clone(), p).line_height(relative(1.3)))
-            .child(acts_row)
-            .child(spec)
-            .child(
-                div()
-                    .child(sec(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(kicker(&format!("Evidence · {total}"), p))
-                            .child(label("newest first", p).text_color(p.text_faint)),
-                        Some(pager.into_any_element()),
-                    ))
-                    .child(list),
-            )
-            .into_any_element(),
+        crate::ui::scroll::area(
+            div()
+                .id("insights-drawer")
+                .role(Role::Complementary)
+                .map(|d| {
+                    if sheet {
+                        // `.sd-drawer--sheet`: over the whole pane, on the page background.
+                        d.absolute().inset_0().bg(p.bg).px(space::S4).py(space::S5)
+                    } else {
+                        // Over the pane (`position: fixed`), not beside it: see `push`.
+                        d.absolute()
+                            .top_0()
+                            .bottom_0()
+                            .right_0()
+                            .w(relative(SHARE))
+                            .border_l_1()
+                            .border_color(p.border)
+                            .bg(p.surface)
+                            .p(space::S5)
+                    }
+                })
+                .overflow_y_scroll()
+                .flex()
+                .flex_col()
+                .gap(space::S4)
+                .child(bar)
+                .child(h2(c.statement.clone(), p).line_height(relative(1.3)))
+                .child(acts_row)
+                .child(spec)
+                .child(
+                    div()
+                        .child(sec(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(6.))
+                                .child(kicker(&format!("Evidence · {total}"), p))
+                                .child(label("newest first", p).text_color(p.text_faint)),
+                            Some(pager.into_any_element()),
+                        ))
+                        .child(list),
+                ),
+        )
+        .into_any_element(),
     )
 }
 

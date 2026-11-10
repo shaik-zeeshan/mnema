@@ -139,7 +139,7 @@ impl RenderOnce for Combobox {
                 })
             });
             let (close, esc) = (state.clone(), state.clone());
-            deferred(
+            deferred(crate::ui::scroll::area(
                 list_box(nid(&format!("{base}-listbox"), 0), &p)
                     .max_h(px(260.))
                     .child(
@@ -189,7 +189,7 @@ impl RenderOnce for Combobox {
                             cx.notify();
                         })
                     }),
-            )
+            ))
             .with_priority(1)
         });
         let (toggle, input) = (state.clone(), search.clone());
