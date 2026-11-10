@@ -3,6 +3,7 @@
 //! as tinted-tile buttons with the open group's sections nested under a
 //! hairline guide, and a REC + lanes + version footer.
 
+use crate::ui::input::FieldText as _;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, AnyElement, Context, Div, Hsla, MouseButton, SharedString, Window};
@@ -85,7 +86,7 @@ pub fn render(s: &Settings, window: &mut Window, cx: &mut Context<Settings>) -> 
                     .aria_label("Search settings")
                     .appearance(false)
                     .px_0()
-                    .text_size(text::BASE)
+                    .field_text(text::BASE)
                     .h(size::H_MD - px(2.)),
             ),
         )

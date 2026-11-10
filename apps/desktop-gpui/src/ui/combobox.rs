@@ -2,6 +2,7 @@
 //! (hairline under it). Typing filters case-insensitively; "No matches" when
 //! nothing does. The search text is gpui-kit's input.
 
+use crate::ui::input::FieldText as _;
 use std::rc::Rc;
 
 use gpui_kit::assets::IconName;
@@ -166,7 +167,7 @@ impl RenderOnce for Combobox {
                                         .appearance(false)
                                         .px_0()
                                         .h(px(18.))
-                                        .text_size(text::MD),
+                                        .field_text(text::MD),
                                 ),
                             ),
                     )

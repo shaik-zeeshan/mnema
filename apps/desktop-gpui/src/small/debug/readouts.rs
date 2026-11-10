@@ -209,15 +209,28 @@ pub struct LogLine {
     pub message: String,
 }
 
-/// `[2026-10-13][15:01:26][target][INFO] message`; `None` for a continuation line.
+/// One head line in either writer's shape; `None` for a continuation line:
+/// ours (`logging.rs`) `[2026-11-10T13:48:12.527282Z][WARN][target] message`,
+/// Tauri's `[2026-10-13][15:01:26][target][INFO] message`.
 /// rust.log stamps UTC; `offset_s` turns it into the local wall clock.
 pub fn parse_log_line(raw: &str, offset_s: i64) -> Option<LogLine> {
     let rest = raw.strip_prefix('[')?;
-    let (date, rest) = rest.split_once("][")?;
-    let (clock, rest) = rest.split_once("][")?;
-    let (target, rest) = rest.split_once("][")?;
-    let (level, text) = rest.split_once(']')?;
-    if date.len() != 10 || !level.chars().all(|c| c.is_ascii_uppercase()) {
+    let (date, clock, target, level, text) = match rest.split_once(']')? {
+        (stamp, rest) if stamp.contains('T') => {
+            let (date, clock) = stamp.strip_suffix('Z').unwrap_or(stamp).split_once('T')?;
+            let (level, rest) = rest.strip_prefix('[')?.split_once("][")?;
+            let (target, text) = rest.split_once(']')?;
+            (date, clock, target, level, text)
+        }
+        _ => {
+            let (date, rest) = rest.split_once("][")?;
+            let (clock, rest) = rest.split_once("][")?;
+            let (target, rest) = rest.split_once("][")?;
+            let (level, text) = rest.split_once(']')?;
+            (date, clock, target, level, text)
+        }
+    };
+    if date.len() != 10 || level.is_empty() || !level.chars().all(|c| c.is_ascii_uppercase()) {
         return None;
     }
     let (hms, frac) = clock
@@ -457,5 +470,43 @@ mod tests {
         assert_eq!(filter_entries(&g, Level::Error, 0, "").len(), 1);
         assert_eq!(filter_entries(&g, Level::All, 3, "").len(), 1);
         assert_eq!(filter_entries(&g, Level::All, 0, "FRAME 1").len(), 1);
+    }
+
+    /// The shape `logging.rs` writes: one row per line, not one merged entry.
+    #[test]
+    fn our_own_log_lines_are_one_row_each() {
+        let lines: Vec<String> = [
+            "[2026-11-10T13:48:12.157462Z][INFO][mnema_gpui] mnema-gpui starting",
+            "[2026-11-10T13:48:12.527282Z][WARN][gpui_apple::text_system] skipping duplicate font",
+            "[2026-11-10T13:48:13.000001Z][ERROR][app_core::startup] worker failed: io error",
+            "stack backtrace:",
+            "   0: std::backtrace::Backtrace::create",
+            "[2026-11-10T23:59:59Z][INFO][app_infra::jobs] [app-infra] worker started",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let g = group_log_lines(&lines, 19_800);
+        assert_eq!(g.len(), 4);
+        let warn = g[1].head.as_ref().unwrap();
+        assert_eq!(
+            (
+                warn.time.as_str(),
+                warn.level.as_str(),
+                warn.prefix.as_str()
+            ),
+            ("19:18:12.527", "WARN", "text_system")
+        );
+        assert_eq!(warn.message, "skipping duplicate font");
+        // The multi-line message keeps its continuation lines under its head.
+        assert_eq!(g[2].head.as_ref().unwrap().level, "ERROR");
+        assert_eq!(g[2].more.len(), 2);
+        let last = g[3].head.as_ref().unwrap();
+        assert_eq!(
+            (last.time.as_str(), last.prefix.as_str()),
+            ("05:29:59", "[app-infra]")
+        );
+        assert_eq!(filter_entries(&g, Level::Warn, 0, "").len(), 2);
+        assert!(parse_log_line("[2026-11-10T13:48:12Z][][x] no level", 0).is_none());
     }
 }

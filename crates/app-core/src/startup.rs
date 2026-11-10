@@ -51,6 +51,8 @@ pub fn manage_default_states(core: &AppCore) {
     core.manage(crate::ocr_models::OcrModelDownloadState::default());
     core.manage(crate::updates::AppUpdateSettingsState::default());
     core.manage(crate::semantic_search_models::SemanticSearchModelDownloadState::default());
+    // The query embedder's model cache: every capture search reads it.
+    core.manage(crate::semantic_search_query::SemanticQueryEmbedderState::new());
     // One settings state, shared by the host's commands and app-core.
     core.manage(crate::recording_settings::RecordingSettingsState::default());
     core.manage(crate::onboarding_state::OnboardingStateStore::default());

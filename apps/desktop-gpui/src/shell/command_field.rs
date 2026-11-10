@@ -2,6 +2,7 @@
 //! ↵ in recall hands the text to Quick Recall, ↵ in ask (or ⌘↵) asks in Chat,
 //! Esc drops back to recall and blurs. Hints hide below 1000 px.
 
+use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::prelude::*;
@@ -220,7 +221,7 @@ impl Render for CommandField {
                             })
                             .appearance(false)
                             .px_0()
-                            .text_size(text::MD)
+                            .field_text(text::MD)
                             .h(px(26.)),
                     ),
             )

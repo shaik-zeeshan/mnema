@@ -2,6 +2,7 @@
 //! `.mx-pop` with the search, the rows and an optional footer. Keys: ↑↓ move,
 //! ↵ activates, 1-9 pick a favorite while the search is empty, Esc closes.
 
+use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
@@ -179,7 +180,7 @@ impl RenderOnce for ModelPicker {
                                     .appearance(false)
                                     .px_0()
                                     .h(px(18.))
-                                    .text_size(text::BASE),
+                                    .field_text(text::BASE),
                             ),
                         ),
                 )

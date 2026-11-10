@@ -1,6 +1,7 @@
 //! The list column (`ChatList.svelte`): New chat, search, date-grouped history
 //! with hover actions and inline rename, and the "Default model" footer.
 
+use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
@@ -189,7 +190,7 @@ pub fn render(
                         .appearance(false)
                         .px_0()
                         .h(px(18.))
-                        .text_size(text::MD)
+                        .field_text(text::MD)
                         .into_any_element(),
                     p,
                 )),
@@ -322,7 +323,7 @@ fn row(
                     .appearance(false)
                     .px_0()
                     .h(px(20.))
-                    .text_size(text::MD),
+                    .field_text(text::MD),
             )
             .into_any_element()
     } else {

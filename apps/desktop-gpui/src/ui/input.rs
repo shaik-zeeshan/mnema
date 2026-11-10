@@ -9,6 +9,31 @@ use gpui_kit::{div, px, App, Div, ElementId, Entity, Focusable, Pixels, SharedSt
 use super::{ring, Force, FIELD_RADIUS};
 use crate::theme::{self, size, space, text, Palette, FONT_MONO};
 
+/// A single-line field's line box, as a multiple of its text size.
+const CARET_LINE: f32 = 1.5;
+
+/// Every single-line `Input` sets its text size through this. kit's `Input`
+/// pins its line box to 1.25 rem whatever the text size, and GPUI draws the
+/// caret 0.85 × that line (1 px wide): a 13.6 px stub in a 19 px field, sat
+/// above the text. WebKit's caret is as tall as the font (~1.27 × its size),
+/// which a 1.5 × line gives.
+pub trait FieldText {
+    fn field_text(self, size: Pixels) -> Self;
+    /// The field's height. kit's own `Input::h` is multi-line only: on a
+    /// single-line field it does nothing and the frame stays 2 rem tall.
+    fn field_h(self, h: Pixels) -> Self;
+}
+
+impl FieldText for Input {
+    fn field_text(self, size: Pixels) -> Self {
+        self.text_size(size).line_height(size * CARET_LINE)
+    }
+
+    fn field_h(self, h: Pixels) -> Self {
+        Styled::h(self, h)
+    }
+}
+
 #[derive(IntoElement)]
 pub struct TextInput {
     id: ElementId,
@@ -120,7 +145,7 @@ impl RenderOnce for TextInput {
                     .appearance(false)
                     .disabled(self.disabled)
                     .px_0()
-                    .text_size(fs)
+                    .field_text(fs)
                     .h(size::H_MD - px(2.))
                     .when(self.center, |el| el.text_center()),
             )

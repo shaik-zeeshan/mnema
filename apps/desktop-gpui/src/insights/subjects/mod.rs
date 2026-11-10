@@ -8,6 +8,7 @@ mod detail;
 mod drawer;
 pub mod tiers;
 
+use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
@@ -56,7 +57,7 @@ pub fn controls(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Vec
                     .aria_label("Filter subjects")
                     .appearance(false)
                     .px_0()
-                    .text_size(text::BASE)
+                    .field_text(text::BASE)
                     .h(size::H_MD - px(2.)),
             ),
         );

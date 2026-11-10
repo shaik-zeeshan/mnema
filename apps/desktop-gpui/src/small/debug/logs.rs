@@ -2,6 +2,7 @@
 //! filter and the feature chips over the app log's last 500 lines, oldest first,
 //! with the tail filling the rest of the tab. Warnings and errors are tinted.
 
+use crate::ui::input::FieldText as _;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, AnyElement, ClipboardItem, Context, Window};
 
@@ -91,7 +92,7 @@ pub fn tab(
                     .appearance(false)
                     .px_0()
                     .h(px(18.))
-                    .text_size(text::BASE)
+                    .field_text(text::BASE)
                     .into_any_element(),
                 p,
             )

@@ -3,6 +3,7 @@
 //! phrases tinted in place (a mirror under a transparent input) and the ghost,
 //! the right-hand status; plus the foot's operator query and live keys.
 
+use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
@@ -283,8 +284,8 @@ impl QuickRecall {
                             .aria_label("Recall anything — Tab to ask")
                             .appearance(false)
                             .px_0()
-                            .h(px(FIELD_LINE))
-                            .text_size(px(FIELD_TEXT))
+                            .field_h(px(FIELD_LINE))
+                            .field_text(px(FIELD_TEXT))
                             .text_color(transparent_black()),
                     ),
             );

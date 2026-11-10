@@ -2,6 +2,7 @@
 //! turns · started, pin / rename / delete), the transcript (max 760) or the
 //! new-chat greeting, and the docked composer with "Jump to latest".
 
+use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
@@ -100,7 +101,7 @@ fn header(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
                     .appearance(false)
                     .px_0()
                     .h(px(28.))
-                    .text_size(text::LG),
+                    .field_text(text::LG),
             )
             .into_any_element()
     } else {

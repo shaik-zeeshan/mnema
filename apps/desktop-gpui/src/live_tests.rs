@@ -669,3 +669,24 @@ fn opening_settings_lands_the_mic_state_and_capture_support(cx: &mut TestAppCont
         assert!(s.data.license.is_some(), "the seed's license status");
     });
 }
+
+// ── Quick Recall ────────────────────────────────────────────────────────────
+
+/// The embedder's state comes from app-core's default states (the Tauri builder
+/// used to be the only one registering it, so every GPUI search failed).
+#[test]
+fn quick_recall_searches_the_seeded_index() {
+    use crate::quick_recall::data::{Backend, CoreBackend};
+    let live = live();
+    let backend = CoreBackend(live.core.clone());
+    // No semantic model installed: keyword-only, an honest answer either way.
+    let hit = backend.search("slack", 24, 8).expect("a match");
+    assert!(!hit.index_empty);
+    let miss = backend
+        .search("arsenal", 24, 8)
+        .expect("no match is not a failure");
+    assert!(miss.frames.is_empty() && miss.audio.is_empty() && !miss.index_empty);
+    assert!(backend
+        .facet("slack", app_infra::SearchFacet::App)
+        .is_some());
+}

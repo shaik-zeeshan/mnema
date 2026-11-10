@@ -126,7 +126,7 @@ impl QuickRecall {
                     Err(e) => {
                         qr.results.reset();
                         qr.results.query = query;
-                        log::debug!("quick recall: search failed ({} chars)", e.len());
+                        log::warn!("quick recall: search failed ({})", error_kind(&e));
                         qr.results.error = Some(e);
                     }
                 }
@@ -525,4 +525,17 @@ impl QuickRecall {
             }
         }
     }
+}
+
+/// A failed search's kind for the log: the backend's fixed prefix, never the
+/// rest (an index error can quote the query).
+fn error_kind(e: &str) -> &'static str {
+    [
+        "search isn't ready yet",
+        "failed to search captured content",
+        "unreadable search response",
+    ]
+    .into_iter()
+    .find(|k| e.starts_with(k))
+    .unwrap_or("other")
 }

@@ -277,3 +277,54 @@ fn debug_health_polls_every_2s_and_pause_stops_it(cx: &mut TestAppContext) {
     vcx.run_until_parked();
     assert_eq!(backend.n(Section::Health), 3, "resume refreshes at once");
 }
+
+/// Real rust.log lines (our own writer's shape), many more than the window holds.
+struct LogTail;
+
+impl DebugBackend for LogTail {
+    fn fetch(&self, s: Section, _: i64) -> DebugData {
+        let mut d = DebugData::default();
+        if s == Section::Logs {
+            let lines: Vec<String> = (0..300)
+                .map(|i| {
+                    format!(
+                        "[2026-11-10T13:48:{:02}.527282Z][INFO][mnema_gpui] line {i}",
+                        i % 60
+                    )
+                })
+                .collect();
+            d.log_tail = Some(json!({ "exists": true, "lines": lines }));
+        }
+        d
+    }
+}
+
+#[gpui_kit::test]
+fn the_log_tail_is_one_row_per_line_and_scrolls(cx: &mut TestAppContext) {
+    use gpui_kit::{point, px, ScrollDelta, ScrollWheelEvent};
+    init(cx);
+    let b: Arc<dyn DebugBackend> = Arc::new(LogTail);
+    let (view, vcx) = cx.add_window_view(|window, cx| DebugWindow::new(b, window, cx));
+    view.update(vcx, |w, cx| {
+        w.go(super::debug::model::Tab::Logs, cx);
+        w.follow = false;
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.refresh());
+    vcx.run_until_parked();
+    let scroll = view.read_with(vcx, |w, _| w.log_scroll.clone());
+    // 300 rows + the footer (a merged tail was 1 row + footer).
+    assert!(scroll.bounds_for_item(300).is_some(), "one row per line");
+    assert_eq!(scroll.offset().y, px(0.));
+    vcx.simulate_event(ScrollWheelEvent {
+        position: scroll.bounds().center(),
+        delta: ScrollDelta::Pixels(point(px(0.), px(-400.))),
+        ..Default::default()
+    });
+    vcx.run_until_parked();
+    assert!(
+        scroll.offset().y < px(0.),
+        "the wheel moves the list: {:?}",
+        scroll.offset().y
+    );
+}
