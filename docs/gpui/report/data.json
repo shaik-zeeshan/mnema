@@ -1,5 +1,5 @@
 {
-  "updated": "2026-11-10 13:30",
+  "updated": "2026-11-10 14:10",
   "verdict": "About 90% done. Everything is built and the polish pass from the final side-by-side sweep is in. What's left: your sign-off on the refreshed screenshots, your hands-on checks, and the cut-over on your go.",
   "metrics": [
     {
@@ -24,8 +24,8 @@
     },
     {
       "label": "Screenshots approved",
-      "value": "212",
-      "note": "every screen and window"
+      "value": "all",
+      "note": "every screen and window, incl. the polish refresh"
     }
   ],
   "bars": [
@@ -58,7 +58,7 @@
     {
       "id": "Waiting",
       "title": "Waiting for you",
-      "detail": "Sign-off on 101 screenshots refreshed by the polish pass, the hands-on checklist below, then your go for cut-over."
+      "detail": "The hands-on checklist below (dev bundle + signed build), the startup-log comparison, then an explicit go for cut-over."
     }
   ],
   "done": [
@@ -269,7 +269,8 @@
     "12 shell and 20 control screenshots approved after viewing.",
     "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09).",
     "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09).",
-    "Onboarding screenshots approved (2026-11-09)."
+    "Onboarding screenshots approved (2026-11-09).",
+    "The 101 screenshots refreshed by the polish pass approved (2026-11-10)."
   ],
   "risks": [
     "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -296,7 +297,7 @@
       ]
     },
     {
-      "title": "Small windows — refreshed, waiting for sign-off",
+      "title": "Small windows — approved",
       "note": "Access request, update window, permission helper, developer window and mini mode; dark/light.",
       "files": [
         "access-granted",
@@ -323,7 +324,7 @@
       ]
     },
     {
-      "title": "Quick Recall — refreshed, waiting for sign-off",
+      "title": "Quick Recall — approved",
       "note": "Idle, results, Quick Look, Ask streaming and done, recent, filter popover; dark/light.",
       "files": [
         "quick-recall-idle",
@@ -336,7 +337,7 @@
       ]
     },
     {
-      "title": "Audio drawer — refreshed, waiting for sign-off",
+      "title": "Audio drawer — approved",
       "note": "Peek, expanded reader, speaker repair, not-transcribed; dark/light.",
       "files": [
         "timeline-drawer-peek",
@@ -346,7 +347,7 @@
       ]
     },
     {
-      "title": "Timeline — refreshed, waiting for sign-off",
+      "title": "Timeline — approved",
       "note": "5 states × dark/light.",
       "files": [
         "timeline-populated",
@@ -357,7 +358,7 @@
       ]
     },
     {
-      "title": "Chat — refreshed, waiting for sign-off",
+      "title": "Chat — approved",
       "note": "5 states × dark/light.",
       "files": [
         "chat-empty",
@@ -368,7 +369,7 @@
       ]
     },
     {
-      "title": "Settings — refreshed, waiting for sign-off",
+      "title": "Settings — approved",
       "note": "12 sections × dark/light.",
       "files": [
         "settings-general",
@@ -386,7 +387,7 @@
       ]
     },
     {
-      "title": "Insights — refreshed, waiting for sign-off",
+      "title": "Insights — approved",
       "note": "Every tab, empty and populated, plus a subject page and an open receipt; dark/light.",
       "files": [
         "insights-overview",
@@ -402,7 +403,7 @@
       ]
     },
     {
-      "title": "Main window — refreshed, waiting for sign-off",
+      "title": "Main window — approved",
       "note": "Now shows the real Timeline instead of a placeholder.",
       "files": [
         "shell-populated",
@@ -414,7 +415,7 @@
       ]
     },
     {
-      "title": "Shared controls — refreshed, waiting for sign-off",
+      "title": "Shared controls — approved",
       "note": "Every control in every state.",
       "files": [
         "gallery-buttons",
