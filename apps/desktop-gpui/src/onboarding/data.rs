@@ -70,6 +70,10 @@ pub trait Backend: Send + Sync + 'static {
         None
     }
     fn probe(&self, path: &str) -> Result<Probe, String>;
+    /// Installed / running apps for the "Never recorded" Add: `(bundle id, name)`.
+    fn app_candidates(&self) -> Vec<(String, String)> {
+        Vec::new()
+    }
     fn start_download(&self, item: &WorkItem) -> Result<(), String>;
     fn cancel_download(&self, item: &WorkItem);
     fn mic_level(&self) -> Option<f32> {
@@ -333,6 +337,17 @@ impl Backend for CoreBackend {
             writable: p.writable,
             free: p.free_bytes.map(|b| b as f64),
         })
+    }
+
+    fn app_candidates(&self) -> Vec<(String, String)> {
+        self.0
+            .block_on(app_core::native_capture::app_candidates::list_privacy_app_candidates())
+            .map(|c| {
+                c.into_iter()
+                    .map(|a| (a.bundle_id, a.display_name))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn start_download(&self, item: &WorkItem) -> Result<(), String> {

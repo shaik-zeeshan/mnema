@@ -233,11 +233,16 @@ impl Onboarding {
             .px(space::S8)
             .pt(space::S3)
             .child(
+                // `.film__tag` "◂◂ rewinding" (CSS uppercases it); the glyph is Lucide's rewind.
                 div()
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
                     .font_family(FONT_MONO)
                     .font_weight(theme::W_MEDIUM)
                     .text_size(text::XS)
                     .text_color(p.text_subtle)
+                    .child(crate::ui::icon("icons/rewind.svg", text::XS))
                     .child("REWINDING"),
             )
             .child(tc_el)

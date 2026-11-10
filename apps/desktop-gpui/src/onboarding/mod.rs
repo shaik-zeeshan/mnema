@@ -123,6 +123,7 @@ pub struct Onboarding {
     pub probe_state: ProbeState,
     probe_seq: u64,
     pub native_pixels: Option<f64>,
+    pub app_pick: screens::AppPick,
     // Change settings
     pub tab: usize,
     pub ai: ai::AiSetup,
@@ -188,6 +189,7 @@ impl Onboarding {
             probe_state: ProbeState::Checking,
             probe_seq: 0,
             native_pixels: None,
+            app_pick: Default::default(),
             tab: 0,
             ai: ai::AiSetup::default(),
             undo: None,
@@ -430,10 +432,12 @@ impl Render for Onboarding {
             .child(parts::strip(self.step, move |w, cx| close(&(), w, cx), &p))
             .child(
                 div()
+                    .relative()
                     .flex_1()
                     .min_h_0()
                     .flex()
                     .flex_col()
+                    .child(parts::texture(&p))
                     .child(main)
                     .children(foot),
             )

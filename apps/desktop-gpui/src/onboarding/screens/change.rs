@@ -219,7 +219,29 @@ impl Onboarding {
                 .into_any_element(),
         };
         let depth = f.depth() as f32;
+        // `.ob-feat.cut`: the parent has switched this dependent row off.
+        let cut = match f {
+            Feature::Ocr => !s.screen,
+            Feature::Transcription => !s.microphone && !s.system_audio,
+            Feature::SpeakerSeparation => !s.transcription,
+            _ => false,
+        };
+        // `.ob-feat.kid::before`: the tree elbow, hierarchy rather than a selection mark.
+        let elbow = (depth > 0.).then(|| {
+            div()
+                .absolute()
+                .left(px(depth * 26. - 16.))
+                .top(px(12.))
+                .w(px(9.))
+                .h(px(10.))
+                .border_l_1()
+                .border_b_1()
+                .rounded_bl(px(4.))
+                .border_color(if cut { p.text_faint } else { p.border_strong })
+                .when(cut, |d| d.border_dashed())
+        });
         div()
+            .relative()
             .flex()
             .items_center()
             .gap(space::S3)
@@ -228,6 +250,7 @@ impl Onboarding {
             .pl(px(depth * 26.))
             .border_b_1()
             .border_color(p.hairline)
+            .children(elbow)
             .child(
                 div()
                     .flex_1()
@@ -239,6 +262,7 @@ impl Onboarding {
                             .gap(space::S2)
                             .font_weight(theme::W_MEDIUM)
                             .text_size(text::MD)
+                            .line_height(relative(1.25))
                             .text_color(if on { p.text_strong } else { p.text_muted })
                             .children(src.map(|c| div().size(px(7.)).rounded(px(2.)).bg(c)))
                             .child(f.label()),

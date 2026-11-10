@@ -145,6 +145,21 @@ impl Backend for FixtureBackend {
         self.accessibility()
     }
 
+    fn app_candidates(&self) -> Vec<(String, String)> {
+        self.log("app_candidates");
+        self.map["list_privacy_app_candidates"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|a| {
+                Some((
+                    a["bundleId"].as_str()?.to_string(),
+                    a["displayName"].as_str()?.to_string(),
+                ))
+            })
+            .collect()
+    }
+
     fn probe(&self, path: &str) -> Result<Probe, String> {
         self.log(format!("probe:{path}"));
         let p = &self.map["probe_storage_path"];

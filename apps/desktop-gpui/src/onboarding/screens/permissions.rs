@@ -336,23 +336,26 @@ impl Onboarding {
         } else {
             "Continue"
         };
-        let note = div()
-            .flex()
-            .gap(space::S2)
-            .children(upcoming.iter().enumerate().map(|(i, m)| {
-                div()
-                    .flex()
-                    .gap(px(4.))
-                    .when(i > 0, |d| d.ml(space::S3))
-                    .child(if i == 0 { "next \u{b7}" } else { "then \u{b7}" })
-                    .child(
-                        div()
-                            .font_weight(theme::W_MEDIUM)
-                            .text_color(p.text)
-                            .child(m.name()),
-                    )
-                    .when(*m == Moment::Accessibility, |d| d.child("(optional)"))
-            }));
+        // One text run, as `.ob-foot__note`: "   then" keeps its three spaces (12 px).
+        let strong = Some((theme::W_MEDIUM, p.text));
+        let mut runs: Vec<(String, Option<_>)> = Vec::new();
+        for (i, m) in upcoming.iter().enumerate() {
+            runs.push((
+                if i == 0 {
+                    "next \u{b7} "
+                } else {
+                    "   then \u{b7} "
+                }
+                .into(),
+                None,
+            ));
+            runs.push((m.name().into(), strong));
+            if *m == Moment::Accessibility {
+                runs.push(("\u{a0}(optional)".into(), None));
+            }
+        }
+        let runs: Vec<_> = runs.iter().map(|(t, s)| (t.as_str(), *s)).collect();
+        let note = div().child(crate::chat::inline_runs(&runs));
         let foot = parts::footer(
             Some(note.into_any_element()),
             vec![

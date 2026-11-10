@@ -54,6 +54,7 @@ icon_assets!(
         Speaker,
         Circle,
         CircleDashed,
+        Rewind,
     ]
 );
 

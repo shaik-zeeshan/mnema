@@ -3,6 +3,7 @@
 
 mod ai;
 mod capture;
+mod capture_apps;
 mod change;
 mod finale;
 mod permissions;
@@ -16,6 +17,7 @@ use gpui_kit::{AnyElement, ClickEvent, Context, SharedString, Window};
 
 use super::parts;
 use super::Onboarding;
+pub(super) use capture_apps::AppPick;
 use crate::ui::Button;
 
 /// The footer's primary "next" button, with the trailing arrow.

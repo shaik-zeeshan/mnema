@@ -156,7 +156,7 @@ pub fn strip(
 }
 
 /// `.ob-main` + `.ob-col`: the scrolling, vertically centred column.
-pub fn main_col(id: &'static str, wide: bool, top: bool, children: Vec<AnyElement>) -> AnyElement {
+fn main_outer(id: &'static str, top: bool) -> gpui_kit::Stateful<Div> {
     div()
         .id(id)
         .flex_1()
@@ -168,6 +168,57 @@ pub fn main_col(id: &'static str, wide: bool, top: bool, children: Vec<AnyElemen
         .px(space::S8)
         .pt(if top { space::S5 } else { space::S7 })
         .pb(space::S6)
+}
+
+/// `.ob-main > .ob-split` (Voice): the split sits straight in the main area,
+/// no `.ob-col` cap, so its columns run to the gutters.
+pub fn main_split(id: &'static str, split: AnyElement) -> AnyElement {
+    main_outer(id, false).child(split).into_any_element()
+}
+
+/// `.ob-stage`'s `mx-texture`: 1 px dots on an 18 px grid (centred on the grid
+/// lines) over the 140 px top sheen, painted as one canvas layer behind the stage.
+pub fn texture(p: &Palette) -> impl IntoElement {
+    let (dot, sheen) = (p.dot, p.sheen);
+    gpui_kit::canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let top = gpui_kit::Bounds::new(b.origin, gpui_kit::size(b.size.width, px(140.)));
+            window.paint_quad(gpui_kit::fill(
+                top,
+                gpui_kit::linear_gradient(
+                    180.,
+                    gpui_kit::linear_color_stop(sheen, 0.),
+                    // Fade the same colour out: a stop at transparent black greys the middle.
+                    gpui_kit::linear_color_stop(sheen.opacity(0.), 1.),
+                ),
+            ));
+            let step = 18.;
+            let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
+            let mut y = 0.;
+            while y <= h {
+                let mut x = 0.;
+                while x <= w {
+                    let o = b.origin + gpui_kit::point(px(x - 1.), px(y - 1.));
+                    window.paint_quad(
+                        gpui_kit::fill(
+                            gpui_kit::Bounds::new(o, gpui_kit::size(px(2.), px(2.))),
+                            dot,
+                        )
+                        .corner_radii(px(1.)),
+                    );
+                    x += step;
+                }
+                y += step;
+            }
+        },
+    )
+    .absolute()
+    .size_full()
+}
+
+pub fn main_col(id: &'static str, wide: bool, top: bool, children: Vec<AnyElement>) -> AnyElement {
+    main_outer(id, top)
         .child(
             div()
                 .flex()

@@ -175,6 +175,9 @@ palette! {
     hairline: a(0x1e1e2e, 0.8), a(0xd8d8d4, 0.8);
     wash: a(0xe2e2e8, 0.04), a(0x14141a, 0.05);
     wash_strong: a(0xe2e2e8, 0.08), a(0x14141a, 0.09);
+    // kit.css `--mx-dot` (fg 5.5% / 7%) and the `--mx-sheen` top stop (fg 3.5% / surface 70%).
+    dot: a(0xe2e2e8, 0.055), a(0x14141a, 0.07);
+    sheen: a(0xe2e2e8, 0.035), a(0xffffff, 0.7);
     titlebar_glass: a(0x08080c, 0.82), a(0xececea, 0.82);
     // kit: raised 96% + blur 22; see `POP_SURFACE_ALPHA` (GPUI can't blur).
     pop_bg: a(0x13131a, super::scale::POP_SURFACE_ALPHA), a(0xfbfbfa, super::scale::POP_SURFACE_ALPHA);

@@ -1396,5 +1396,31 @@
  "ai_runtime_chatgpt_begin_login": {
   "userCode": "WXYZ-1234",
   "verifyUrl": "https://auth.openai.com/codex/device"
- }
+ },
+ "list_privacy_app_candidates": [
+  {
+   "bundleId": "com.1password.1password",
+   "displayName": "1Password",
+   "running": false,
+   "iconPath": null
+  },
+  {
+   "bundleId": "com.apple.Safari",
+   "displayName": "Safari",
+   "running": true,
+   "iconPath": null
+  },
+  {
+   "bundleId": "com.apple.MobileSMS",
+   "displayName": "Messages",
+   "running": false,
+   "iconPath": null
+  },
+  {
+   "bundleId": "com.tinyspeck.slackmacgap",
+   "displayName": "Slack",
+   "running": true,
+   "iconPath": null
+  }
+ ]
 }

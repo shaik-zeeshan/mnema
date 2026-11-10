@@ -496,3 +496,38 @@ fn every_fixture_parses_into_real_settings() {
         assert!(s.is_ok(), "{file}: {:?}", s.err());
     }
 }
+
+#[gpui_kit::test]
+fn never_recorded_add_picks_an_installed_app_into_the_draft_only(cx: &mut TestAppContext) {
+    let (view, vcx, backend, _) = open(cx, "granted");
+    go(&view, vcx, Step::Capture);
+    view.update_in(vcx, |o, window, cx| o.open_app_pick(window, cx));
+    vcx.run_until_parked();
+    assert!(backend.calls().contains(&"app_candidates".to_string()));
+    vcx.simulate_input("sla");
+    vcx.simulate_keystrokes("enter");
+    vcx.run_until_parked();
+    view.read_with(vcx, |o, _| {
+        assert!(o.app_pick.query.is_none(), "a pick closes the field");
+        let slack = o
+            .draft
+            .privacy
+            .excluded_apps
+            .iter()
+            .find(|a| a.display_name == "Slack");
+        assert!(slack.is_some_and(|a| a.enabled && a.bundle_id == "com.tinyspeck.slackmacgap"));
+    });
+    // Draft-only: nothing is saved before the Finale.
+    assert!(!backend.calls().iter().any(|c| c.starts_with("finish")));
+
+    // Esc closes without adding.
+    view.update_in(vcx, |o, window, cx| o.open_app_pick(window, cx));
+    vcx.run_until_parked();
+    let before = view.read_with(vcx, |o, _| o.draft.privacy.excluded_apps.len());
+    vcx.simulate_keystrokes("escape");
+    vcx.run_until_parked();
+    view.read_with(vcx, |o, _| {
+        assert!(o.app_pick.query.is_none());
+        assert_eq!(o.draft.privacy.excluded_apps.len(), before);
+    });
+}

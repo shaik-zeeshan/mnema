@@ -94,7 +94,8 @@ impl Onboarding {
                 .child(parts::label("Read this out loud", &p))
                 .child(
                     div()
-                        .max_w(px(50. * 8.5))
+                        // `max-width: 50ch` at 17 px (Hanken Grotesk's "0" is ~0.56 em).
+                        .max_w(px(50. * 0.56 * 17.))
                         .text_size(px(17.))
                         .line_height(relative(1.55))
                         .text_color(p.text_strong)
@@ -230,7 +231,7 @@ impl Onboarding {
             &p,
         );
         (
-            parts::main_col("ob-voice", true, false, vec![split.into_any_element()]),
+            parts::main_split("ob-voice", split.into_any_element()),
             Some(foot.into_any_element()),
         )
     }

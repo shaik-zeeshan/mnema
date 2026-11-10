@@ -153,6 +153,7 @@ impl Onboarding {
             p.cat_communication,
             p.cat_learning,
         ];
+        let add = self.app_add(cx);
         let apps = div()
             .flex()
             .flex_wrap()
@@ -211,7 +212,8 @@ impl Onboarding {
                             .child(a.display_name.clone())
                             .on_click(cx.listener(move |this, _, _, cx| this.toggle_app(&id, cx)))
                     }),
-            );
+            )
+            .child(add);
 
         let tone = match v.tone {
             VTone::Bad => Some(Tone::Danger),
