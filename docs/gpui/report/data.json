@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-11 01:43",
+ "updated": "2026-11-11 02:23",
  "verdict": "Every screen is built and connected to the real backend. On 10 Nov both of your hands-on rounds were fixed; then an agent used the real dev build by hand and a behaviour audit compared the two apps, and everything those found is fixed too, including the build that was missing the Whisper transcriber. All of it is in local commits and a signed dev build from midnight; nothing is pushed. What needs you: unlock the Mac, approve two screenshots, and five decisions.",
  "metrics": [
   {
@@ -20,12 +20,12 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 470 GPUI (463 + 5 wiring + 2 engines); shared and Tauri counts are from before 10 Nov; the Tauri app compiles"
+   "note": "1,338 shared + 71 Tauri + 484 GPUI (476 + 6 wiring + 2 engines); shared and Tauri counts are from before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "5 pending",
-   "note": "developer window Logs and Capture, and three new MCP screens"
+   "value": "7 pending",
+   "note": "four developer-window screens and three MCP screens"
   }
  ],
  "bars": [
@@ -56,9 +56,9 @@
  ],
  "now": [
   {
-   "id": "Jobs",
-   "title": "Developer window: job inspector",
-   "detail": "Clicking a processor opens its jobs, one job's details and Retry now. Agent working. Not built yet."
+   "id": "Batch",
+   "title": "Small parity batch",
+   "detail": "Selectors that stretch full width, the Models tab's per-model strip, rebindable Timeline keys, connector warm-up in Chat and Quick Recall, and ten text fields whose height setting does nothing. Agent working."
   }
  ],
  "done": [
@@ -403,13 +403,19 @@
    "title": "MCP: custom connectors, a toggle per tool, sign-in in the dialog",
    "what": "Add your own connector (a local command or a remote URL), switch individual tools on and off, and go through sign-in without leaving the dialog. Secrets go only to the encrypted vault. Built and wired; a real sign-in and a real local server have not been driven.",
    "commit": "0161ccbd"
+  },
+  {
+   "id": "Gap 8",
+   "title": "Developer window: jobs, a job inspector, Retry now",
+   "what": "Clicking a processor in the Pipeline tab opens its jobs with a status filter; a job opens an inspector with its error, timings and tries, and Retry now, Reprocess, Open in Timeline, Show in log and Copy id. It uses the backend's existing retry path. Built and wired; a real failed job has not been retried in the signed app.",
+   "commit": "fc010334"
   }
  ],
  "next": [
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "20 marked shortcuts remain. One is substantial and in progress (the developer window's job inspector). The rest are small: drawing approximations the toolkit forces, shortcuts the Tauri app takes too, the Models tab's per-model size strip, ten text fields whose height setting does nothing, and the Timeline's fixed single-letter keys."
+   "detail": "20 marked shortcuts remain, all small: drawing approximations the toolkit forces, shortcuts the Tauri app takes too, and a few being closed by the batch in progress."
   },
   {
    "id": "Docs",
@@ -724,8 +730,8 @@
   },
   {
    "id": "Approve",
-   "title": "Five screenshots",
-   "detail": "Developer window Logs and Capture, and three new MCP screens, on the \"Real-app test and behaviour audit\" page."
+   "title": "Seven screenshots",
+   "detail": "Developer window Logs, Capture, jobs table and job inspector, and three new MCP screens, on the \"Real-app test and behaviour audit\" page."
   },
   {
    "id": "Decide",
@@ -1773,16 +1779,16 @@
    ]
   }
  ],
- "round3_verdict": "Everything found by the real-app test and the behaviour audit is fixed and committed locally, except the items under Decisions. Since then the Settings pickers, the microphone-cancel fix and MCP custom connectors have been added. A signed dev build with all of it was built on 11 Nov at 01:43 and opened in the background; the Mac is locked, so it is waiting for a display and should start recording when you unlock. Five screenshots need your approval and six things need a decision or a look. Nothing has been pushed.",
+ "round3_verdict": "Everything found by the real-app test and the behaviour audit is fixed and committed locally, except the items under Decisions. Since then the Settings pickers, the microphone-cancel fix and MCP custom connectors have been added. A signed dev build with all of it was built on 11 Nov at 01:43 and opened in the background; the Mac is locked, so it is waiting for a display and should start recording when you unlock. Seven screenshots need your approval and six things need a decision or a look. Nothing has been pushed.",
  "round3": [
   {
    "anchor": "r3-approve",
    "title": "Screenshots to approve",
    "toc": "To approve",
-   "commit": "50cdc2d7, 0161ccbd",
+   "commit": "50cdc2d7, 0161ccbd, fc010334",
    "state": "awaiting your approval",
    "awaiting": true,
-   "what": "Five screens need your yes, all rendered from test data. Developer window: the Logs tab's filter chips now wrap, and the Capture tab's disk labels join into one when they would overlap. Settings › MCP, new: the custom connector form, the list of a connector's tools with a switch each, and the sign-in dialog. One known flaw in the MCP form: the Transport and Authorization selectors stretch across the full width; that is being corrected and will not need a new approval for anything else on the screen.",
+   "what": "Seven screens need your yes, all rendered from test data. Developer window: the Logs tab's filter chips now wrap, and the Capture tab's disk labels join into one when they would overlap. Developer window, new: a processor's jobs table and one job's inspector with Retry now and Reprocess. Settings › MCP, new: the custom connector form, the list of a connector's tools with a switch each, and the sign-in dialog. One known flaw in the MCP form: the Transport and Authorization selectors stretch across the full width; that is being corrected and will not need a new approval for anything else on the screen.",
    "rows": [
     {
      "heading": "Developer window › Logs",
@@ -1845,6 +1851,32 @@
       },
       {
        "file": "r3-settings-mcp-oauth-idle-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Developer window › Pipeline › a processor's jobs",
+     "shots": [
+      {
+       "file": "r3-debug-jobs-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r3-debug-jobs-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Developer window › Pipeline › one job",
+     "shots": [
+      {
+       "file": "r3-debug-job-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r3-debug-job-dark.jpg",
        "caption": "Dark"
       }
      ]
