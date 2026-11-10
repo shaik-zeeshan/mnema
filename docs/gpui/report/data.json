@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-10 16:40",
+ "updated": "2026-11-10 17:25",
  "verdict": "Every screen is built, but the first hands-on run showed many were still on test data. Two wiring passes have since connected them to the real backend, and the six issues from today's hands-on test are being fixed now. \"Built\" means it renders and passes tests; \"wired\" means it talks to the real backend; \"driven\" means someone used it in the real app. Almost nothing is driven yet.",
  "metrics": [
   {
@@ -20,7 +20,7 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 214 GPUI, 0 failing (GPUI now 239 + 4 wiring)"
+   "note": "1,338 shared + 71 Tauri + 246 GPUI (242 + 4 wiring)"
   },
   {
    "label": "Screenshots approved",
@@ -56,14 +56,14 @@
  ],
  "now": [
   {
-   "id": "Icons",
-   "title": "App icons: blurry, and under the Timeline rails",
-   "detail": "Agent working. Not built yet."
-  },
-  {
    "id": "Hover",
    "title": "Square hover and focus corners",
    "detail": "Design-system sweep across every screen. Agent working. Not built yet."
+  },
+  {
+   "id": "Resize",
+   "title": "Window-size behaviour",
+   "detail": "Small windows: nothing cut off. Large windows: pages use or centre in the space, as the Tauri app does. Agent working. Not built yet."
   },
   {
    "id": "Sign-off",
@@ -281,14 +281,15 @@
    "title": "Onboarding: model list fits, text lines up",
    "what": "The Semantic Search model row no longer runs off the window (English / Multilingual, then that group's models, as in the Tauri app). Mixed-size text now sits on one baseline on Welcome, Change settings and Setup. Built; screenshots await sign-off; not driven.",
    "commit": "e82d4847"
+  },
+  {
+   "id": "Fix 3",
+   "title": "App icons: sharp, and above the Timeline rails",
+   "what": "Icon files are 1024 px and were shrunk in one crude step; each is now scaled once to the exact size the screen needs. On the Timeline the icon sits above the bands and resting ticks. Covers the Timeline, Quick Recall, and the update and permission windows. Built; not driven on a real Retina or 1× screen.",
+   "commit": "5a63d7e2"
   }
  ],
  "next": [
-  {
-   "id": "Resize",
-   "title": "Window-size behaviour",
-   "detail": "Nothing cut off in a small window, and pages use or centre in a large one, with the Tauri app as the reference."
-  },
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
