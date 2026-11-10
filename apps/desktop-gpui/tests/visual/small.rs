@@ -25,7 +25,7 @@ use mnema_gpui::theme;
 use super::compare;
 
 /// `(surface, state, fixture file)` for every golden; the fixture defaults like `shoot.ts`.
-pub const STATES: [(&str, &str, &str); 21] = [
+pub const STATES: [(&str, &str, &str); 23] = [
     ("access", "request", "request"),
     ("access", "widen", "widen"),
     ("access", "no-request", "no-request"),
@@ -43,6 +43,9 @@ pub const STATES: [(&str, &str, &str); 21] = [
     ("debug", "overview-ok", "overview-ok"),
     ("debug", "not-recording", "not-recording"),
     ("debug", "pipeline", "default"),
+    // The processor drill-in (Pipeline › Transcription) and a failed job's inspector.
+    ("debug", "jobs", "default"),
+    ("debug", "job", "default"),
     ("debug", "capture", "default"),
     ("debug", "ai", "default"),
     ("debug", "logs", "default"),
@@ -100,6 +103,7 @@ pub fn render(
     cx.update(|cx| theme::set_setting(setting, cx));
     let vp = viewport(surface);
     let mut access_view = None;
+    let mut debug_view = None;
     let window = crate::pointer::open(cx, compare::viewport(vp), |window, cx| {
         let root =
             |view: gpui_kit::AnyView, window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
@@ -128,9 +132,10 @@ pub fn render(
             }
             _ => {
                 let v = cx.new(|cx| {
-                    let mut w = DebugWindow::new(Arc::new(FixtureDebug(map.clone())), window, cx);
+                    let mut w =
+                        DebugWindow::new(Arc::new(FixtureDebug::new(map.clone())), window, cx);
                     w.tab = match state {
-                        "pipeline" => Tab::Pipeline,
+                        "pipeline" | "jobs" | "job" => Tab::Pipeline,
                         "capture" => Tab::Capture,
                         "ai" => Tab::Ai,
                         "logs" => Tab::Logs,
@@ -139,8 +144,12 @@ pub fn render(
                     if surface == "debug-mini" {
                         w.mode = Mode::Mini;
                     }
+                    if matches!(state, "jobs" | "job") {
+                        w.open_processor(1, cx);
+                    }
                     w
                 });
+                debug_view = Some(v.clone());
                 root(v.into(), window, cx)
             }
         }
@@ -150,6 +159,16 @@ pub fn render(
     if let (Some(v), "granted") = (&access_view, state) {
         cx.update_window(window, |_, window, cx| {
             v.update(cx, |v, cx| v.approve(window, cx))
+        })?;
+        settle(cx, window)?;
+    }
+    if let (Some(v), "job") = (&debug_view, state) {
+        cx.update_window(window, |_, _, cx| {
+            v.update(cx, |w, cx| {
+                // The failed job at its attempt ceiling, with a multi-line error.
+                let job = w.detail.jobs.iter().find(|j| j["id"] == 48213871).cloned();
+                w.open_job(job.expect("the fixture's failed job"), cx);
+            })
         })?;
         settle(cx, window)?;
     }

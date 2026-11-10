@@ -441,67 +441,67 @@ fn provider_name(p: &str) -> String {
     }
 }
 
+/// `engineWords`: "Parakeet, on this Mac" / "Deepgram, cloud" (· can't be
+/// reached while its jobs wait on a transient error); `lane` = `None` skips that.
+pub fn engine_words(
+    spec: &super::detail::Spec,
+    settings: Option<&Value>,
+    lane: Option<&Value>,
+) -> String {
+    let Some(c) = settings.map(|s| s.at(&[spec.cfg])).filter(|c| !c.is_null()) else {
+        return String::new();
+    };
+    let provider = c.str_at(&["provider"]).unwrap_or("");
+    let label = if spec.key == "meaningIndex" {
+        c.str_at(&["modelId"])
+            .unwrap_or("Meaning index")
+            .to_string()
+    } else {
+        provider_name(provider)
+    };
+    if provider != "deepgram" {
+        return format!("{label}, on this Mac");
+    }
+    let unreachable = lane.is_some_and(|l| {
+        int(Some(l), "retrying") > 0 && super::detail::is_transient(l.str_at(&["lastError"]))
+    });
+    if unreachable {
+        format!("{label}, cloud \u{b7} can\u{2019}t be reached")
+    } else {
+        format!("{label}, cloud")
+    }
+}
+
 /// The four processor rows: `(name, tone, engine words, avg)`.
 pub fn processor_rows(rows: &[Value], lanes: &[Value], settings: Option<&Value>) -> Vec<RowView> {
-    let specs = [
-        ("reading", "Reading", Some("ocr"), "ocr"),
-        (
-            "transcription",
-            "Transcription",
-            Some("audio_transcription"),
-            "transcription",
-        ),
-        (
-            "speakers",
-            "Speakers",
-            Some("speaker_analysis"),
-            "speakerAnalysis",
-        ),
-        ("meaningIndex", "Meaning index", None, "semanticSearch"),
-    ];
-    specs
+    super::detail::SPECS
         .iter()
-        .map(|(key, name, proc_, cfg)| {
-            let l = proc_.and_then(|p| lane(lanes, p));
-            let why = settings
-                .map(|s| s.at(&[cfg]))
-                .filter(|c| !c.is_null())
-                .map_or(String::new(), |c| {
-                    let provider = c.str_at(&["provider"]).unwrap_or("");
-                    let label = if *key == "meaningIndex" {
-                        c.str_at(&["modelId"])
-                            .unwrap_or("Meaning index")
-                            .to_string()
-                    } else {
-                        provider_name(provider)
-                    };
-                    if provider == "deepgram" {
-                        format!("{label}, cloud")
-                    } else {
-                        format!("{label}, on this Mac")
-                    }
-                });
+        .map(|spec| {
+            let l = spec.processor.and_then(|p| lane(lanes, p));
             let metric = l
                 .and_then(|l| l.num_at(&["averageCompletedSecondsLast24h"]))
-                .map_or(String::new(), |s| {
-                    if s < 0.1 {
-                        format!("{} ms avg", (s * 1000.).round())
-                    } else if s < 10. {
-                        format!("{s:.1} s avg")
-                    } else {
-                        format!("{} s avg", s.round())
-                    }
-                });
+                .map_or(String::new(), |s| format!("{} avg", avg_time(s)));
             RowView {
-                feature: key.to_string(),
-                tone: tone_of(severity_for(rows, key).unwrap_or("ok")),
-                name: name.to_string(),
-                why,
+                feature: spec.key.to_string(),
+                tone: tone_of(severity_for(rows, spec.key).unwrap_or("ok")),
+                name: spec.name.to_string(),
+                why: engine_words(spec, settings, l),
                 metric,
                 tab: Tab::Pipeline,
             }
         })
         .collect()
+}
+
+/// "400 ms" / "6.2 s" / "11 s".
+pub fn avg_time(s: f64) -> String {
+    if s < 0.1 {
+        format!("{} ms", (s * 1000.).round())
+    } else if s < 10. {
+        format!("{s:.1} s")
+    } else {
+        format!("{} s", s.round())
+    }
 }
 
 #[cfg(test)]

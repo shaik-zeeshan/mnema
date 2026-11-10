@@ -2,6 +2,7 @@
 //! (`tabs/{OverviewTab,PipelineTab}.svelte`, `HealthRow.svelte`).
 
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, relative, AnyElement, Context, Div, SharedString, Window};
 use serde_json::Value;
 
@@ -11,7 +12,7 @@ use crate::insights::stats;
 use crate::settings::model::Json;
 use crate::small::parts::{dot, spec_row};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
-use crate::ui::{icon, mix, nid, Tone};
+use crate::ui::{icon, mix, nid, ring_box, Tone};
 
 pub(super) fn clock(ms: i64, cx: &gpui_kit::App) -> String {
     stats::clock(ms, crate::ui::clock::now(cx).offset())
@@ -43,11 +44,13 @@ pub(super) fn sec(p: &Palette) -> Div {
     div().flex().flex_col().gap(px(6.)).min_w_0()
 }
 
-/// One `.dv-row`: dot · name · plain reason · metric · chevron.
+/// One `.dv-row`: dot · name · plain reason · metric · chevron. `focus` makes
+/// it a Tab stop (Enter / Space press it), with its focus-visible ring.
 fn row(
     id: gpui_kit::ElementId,
     r: &RowView,
     plain: bool,
+    focus: Option<(&gpui_kit::FocusHandle, bool)>,
     on_click: impl Fn(&mut DebugWindow, &mut Context<DebugWindow>) + 'static,
     cx: &mut Context<DebugWindow>,
     p: &Palette,
@@ -62,6 +65,7 @@ fn row(
     let wash = p.wash;
     div()
         .id(id)
+        .test_support()
         .role(gpui_kit::Role::Button)
         .aria_label(SharedString::from(r.name.clone()))
         .flex()
@@ -75,7 +79,22 @@ fn row(
         .border_color(p.hairline)
         .cursor_pointer()
         .hover(move |s| s.bg(wash))
-        .on_click(cx.listener(move |w, _, _, cx| on_click(w, cx)))
+        .relative()
+        .when_some(focus, |el, (h, visible)| {
+            el.track_focus(h).when(visible, |el| {
+                el.child(
+                    ring_box(p.accent, px(2.), px(0.))
+                        .top_0()
+                        .left_0()
+                        .right_0()
+                        .bottom_0(),
+                )
+            })
+        })
+        .on_click(cx.listener(move |w, _, window, cx| {
+            on_click(w, cx);
+            window.focus(&w.root_focus, cx);
+        }))
         .child(dot(r.tone, px(7.), p))
         .child(
             div()
@@ -142,6 +161,7 @@ fn overview(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<
                     nid("dv-row", n),
                     r,
                     false,
+                    None,
                     move |w, cx| w.go(tab, cx),
                     cx,
                     p,
@@ -244,15 +264,30 @@ fn flow(w: &DebugWindow, p: &Palette) -> AnyElement {
         .into_any_element()
 }
 
-fn pipeline(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<AnyElement> {
+fn pipeline(
+    w: &DebugWindow,
+    window: &mut Window,
+    cx: &mut Context<DebugWindow>,
+    p: &Palette,
+) -> Vec<AnyElement> {
+    if w.drilled() {
+        return super::detail_view::view(w, window, cx, p);
+    }
     let d = &w.data;
     let rows = model::processor_rows(&d.health, &d.lanes, d.settings.as_ref());
     let mut items = Vec::new();
     for (i, r) in rows.iter().enumerate() {
-        // shortcut: no processor drill-in yet (jobs table + inspector + Retry now over
-        // list_processing_jobs_by_processor / get_processing_job / retry_processing_job_now,
-        // all in app-core); it needs its own view, a row stays on the Pipeline tab.
-        items.push(row(nid("dv-proc", i as u64), r, true, |_, _| {}, cx, p));
+        let h = &w.proc_focus[i];
+        let visible = h.is_focused(window) && window.last_input_was_keyboard();
+        items.push(row(
+            nid("dv-proc", i as u64),
+            r,
+            true,
+            Some((h, visible)),
+            move |w, cx| w.open_processor(i, cx),
+            cx,
+            p,
+        ));
     }
     let at = |s: Option<&str>| {
         s.and_then(parse_job_ts)
@@ -449,7 +484,7 @@ pub fn body(
     }
     let children = match w.tab {
         Tab::Overview => overview(w, cx, p),
-        Tab::Pipeline => pipeline(w, cx, p),
+        Tab::Pipeline => pipeline(w, window, cx, p),
         Tab::Capture => super::capture::tab(w, cx, p),
         Tab::Ai => super::ai::tab(w, cx, p),
         Tab::Logs => vec![],

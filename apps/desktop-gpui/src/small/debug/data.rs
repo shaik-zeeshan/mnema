@@ -131,6 +131,27 @@ pub enum Action {
     Derive,
 }
 
+/// The processor drill-in's commands (`list_processing_jobs_by_processor`,
+/// `retry_processing_job_now`, the `reprocess_*` per subject,
+/// `transcription_test_deepgram`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum JobCall {
+    /// `status`: a wire status (`queued`/`running`/`failed`), `None` = every status.
+    List {
+        processor: String,
+        status: Option<String>,
+        limit: i64,
+    },
+    /// Skip a waiting job's backoff; answers the job.
+    RetryNow(i64),
+    /// Requeue one subject through its processor's reprocess command.
+    Reprocess {
+        processor: String,
+        subject_id: i64,
+    },
+    TestDeepgram,
+}
+
 pub trait DebugBackend: Send + Sync + 'static {
     /// One section's fields (the rest default). Sync: runs on the background executor.
     fn fetch(&self, section: Section, now_ms: i64) -> DebugData;
@@ -138,6 +159,11 @@ pub trait DebugBackend: Send + Sync + 'static {
     /// backend's own words.
     fn act(&self, action: Action) -> Result<Option<String>, String> {
         let _ = action;
+        Err("not available without the app core".into())
+    }
+    /// One drill-in command's JSON answer (a jobs page, a job, or nothing).
+    fn jobs(&self, call: &JobCall) -> Result<Value, String> {
+        let _ = call;
         Err("not available without the app core".into())
     }
 }
@@ -307,9 +333,96 @@ impl DebugBackend for CoreDebug {
         }
         result
     }
+
+    fn jobs(&self, call: &JobCall) -> Result<Value, String> {
+        let core = &self.0;
+        let infra = core
+            .try_state::<AppInfraState>()
+            .ok_or("app infrastructure isn't ready")?;
+        let result = match call {
+            JobCall::List {
+                processor,
+                status,
+                limit,
+            } => {
+                let request = app_core::debug_pipeline::ListProcessingJobsRequest {
+                    processor: processor.clone(),
+                    status: status
+                        .as_ref()
+                        .map(|s| serde_json::from_value(Value::String(s.clone())))
+                        .transpose()
+                        .map_err(|e| e.to_string())?,
+                    subject_id: None,
+                    limit: Some(*limit),
+                    offset: Some(0),
+                };
+                core.block_on(app_core::debug_pipeline::list_processing_jobs_by_processor(
+                    request, &infra,
+                ))
+                .map(|page| json(page).unwrap_or_default())
+            }
+            JobCall::RetryNow(id) => core
+                .block_on(app_core::app_infra::retry_processing_job_now(*id, &infra))
+                .map(|job| json(job).unwrap_or_default()),
+            JobCall::Reprocess {
+                processor,
+                subject_id,
+            } => self.reprocess(&infra, processor, *subject_id),
+            JobCall::TestDeepgram => {
+                crate::settings::live::deepgram_test(core).map(|_| Value::Null)
+            }
+        };
+        // Ids and the backend's words only: a job's own error never reaches the log here.
+        if let (Err(e), false) = (&result, matches!(call, JobCall::List { .. })) {
+            log::warn!("debug: a job action failed: {e}");
+        }
+        result
+    }
 }
 
 impl CoreDebug {
+    /// `DETAIL_SPECS[..].reprocess`: the per-subject reprocess command of each lane.
+    fn reprocess(
+        &self,
+        infra: &AppInfraState,
+        processor: &str,
+        subject_id: i64,
+    ) -> Result<Value, String> {
+        use app_core::app_infra as ai;
+        let core = &self.0;
+        let segment = || ai::ReprocessAudioSegmentTranscriptionRequest {
+            audio_segment_id: subject_id,
+        };
+        match processor {
+            "ocr" => {
+                let settings = core
+                    .try_state::<RecordingSettingsState>()
+                    .ok_or("settings aren't ready")?;
+                let request = ai::ReprocessCapturedFrameOcrRequest {
+                    frame_id: subject_id,
+                    payload_json: None,
+                };
+                core.block_on(ai::reprocess_captured_frame_ocr(request, infra, &settings))
+                    .map(|_| Value::Null)
+            }
+            "audio_transcription" => core
+                .block_on(ai::reprocess_audio_segment_transcription(
+                    segment(),
+                    infra,
+                    core,
+                ))
+                .map(|_| Value::Null),
+            "speaker_analysis" => core
+                .block_on(ai::reprocess_audio_segment_speaker_analysis(
+                    segment(),
+                    infra,
+                    core,
+                ))
+                .map(|_| Value::Null),
+            other => Err(format!("{other} has no reprocess command")),
+        }
+    }
+
     fn run(&self, action: Action) -> Result<Option<String>, String> {
         use app_core::native_capture::control;
         let core = &self.0;
@@ -328,8 +441,19 @@ impl CoreDebug {
     }
 }
 
-/// Serves a parity fixture map (command → JSON).
-pub struct FixtureDebug(pub Value);
+/// Serves a parity fixture map (command → JSON) and records the drill-in's calls.
+/// `{ "__reject": "<reason>" }` under a command makes it fail, as in the Svelte stub.
+pub struct FixtureDebug(pub Value, pub std::sync::Mutex<Vec<JobCall>>);
+
+impl FixtureDebug {
+    pub fn new(map: Value) -> Self {
+        Self(map, Default::default())
+    }
+
+    pub fn calls(&self) -> Vec<JobCall> {
+        self.1.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+}
 
 impl DebugBackend for FixtureDebug {
     fn fetch(&self, section: Section, now_ms: i64) -> DebugData {
@@ -386,5 +510,22 @@ impl DebugBackend for FixtureDebug {
             Section::Logs => d.log_tail = v("tail_app_log"),
         }
         d
+    }
+
+    fn jobs(&self, call: &JobCall) -> Result<Value, String> {
+        if let Ok(mut c) = self.1.lock() {
+            c.push(call.clone());
+        }
+        let key = match call {
+            JobCall::List { .. } => "list_processing_jobs_by_processor",
+            JobCall::RetryNow(_) => "retry_processing_job_now",
+            JobCall::Reprocess { .. } => "reprocess",
+            JobCall::TestDeepgram => "transcription_test_deepgram",
+        };
+        let v = self.0.get(key).cloned().unwrap_or(Value::Null);
+        match v["__reject"].as_str() {
+            Some(reason) => Err(reason.to_string()),
+            None => Ok(v),
+        }
     }
 }

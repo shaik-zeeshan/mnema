@@ -8,6 +8,9 @@ mod ai;
 mod capture;
 mod chrome;
 pub mod data;
+pub mod detail;
+mod detail_view;
+mod inspector;
 mod logs;
 pub mod model;
 pub mod readouts;
@@ -20,8 +23,8 @@ use std::time::{Duration, Instant};
 use gpui_kit::component::input::InputState;
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    px, size, App, AppContext, ClipboardItem, Context, Entity, KeyDownEvent, Render, ScrollHandle,
-    Task, Window,
+    px, size, App, AppContext, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent, Render,
+    ScrollHandle, Task, Window,
 };
 
 use data::{DebugBackend, DebugData, Section};
@@ -32,6 +35,8 @@ pub const SIZE: (f32, f32) = (520., 640.);
 pub const MIN: (f32, f32) = (440., 480.);
 pub const MINI: (f32, f32) = (300., 120.);
 const TICK: Duration = Duration::from_secs(1);
+/// The drill-in's jobs poll (`controller.poll(detail.fetchJobs, 2000)`).
+const JOBS_EVERY: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -61,6 +66,13 @@ pub struct DebugWindow {
     /// The last button's outcome: `(ok, line)`; and the one in flight.
     pub note: Option<(bool, String)>,
     pub acting: Option<data::Action>,
+    /// Pipeline › <processor> › #job.
+    pub detail: detail::Detail,
+    /// The four processor rows' Tab stops: Esc / Back lands focus on the row it came from.
+    pub proc_focus: Vec<FocusHandle>,
+    /// The window's own focus: a drill-in moves it here, so Esc still reaches
+    /// `on_key` after the row that had focus leaves the tree.
+    pub root_focus: FocusHandle,
     _tick: Task<()>,
 }
 
@@ -98,6 +110,11 @@ impl DebugWindow {
             in_flight: HashSet::new(),
             note: None,
             acting: None,
+            detail: detail::Detail::default(),
+            proc_focus: (0..detail::SPECS.len())
+                .map(|_| cx.focus_handle().tab_stop(true))
+                .collect(),
+            root_focus: cx.focus_handle(),
             _tick: tick,
         }
     }
@@ -177,11 +194,20 @@ impl DebugWindow {
             })
             .detach();
         }
+        let jobs_due = self
+            .detail
+            .polled_at
+            .is_none_or(|at| now.duration_since(at) >= JOBS_EVERY);
+        if self.mode == Mode::Full && self.jobs_due() && jobs_due && !self.detail.in_flight {
+            self.fetch_jobs(cx);
+        }
     }
 
     /// Switch tab; the new tab's reads start now.
     pub fn go(&mut self, tab: Tab, cx: &mut Context<Self>) {
         self.tab = tab;
+        // A tab switch always lands on the tab's top level.
+        self.detail = detail::Detail::leave(&self.detail);
         self.menu_open = false;
         self.poll(cx);
         cx.notify();
@@ -193,6 +219,7 @@ impl DebugWindow {
         if self.live {
             // Resume refreshes everything at once rather than waiting out each interval.
             self.last.clear();
+            self.detail.polled_at = None;
             self.poll(cx);
         }
         cx.notify();
@@ -282,6 +309,9 @@ impl DebugWindow {
             if self.menu_open {
                 self.menu_open = false;
                 cx.notify();
+            } else if self.mode == Mode::Full && self.drilled() {
+                // Esc in a drill-in goes back one level.
+                self.back(window, cx);
             } else {
                 window.remove_window();
             }
@@ -298,6 +328,7 @@ impl Render for DebugWindow {
         let p = crate::theme::tokens(cx);
         let root = super::parts::frame(&p)
             .key_context("DebugWindow")
+            .track_focus(&self.root_focus)
             .on_key_down(cx.listener(Self::on_key));
         match self.mode {
             Mode::Mini => root.child(chrome::mini(self, cx, &p)),

@@ -22,6 +22,8 @@ const ICON_GAP: Pixels = px(6.);
 pub struct SegOption {
     pub label: SharedString,
     pub icon: Option<SharedString>,
+    /// A mono count after the label (the developer window's job filter).
+    pub count: Option<SharedString>,
 }
 
 impl<S: Into<SharedString>> From<S> for SegOption {
@@ -29,6 +31,7 @@ impl<S: Into<SharedString>> From<S> for SegOption {
         Self {
             label: label.into(),
             icon: None,
+            count: None,
         }
     }
 }
@@ -37,6 +40,15 @@ pub fn opt_icon(label: impl Into<SharedString>, icon: impl Into<SharedString>) -
     SegOption {
         label: label.into(),
         icon: Some(icon.into()),
+        count: None,
+    }
+}
+
+pub fn opt_count(label: impl Into<SharedString>, count: impl Into<SharedString>) -> SegOption {
+    SegOption {
+        label: label.into(),
+        icon: None,
+        count: Some(count.into()),
     }
 }
 
@@ -129,7 +141,13 @@ impl RenderOnce for Segmented {
                 } else {
                     px(0.)
                 };
-                pad * 2. + icon_w + text_width(&o.label, family, theme::W_MEDIUM, fs, window)
+                let count_w = o.count.as_ref().map_or(px(0.), |c| {
+                    ICON_GAP + text_width(c, FONT_MONO, theme::W_REGULAR, text::XS, window)
+                });
+                pad * 2.
+                    + icon_w
+                    + count_w
+                    + text_width(&o.label, family, theme::W_MEDIUM, fs, window)
             })
             .collect();
 
@@ -243,6 +261,16 @@ impl RenderOnce for Segmented {
                 })
                 .when_some(o.icon.clone(), |el, path| el.child(icon(path, ICON)))
                 .child(o.label.clone())
+                .when_some(o.count.clone(), |el, c| {
+                    el.child(
+                        div()
+                            .font_family(FONT_MONO)
+                            .font_weight(theme::W_REGULAR)
+                            .text_size(text::XS)
+                            .text_color(p.text_subtle)
+                            .child(c),
+                    )
+                })
                 .when_some(on_change.filter(|_| !self.disabled), |el, f| {
                     el.on_click(move |_, window, cx| f(ix, window, cx))
                 })

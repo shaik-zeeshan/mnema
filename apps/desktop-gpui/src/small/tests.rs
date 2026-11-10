@@ -328,3 +328,278 @@ fn the_log_tail_is_one_row_per_line_and_scrolls(cx: &mut TestAppContext) {
         scroll.offset().y
     );
 }
+
+// ── The processor drill-in (Pipeline › <processor> › #job) ─────────────────
+
+use super::debug::data::{FixtureDebug, JobCall};
+use super::debug::detail::SPECS;
+use super::debug::model::Tab;
+use crate::ui::nid;
+
+fn debug_map() -> Value {
+    serde_json::from_str(include_str!(
+        "../../../desktop/parity/fixtures/debug/default.json"
+    ))
+    .unwrap()
+}
+
+fn drill(
+    cx: &mut TestAppContext,
+    map: Value,
+) -> (
+    Entity<DebugWindow>,
+    &mut VisualTestContext,
+    Arc<FixtureDebug>,
+) {
+    init(cx);
+    cx.update(|cx| crate::ui::clock::freeze(Some(app_core::fixtures::fixture_now()), cx));
+    let backend = Arc::new(FixtureDebug::new(map));
+    let b: Arc<dyn DebugBackend> = backend.clone();
+    let (view, vcx) = cx.add_window_view(|window, cx| DebugWindow::new(b, window, cx));
+    // Tall enough that every row is laid out (hit-tested) without scrolling.
+    vcx.simulate_resize(gpui_kit::size(gpui_kit::px(520.), gpui_kit::px(1600.)));
+    view.update(vcx, |w, cx| w.go(Tab::Pipeline, cx));
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.render_frame(cx));
+    (view, vcx, backend)
+}
+
+fn click(vcx: &mut VisualTestContext, id: gpui_kit::ElementId) {
+    vcx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click(id, cx);
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| window.render_frame(cx));
+}
+
+fn has(vcx: &mut VisualTestContext, id: impl Into<gpui_kit::ElementId>) -> bool {
+    let id = id.into();
+    vcx.update(|window, _| window.try_find(id).is_some())
+}
+
+fn lists(b: &FixtureDebug) -> Vec<JobCall> {
+    b.calls()
+        .into_iter()
+        .filter(|c| matches!(c, JobCall::List { .. }))
+        .collect()
+}
+
+#[gpui_kit::test]
+fn every_processor_row_drills_into_its_own_lane(cx: &mut TestAppContext) {
+    let (view, vcx, backend) = drill(cx, debug_map());
+    for (i, spec) in SPECS.iter().enumerate() {
+        let before = lists(&backend).len();
+        click(vcx, nid("dv-proc", i as u64));
+        assert_eq!(view.read_with(vcx, |w, _| w.detail.spec), Some(*spec));
+        assert!(
+            has(vcx, "dv-crumb-pipeline"),
+            "{}: the breadcrumb",
+            spec.key
+        );
+        match spec.processor {
+            Some(processor) => {
+                assert_eq!(
+                    lists(&backend)[before..].first(),
+                    Some(&JobCall::List {
+                        processor: processor.into(),
+                        status: None,
+                        limit: 25
+                    }),
+                    "{}: one page of its own lane",
+                    spec.key
+                );
+                assert!(has(vcx, "dv-job-filter"));
+                assert!(has(vcx, nid("dv-job", 48213907)), "{}: the rows", spec.key);
+            }
+            None => {
+                assert_eq!(
+                    lists(&backend).len(),
+                    before,
+                    "the meaning index has no jobs"
+                );
+                assert!(!has(vcx, "dv-job-filter"));
+            }
+        }
+        click(vcx, "dv-back".into());
+        assert!(!view.read_with(vcx, |w, _| w.drilled()));
+        assert!(
+            has(vcx, nid("dv-proc", i as u64)),
+            "back on the Pipeline tab"
+        );
+    }
+}
+
+#[gpui_kit::test]
+fn the_jobs_poll_runs_every_2s_and_a_filter_refetches(cx: &mut TestAppContext) {
+    let (view, vcx, backend) = drill(cx, debug_map());
+    click(vcx, nid("dv-proc", 1));
+    assert_eq!(lists(&backend).len(), 1);
+    vcx.executor().advance_clock(Duration::from_millis(1999));
+    vcx.run_until_parked();
+    assert_eq!(lists(&backend).len(), 1, "not again before 2 s");
+    vcx.executor().advance_clock(Duration::from_millis(1));
+    vcx.run_until_parked();
+    assert_eq!(lists(&backend).len(), 2, "again at 2 s");
+    // Retrying shares the wire status with queued: a wider page, split here.
+    click(vcx, nid("dv-job-filter-opt", 3));
+    assert_eq!(
+        lists(&backend).last(),
+        Some(&JobCall::List {
+            processor: "audio_transcription".into(),
+            status: Some("queued".into()),
+            limit: 100
+        })
+    );
+    let shown: Vec<i64> = view.read_with(vcx, |w, cx| {
+        let now = crate::ui::clock::now_ms(cx);
+        w.detail
+            .visible(now)
+            .iter()
+            .map(|j| j["id"].as_i64().unwrap())
+            .collect()
+    });
+    assert_eq!(shown, vec![48213907], "only the job serving a backoff");
+}
+
+#[gpui_kit::test]
+fn zero_jobs_say_so(cx: &mut TestAppContext) {
+    let mut map = debug_map();
+    map["list_processing_jobs_by_processor"] = json!({ "jobs": [], "total": 0 });
+    let (_, vcx, _) = drill(cx, map);
+    click(vcx, nid("dv-proc", 2));
+    assert!(has(vcx, "dv-jobs-empty"));
+    assert!(!has(vcx, nid("dv-job", 48213907)));
+}
+
+#[gpui_kit::test]
+fn a_failed_read_shows_its_error_in_place(cx: &mut TestAppContext) {
+    let mut map = debug_map();
+    map["list_processing_jobs_by_processor"] =
+        json!({ "__reject": "failed to list processing jobs: database is locked" });
+    let (view, vcx, _) = drill(cx, map);
+    click(vcx, nid("dv-proc", 0));
+    assert!(has(vcx, "dv-jobs-empty"));
+    assert_eq!(
+        view.read_with(vcx, |w, _| w.detail.error.clone())
+            .as_deref(),
+        Some("failed to list processing jobs: database is locked")
+    );
+}
+
+#[gpui_kit::test]
+fn a_failed_job_at_its_ceiling_offers_reprocess_not_retry(cx: &mut TestAppContext) {
+    let (view, vcx, backend) = drill(cx, debug_map());
+    click(vcx, nid("dv-proc", 1));
+    click(vcx, nid("dv-job", 48213871));
+    assert_eq!(
+        view.read_with(vcx, |w, _| w
+            .detail
+            .inspected
+            .as_ref()
+            .map(|j| j["id"].clone())),
+        Some(json!(48213871))
+    );
+    assert!(has(vcx, "dv-insp-error"), "the multi-line error, in full");
+    assert!(has(vcx, "dv-reprocess"));
+    assert!(!has(vcx, "dv-retry-now"), "a failed job is terminal");
+    click(vcx, "dv-reprocess".into());
+    assert!(backend.calls().contains(&JobCall::Reprocess {
+        processor: "audio_transcription".into(),
+        subject_id: 2290871
+    }));
+    assert_eq!(
+        view.read_with(vcx, |w, _| w.detail.message.clone()),
+        Some((true, "Queued again".into()))
+    );
+}
+
+#[gpui_kit::test]
+fn retry_now_calls_the_backend_once_and_refreshes(cx: &mut TestAppContext) {
+    let (view, vcx, backend) = drill(cx, debug_map());
+    click(vcx, nid("dv-proc", 1));
+    click(vcx, nid("dv-job", 48213907));
+    assert!(!has(vcx, "dv-reprocess"), "a waiting job isn't reprocessed");
+    let before = lists(&backend).len();
+    click(vcx, "dv-retry-now".into());
+    let retries: Vec<_> = backend
+        .calls()
+        .into_iter()
+        .filter(|c| matches!(c, JobCall::RetryNow(_)))
+        .collect();
+    assert_eq!(retries, vec![JobCall::RetryNow(48213907)]);
+    assert_eq!(lists(&backend).len(), before + 1, "the page is re-read");
+    assert_eq!(
+        view.read_with(vcx, |w, _| w.detail.message.clone()),
+        Some((true, "Will try again now".into()))
+    );
+    assert!(has(vcx, "dv-insp-message"));
+}
+
+#[gpui_kit::test]
+fn a_refused_retry_shows_the_backend_words_in_place(cx: &mut TestAppContext) {
+    let mut map = debug_map();
+    let refusal = "Only a waiting job can be retried now. Use Reprocess for a failed job.";
+    map["retry_processing_job_now"] = json!({ "__reject": refusal });
+    let (view, vcx, _) = drill(cx, map);
+    click(vcx, nid("dv-proc", 1));
+    click(vcx, nid("dv-job", 48213907));
+    click(vcx, "dv-retry-now".into());
+    assert_eq!(
+        view.read_with(vcx, |w, _| w.detail.message.clone()),
+        Some((false, refusal.into()))
+    );
+    assert!(has(vcx, "dv-insp-message"));
+    assert!(
+        view.read_with(vcx, |w, _| w.detail.inspected.is_some()),
+        "still on the job"
+    );
+}
+
+#[gpui_kit::test]
+fn enter_drills_in_and_esc_walks_back_to_the_row_it_came_from(cx: &mut TestAppContext) {
+    let (view, vcx, _) = drill(cx, debug_map());
+    view.update_in(vcx, |w, window, cx| window.focus(&w.proc_focus[1], cx));
+    press(vcx, "enter");
+    assert_eq!(
+        view.read_with(vcx, |w, _| w.detail.spec.map(|s| s.key)),
+        Some("transcription")
+    );
+    click(vcx, nid("dv-job", 48213871));
+    press(vcx, "escape");
+    view.read_with(vcx, |w, _| {
+        assert!(w.detail.inspected.is_none(), "Esc closes the job first");
+        assert!(w.drilled(), "and stays on the processor");
+    });
+    press(vcx, "escape");
+    view.update_in(vcx, |w, window, _| {
+        assert!(!w.drilled());
+        assert_eq!(w.tab, Tab::Pipeline);
+        assert!(
+            w.proc_focus[1].is_focused(window),
+            "focus is back on its row"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn an_unreachable_cloud_provider_says_so_and_tests_it(cx: &mut TestAppContext) {
+    let mut map = debug_map();
+    map["get_recording_settings"]["transcription"]["provider"] = json!("deepgram");
+    if let Some(jobs) = map["list_processing_jobs_by_processor"]["jobs"].as_array_mut() {
+        jobs[0]["lastError"] = json!("deepgram: connection refused");
+        jobs[0]["payloadJson"] = json!("{\"provider\":\"deepgram\"}");
+    }
+    let (view, vcx, backend) = drill(cx, map);
+    // Settings arrive with the 30 s housekeeping read.
+    vcx.run_until_parked();
+    click(vcx, nid("dv-proc", 1));
+    assert!(has(vcx, "dv-test-provider"));
+    click(vcx, "dv-test-provider".into());
+    assert!(backend.calls().contains(&JobCall::TestDeepgram));
+    assert_eq!(
+        view.read_with(vcx, |w, _| w.detail.test.clone()),
+        Some(Ok(()))
+    );
+    assert!(has(vcx, "dv-test-result"));
+}

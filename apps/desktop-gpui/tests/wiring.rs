@@ -343,3 +343,24 @@ fn debug_health_returns_rows() {
     // The capture tab's read is live too (not recording).
     assert!(backend.fetch(Section::Capture, 1_000).capture.is_some());
 }
+
+#[test]
+fn debug_jobs_list_and_retry_go_through_app_core() {
+    use small::debug::data::{DebugBackend as _, JobCall};
+    let r = rig();
+    let backend = small::debug::data::CoreDebug(r.core.clone());
+    for status in [None, Some("queued"), Some("failed")] {
+        let page = backend
+            .jobs(&JobCall::List {
+                processor: "audio_transcription".into(),
+                status: status.map(str::to_string),
+                limit: 25,
+            })
+            .expect("the jobs page");
+        assert!(page["jobs"].is_array(), "{status:?}: {page}");
+        assert!(page["total"].is_i64(), "{status:?}: {page}");
+    }
+    // The requeue path refuses a job that isn't waiting, in its own words.
+    let refused = backend.jobs(&JobCall::RetryNow(987_654_321)).unwrap_err();
+    assert!(!refused.is_empty());
+}

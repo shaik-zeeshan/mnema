@@ -17,6 +17,26 @@ pub fn notice(
     acts: Vec<AnyElement>,
     p: &Palette,
 ) -> Div {
+    let body = body.map(|b| {
+        div()
+            .text_size(text::BASE)
+            .line_height(gpui_kit::relative(1.45))
+            .text_color(p.text_muted)
+            .child(b)
+            .into_any_element()
+    });
+    notice_el(tone, icon_path, title, body, acts, p)
+}
+
+/// [`notice`] with a body the caller builds (mixed runs, a raw error box).
+pub fn notice_el(
+    tone: Tone,
+    icon_path: impl Into<SharedString>,
+    title: impl Into<SharedString>,
+    body: Option<AnyElement>,
+    acts: Vec<AnyElement>,
+    p: &Palette,
+) -> Div {
     let (t, bg, bd) = tone.colors(p);
     let off = tone == Tone::Off;
     div()
@@ -57,13 +77,7 @@ pub fn notice(
                         .text_color(p.text_strong)
                         .child(title.into()),
                 )
-                .children(body.map(|b| {
-                    div()
-                        .text_size(text::BASE)
-                        .line_height(gpui_kit::relative(1.45))
-                        .text_color(p.text_muted)
-                        .child(b)
-                })),
+                .children(body),
         )
         .child(div().flex().flex_none().gap(px(6.)).children(acts))
 }
