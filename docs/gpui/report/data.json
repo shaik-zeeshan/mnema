@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-10 17:25",
+ "updated": "2026-11-10 18:05",
  "verdict": "Every screen is built, but the first hands-on run showed many were still on test data. Two wiring passes have since connected them to the real backend, and the six issues from today's hands-on test are being fixed now. \"Built\" means it renders and passes tests; \"wired\" means it talks to the real backend; \"driven\" means someone used it in the real app. Almost nothing is driven yet.",
  "metrics": [
   {
@@ -56,14 +56,14 @@
  ],
  "now": [
   {
-   "id": "Hover",
-   "title": "Square hover and focus corners",
-   "detail": "Design-system sweep across every screen. Agent working. Not built yet."
-  },
-  {
    "id": "Resize",
    "title": "Window-size behaviour",
    "detail": "Small windows: nothing cut off. Large windows: pages use or centre in the space, as the Tauri app does. Agent working. Not built yet."
+  },
+  {
+   "id": "Health",
+   "title": "Capture health in the status bar",
+   "detail": "Waiting lanes, the disk-almost-full flag, the paused clock, reconnecting and \"Catching up\" rows. Agent working. Not built yet."
   },
   {
    "id": "Sign-off",
@@ -287,6 +287,12 @@
    "title": "App icons: sharp, and above the Timeline rails",
    "what": "Icon files are 1024 px and were shrunk in one crude step; each is now scaled once to the exact size the screen needs. On the Timeline the icon sits above the bands and resting ticks. Covers the Timeline, Quick Recall, and the update and permission windows. Built; not driven on a real Retina or 1× screen.",
    "commit": "5a63d7e2"
+  },
+  {
+   "id": "Fix 4",
+   "title": "Hover, selected and focus corners",
+   "what": "13 places where a highlight had square or wrong corners now follow the design system: choice lists, Insights rows and week tiles, Settings shortcut and reload buttons, MCP tiles, the Quick Recall current turn. Seven proven by picture, six from code. The transcript current-word highlight stays square (GPUI can't round a text background). Built; not driven.",
+   "commit": "30e841c5"
   }
  ],
  "next": [
