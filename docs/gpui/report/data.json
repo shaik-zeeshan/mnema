@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-11 02:23",
+ "updated": "2026-11-11 02:52",
  "verdict": "Every screen is built and connected to the real backend. On 10 Nov both of your hands-on rounds were fixed; then an agent used the real dev build by hand and a behaviour audit compared the two apps, and everything those found is fixed too, including the build that was missing the Whisper transcriber. All of it is in local commits and a signed dev build from midnight; nothing is pushed. What needs you: unlock the Mac, approve two screenshots, and five decisions.",
  "metrics": [
   {
@@ -20,12 +20,12 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 484 GPUI (476 + 6 wiring + 2 engines); shared and Tauri counts are from before 10 Nov; the Tauri app compiles"
+   "note": "1,338 shared + 71 Tauri + 500 GPUI (492 + 6 wiring + 2 engines); shared and Tauri counts are from before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "7 pending",
-   "note": "four developer-window screens and three MCP screens"
+   "value": "9 pending",
+   "note": "four developer-window screens, three MCP screens, onboarding Models, gallery dropdowns"
   }
  ],
  "bars": [
@@ -54,13 +54,7 @@
    "pct": 0
   }
  ],
- "now": [
-  {
-   "id": "Batch",
-   "title": "Small parity batch",
-   "detail": "Selectors that stretch full width, the Models tab's per-model strip, rebindable Timeline keys, connector warm-up in Chat and Quick Recall, and ten text fields whose height setting does nothing. Agent working."
-  }
- ],
+ "now": [],
  "done": [
   {
    "id": "T0",
@@ -409,13 +403,19 @@
    "title": "Developer window: jobs, a job inspector, Retry now",
    "what": "Clicking a processor in the Pipeline tab opens its jobs with a status filter; a job opens an inspector with its error, timings and tries, and Retry now, Reprocess, Open in Timeline, Show in log and Copy id. It uses the backend's existing retry path. Built and wired; a real failed job has not been retried in the signed app.",
    "commit": "fc010334"
+  },
+  {
+   "id": "Gap 9",
+   "title": "Small parity batch",
+   "what": "Selectors hug their options everywhere; onboarding's Models tab has the per-model strip and budget bar; the six Timeline keys are rebindable; Chat and Quick Recall warm up connectors; nine text fields take their real height. Built; two approved screenshots change and await approval.",
+   "commit": "b81defc6"
   }
  ],
  "next": [
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "20 marked shortcuts remain, all small: drawing approximations the toolkit forces, shortcuts the Tauri app takes too, and a few being closed by the batch in progress."
+   "detail": "20 marked shortcuts remain, all small: drawing approximations the toolkit forces and shortcuts the Tauri app takes too. One one-line follow-up is open: the developer Logs filter field's height."
   },
   {
    "id": "Docs",
@@ -726,17 +726,17 @@
   {
    "id": "Unlock",
    "title": "Unlock the Mac",
-   "detail": "The dev build from 11 Nov 01:43 is open and waiting for a display; its log shows it retrying and waiting, as designed. It should start recording by itself when you unlock. It has everything committed so far."
+   "detail": "The newest dev build (11 Nov, early morning) is open and waiting for a display; it should start recording by itself when you unlock. It has everything committed so far."
   },
   {
    "id": "Approve",
-   "title": "Seven screenshots",
-   "detail": "Developer window Logs, Capture, jobs table and job inspector, and three new MCP screens, on the \"Real-app test and behaviour audit\" page."
+   "title": "Nine screenshots",
+   "detail": "Four developer-window screens, three MCP screens, the fuller onboarding Models tab and the control gallery's dropdown page, on the \"Real-app test and behaviour audit\" page."
   },
   {
    "id": "Decide",
-   "title": "Six decisions or looks",
-   "detail": "The fast recording clock, the missing-engine safety check, a CLAUDE.md rule, the new ChatGPT sign-in in Chat, two older failing tests, and the microphone-cancel change made in your absence. On the real-app test page, under Decisions."
+   "title": "Seven decisions or looks",
+   "detail": "The fast recording clock, the missing-engine safety check, a CLAUDE.md rule, the new ChatGPT sign-in in Chat, two older failing tests, the microphone-cancel change made in your absence, and a log detail. On the real-app test page, under Decisions."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -1779,16 +1779,16 @@
    ]
   }
  ],
- "round3_verdict": "Everything found by the real-app test and the behaviour audit is fixed and committed locally, except the items under Decisions. Since then the Settings pickers, the microphone-cancel fix and MCP custom connectors have been added. A signed dev build with all of it was built on 11 Nov at 01:43 and opened in the background; the Mac is locked, so it is waiting for a display and should start recording when you unlock. Seven screenshots need your approval and six things need a decision or a look. Nothing has been pushed.",
+ "round3_verdict": "Everything found by the real-app test and the behaviour audit is fixed and committed locally, except the items under Decisions. Since then the Settings pickers, the microphone-cancel fix, MCP custom connectors, the developer window's job inspector and a batch of small parity items have been added. A signed dev build with all of it was built on 11 Nov at 01:43 and opened in the background; the Mac is locked, so it is waiting for a display and should start recording when you unlock. Nine screenshots need your approval and seven things need a decision or a look. Nothing has been pushed.",
  "round3": [
   {
    "anchor": "r3-approve",
    "title": "Screenshots to approve",
    "toc": "To approve",
-   "commit": "50cdc2d7, 0161ccbd, fc010334",
+   "commit": "50cdc2d7, 0161ccbd, fc010334, b81defc6",
    "state": "awaiting your approval",
    "awaiting": true,
-   "what": "Seven screens need your yes, all rendered from test data. Developer window: the Logs tab's filter chips now wrap, and the Capture tab's disk labels join into one when they would overlap. Developer window, new: a processor's jobs table and one job's inspector with Retry now and Reprocess. Settings › MCP, new: the custom connector form, the list of a connector's tools with a switch each, and the sign-in dialog. One known flaw in the MCP form: the Transport and Authorization selectors stretch across the full width; that is being corrected and will not need a new approval for anything else on the screen.",
+   "what": "Nine screens need your yes, all rendered from test data. Developer window: the Logs tab's filter chips wrap; the Capture tab's disk labels join when they would overlap; new, a processor's jobs table and one job's inspector. Settings › MCP, new: the custom connector form (its two selectors now hug their options), a connector's tool list, and the sign-in dialog. Onboarding › Models: you approved this screen on 10 Nov; it now also has the per-model Download / Memory strip and the budget bar the Tauri app has. Control gallery › dropdowns: the search row is about 9 px shorter, because text fields now take their real height.",
    "rows": [
     {
      "heading": "Developer window › Logs",
@@ -1880,6 +1880,32 @@
        "caption": "Dark"
       }
      ]
+    },
+    {
+     "heading": "Onboarding › Models, with the strip and budget bar",
+     "shots": [
+      {
+       "file": "r3-onboarding-models-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r3-onboarding-models-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Dropdown search row, before and after",
+     "shots": [
+      {
+       "file": "r3-fields-light.jpg",
+       "caption": "Light. Left: before. Right: after."
+      },
+      {
+       "file": "r3-fields-dark.jpg",
+       "caption": "Dark."
+      }
+     ]
     }
    ]
   },
@@ -1890,7 +1916,7 @@
    "commit": "—",
    "state": "your decision",
    "awaiting": true,
-   "what": "1. The recording clock runs fast, in both apps. The REC timer and the developer window's \"since\" time read a value that is not the session start; it is a timing anchor that moves earlier each time the screen pauses for inactivity and resumes. The fix stores a real session start in the shared backend and changes the Tauri app too. Recommended: fix it. 2. A safety check so recording refuses to start, with a clear message, if the Whisper engine is ever missing from a build again. Today the jobs retry forever in silence. It changes nothing in a correct build. Recommended: add it. 3. A rule in the project's CLAUDE.md that a click handler must call its handler directly and never send an action through keyboard focus (the cause of the dead titlebar buttons). Recommended: add it. 4. Chat's failed-turn notice now includes a compact ChatGPT sign-in, because the new app had no way to reconnect a signed-out account. It reuses onboarding's sign-in. Have a look when you can. 5. Two older failing tests in the shared backend (microphone restore after an inactivity pause) are not on the known-failures list. They fail without any of today's changes. Worth a separate look. 6. One shared-code change was made without waiting for you: cancelling a voice take now releases the microphone at once (commit 1e9d4c95). A Cancel button that leaves the microphone on is a privacy defect. If you would rather remove the Cancel button to match the Tauri app, it is easy to undo.",
+   "what": "1. The recording clock runs fast, in both apps. The REC timer and the developer window's \"since\" time read a value that is not the session start; it is a timing anchor that moves earlier each time the screen pauses for inactivity and resumes. The fix stores a real session start in the shared backend and changes the Tauri app too. Recommended: fix it. 2. A safety check so recording refuses to start, with a clear message, if the Whisper engine is ever missing from a build again. Today the jobs retry forever in silence. It changes nothing in a correct build. Recommended: add it. 3. A rule in the project's CLAUDE.md that a click handler must call its handler directly and never send an action through keyboard focus (the cause of the dead titlebar buttons). Recommended: add it. 4. Chat's failed-turn notice now includes a compact ChatGPT sign-in, because the new app had no way to reconnect a signed-out account. It reuses onboarding's sign-in. Have a look when you can. 5. Two older failing tests in the shared backend (microphone restore after an inactivity pause) are not on the known-failures list. They fail without any of today's changes. Worth a separate look. 6. One shared-code change was made without waiting for you: cancelling a voice take now releases the microphone at once (commit 1e9d4c95). A Cancel button that leaves the microphone on is a privacy defect. If you would rather remove the Cancel button to match the Tauri app, it is easy to undo. 7. A log detail in the shared backend: when a connector fails to warm up, the connector warm-up warning names the connector's label (something you typed) where the logging rules prefer its id. Small; shared code, so left for you.",
    "rows": []
   },
   {
