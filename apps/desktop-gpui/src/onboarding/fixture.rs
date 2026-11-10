@@ -45,6 +45,8 @@ pub struct FixtureBackend {
     pub enrollment: Mutex<Enrollment>,
     /// `finish` fails with this, when set.
     pub finish_error: Mutex<Option<String>>,
+    /// The recorder answers "cancelled" (a quit ended the take).
+    pub clip_cancelled: Mutex<bool>,
     /// Instance ids with a key "in the vault".
     keys: Mutex<Vec<String>>,
 }
@@ -56,6 +58,7 @@ impl FixtureBackend {
             calls: Mutex::new(Vec::new()),
             enrollment: Mutex::new(Enrollment::Enrolled),
             finish_error: Mutex::new(None),
+            clip_cancelled: Mutex::new(false),
             keys: Mutex::new(Vec::new()),
         }
     }
@@ -188,9 +191,13 @@ impl Backend for FixtureBackend {
         self.log(format!("cancel_download:{}", item.model_id));
     }
 
-    fn record_clip(&self, ms: u64) -> Result<String, String> {
+    fn record_clip(&self, ms: u64) -> Result<Option<String>, String> {
         self.log(format!("record_clip:{ms}"));
-        Ok("/tmp/mnema-fixture-clip.wav".into())
+        Ok((!*self.clip_cancelled.lock().unwrap()).then(|| "/tmp/mnema-fixture-clip.wav".into()))
+    }
+
+    fn cancel_clip(&self) {
+        self.log("cancel_clip");
     }
 
     fn enroll(&self, clip: &str) -> Result<Enrollment, String> {

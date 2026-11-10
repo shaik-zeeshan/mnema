@@ -356,8 +356,9 @@ pub trait Backend: Send + Sync + 'static {
         Err("no app core".into())
     }
     /// `record_bounded_microphone_clip`: opens the microphone for `ms`, blocks
-    /// for the take, answers the clip path (`Err` = what to do, in words).
-    fn record_clip(&self, ms: u64) -> Result<String, String> {
+    /// for the take, answers the clip path, `None` when [`Self::cancel_clip`]
+    /// ended it (`Err` = what to do, in words).
+    fn record_clip(&self, ms: u64) -> Result<Option<String>, String> {
         let _ = ms;
         Err("no app core".into())
     }
@@ -486,14 +487,13 @@ impl Backend for CoreBackend {
         ))
     }
 
-    fn record_clip(&self, ms: u64) -> Result<String, String> {
+    fn record_clip(&self, ms: u64) -> Result<Option<String>, String> {
         crate::voice::live::record(&self.0, ms)
     }
 
-    // shortcut: app-core's bounded recorder has no cancel (it sleeps out its 15 s,
-    // then stops), so the real microphone stays open until the take's own bound;
-    // wire `cancel_bounded_microphone_clip` here once app-core has one.
-    fn cancel_clip(&self) {}
+    fn cancel_clip(&self) {
+        crate::voice::live::cancel();
+    }
 
     fn mic_level(&self) -> Option<f32> {
         app_core::native_capture::microphone::bounded_clip::get_microphone_activity_level()

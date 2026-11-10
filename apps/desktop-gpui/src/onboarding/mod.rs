@@ -135,6 +135,8 @@ pub struct Onboarding {
     pub take: Take,
     pub owner_enrolled: bool,
     voice_task: Option<Task<()>>,
+    /// Held while a take records; dropping it closes the microphone.
+    mic: Option<voice::MicLease>,
     // Finale
     pub finale: FinalePhase,
     pub evidence: Option<Evidence>,
@@ -199,6 +201,7 @@ impl Onboarding {
             take: Take::default(),
             owner_enrolled: false,
             voice_task: None,
+            mic: None,
             finale: FinalePhase::Starting,
             evidence: None,
             rec_started: None,
@@ -336,6 +339,7 @@ impl Onboarding {
 
     // ── Navigation ─────────────────────────────────────────────────────────
     pub fn go(&mut self, step: Step, cx: &mut Context<Self>) {
+        self.end_take();
         self.step = step;
         self.undo = None;
         self.entered(cx);
@@ -388,6 +392,7 @@ impl Onboarding {
 
     /// The strip's close light (and the window's own close).
     pub fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.end_take();
         match flow::close_action(self.completed) {
             flow::CloseAction::Exit => (self.exit.clone())(window, cx),
             flow::CloseAction::Close => window.remove_window(),

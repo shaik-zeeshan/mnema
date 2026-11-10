@@ -4,7 +4,7 @@
 //!
 //! It lives in keyed element state under the Voice section, so it exists only
 //! while that section renders: leaving the group or closing Settings drops it,
-//! and the dropped [`MicLease`] ends a running take (as Cancel does). The
+//! and the dropped `MicLease` ends a running take (as Cancel does). The
 //! microphone is opened only by `start`.
 
 use std::sync::Arc;
@@ -14,21 +14,7 @@ use gpui_kit::{AppContext as _, Context, Entity, Task, WeakEntity, Window};
 use crate::settings::data::Backend;
 use crate::settings::Settings;
 use crate::timeline::audio::transport::Player;
-use crate::voice::{self, Enrollment, Phase, Take};
-
-/// Held while a take records; dropping it early ends the take and frees the mic.
-struct MicLease {
-    backend: Arc<dyn Backend>,
-    armed: bool,
-}
-
-impl Drop for MicLease {
-    fn drop(&mut self) {
-        if self.armed {
-            self.backend.cancel_clip();
-        }
-    }
-}
+use crate::voice::{self, Enrollment, MicLease, Phase, Take};
 
 pub struct VoiceTake {
     pub take: Take,
@@ -72,10 +58,8 @@ impl VoiceTake {
         self.stop_playback();
         self.just_enrolled = false;
         self.play_failed = false;
-        self.mic = Some(MicLease {
-            backend: self.backend.clone(),
-            armed: true,
-        });
+        let b = self.backend.clone();
+        self.mic = Some(MicLease::new(move || b.cancel_clip()));
         let b = self.backend.clone();
         self.task = Some(cx.spawn(async move |this, cx| {
             let b2 = b.clone();
@@ -101,11 +85,13 @@ impl VoiceTake {
             let clip = clip.await;
             let _ = this.update(cx, |t, cx| {
                 // The recorder ended the take itself: nothing left to release.
-                if let Some(mut lease) = t.mic.take() {
-                    lease.armed = false;
+                if let Some(lease) = t.mic.take() {
+                    lease.disarm();
                 }
                 match clip {
-                    Ok(path) => t.take.review(path),
+                    Ok(Some(path)) => t.take.review(path),
+                    // Cancelled from elsewhere (quit): back to idle, not a failure.
+                    Ok(None) => t.take.cancel(),
                     Err(e) => t.take.judged(Err(e)),
                 }
                 cx.notify();

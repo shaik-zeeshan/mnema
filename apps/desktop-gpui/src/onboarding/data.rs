@@ -72,8 +72,11 @@ pub trait Backend: Send + Sync + 'static {
     fn mic_level(&self) -> Option<f32> {
         None
     }
-    /// Records the bounded clip (blocks for its length); answers the clip path.
-    fn record_clip(&self, ms: u64) -> Result<String, String>;
+    /// Records the bounded clip (blocks for its length); answers the clip path,
+    /// `None` when [`Self::cancel_clip`] ended it.
+    fn record_clip(&self, ms: u64) -> Result<Option<String>, String>;
+    /// End a running take now (leaving the step, closing the window).
+    fn cancel_clip(&self);
     fn enroll(&self, clip: &str) -> Result<Enrollment, String>;
     /// The atomic commit: save the whole recording config, mark onboarding done,
     /// then (optionally) start capture. `Err((completed, why))`: `completed` says
@@ -418,8 +421,12 @@ impl Backend for CoreBackend {
         app_core::native_capture::microphone::bounded_clip::get_microphone_activity_level()
     }
 
-    fn record_clip(&self, ms: u64) -> Result<String, String> {
+    fn record_clip(&self, ms: u64) -> Result<Option<String>, String> {
         crate::voice::live::record(&self.0, ms)
+    }
+
+    fn cancel_clip(&self) {
+        crate::voice::live::cancel();
     }
 
     fn enroll(&self, clip: &str) -> Result<Enrollment, String> {

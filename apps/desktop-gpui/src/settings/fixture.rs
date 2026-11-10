@@ -124,6 +124,8 @@ pub struct FixtureBackend {
     pub enrollment: Mutex<Option<crate::voice::Enrollment>>,
     /// The take's player (`Play the take`).
     pub player: crate::timeline::audio::fixture::FakePlayer,
+    /// The recorder answers "cancelled" (a quit ended the take).
+    pub clip_cancelled: Mutex<bool>,
 }
 
 /// The fake recorder's clip path.
@@ -218,8 +220,9 @@ impl Backend for FixtureBackend {
         self.record(Call::SelectSemantic(model_id.into()))
             .map(|_| 42)
     }
-    fn record_clip(&self, ms: u64) -> Result<String, String> {
-        self.record(Call::RecordClip(ms)).map(|_| CLIP_PATH.into())
+    fn record_clip(&self, ms: u64) -> Result<Option<String>, String> {
+        self.record(Call::RecordClip(ms))?;
+        Ok((!*self.clip_cancelled.lock().unwrap()).then(|| CLIP_PATH.into()))
     }
     fn cancel_clip(&self) {
         self.calls.lock().unwrap().push(Call::CancelClip);

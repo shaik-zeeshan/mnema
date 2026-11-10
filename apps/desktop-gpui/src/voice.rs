@@ -20,6 +20,30 @@ pub const BARS: usize = 18;
 /// `ENROLLMENT_SENTENCE`.
 pub const SENTENCE: &str = "I keep my work on this machine, and I would like Mnema to know my voice. I work on a few things at once, and I would like the transcript to say who said what. Reading this out loud takes about fifteen seconds.";
 
+/// Held while a take records. Dropping it (Cancel, leaving the screen, closing
+/// the window) cancels the take, which closes the real microphone at once;
+/// [`MicLease::disarm`] when the recorder ended the take itself.
+pub struct MicLease(Option<Box<dyn FnOnce()>>);
+
+impl MicLease {
+    pub fn new(cancel: impl FnOnce() + 'static) -> Self {
+        Self(Some(Box::new(cancel)))
+    }
+
+    /// The recorder ended the take itself: nothing left to release.
+    pub fn disarm(mut self) {
+        self.0 = None;
+    }
+}
+
+impl Drop for MicLease {
+    fn drop(&mut self) {
+        if let Some(cancel) = self.0.take() {
+            cancel();
+        }
+    }
+}
+
 /// `enroll_account_owner_voice`'s tagged outcome.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Enrollment {
@@ -224,11 +248,22 @@ pub mod live {
 
     use super::{error_words, Enrollment};
 
-    /// `record_bounded_microphone_clip`: blocks for the take, answers the clip path.
-    pub fn record(core: &Arc<AppCore>, ms: u64) -> Result<String, String> {
-        use app_core::native_capture::microphone::bounded_clip::record_bounded_microphone_clip;
-        core.block_on(record_bounded_microphone_clip(ms, core))
-            .map_err(|e| error_words(&e.code, e.message))
+    /// `record_bounded_microphone_clip_or_cancel`: blocks for the take, answers
+    /// the clip path, or `None` when [`cancel`] ended it.
+    pub fn record(core: &Arc<AppCore>, ms: u64) -> Result<Option<String>, String> {
+        use app_core::native_capture::microphone::bounded_clip::{
+            record_bounded_microphone_clip_or_cancel, BoundedClip,
+        };
+        match core.block_on(record_bounded_microphone_clip_or_cancel(ms, core)) {
+            Ok(BoundedClip::Recorded(path)) => Ok(Some(path)),
+            Ok(BoundedClip::Cancelled) => Ok(None),
+            Err(e) => Err(error_words(&e.code, e.message)),
+        }
+    }
+
+    /// End the take in progress now: the microphone closes at once (signal only).
+    pub fn cancel() {
+        app_core::native_capture::microphone::bounded_clip::cancel_bounded_microphone_clip();
     }
 
     /// `enroll_account_owner_voice` on a recorded clip.

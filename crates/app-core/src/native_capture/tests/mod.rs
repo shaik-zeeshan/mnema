@@ -667,6 +667,8 @@ fn screen_paused_with_system_audio_runtime_fixture(audio_paused: bool) -> Native
 mod audio_pause;
 mod audio_restart;
 mod audio_segments;
+#[cfg(target_os = "macos")]
+mod bounded_clip;
 mod continuation;
 #[cfg(target_os = "macos")]
 mod host_events;

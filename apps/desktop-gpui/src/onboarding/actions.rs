@@ -432,6 +432,8 @@ impl Onboarding {
             return;
         }
         let b = self.backend.clone();
+        self.mic = Some(voice::MicLease::new(move || b.cancel_clip()));
+        let b = self.backend.clone();
         self.voice_task = Some(cx.spawn(async move |this, cx| {
             let b2 = b.clone();
             let clip =
@@ -453,10 +455,25 @@ impl Onboarding {
                     break;
                 }
             }
-            let outcome = match clip.await {
-                Ok(path) => {
+            let clip = clip.await;
+            let _ = this.update(cx, |s, _| {
+                // The recorder ended the take itself: nothing left to release.
+                if let Some(lease) = s.mic.take() {
+                    lease.disarm();
+                }
+            });
+            let outcome = match clip {
+                Ok(Some(path)) => {
                     let b2 = b.clone();
                     cx.background_spawn(async move { b2.enroll(&path) }).await
+                }
+                // Cancelled from elsewhere (quit): back to idle, not a failure.
+                Ok(None) => {
+                    let _ = this.update(cx, |s, cx| {
+                        s.take.cancel();
+                        cx.notify();
+                    });
+                    return;
                 }
                 Err(e) => Err(e),
             };
@@ -469,6 +486,16 @@ impl Onboarding {
             });
         }));
         cx.notify();
+    }
+
+    /// End a take still recording (leaving the step, closing the window): the
+    /// dropped lease closes the microphone, and the screen goes back to idle.
+    /// Nothing to do once the recorder has finished on its own.
+    pub(super) fn end_take(&mut self) {
+        if self.mic.take().is_some() {
+            self.voice_task = None;
+            self.take.cancel();
+        }
     }
 
     /// Voice can run only with speaker separation on and its model on disk.

@@ -494,3 +494,16 @@ fn closing_settings_releases_the_mic(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(count(&b, &Call::CancelClip), 1);
 }
+
+#[gpui_kit::test]
+fn a_take_cancelled_elsewhere_goes_back_to_idle(cx: &mut TestAppContext) {
+    // A quit cancels in app-core; the recorder answers "cancelled", not an error.
+    let (w, _, b) = open(cx, "speakers");
+    *b.clip_cancelled.lock().unwrap() = true;
+    record(cx, w, &b);
+    advance(cx, voice::CLIP);
+    assert!(present(cx, w, "voice-record"), "idle again");
+    assert!(!present(cx, w, "voice-use") && !present(cx, w, "voice-meter"));
+    assert_eq!(count(&b, &Call::Enroll), 0);
+    assert_eq!(count(&b, &Call::CancelClip), 0, "nothing left to release");
+}

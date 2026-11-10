@@ -72,6 +72,14 @@ impl AppCore {
                 "starting graceful app exit; stopping capture and background workers before unloading cached Local Whisper contexts"
             });
 
+            // A voice take holds the microphone for up to 15 s: close it before
+            // capture stops, so the lend's hand-back lands while stop can see it.
+            let _ = core
+                .spawn_blocking(
+                    crate::native_capture::microphone::bounded_clip::cancel_bounded_microphone_clip_and_wait,
+                )
+                .await;
+
             step(&core, "stop_capture");
             let stop_core = Arc::clone(&core);
             match core

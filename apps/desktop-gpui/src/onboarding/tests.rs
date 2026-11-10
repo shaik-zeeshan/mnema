@@ -412,6 +412,68 @@ fn the_voice_screen_records_fifteen_seconds_then_enrolls(cx: &mut TestAppContext
         assert_eq!(o.take.phase, Phase::Enrolled, "past 15 000 ms: judged")
     });
     assert!(backend.calls().contains(&"record_clip:15000".to_string()));
+    // The recorder ended the take itself: leaving and closing release nothing.
+    go(&view, vcx, Step::Finale);
+    view.update_in(vcx, |o, window, cx| o.request_close(window, cx));
+    assert_eq!(count(&backend, "cancel_clip"), 0);
+}
+
+fn count(backend: &FixtureBackend, call: &str) -> usize {
+    backend.calls().iter().filter(|c| *c == call).count()
+}
+
+/// On the Voice step, one second into a take.
+fn mid_take(view: &Entity<Onboarding>, vcx: &mut VisualTestContext) {
+    go(view, vcx, Step::Voice);
+    view.update(vcx, |o, cx| o.record(cx));
+    vcx.executor().advance_clock(Duration::from_secs(1));
+    vcx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn leaving_the_voice_step_mid_take_releases_the_mic(cx: &mut TestAppContext) {
+    for to in [Step::Finale, Step::Setup] {
+        let (view, vcx, backend, _) = open(cx, "installed");
+        mid_take(&view, vcx);
+        go(&view, vcx, to);
+        assert_eq!(count(&backend, "cancel_clip"), 1, "{to:?}");
+        view.update(vcx, |o, _| assert_eq!(o.take.phase, Phase::Idle));
+        vcx.executor().advance_clock(voice::CLIP);
+        vcx.run_until_parked();
+        assert_eq!(count(&backend, "cancel_clip"), 1, "once only");
+        assert!(
+            !backend.calls().iter().any(|c| c.starts_with("enroll")),
+            "a cancelled take is never enrolled"
+        );
+        // Back again: idle until Record.
+        go(&view, vcx, Step::Voice);
+        view.update(vcx, |o, _| assert_eq!(o.take.phase, Phase::Idle));
+    }
+}
+
+#[gpui_kit::test]
+fn closing_the_window_mid_take_releases_the_mic(cx: &mut TestAppContext) {
+    let (view, vcx, backend, exits) = open(cx, "installed");
+    mid_take(&view, vcx);
+    view.update_in(vcx, |o, window, cx| o.request_close(window, cx));
+    assert_eq!(count(&backend, "cancel_clip"), 1);
+    assert_eq!(exits.get(), 1, "before completion, closing quits");
+    vcx.executor().advance_clock(voice::CLIP);
+    vcx.run_until_parked();
+    assert_eq!(count(&backend, "cancel_clip"), 1);
+}
+
+#[gpui_kit::test]
+fn a_take_cancelled_elsewhere_goes_back_to_idle(cx: &mut TestAppContext) {
+    // A quit cancels in app-core; the recorder answers "cancelled", not an error.
+    let (view, vcx, backend, _) = open(cx, "installed");
+    *backend.clip_cancelled.lock().unwrap() = true;
+    mid_take(&view, vcx);
+    vcx.executor().advance_clock(voice::CLIP);
+    vcx.run_until_parked();
+    view.update(vcx, |o, _| assert_eq!(o.take.phase, Phase::Idle));
+    assert!(!backend.calls().iter().any(|c| c.starts_with("enroll")));
+    assert_eq!(count(&backend, "cancel_clip"), 0, "nothing left to release");
 }
 
 #[gpui_kit::test]
