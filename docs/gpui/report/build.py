@@ -178,8 +178,8 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = ([(link(drafts, "receipts", "Licence receipts: pick a direction"), "three redesigned directions, built and rendered",
-              chip("your pick", "strong"))] if d.get("receipts") else []) + [(link(drafts, "approve", "Waiting for your approval"), "screenshots that need your yes before they become references",
+    rows = ([(link(drafts, "receipts", "Licence receipts: the final design"), "your pick on every licence receipt, with the three original directions below",
+              chip("awaiting your approval", "strong"))] if d.get("receipts") else []) + [(link(drafts, "approve", "Waiting for your approval"), "screenshots that need your yes before they become references",
              chip("awaiting your approval", "strong")),
             (link(drafts, "fixes", "Today’s fixes: before and after"), "10 Nov · before and after pictures of each fix",
              chip("built"))]

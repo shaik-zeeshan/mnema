@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-10 20:15",
+ "updated": "2026-11-10 20:40",
  "verdict": "Every screen is built and connected to the real backend, and all six issues from the 10 Nov hands-on test have a committed fix. Since then capture health, Chat sources, the licence banner and receipt, and centring on large windows have been added. A signed dev build with all of it was opened at 19:15 on a completely clean state. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "6 pending",
-   "note": "the privacy prompt (4) and the licence banners (2); receipts are being finished"
+   "value": "receipts pending",
+   "note": "only the licence receipts are waiting, in their final design"
   }
  ],
  "bars": [
@@ -368,7 +368,8 @@
   "Large windows: Settings and onboarding are centred in GPUI, a deliberate difference from Tauri (2026-11-10).",
   "Pictures for approval go on the report's \"Waiting for your approval\" page, not in Preview (2026-11-10).",
   "Centred large-window layout approved as shown, incl. the onboarding top and bottom bars following the column (2026-11-10).",
-  "Licence receipts: the updates timeline for activated, the ticket with device tiles for the device limit, the notched tear line on both (2026-11-10)."
+  "Licence receipts: the updates timeline for activated, the ticket with device tiles for the device limit, the notched tear line on both (2026-11-10).",
+  "Sensitive-app exclusion prompt and the two licence banners approved (2026-11-10)."
  ],
  "risks": [
   "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -647,9 +648,9 @@
  ],
  "waiting": [
   {
-   "id": "Approve",
-   "title": "Screenshots to approve",
-   "detail": "The sensitive-app exclusion prompt (banner and notice) and the two licence banners, on the \"Waiting for your approval\" page."
+   "id": "Receipts",
+   "title": "The final licence receipts",
+   "detail": "Activated, device limit, renewed, pending, working and failed, on the \"Licence receipts\" page."
   },
   {
    "id": "Drive",
@@ -1049,15 +1050,15 @@
    "what": "No picture: this changes behaviour, not looks. Settings now shows the microphone, capture support and permissions at once, and the slower keychain and network checks follow, each given at most 10 seconds. A check that fails says \"couldn't check\" instead of showing \"Checking…\" forever. The stuck screen resolution and the microphone error in your screenshot were fixed earlier by 8a1fcb2d, which wired Settings to the real backend; your screenshot came from the build before it. Not driven yet."
   }
  ],
- "approve_verdict": "Two sets need your yes: the sensitive-app exclusion prompt in Settings (new) and the two licence banners. The licence receipts are being finished in the design you picked and will come here next. Everything else on this page is already approved.",
+ "approve_verdict": "Nothing on this page is waiting for you: the privacy prompt and the licence banners were approved on 10 Nov. The final licence receipts are on their own page and do need your yes.",
  "approve": [
   {
    "anchor": "approve-privacy",
    "title": "Sensitive-app exclusion prompt in Settings",
    "toc": "Privacy prompt",
    "commit": "0ae8987e",
-   "state": "built and wired · awaiting your approval",
-   "awaiting": true,
+   "state": "approved 10 Nov",
+   "awaiting": false,
    "what": "Shown only in Settings, while a known sensitive app (Apple Passwords, Keychain Access, 1Password, Bitwarden) is installed and not excluded from capture, until you dismiss or complete it. A banner sits above whichever group is open; a notice sits at the top of Capture › Privacy. Add exclusions excludes all pending apps and closes it; Dismiss closes it for good; Review jumps to Capture › Privacy. Same wording and behaviour as the Tauri app. Not checked: which apps your real Mac reports, and that a new exclusion reaches live capture (it uses the same save as the Privacy list).",
    "rows": [
     {
@@ -1090,12 +1091,12 @@
   },
   {
    "anchor": "approve-licence",
-   "title": "Licence banner (the receipts are being redesigned)",
+   "title": "Licence banners",
    "toc": "Licence",
    "commit": "4506b28c",
-   "state": "built and wired · banners awaiting your approval",
-   "awaiting": true,
-   "what": "The banner sits under the titlebar: trial ending (more urgent at 7, 3 and 1 days), Read-Only Mode, revoked, activation lapsed with a Re-check button, activation pending, and low disk when no licence banner is showing. Only the trial and pending banners can be closed, and only for that day count. You asked for the two receipts to be more creative and celebratory, so they are not up for approval: three redesigned directions are being built and will appear here to choose from. The plain versions below are what the current dev build shows. Not checked: a real licence link or purchase, and whether the banner on the Settings screen runs under the window's traffic-light buttons.",
+   "state": "approved 10 Nov",
+   "awaiting": false,
+   "what": "The banner sits under the titlebar: trial ending (more urgent at 7, 3 and 1 days), Read-Only Mode, revoked, activation lapsed with a Re-check button, activation pending, and low disk when no licence banner is showing. Only the trial and pending banners can be closed, and only for that day count. Not checked: a real licence link or purchase, and whether the banner on the Settings screen runs under the window's traffic-light buttons. The receipts have their own page.",
    "rows": [
     {
      "heading": "Banner: trial ending in 2 days",
@@ -1119,32 +1120,6 @@
       },
       {
        "file": "licence-banner-lapsed-dark.jpg",
-       "caption": "Dark"
-      }
-     ]
-    },
-    {
-     "heading": "Receipt: activated (current plain version, being redesigned)",
-     "shots": [
-      {
-       "file": "licence-receipt-activated-light.jpg",
-       "caption": "Light"
-      },
-      {
-       "file": "licence-receipt-activated-dark.jpg",
-       "caption": "Dark"
-      }
-     ]
-    },
-    {
-     "heading": "Receipt: device limit reached (current plain version, being redesigned)",
-     "shots": [
-      {
-       "file": "licence-receipt-overcap-light.jpg",
-       "caption": "Light"
-      },
-      {
-       "file": "licence-receipt-overcap-dark.jpg",
        "caption": "Dark"
       }
      ]
@@ -1312,6 +1287,135 @@
  ],
  "receipts": [
   {
+   "anchor": "receipt-final",
+   "title": "The chosen design, on every receipt",
+   "toc": "Final design",
+   "commit": "not merged yet · tests running",
+   "state": "built · awaiting your approval",
+   "awaiting": true,
+   "what": "Your pick, combined: the updates timeline for activated, the ticket with device tiles for the device limit, and the notched tear line on both. The notches are now real bites out of the panel's edge (the border follows the curve), not painted dots, so they hold up over the dimmed backdrop in both themes. The same shell carries to the renewal, pending, working and failed receipts, so the panel keeps its shape as it changes from \"Setting up your license\" to the result. Worth a look: the working and failed receipts keep the \"Updates included through\" label over an empty ruler, which may read oddly on a failure.",
+   "rows": [
+    {
+     "heading": "Activated",
+     "shots": [
+      {
+       "file": "final-activated-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "final-activated-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "How the activated receipt moves (once, about 1.4 s)",
+     "shots": [
+      {
+       "file": "final-activated-motion.jpg",
+       "caption": "Frames at 100, 250, 450, 700, 1000 and 1400 ms: the playhead scrubs to the last included day while the date counts up."
+      }
+     ]
+    },
+    {
+     "heading": "The notch, close up",
+     "shots": [
+      {
+       "file": "final-notches.jpg",
+       "caption": "Left to right: activated dark, activated light, device limit dark, device limit light."
+      }
+     ]
+    },
+    {
+     "heading": "Device limit reached",
+     "shots": [
+      {
+       "file": "final-overcap-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "final-overcap-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Device limit, after trying to free up devices too soon",
+     "shots": [
+      {
+       "file": "final-overcap-note-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "final-overcap-note-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Renewed",
+     "shots": [
+      {
+       "file": "final-renewed-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "final-renewed-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "How the renewal moves",
+     "shots": [
+      {
+       "file": "final-renewed-motion.jpg",
+       "caption": "Frames at 250, 450 and 1000 ms: the playhead runs from the old end date to the new one."
+      }
+     ]
+    },
+    {
+     "heading": "Activation pending (installed, still confirming this Mac)",
+     "shots": [
+      {
+       "file": "final-pending-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "final-pending-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Working",
+     "shots": [
+      {
+       "file": "final-working-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "final-working-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Failed",
+     "shots": [
+      {
+       "file": "final-failed-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "final-failed-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "anchor": "receipt-d1",
    "title": "Direction 1: the receipt",
    "toc": "1 · The receipt",
@@ -1441,5 +1545,5 @@
    ]
   }
  ],
- "receipts_verdict": "Decided 10 Nov: the updates timeline (Direction 2) for the activated receipt, the receipt with device tiles (Direction 1) for the device limit, and the notched tear line from Direction 1 added to the timeline receipt's middle divider. The agent is now combining them, carrying the design to the renewal, pending, working and failed receipts, and deleting Direction 3. The final pictures will be on the approval page."
+ "receipts_verdict": "The final design is at the top: your pick on every licence receipt, with the notched tear line. It needs your yes before it is merged and becomes the reference. The three original directions are kept below for comparison."
 }
