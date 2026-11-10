@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-10 19:10",
- "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. Of the six issues from today's hands-on test, one is wired, four are built (the onboarding screenshots are approved) and one, window-size behaviour, is still being worked on. Capture health in the status bar is now built and wired. Almost nothing is driven yet: the next step that needs you is a hands-on run of the next signed dev build.",
+ "updated": "2026-11-10 19:50",
+ "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. All six issues from today's hands-on test now have a fix: one is wired, four are built and committed, and the window-size fix is applied and in its test run. Capture health in the status bar is built and wired. Almost nothing is driven yet: the next step that needs you is a hands-on run of the next signed dev build.",
  "metrics": [
   {
    "label": "Overall",
@@ -58,7 +58,12 @@
   {
    "id": "Resize",
    "title": "Window-size behaviour",
-   "detail": "Small windows: nothing cut off. Large windows: pages use or centre in the space, as the Tauri app does. Agent working. Not built yet."
+   "detail": "Applied; 276 tests pass; the screenshot run is finishing before it is committed."
+  },
+  {
+   "id": "Spacing",
+   "title": "Status popover spacing",
+   "detail": "The \"Building meaning index\" row gets the same gaps and alignment as the rows around it. Agent working."
   },
   {
    "id": "Chat",
@@ -592,16 +597,23 @@
   },
   {
    "title": "Window size: small windows cut off, large windows not using the space",
-   "state": "in progress",
-   "commit": "—",
-   "note": "An agent is working on it. Not built yet."
+   "state": "built · tests running",
+   "commit": "not committed yet",
+   "note": "Small windows: the missing width rules from the Tauri app are ported, so nothing is cut off. Large windows: GPUI already matched Tauri, which also pins Settings and onboarding to the left; centring them is your decision. Applied and passing 276 tests; the screenshot run is still going. Not driven.",
+   "awaiting": true,
+   "anchor": "fix-resize"
   }
  ],
  "waiting": [
   {
+   "id": "Decide",
+   "title": "Large windows: pinned left or centred?",
+   "detail": "Tauri keeps Settings and onboarding as a column pinned to the left on a large window, and GPUI matches it. Centring them is a small change but makes GPUI differ from Tauri until cut-over."
+  },
+  {
    "id": "Approve",
-   "title": "One new status-bar screenshot",
-   "detail": "The status bar and its popover with a sleeping display, reconnecting system audio and a \"Catching up\" backlog. It is a new state, so it has no earlier version to compare with. Opened in Preview on 10 Nov."
+   "title": "Screenshots to approve",
+   "detail": "The capture-health status bar (after its spacing fix), and, once window size is merged, the Insights screenshots that shift by 1 pt and the restacked Insights subject page."
   },
   {
    "id": "Drive",
@@ -609,7 +621,7 @@
    "detail": "Today's fixes are built (Settings is also wired) but none has been used in the real app. The checklist below lists what only a person can check."
   }
  ],
- "fixes_verdict": "Four of today's six issues have pictures here. You approved the five changed onboarding screenshots on 10 Nov, so they are now the reference. The icon and corner fixes did not change any approved screenshot enough to need one.",
+ "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Still yours to decide: whether Settings and onboarding should be centred on a large window (Tauri pins them left, as GPUI does now), and approval of the capture-health screenshot once its spacing fix lands.",
  "fixes": [
   {
    "anchor": "fix-onboarding",
@@ -879,6 +891,114 @@
       {
        "file": "hover-settings-shortcuts-reload-hover-after.jpg",
        "caption": "Settings › Shortcuts: the reload button on hover: after"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "fix-resize",
+   "title": "Window size: small windows no longer cut things off",
+   "toc": "Window size",
+   "commit": "not committed yet",
+   "state": "built · tests running",
+   "awaiting": true,
+   "what": "The Tauri app has about 28 rules for how screens rearrange at different widths, and GPUI had only 3 of them. The rest are now ported: Settings rows, the Insights tab bar, headline, grids and evidence drawer, the Chat placeholder, the audio drawer transcript and the onboarding Whisper picker. 276 tests and 4 wiring tests pass; the screenshot run is still going, so this is applied but not committed. Not driven.",
+   "how": "Every Insights reference screenshot shifts down by 1 pt (the tab bar is now Tauri's real height), and the Insights subject page restacks its stats at the default size. Both will need your approval after the merge.",
+   "rows": [
+    {
+     "heading": "Settings › Capture › Video at 640×480",
+     "shots": [
+      {
+       "file": "resize-settings-capture-video-640x480.jpg",
+       "caption": "Left to right: GPUI before, GPUI after, Tauri. The description was squeezed to one letter per line. The control now drops under the text, and the side rail narrows, as in Tauri."
+      }
+     ]
+    },
+    {
+     "heading": "Insights overview at 640×480",
+     "shots": [
+      {
+       "file": "resize-insights-overview-640x480.jpg",
+       "caption": "Left to right: GPUI before, GPUI after, Tauri. The Ask button and period picker ran off the right edge and the headline wrapped one word per line. The controls now wrap to a second row."
+      }
+     ]
+    },
+    {
+     "heading": "Insights subject page with its evidence drawer at 640 wide",
+     "shots": [
+      {
+       "file": "resize-insights-subject-640x1000.jpg",
+       "caption": "Left to right: GPUI before, GPUI after, Tauri. The page was crushed beside the drawer. Below 700 px the drawer now becomes a full sheet with a back arrow."
+      }
+     ]
+    },
+    {
+     "heading": "Insights subject page with its evidence drawer at 2400 wide",
+     "shots": [
+      {
+       "file": "resize-insights-subject-2400x1000.jpg",
+       "caption": "Left to right: GPUI before, GPUI after, Tauri. The page jumped to the left edge and the chart ran under the drawer. It now keeps its place and pads its right side."
+      }
+     ]
+    },
+    {
+     "heading": "Chat empty state at 640×480",
+     "shots": [
+      {
+       "file": "resize-chat-empty-640x480.jpg",
+       "caption": "Left to right: GPUI before, GPUI after, Tauri. The composer's placeholder was cut off on one line. It now wraps."
+      }
+     ]
+    },
+    {
+     "heading": "Timeline audio drawer at 640×480",
+     "shots": [
+      {
+       "file": "resize-timeline-drawer-expanded-640x480.jpg",
+       "caption": "Left to right: GPUI before, GPUI after, Tauri. Speaker names now stack above the transcript text when the drawer is narrow."
+      }
+     ]
+    },
+    {
+     "heading": "Onboarding › Models at its minimum size",
+     "shots": [
+      {
+       "file": "resize-onboarding-change-models-920x620.jpg",
+       "caption": "Left to right: GPUI before, GPUI after, Tauri. The Whisper build picker stretched across the whole column. It is now only as wide as its options. (No Tauri picture for this one.)"
+      }
+     ]
+    },
+    {
+     "heading": "Settings at 2400 wide: unchanged, your decision",
+     "shots": [
+      {
+       "file": "resize-settings-general-2400x1000.jpg",
+       "caption": "Left to right: GPUI before, GPUI after, Tauri. Tauri also keeps Settings as a 760 px column pinned to the left, so GPUI already matched. Whether to centre it instead is your call."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "fix-health",
+   "title": "Capture health in the status bar and popover",
+   "toc": "Capture health",
+   "commit": "ed6e0e36",
+   "state": "built and wired · screenshot awaiting approval",
+   "awaiting": true,
+   "what": "The status bar now shows a source that is waiting (display asleep, system audio reconnecting), a disk-almost-full flag and a clock on PAUSED; the popover lists reconnecting sources and the \"Catching up\" backlog. This is a new screenshot state. You asked for better spacing on the \"Building meaning index\" row: that fix is being made now, so the picture below is the version before it.",
+   "rows": [
+    {
+     "heading": "Status bar and popover",
+     "shots": [
+      {
+       "file": "health-shell-light.jpg",
+       "caption": "Light. The \"Building meaning index\" row is the one being re-spaced."
+      },
+      {
+       "file": "health-shell-dark.jpg",
+       "caption": "Dark."
       }
      ]
     }
