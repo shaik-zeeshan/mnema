@@ -206,6 +206,7 @@ fn aggregate_desc(
         ],
     );
     let tap_list = cf::ArrayOf::from_slice(&[sub_tap.as_ref()]);
+    let name = cf::String::from_str(capture_types::SYSTEM_AUDIO_AGGREGATE_NAME);
 
     cf::DictionaryOf::with_keys_values(
         &[
@@ -219,7 +220,7 @@ fn aggregate_desc(
             ca::aggregate_device_keys::is_stacked(),
         ],
         &[
-            cf::str!(c"Mnema System Audio").as_type_ref(),
+            name.as_type_ref(),
             aggregate_uid.as_type_ref(),
             output_uid.as_type_ref(),
             sub_device_list.as_type_ref(),

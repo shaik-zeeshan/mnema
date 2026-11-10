@@ -119,6 +119,39 @@ pub fn disk_at(bytes: f64) -> f32 {
     (bytes / DISK_SCALE_BYTES).clamp(0., 1.) as f32
 }
 
+/// The Disk scale's left legend as `(position 0..1, text)`, "25 GB +" aside.
+/// A pause tick hard against 0 takes over the "0" label (as Svelte). A resume
+/// tick too close to its pause label for its own joins it ("pause 1 · resume 1"):
+/// with the real 1 GB floor the two ticks sit ~20 MB apart and drew on top of
+/// each other (Svelte has the same overlap).
+pub fn disk_legend(pause: f64, resume: f64) -> Vec<(f32, String)> {
+    const ROOM: f32 = 0.12;
+    // One XS mono character (~6.3 px) of the ≥408 px scale at the 440 px minimum.
+    const CHAR: f32 = 0.016;
+    let (pa, ra) = (disk_at(pause), disk_at(resume));
+    let mut out = vec![];
+    let mut pause_label = format!("pause {}", gb(pause));
+    let anchor = if pa < ROOM {
+        0.
+    } else {
+        out.push((0., "0".to_string()));
+        pa
+    };
+    let mut resume_label = None;
+    if resume > pause {
+        let text = format!("resume {}", gb(resume));
+        // The pause label (left-aligned at `anchor`) plus a space must end first.
+        if ra - anchor < (pause_label.chars().count() + 1) as f32 * CHAR {
+            pause_label = format!("{pause_label} \u{b7} {text}");
+        } else {
+            resume_label = Some((ra, text));
+        }
+    }
+    out.push((anchor, pause_label));
+    out.extend(resume_label);
+    out
+}
+
 // ── AI ──────────────────────────────────────────────────────────────────────
 
 /// A stat value split into number and unit: 18240 → ("18.2", "k").
@@ -435,6 +468,39 @@ mod tests {
             "Headset switched to call quality, 48 \u{2192} 16 kHz"
         );
         assert_eq!(format_seconds(30_000.), "30 s");
+    }
+
+    #[test]
+    fn disk_legend_never_stacks_pause_and_resume() {
+        // Real app: 1 GiB floor + a ~20 MB segment estimate (pause) / 2x (resume).
+        let est = 20. * 1024. * 1024.;
+        assert_eq!(
+            disk_legend(GIB + est, GIB + 2. * est),
+            vec![(0., "pause 1 \u{b7} resume 1".to_string())]
+        );
+        // Fixture: 5 / 7 GB sit 8% apart, also too close ("pause 5resume 7" in
+        // the old golden).
+        assert_eq!(
+            disk_legend(5. * GIB, 7. * GIB),
+            vec![
+                (0., "0".into()),
+                (disk_at(5. * GIB), "pause 5 \u{b7} resume 7".into())
+            ]
+        );
+        // Far enough apart: each label at its own tick.
+        let at = |g: f64| disk_at(g * GIB);
+        assert_eq!(
+            disk_legend(5. * GIB, 10. * GIB),
+            vec![
+                (0., "0".into()),
+                (at(5.), "pause 5".into()),
+                (at(10.), "resume 10".into())
+            ]
+        );
+        // Not recording: one tick at the floor, no resume label.
+        assert_eq!(disk_legend(GIB, GIB), vec![(0., "pause 1".to_string())]);
+        // A pause label at 0 and a resume tick past its room keep separate labels.
+        assert_eq!(disk_legend(GIB, 4. * GIB).len(), 2);
     }
 
     #[test]

@@ -160,6 +160,12 @@ fn capture(core: &AppCore) -> Option<Value> {
         })
 }
 
+/// The version About shows: the updater's app info (read from the bundle).
+fn app_version(core: &AppCore) -> String {
+    core.try_state::<app_core::updates::Updater>()
+        .map_or_else(String::new, |u| u.config.app.version.clone())
+}
+
 pub struct CoreDebug(pub Arc<AppCore>);
 
 impl DebugBackend for CoreDebug {
@@ -171,7 +177,8 @@ impl DebugBackend for CoreDebug {
                 .and_then(|s| json(current_recording_settings(&s)))
         };
         let mut d = DebugData {
-            version: env!("CARGO_PKG_VERSION").into(),
+            // The bundle's version, as Settings > About shows it (not this crate's).
+            version: app_version(core),
             ..Default::default()
         };
         match section {

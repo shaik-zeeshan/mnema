@@ -181,9 +181,52 @@ pub fn reason_label(reason: &str, settings: Option<&RecordingSettings>) -> Strin
         "invalid_base_url_scheme" => "The provider's base URL must start with http:// or https://.",
         "vault_denied" => "Mnema couldn't read your saved keys from the keychain.",
         "local_endpoint_unreachable" => "The local endpoint could not be reached.",
-        _ => return reason.to_string(),
+        // Svelte echoes the raw code here; a code is never shown to the user.
+        _ => "The AI engine isn't available right now.",
     }
     .to_string()
+}
+
+/// `askAiReasonLabel`: Ask AI's own gate plus the engine codes (Settings › Ask AI).
+pub fn ask_ai_reason_label(reason: Option<&str>, settings: Option<&RecordingSettings>) -> String {
+    match reason.unwrap_or("") {
+        "" => "Ask AI is unavailable.".into(),
+        "ask_ai_disabled" => "Ask AI is turned off.".into(),
+        "ai_runtime_disabled" => {
+            "AI features are turned off \u{2014} enable them in the Providers card above.".into()
+        }
+        "no_providers" => "Connect an AI provider in the Providers card above.".into(),
+        "no_default_model" => "Choose a global default model in the Providers card above.".into(),
+        r => reason_label(r, settings),
+    }
+}
+
+#[cfg(test)]
+mod reason_tests {
+    use super::*;
+
+    #[test]
+    fn settings_never_show_a_raw_reason_code() {
+        // Real app, AI off (capture 41): both read as raw codes.
+        assert_eq!(
+            reason_label("ai_runtime_disabled", None),
+            "AI features are turned off."
+        );
+        assert_eq!(
+            ask_ai_reason_label(Some("ask_ai_disabled"), None),
+            "Ask AI is turned off."
+        );
+        assert!(ask_ai_reason_label(Some("ai_runtime_disabled"), None)
+            .starts_with("AI features are turned off"));
+        assert_eq!(ask_ai_reason_label(None, None), "Ask AI is unavailable.");
+        for code in ["some_new_code", "engine_gone:abc"] {
+            assert_eq!(
+                reason_label(code, None),
+                "The AI engine isn't available right now."
+            );
+            assert!(!ask_ai_reason_label(Some(code), None).contains(code));
+        }
+    }
 }
 
 /// The four-step page rule (independent of `configured`).

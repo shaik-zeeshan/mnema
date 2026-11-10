@@ -36,10 +36,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         None if s.data.complete => "Couldn\u{2019}t check Ask AI availability.".to_string(),
         None => "Checking Ask AI availability\u{2026}".to_string(),
         Some(_) if available => "Ask AI can answer over your redacted capture history.".into(),
-        Some(v) => v
-            .str_at(&["reason"])
-            .unwrap_or("Ask AI isn\u{2019}t available.")
-            .to_string(),
+        Some(v) => crate::insights::model::ask_ai_reason_label(v.str_at(&["reason"]), Some(&d)),
     };
     let mut rows: Vec<AnyElement> = Vec::new();
     if avail.is_some() && !available {

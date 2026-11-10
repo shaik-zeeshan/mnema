@@ -97,10 +97,11 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     .desc(counts)
     .control(actions)
     .when(paused, |r| {
-        let reason = st
-            .and_then(|v| v.str_at(&["reason"]))
-            .unwrap_or_default()
-            .to_string();
+        // `aiRuntimeReasonLabel`: "Unavailable" with no reason, never a raw code.
+        let reason = st.and_then(|v| v.str_at(&["reason"])).map_or_else(
+            || "Unavailable".to_string(),
+            |r| crate::insights::model::reason_label(r, Some(&d)),
+        );
         r.below(line(Tone::Warn, icons::INFO, reason, p))
     })
     .when(up_to_date, |r| {

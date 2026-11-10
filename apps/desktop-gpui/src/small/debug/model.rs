@@ -336,7 +336,11 @@ fn capture_node(rows: &[Value]) -> FlowNode {
     let mut node = FlowNode {
         name: "Capture",
         big: live.to_string(),
-        unit: "sources live",
+        unit: if live == 1 {
+            "source live"
+        } else {
+            "sources live"
+        },
         lines: vec![],
         bar: None,
         tone: None,
@@ -564,5 +568,13 @@ mod tests {
         assert_eq!(n[1].tone, Some(Tone::Danger));
         assert_eq!(n[1].bar, Some(0.5));
         assert_eq!(n[4].lines[0].text, "12,480 done");
+        assert_eq!(n[0].unit, "sources live");
+        // Real app: one source live (screen only, audio off) reads singular.
+        let one = flow_nodes(
+            &[row("screen", "ok", ""), row("microphone", "off", "")],
+            &[],
+            None,
+        );
+        assert_eq!((one[0].big.as_str(), one[0].unit), ("1", "source live"));
     }
 }

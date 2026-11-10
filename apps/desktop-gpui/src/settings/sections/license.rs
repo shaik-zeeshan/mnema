@@ -16,20 +16,21 @@ const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// `fmtLicenseDate`: "Nov 13, 2026".
-fn date(ms: i64, cx: &gpui_kit::App) -> String {
-    let now = crate::ui::clock::now(cx);
-    time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000)
-        .map(|t| {
-            let t = t.to_offset(now.offset());
-            format!(
-                "{} {}, {}",
-                MONTHS[t.month() as usize - 1],
-                t.day(),
-                t.year()
-            )
-        })
-        .unwrap_or_default()
+/// `fmtLicenseDate`: "Nov 13, 2026"; `None` past the representable range
+/// (a key with no update expiry carries `i64::MAX`).
+fn date(ms: i64, offset: time::UtcOffset) -> Option<String> {
+    let t = time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000).ok()?;
+    let t = t.checked_to_offset(offset)?;
+    Some(format!(
+        "{} {}, {}",
+        MONTHS[t.month() as usize - 1],
+        t.day(),
+        t.year()
+    ))
+}
+
+fn offset(cx: &gpui_kit::App) -> time::UtcOffset {
+    crate::ui::clock::now(cx).offset()
 }
 
 fn days(n: u32) -> String {
@@ -53,25 +54,31 @@ fn badge(st: &LicenseStatus) -> Option<(&'static str, ChipKind)> {
 }
 
 /// `statusHintFor` (without the device count, which needs `get_license_devices`).
-fn hint(st: &LicenseStatus, cx: &gpui_kit::App) -> Option<String> {
+/// An empty value never leaves a dangling "through ." / "to .".
+fn hint(st: &LicenseStatus, offset: time::UtcOffset) -> Option<String> {
     match st {
         LicenseStatus::TrialNotStarted { trial_days } => Some(format!("Free trial \u{2014} starts when you first record ({}).", days(*trial_days))),
         LicenseStatus::Trial { days_left, trial_end_ms } => Some(format!(
-            "{} left \u{b7} ends {}. After that Mnema switches to Read-Only Mode \u{2014} your history stays searchable, only new recording pauses until you buy.",
+            "{} left{}. After that Mnema switches to Read-Only Mode \u{2014} your history stays searchable, only new recording pauses until you buy.",
             days(*days_left),
-            date(*trial_end_ms, cx)
+            date(*trial_end_ms, offset).map_or_else(String::new, |d| format!(" \u{b7} ends {d}"))
         )),
         LicenseStatus::Licensed { name, email, activation, in_window, update_through_ms } => {
-            let who = if name.is_empty() { email.clone() } else { name.clone() };
+            let who = [name, email].into_iter().map(|s| s.trim()).find(|s| !s.is_empty());
+            let licensed = who.map_or_else(|| "Licensed".to_string(), |w| format!("Licensed to {w}"));
             match activation {
                 Activation::Pending { provisional_days_left } => Some(format!(
-                    "Licensed to {who}. Finishing activation\u{2026} ({} to connect).",
+                    "{licensed}. Finishing activation\u{2026} ({} to connect).",
                     days(*provisional_days_left)
                 )),
                 Activation::Activated => {
-                    let mut parts = vec![format!("Licensed to {who}")];
+                    let mut parts = vec![licensed];
                     if *in_window {
-                        parts.push(format!("updates included through {}", date(*update_through_ms, cx)));
+                        // Svelte: "updates included" when the date is out of range.
+                        parts.push(date(*update_through_ms, offset).map_or_else(
+                            || "updates included".into(),
+                            |d| format!("updates included through {d}"),
+                        ));
                     }
                     Some(format!("{}.", parts.join(" \u{b7} ")))
                 }
@@ -99,7 +106,10 @@ fn inline(st: &LicenseStatus, cx: &gpui_kit::App) -> Option<(Tone, &'static str,
         LicenseStatus::Licensed { in_window: false, update_through_ms, .. } => Some((
             Tone::Warn,
             icons::INFO,
-            format!("Update window lapsed {} \u{2014} you keep this version forever; renew for new builds.", date(*update_through_ms, cx)),
+            format!(
+                "Update window lapsed{} \u{2014} you keep this version forever; renew for new builds.",
+                date(*update_through_ms, offset(cx)).map_or_else(String::new, |d| format!(" {d}"))
+            ),
         )),
         _ => None,
     }
@@ -107,7 +117,7 @@ fn inline(st: &LicenseStatus, cx: &gpui_kit::App) -> Option<(Tone, &'static str,
 
 pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
     let st = s.data.license.as_ref();
-    let mut status = row("Status").desc_opt(st.and_then(|st| hint(st, cx)));
+    let mut status = row("Status").desc_opt(st.and_then(|st| hint(st, offset(cx))));
     if let Some((label, kind)) = st.and_then(badge) {
         status = status.extra(chip(label, kind, p));
     }
@@ -252,4 +262,65 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         p,
     )
     .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const UTC: time::UtcOffset = time::UtcOffset::UTC;
+
+    fn licensed(name: &str, email: &str, through: i64) -> LicenseStatus {
+        LicenseStatus::Licensed {
+            update_through_ms: through,
+            in_window: true,
+            email: email.into(),
+            name: name.into(),
+            activation: Activation::Activated,
+        }
+    }
+
+    #[test]
+    fn hint_never_leaves_an_empty_value_dangling() {
+        // Real app: a dev key with no update expiry (i64::MAX) read
+        // "Licensed to Dev · updates included through ." (capture 13).
+        assert_eq!(
+            hint(&licensed("Dev", "", i64::MAX), UTC).as_deref(),
+            Some("Licensed to Dev \u{b7} updates included.")
+        );
+        assert_eq!(
+            hint(&licensed("Dev", "", 1_794_560_520_000), UTC).as_deref(),
+            Some("Licensed to Dev \u{b7} updates included through Nov 13, 2026.")
+        );
+        // No name: the email (Svelte's `name || email`); neither: plain "Licensed".
+        assert_eq!(
+            hint(&licensed("", "a@b.c", i64::MAX), UTC).as_deref(),
+            Some("Licensed to a@b.c \u{b7} updates included.")
+        );
+        assert_eq!(
+            hint(&licensed(" ", "", i64::MAX), UTC).as_deref(),
+            Some("Licensed \u{b7} updates included.")
+        );
+        let trial = LicenseStatus::Trial {
+            days_left: 1,
+            trial_end_ms: i64::MAX,
+        };
+        assert!(hint(&trial, UTC)
+            .unwrap()
+            .starts_with("1 day left. After that"));
+        let trial = LicenseStatus::Trial {
+            days_left: 9,
+            trial_end_ms: 1_794_560_520_000,
+        };
+        assert!(hint(&trial, UTC)
+            .unwrap()
+            .starts_with("9 days left \u{b7} ends Nov 13, 2026."));
+        for st in [licensed("", "", i64::MAX), trial] {
+            let h = hint(&st, UTC).unwrap();
+            assert!(
+                !h.contains(" .") && !h.contains("to .") && !h.contains("through ."),
+                "{h}"
+            );
+        }
+    }
 }

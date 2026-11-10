@@ -6,7 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, AnyElement, Context, Hsla};
 use serde_json::Value;
 
-use super::readouts::{self, disk_at, gb, lane_detail, lane_word, meter_bars};
+use super::readouts::{self, disk_at, disk_legend, gb, lane_detail, lane_word, meter_bars};
 use super::tabs::{clock, h, sec};
 use super::DebugWindow;
 use crate::settings::model::Json;
@@ -515,27 +515,11 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                     .font_family(FONT_MONO)
                     .text_size(text::XS)
                     .text_color(p.text_subtle)
-                    .child(div().absolute().left_0().child(if disk_at(pa) < 0.12 {
-                        format!("pause {}", gb(pa))
-                    } else {
-                        "0".into()
-                    }))
-                    .when(disk_at(pa) >= 0.12, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .left(relative(disk_at(pa)))
-                                .child(format!("pause {}", gb(pa))),
-                        )
-                    })
-                    .when(split, |d| {
-                        d.child(
-                            div()
-                                .absolute()
-                                .left(relative(disk_at(ra)))
-                                .child(format!("resume {}", gb(ra))),
-                        )
-                    })
+                    .children(
+                        disk_legend(pa, ra)
+                            .into_iter()
+                            .map(|(at, label)| div().absolute().left(relative(at)).child(label)),
+                    )
                     .child(div().absolute().right_0().child("25 GB +")),
             );
     }

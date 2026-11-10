@@ -397,3 +397,86 @@ fn a_third_party_notice_opens_its_source_url(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(cx.opened_url(), Some(url));
 }
+
+/// The rail tracks the section at the top of the column as the user scrolls
+/// (`scroll-spy.ts`). Real app: "Providers" stayed lit over Transcription
+/// (capture 43): GPUI's tracked child bounds are content positions, and the spy
+/// read them as on-screen ones, so every scroll fell back to the first section.
+#[gpui_kit::test]
+fn rail_follows_scrolling_through_intelligence(cx: &mut TestAppContext) {
+    use gpui_kit::{InputEvent as _, ScrollDelta};
+    let (window, v, _) = open(cx, false);
+    v.update(cx, |s, cx| s.open_tab("ai", cx));
+    frame(cx, window);
+    frame(cx, window);
+    // Each section's top, measured with the column at the top.
+    let (ids, tops, max) = v.read_with(cx, |s, _| {
+        assert_eq!(f32::from(s.scroll.offset().y), 0.);
+        let view = s.scroll.bounds();
+        let tops: Vec<f32> = (0..s.items.len())
+            .map(|ix| {
+                f32::from(s.scroll.bounds_for_item(s.item_base + ix).unwrap().top() - view.top())
+            })
+            .collect();
+        (s.items.clone(), tops, f32::from(s.scroll.max_offset().y))
+    });
+    assert!(ids.len() >= 5, "Intelligence has its sections: {ids:?}");
+    let mut at = 0f32;
+    let mut stops = (1..ids.len())
+        .chain((0..ids.len() - 1).rev())
+        .collect::<Vec<_>>();
+    stops.push(0);
+    for ix in stops {
+        // Park this section's top a little under the column top, as a wheel would.
+        let target = (tops[ix] - 40.).clamp(0., max);
+        cx.update_window(window.into(), |_, window, cx| {
+            // A wheel over the column (right of the rail, under the bar).
+            let position = gpui_kit::point(px(900.), px(400.));
+            window.dispatch_event(
+                gpui_kit::MouseMoveEvent {
+                    position,
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+            window.dispatch_event(
+                gpui_kit::ScrollEvent {
+                    position,
+                    delta: ScrollDelta::Pixels(gpui_kit::point(px(0.), px(at - target))),
+                    ..Default::default()
+                }
+                .to_platform_input(),
+                cx,
+            );
+        })
+        .unwrap();
+        at = target;
+        frame(cx, window);
+        let want = if target >= max - 2. {
+            *ids.last().unwrap()
+        } else {
+            ids[ix]
+        };
+        v.read_with(cx, |s, _| {
+            assert_eq!(
+                f32::from(-s.scroll.offset().y).round(),
+                target.round(),
+                "scrolled to {ix}"
+            );
+            assert_eq!(s.section, want, "stop {ix} at {target} px");
+        });
+    }
+    // A rail click from a scrolled column parks its section 24 px under the top.
+    let from = (tops[3] - 40.).clamp(0., max);
+    v.update(cx, |s, cx| {
+        s.scroll.set_offset(gpui_kit::point(px(0.), px(-from)));
+        s.navigate(ids[1], cx);
+    });
+    frame(cx, window);
+    v.read_with(cx, |s, _| {
+        let want = (tops[1] - 24.).clamp(0., max);
+        assert_eq!(f32::from(-s.scroll.offset().y).round(), want.round());
+        assert_eq!(s.section, ids[1]);
+    });
+}

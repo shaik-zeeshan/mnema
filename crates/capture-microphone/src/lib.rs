@@ -1758,6 +1758,11 @@ pub fn list_microphone_devices() -> Result<Vec<MicrophoneDevice>, CaptureErrorRe
 
         let id = device.unique_id().to_string();
         let name = device.localized_name().to_string();
+        // Our own system-audio aggregate: never a microphone, so a saved
+        // preference pointing at it resolves as "not available".
+        if MicrophoneDevice::is_mnema_system_audio(&id, &name) {
+            continue;
+        }
         let is_default = default_device_id.as_deref() == Some(id.as_str());
         devices.push(MicrophoneDevice {
             id,

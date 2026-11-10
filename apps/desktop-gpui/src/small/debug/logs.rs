@@ -99,19 +99,25 @@ pub fn tab(
             .h(size::H_SM)
             .pl(px(8.)),
         )
-        .child(div().flex().gap(px(2.)).overflow_hidden().children(
-            LOG_FEATURES.iter().enumerate().map(|(i, (label, _))| {
-                Button::new(nid("dv-feat", i as u64), *label)
-                    .ghost()
-                    .sm()
-                    .h(px(22.))
-                    .pressed(w.feature == i)
-                    .on_click(cx.listener(move |w, _, _, cx| {
-                        w.feature = i;
-                        cx.notify();
-                    }))
-            }),
-        ));
+        // Wraps rather than clipping: at 440 px "Meaning index" and the rest
+        // fell off the right edge with no sign more existed.
+        .child(
+            div()
+                .flex()
+                .flex_wrap()
+                .gap(px(2.))
+                .children(LOG_FEATURES.iter().enumerate().map(|(i, (label, _))| {
+                    Button::new(nid("dv-feat", i as u64), *label)
+                        .ghost()
+                        .sm()
+                        .h(px(22.))
+                        .pressed(w.feature == i)
+                        .on_click(cx.listener(move |w, _, _, cx| {
+                            w.feature = i;
+                            cx.notify();
+                        }))
+                })),
+        );
 
     let offset = crate::ui::clock::now(cx).offset().whole_seconds() as i64;
     let lines: Vec<String> = tail

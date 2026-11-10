@@ -436,7 +436,10 @@ pub fn render(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settin
         Some(line(
             Tone::Warn,
             icons::INFO,
-            format!("Isn\u{2019}t ready \u{2014} {reason}"),
+            format!(
+                "Isn\u{2019}t ready \u{2014} {}",
+                crate::insights::model::reason_label(&reason, Some(&d))
+            ),
             p,
         ))
     } else {

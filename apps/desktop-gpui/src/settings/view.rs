@@ -42,7 +42,8 @@ pub fn scroll_to(s: &mut Settings, section: SectionId) {
         Some(b) => {
             let view = s.scroll.bounds();
             let offset = s.scroll.offset();
-            let content_top = b.top() - view.top() - offset.y;
+            // Tracked child bounds are content positions (unscrolled).
+            let content_top = b.top() - view.top();
             let max = s.scroll.max_offset().y;
             let y = (content_top - px(SCROLL_MARGIN)).max(px(0.)).min(max);
             s.scroll.set_offset(point(offset.x, -y));
@@ -59,13 +60,16 @@ fn spy(s: &mut Settings) {
         return;
     }
     let view = s.scroll.bounds();
+    // Tracked child bounds are content positions; the offset (≤ 0) turns them
+    // into tops within the column. Without it every scroll read as the top.
+    let y = s.scroll.offset().y;
     let tops: Vec<(SectionId, f32)> = s
         .items
         .iter()
         .enumerate()
         .filter_map(|(ix, id)| {
             let b = s.scroll.bounds_for_item(s.item_base + ix)?;
-            Some((*id, f32::from(b.top() - view.top())))
+            Some((*id, f32::from(b.top() - view.top() + y)))
         })
         .collect();
     let at_bottom = f32::from(-s.scroll.offset().y) >= f32::from(s.scroll.max_offset().y) - 2.;

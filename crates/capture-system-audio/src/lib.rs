@@ -64,7 +64,7 @@ pub fn supports_system_audio_capture() -> bool {
 /// Greppable marker for every tap lifecycle and rebuild event in `rust.log`.
 pub const LOG_PREFIX: &str = "system-audio-tap:";
 
-const AGGREGATE_UID_PREFIX: &str = "mnema-system-audio-";
+const AGGREGATE_UID_PREFIX: &str = capture_types::SYSTEM_AUDIO_AGGREGATE_UID_PREFIX;
 
 /// Aggregate UIDs must be unique per pid *and* per instance: concurrent
 /// instances sharing a UID was a real cpal bug, and a rebuild mints a new
