@@ -355,3 +355,112 @@ fn a_removed_clip_says_so_and_a_late_clip_answer_is_dropped(cx: &mut TestAppCont
     );
     assert!(!player.state().1);
 }
+
+fn tool(app: &str, path: Option<&str>) -> capture_types::ToolActivityEntry {
+    capture_types::ToolActivityEntry {
+        kind: "search".into(),
+        label: "Searched your captures".into(),
+        app: Some(app.into()),
+        app_icon_path: path.map(str::to_string),
+    }
+}
+
+fn lane(label: &str, start: &str, app: Option<&str>) -> capture_types::TimelineItem {
+    capture_types::TimelineItem {
+        label: label.into(),
+        start: start.into(),
+        end: None,
+        app: app.map(str::to_string),
+        category: Some("research".into()),
+    }
+}
+
+/// Tool rows (steps open) and a timeline block naming Safari, Notes, Figma
+/// and an app the backend already resolved.
+fn with_apps(
+    cx: &mut TestAppContext,
+    icons: &[(&str, &str)],
+) -> (WindowHandle<Root>, Entity<Chat>, Arc<FixtureSources>) {
+    let src = FixtureSources {
+        icons: icons
+            .iter()
+            .map(|(a, p)| (a.to_string(), PathBuf::from(p)))
+            .collect(),
+        ..Default::default()
+    };
+    let (w, chat, src, _) = setup(cx, src, SEG);
+    chat.update(cx, |c, cx| {
+        let t = &mut c.turns[0];
+        t.view.tool_activities = vec![
+            tool("Safari", None),
+            tool(" safari", None),
+            tool("Notes", None),
+            tool("Zed", Some("/given/zed.png")),
+        ];
+        t.view.blocks = vec![capture_types::AnswerBlock::Timeline {
+            title: Some("Tuesday morning".into()),
+            items: vec![
+                lane("Read the notes", "9:00 AM", Some("Safari (Release notes)")),
+                lane("Design review", "10:30 AM", Some("Figma")),
+                lane("Walk", "12:00 PM", None),
+            ],
+        }];
+        c.steps_open.insert(0);
+        cx.notify();
+    });
+    (w, chat, src)
+}
+
+#[gpui_kit::test]
+fn app_icons_are_asked_once_per_app_in_one_batch(cx: &mut TestAppContext) {
+    let (w, chat, src) = with_apps(cx, &[("Safari", "/nonexistent/safari.png")]);
+    draw(cx, w, &chat);
+    draw(cx, w, &chat);
+    let asked: Vec<_> = src
+        .calls()
+        .into_iter()
+        .filter(|c| c.starts_with("icons"))
+        .collect();
+    // Case and spacing don't make a new app; the backend's own path isn't re-asked.
+    assert_eq!(asked, [r#"icons ["Safari", "Notes", "Figma"]"#]);
+    chat.read_with(cx, |c, _| {
+        assert_eq!(
+            c.icon_for("SAFARI "),
+            Some(PathBuf::from("/nonexistent/safari.png"))
+        );
+        // A miss stays a miss (the initial shows) and is never asked again.
+        assert_eq!(c.icon_for("Notes"), None);
+    });
+    chat.update(cx, |c, cx| c.reset(Some("c2".into()), cx));
+    draw(cx, w, &chat);
+    assert_eq!(
+        count(&src, "icons"),
+        1,
+        "icons are facts about apps, kept across chats"
+    );
+}
+
+#[gpui_kit::test]
+fn the_timeline_block_renders_its_intervals_on_the_rail(cx: &mut TestAppContext) {
+    let (w, chat, _) = with_apps(cx, &[]);
+    draw(cx, w, &chat);
+    cx.update_window(w.into(), |_, window, _| {
+        let rail = window.find("chat-timeline-0-0");
+        assert_eq!(rail.label(), Some("Tuesday morning"));
+        let rows = window.find_all_by_role(gpui_kit::Role::ListItem);
+        let labels: Vec<_> = rows
+            .iter()
+            .filter_map(|r| r.label().map(str::to_string))
+            .filter(|l| l.contains("AM") || l.contains("PM"))
+            .collect();
+        assert_eq!(
+            labels,
+            [
+                "9:00 AM, Read the notes, Safari",
+                "10:30 AM, Design review, Figma",
+                "12:00 PM, Walk"
+            ]
+        );
+    })
+    .unwrap();
+}

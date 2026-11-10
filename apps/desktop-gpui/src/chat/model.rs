@@ -263,4 +263,6 @@ pub struct ChatData {
     /// None while availability loads.
     pub availability: Option<Availability>,
     pub engine: Engine,
+    /// What a failed turn's copy names providers from (`labelFor(settings)`).
+    pub settings: Option<capture_types::RecordingSettings>,
 }

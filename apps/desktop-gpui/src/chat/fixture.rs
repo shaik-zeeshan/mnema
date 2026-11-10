@@ -32,6 +32,7 @@ pub fn chat_fixture(state: &str) -> anyhow::Result<ChatFixture> {
                 .as_ref()
                 .map(super::data::engine)
                 .unwrap_or_default(),
+            settings,
         },
         open: get(&map, &["get_conversation"])?,
         snapshot: get(&map, &["ask_ai_snapshot"])?,
@@ -52,6 +53,10 @@ pub struct FixtureSources {
     pub ocr: std::collections::HashMap<i64, Vec<crate::timeline::model::OcrBox>>,
     /// The receipt's strip over any span.
     pub strip: Vec<(i64, i64)>,
+    /// `resolve_app_icons`: requested name → icon PNG.
+    pub icons: std::collections::HashMap<String, std::path::PathBuf>,
+    /// `ai_runtime_chatgpt_begin_login`: (code, url); `None` fails it.
+    pub login: Option<(String, String)>,
     pub calls: std::sync::Mutex<Vec<String>>,
 }
 
@@ -97,5 +102,20 @@ impl super::source_data::SourceBackend for FixtureSources {
     fn frames(&self, start: i64, end: i64) -> super::source_data::Res<Vec<(i64, i64)>> {
         self.log(format!("frames {start}..{end}"));
         Ok(self.strip.clone())
+    }
+    fn app_icons(&self, apps: &[String]) -> Vec<(String, std::path::PathBuf)> {
+        self.log(format!("icons {apps:?}"));
+        apps.iter()
+            .filter_map(|a| Some((a.clone(), self.icons.get(a)?.clone())))
+            .collect()
+    }
+    fn chatgpt_begin(&self, provider: &str) -> super::source_data::Res<(String, String)> {
+        self.log(format!("chatgpt_begin {provider}"));
+        self.login
+            .clone()
+            .ok_or_else(|| "OpenAI didn't answer.".into())
+    }
+    fn chatgpt_cancel(&self, provider: &str) {
+        self.log(format!("chatgpt_cancel {provider}"));
     }
 }

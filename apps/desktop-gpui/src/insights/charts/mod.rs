@@ -2,13 +2,16 @@
 //! so any surface can reuse them: `stacked_bar` (Where the time went),
 //! `heatmap` (focus by time of day), `sparkline` (confidence micro-trend),
 //! `line_chart` (the subject's confidence over time, `SubjectChart` + the
-//! `Timeline` geometry), `mini_bars` (ranked rows) and `confidence_bar`.
+//! `Timeline` geometry), `mini_bars` (ranked rows), `confidence_bar` and
+//! `timeline` (an answer's time-of-day rail).
 
 mod lines;
 mod stacked;
+pub mod timeline;
 
 pub use lines::{line_chart, sparkline, Line};
 pub use stacked::stacked_bar;
+pub use timeline::timeline;
 
 use capture_types::FocusLevel;
 use gpui_kit::prelude::*;

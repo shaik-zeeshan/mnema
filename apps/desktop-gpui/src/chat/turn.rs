@@ -12,11 +12,15 @@ use gpui_kit::{
     SharedString, Transformation,
 };
 
-use super::{blocks, format, prose, sources, Chat, ChatTurn};
+use std::path::PathBuf;
+
+use super::{blocks, format, prose, sources, turn_error, Chat, ChatTurn};
+use crate::insights::charts::timeline;
 use crate::theme::{self, motion, radius, size, space, text, Palette, FONT_MONO};
-use crate::ui::notice::{inline, notice};
+use crate::ui::app_icon::icon_or_initial;
+use crate::ui::notice::inline;
 use crate::ui::progress::spinner;
-use crate::ui::{icon, icon_button, nid, with_tip, Button, Tone};
+use crate::ui::{icon, icon_button, nid, with_tip, Tone};
 
 fn chevron(open: bool, p: &Palette) -> impl IntoElement {
     svg()
@@ -47,15 +51,16 @@ fn summary(id: SharedString, p: &Palette) -> gpui_kit::Stateful<Div> {
         .hover(move |s| s.text_color(hover))
 }
 
-fn app_chip(a: &ToolActivityEntry, p: &Palette) -> Option<Div> {
+/// `· [icon] App`: the backend's resolved path, else Chat's icon map, with
+/// the initial while it loads or when there is none.
+fn app_chip(chat: &Chat, a: &ToolActivityEntry, p: &Palette) -> Option<Div> {
     let app = a.app.clone()?;
-    let first = app
-        .chars()
-        .next()
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_default();
-    // shortcut: the letter fallback, not the app's icon (`resolve_app_icons` is
-    // wired for the Timeline; Chat's tool rows don't load icons yet).
+    let path = a
+        .app_icon_path
+        .as_ref()
+        .map(PathBuf::from)
+        .or_else(|| chat.icon_for(&app));
+    let bg = p.surface_hover;
     Some(
         div()
             .flex()
@@ -63,23 +68,23 @@ fn app_chip(a: &ToolActivityEntry, p: &Palette) -> Option<Div> {
             .gap(px(4.))
             .text_color(p.text_subtle)
             .child("·")
-            .child(
+            .child(icon_or_initial(path, &app, 13., move || {
                 div()
                     .size(px(13.))
+                    .flex_none()
                     .rounded(px(3.))
-                    .bg(p.surface_hover)
+                    .bg(bg)
                     .flex()
                     .items_center()
                     .justify_center()
                     .font_weight(theme::W_SEMIBOLD)
                     .text_size(px(8.))
-                    .child(SharedString::from(first)),
-            )
+            }))
             .child(SharedString::from(app)),
     )
 }
 
-fn steps_list(t: &ChatTurn, live: bool, p: &Palette) -> Div {
+fn steps_list(chat: &Chat, t: &ChatTurn, live: bool, p: &Palette) -> Div {
     let n = t.view.tool_activities.len();
     div()
         .flex()
@@ -114,7 +119,7 @@ fn steps_list(t: &ChatTurn, live: bool, p: &Palette) -> Div {
                         }),
                 )
                 .child(SharedString::from(a.label.clone()))
-                .children(app_chip(a, p))
+                .children(app_chip(chat, a, p))
                 // Rows rise in (mx-rise 220 ms expo).
                 .with_animation(
                     nid(&format!("chat-step-rise-{}", t.view.turn_index), i as u64),
@@ -184,7 +189,7 @@ fn steps(chat: &Chat, t: &ChatTurn, p: &Palette, cx: &mut Context<Chat>) -> Opti
             .mb(space::S4)
             .child(head)
             .when(open && !t.view.tool_activities.is_empty(), |d| {
-                d.child(steps_list(t, live, p))
+                d.child(steps_list(chat, t, live, p))
             }),
     )
 }
@@ -242,139 +247,7 @@ fn reasoning(chat: &Chat, t: &ChatTurn, p: &Palette, cx: &mut Context<Chat>) -> 
     )
 }
 
-fn error_notice(
-    chat: &Chat,
-    t: &ChatTurn,
-    trailing: bool,
-    p: &Palette,
-    cx: &mut Context<Chat>,
-) -> Div {
-    let copy = error_copy(t.view.error_message.as_deref(), t.error_kind.as_deref());
-    let acts = if trailing {
-        let disabled = chat.streaming || chat.available() != Some(true);
-        vec![match copy.action {
-            Action::Settings => Button::new("chat-err-settings", "Open settings")
-                .sm()
-                .on_click(|_, _, cx| {
-                    cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
-                })
-                .into_any_element(),
-            Action::NewChat => Button::new("chat-err-new", "New chat")
-                .sm()
-                .on_click(cx.listener(|this, _, window, cx| this.new_chat(None, false, window, cx)))
-                .into_any_element(),
-            Action::Retry => Button::new("chat-err-retry", "Retry")
-                .sm()
-                .icon("icons/rotate-ccw.svg")
-                .disabled(disabled)
-                .on_click(cx.listener(|this, _, window, cx| this.regenerate(window, cx)))
-                .into_any_element(),
-        }]
-    } else {
-        Vec::new()
-    };
-    notice(
-        copy.tone,
-        copy.icon,
-        copy.title,
-        Some(copy.text.into()),
-        acts,
-        p,
-    )
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Action {
-    Retry,
-    Settings,
-    NewChat,
-}
-
-struct ErrorCopy {
-    tone: Tone,
-    icon: SharedString,
-    title: &'static str,
-    text: String,
-    action: Action,
-}
-
-/// `isReasonCode`: `snake_case`, optionally `:<id>`, no spaces.
-pub fn is_reason_code(m: &str) -> bool {
-    let (head, tail) = m.split_once(':').map_or((m, None), |(h, t)| (h, Some(t)));
-    !head.is_empty()
-        && head.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')
-        && tail.is_none_or(|t| !t.is_empty() && !t.chars().any(char::is_whitespace))
-}
-
-/// `turnErrorCopy` + ChatErrorTurn's head: plain copy and the ONE action; a raw
-/// resolve code never reaches the screen.
-/// shortcut: reason codes map to generic copy (no provider names, no ChatGPT
-/// "Sign in again" button) until S13 brings `aiRuntimeReasonLabelFor` across.
-fn error_copy(message: Option<&str>, kind: Option<&str>) -> ErrorCopy {
-    let raw = message.unwrap_or("").trim();
-    let code = is_reason_code(raw);
-    let unreachable = kind == Some("unreachable") || raw.contains("unreachable");
-    let alert: SharedString = IconName::TriangleAlert.path();
-    if code {
-        if unreachable {
-            return ErrorCopy {
-                tone: Tone::Warn,
-                icon: "icons/cloud-off.svg".into(),
-                title: "Can’t reach the AI provider right now",
-                text: "Can't reach the AI provider right now — your sign-in is fine.".into(),
-                action: Action::Retry,
-            };
-        }
-        return ErrorCopy {
-            tone: Tone::Danger,
-            icon: alert,
-            title: "The AI settings need a look",
-            text: "The reasoning engine needs attention in Settings.".into(),
-            action: Action::Settings,
-        };
-    }
-    let text = if raw.is_empty() {
-        "The engine couldn't answer.".to_string()
-    } else {
-        raw.to_string()
-    };
-    let (tone, title, action) = match kind {
-        _ if unreachable => (
-            Tone::Warn,
-            "Can’t reach the AI provider right now",
-            Action::Retry,
-        ),
-        Some("quota") => (
-            Tone::Warn,
-            "The provider is limiting requests",
-            Action::Retry,
-        ),
-        Some("context_too_long") => (
-            Tone::Warn,
-            "This chat is too long for the model",
-            Action::NewChat,
-        ),
-        Some("settings") | Some("auth") => (
-            Tone::Danger,
-            "The AI settings need a look",
-            Action::Settings,
-        ),
-        _ => (Tone::Danger, "Couldn’t answer this one", Action::Retry),
-    };
-    ErrorCopy {
-        tone,
-        icon: if unreachable {
-            "icons/cloud-off.svg".into()
-        } else {
-            alert
-        },
-        title,
-        text,
-        action,
-    }
-}
-
-fn answer(t: &ChatTurn, p: &Palette) -> Div {
+fn answer(chat: &Chat, t: &ChatTurn, p: &Palette) -> Div {
     let n = t.view.blocks.len();
     div()
         .flex()
@@ -415,7 +288,14 @@ fn answer(t: &ChatTurn, p: &Palette) -> Div {
                         AnswerBlock::Timeline { title, items } => blocks::panel(
                             None,
                             None,
-                            blocks::timeline(title.as_deref(), items, p).into_any_element(),
+                            timeline(
+                                &format!("chat-timeline-{}-{bi}", t.view.turn_index),
+                                title.as_deref(),
+                                items,
+                                &|app| chat.icon_for(app),
+                                p,
+                            )
+                            .into_any_element(),
                             p,
                         )
                         .into_any_element(),
@@ -591,7 +471,7 @@ pub fn render(
         if let Some(s) = steps(chat, t, p, cx) {
             v.push(s.into_any_element());
         }
-        v.push(error_notice(chat, t, trailing, p, cx).into_any_element());
+        v.push(turn_error::error_notice(chat, t, trailing, p, cx).into_any_element());
         v
     } else {
         let mut v = Vec::new();
@@ -603,7 +483,7 @@ pub fn render(
                 .flex()
                 .flex_col()
                 .children(reasoning(chat, t, p, cx))
-                .child(answer(t, p))
+                .child(answer(chat, t, p))
                 .into_any_element(),
         );
         if t.view.phase == "done" {

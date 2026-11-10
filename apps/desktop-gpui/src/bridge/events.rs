@@ -182,6 +182,14 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 crate::licence::on_event(&licence, &event, cx);
             }
         }
+        HostMsg::Event(event @ CoreEvent::ChatgptLoginUpdate(_)) => {
+            // Chat's inline "Sign in again" first; onboarding still gets it.
+            if let (CoreEvent::ChatgptLoginUpdate(v), Some(shell)) = (&event, shell.upgrade()) {
+                let chat = shell.read(cx).chat.clone();
+                chat.update(cx, |chat, cx| chat.on_chatgpt_update(v, cx));
+            }
+            crate::onboarding::on_event(&event, cx);
+        }
         // Onboarding takes download progress.
         HostMsg::Event(event) => crate::onboarding::on_event(&event, cx),
         HostMsg::OpenWindow(req) if crate::small::open_request(&req, cx) => {}

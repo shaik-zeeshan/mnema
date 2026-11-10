@@ -51,6 +51,7 @@ pub async fn load(core: &AppCore, query: &str) -> ChatData {
         query: query.to_string(),
         availability,
         engine: settings.as_ref().map(engine).unwrap_or_default(),
+        settings,
     }
 }
 

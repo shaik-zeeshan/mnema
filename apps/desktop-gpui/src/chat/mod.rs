@@ -11,6 +11,7 @@ pub mod data;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 pub mod format;
+mod icons;
 pub(crate) mod list;
 pub mod model;
 pub mod peek;
@@ -20,6 +21,7 @@ pub mod source_data;
 mod sources;
 mod thread;
 mod turn;
+pub mod turn_error;
 
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -114,6 +116,11 @@ pub struct Chat {
     pub thumbs: HashMap<i64, Option<PathBuf>>,
     thumbs_asked: HashSet<i64>,
     thumbs_gen: u64,
+    /// App name (trimmed, lower-cased) → its icon, for tool rows and timeline chips.
+    pub icons: HashMap<String, PathBuf>,
+    icons_asked: HashSet<String>,
+    /// The inline ChatGPT sign-in a failed turn offers (provider id, state).
+    pub login: Option<(String, turn_error::Login)>,
     pub thumb_images: Entity<FrameImages>,
     /// The peek's hero and the receipt's screen, decoded to the hero's size.
     pub images: Entity<FrameImages>,
@@ -233,6 +240,9 @@ impl Chat {
             thumbs: HashMap::new(),
             thumbs_asked: HashSet::new(),
             thumbs_gen: 0,
+            icons: HashMap::new(),
+            icons_asked: HashSet::new(),
+            login: None,
             thumb_images: FrameImages::with_decoded(
                 Default::default(),
                 sources::THUMBS_DECODED,
@@ -309,6 +319,8 @@ impl Chat {
         self.thumbs_asked.clear();
         self.thumbs_gen += 1;
         self.copied = None;
+        // Like `ChatgptConnect` unmounting: the backend's poll runs on.
+        self.login = None;
         self.steps_open.clear();
         self.reason_open.clear();
         cx.notify();
@@ -534,6 +546,7 @@ impl Render for Chat {
                 .update(cx, |s, cx| s.set_placeholder(text, window, cx));
         }
         self.request_thumbs(cx);
+        self.request_icons(cx);
         self.tick_clip(window, cx);
         let narrow = window.viewport_size().width <= size::CHAT_LIST_BREAKPOINT;
         div()

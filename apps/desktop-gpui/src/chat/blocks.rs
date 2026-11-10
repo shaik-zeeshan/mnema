@@ -1,5 +1,6 @@
 //! The graphical answer blocks (`ChatTurn.svelte` + the Insights charts):
-//! bars (MiniBars), dossier (chips + ConfidenceBar) and timeline. They carry
+//! bars (MiniBars), dossier (chips + ConfidenceBar), and Quick Recall's side
+//! timeline (Chat's is `insights::charts::timeline`). They carry
 //! already-parsed data; nothing here parses.
 
 use capture_types::{BarsItem, DossierItem, TimelineItem};
@@ -27,9 +28,10 @@ pub fn panel(title: Option<&str>, label: Option<&str>, body: AnyElement, p: &Pal
                     .child(SharedString::from(t.to_string()))
             }))
             .children(label.map(|l| {
+                // `.mx-label`: sans 500, subtle.
                 div()
                     .ml_auto()
-                    .font_family(FONT_MONO)
+                    .font_weight(theme::W_MEDIUM)
                     .text_size(text::XS)
                     .text_color(p.text_subtle)
                     .child(SharedString::from(l.to_string()))
@@ -188,19 +190,13 @@ pub fn dossier(items: &[DossierItem], p: &Palette) -> Div {
 }
 
 fn category_color(category: Option<&str>, p: &Palette) -> Hsla {
-    match category {
-        Some("research") => p.cat_research,
-        Some("creating") => p.cat_creating,
-        Some("communication") => p.cat_communication,
-        Some("learning") => p.cat_learning,
-        Some("personal") => p.cat_personal,
-        _ => p.chart_grey_3,
-    }
+    let c = category.and_then(|c| serde_json::from_value(c.into()).ok());
+    crate::insights::stats::category_color(c, p)
 }
 
-/// Timeline: one row per interval (category dot, label, range, app).
-/// shortcut: a list, not the Insights rail with app icons (`insights/charts`
-/// has the pieces; the block doesn't use them yet).
+/// Quick Recall's side timeline (`AskPane`'s `.rc-tl`): one row per interval.
+/// shortcut: rows also show the app and the end time, which `.rc-tl` doesn't;
+/// align them in Quick Recall's own parity pass (this brief covered Chat).
 pub fn timeline(title: Option<&str>, items: &[TimelineItem], p: &Palette) -> Div {
     div()
         .flex()

@@ -303,9 +303,9 @@ fn model_names_read_like_the_svelte_ones() {
 
 #[test]
 fn reason_codes_are_detected() {
-    assert!(turn::is_reason_code("no_providers"));
-    assert!(turn::is_reason_code("needs_reconnect:chatgpt"));
-    assert!(!turn::is_reason_code("The engine broke."));
+    assert!(turn_error::is_reason_code("no_providers"));
+    assert!(turn_error::is_reason_code("needs_reconnect:chatgpt"));
+    assert!(!turn_error::is_reason_code("The engine broke."));
 }
 
 #[cfg(feature = "fixtures")]

@@ -1,6 +1,7 @@
-//! What an answer's sources read beyond the cited facts: chip thumbnails, the
-//! frame peek (size, image, OCR) and the audio receipt's frame strip. Sync, run
-//! on the background executor. `CoreSources` hands each call to the surface that
+//! What a turn reads beyond the stream: chip thumbnails, the frame peek (size,
+//! image, OCR), the audio receipt's frame strip, app icons for tool rows and
+//! the timeline block, and the inline ChatGPT sign-in a failed turn offers.
+//! Sync, run on the background executor. `CoreSources` hands each call to the surface that
 //! already reads that app-core command; tests serve a fixture.
 
 use std::path::PathBuf;
@@ -34,6 +35,16 @@ pub trait SourceBackend: Send + Sync + 'static {
     fn frames(&self, _start_ms: i64, _end_ms: i64) -> Res<Vec<(i64, i64)>> {
         Err("no app core".into())
     }
+    /// `resolve_app_icons`: (requested name or bundle id, icon PNG); a miss is absent.
+    fn app_icons(&self, _apps: &[String]) -> Vec<(String, PathBuf)> {
+        Vec::new()
+    }
+    /// `ai_runtime_chatgpt_begin_login`: (user code, verify URL).
+    fn chatgpt_begin(&self, _provider: &str) -> Res<(String, String)> {
+        Err("no app core".into())
+    }
+    /// `ai_runtime_chatgpt_cancel_login`.
+    fn chatgpt_cancel(&self, _provider: &str) {}
 }
 
 /// No `AppCore` (a bare view).
@@ -75,5 +86,20 @@ impl SourceBackend for CoreSources {
     fn frames(&self, start_ms: i64, end_ms: i64) -> Res<Vec<(i64, i64)>> {
         use crate::insights::data::Backend as _;
         crate::insights::data::CoreBackend(self.0.clone()).frames(start_ms, end_ms)
+    }
+
+    fn app_icons(&self, apps: &[String]) -> Vec<(String, PathBuf)> {
+        use crate::timeline::data::Source as _;
+        crate::timeline::data::CoreSource(self.0.clone()).app_icons(apps)
+    }
+
+    fn chatgpt_begin(&self, provider: &str) -> Res<(String, String)> {
+        use crate::onboarding::data::Backend as _;
+        crate::onboarding::data::CoreBackend(self.0.clone()).chatgpt_begin(provider)
+    }
+
+    fn chatgpt_cancel(&self, provider: &str) {
+        use crate::onboarding::data::Backend as _;
+        crate::onboarding::data::CoreBackend(self.0.clone()).chatgpt_cancel(provider)
     }
 }

@@ -6,10 +6,14 @@
 
 use std::future::Future;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use gpui_kit::prelude::*;
-use gpui_kit::{img, px, App, Asset, ImageCacheError, ImageSource, Img, RenderImage};
+use gpui_kit::{
+    img, px, AnyElement, App, Asset, Div, ImageCacheError, ImageSource, Img, RenderImage,
+    SharedString,
+};
 use image::{imageops, Frame, RgbaImage};
 
 /// Where an icon's encoded bytes live.
@@ -98,6 +102,36 @@ pub fn app_icon(src: Src, size: f32) -> Img {
     .size(px(size))
 }
 
+/// `appIconFallback`: the name's first letter, upper-cased, or "?".
+pub fn initial(name: &str) -> String {
+    name.trim()
+        .chars()
+        .next()
+        .map_or_else(|| "?".into(), |c| c.to_uppercase().to_string())
+}
+
+/// `path`'s icon at `size`, or `tile` (a styled box) holding `name`'s initial
+/// when there is no path, while the file decodes, and if it fails to.
+pub fn icon_or_initial(
+    path: Option<PathBuf>,
+    name: &str,
+    size: f32,
+    tile: impl Fn() -> Div + 'static,
+) -> AnyElement {
+    let letter = SharedString::from(initial(name));
+    let tile = Rc::new(move || tile().child(letter.clone()).into_any_element());
+    match path {
+        None => tile(),
+        Some(path) => {
+            let (loading, failed) = (tile.clone(), tile);
+            app_icon(Src::File(path), size)
+                .with_loading(move || loading())
+                .with_fallback(move || failed())
+                .into_any_element()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +181,50 @@ mod tests {
         let image = decode(png.get_ref(), 2).unwrap();
         // Left output pixel = 1 blue + 1 clear: half alpha, still full blue (BGRA).
         assert_eq!(&image.as_bytes(0).unwrap()[..4], &[255, 0, 0, 128]);
+    }
+
+    /// Draws `icon_or_initial` and notes whether the initial's tile was drawn.
+    struct Either(Option<PathBuf>, std::rc::Rc<std::cell::Cell<bool>>);
+
+    impl Render for Either {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let drawn = self.1.clone();
+            drawn.set(false);
+            div().child(icon_or_initial(self.0.clone(), "Notes", 13., move || {
+                drawn.set(true);
+                div()
+            }))
+        }
+    }
+
+    fn tile_drawn(cx: &mut TestAppContext, path: Option<PathBuf>) -> bool {
+        let drawn = std::rc::Rc::new(std::cell::Cell::new(false));
+        let (view, cx) = cx.add_window_view(|_, _| Either(path, drawn.clone()));
+        cx.run_until_parked();
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        drawn.get()
+    }
+
+    /// The initial stands in with no path and for a file that can't decode;
+    /// a decoded icon replaces it.
+    #[gpui_kit::test]
+    fn the_initial_shows_until_an_icon_decodes(cx: &mut TestAppContext) {
+        assert!(tile_drawn(cx, None));
+        assert!(tile_drawn(cx, Some(PathBuf::from("/nonexistent/x.png"))));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("ok.png");
+        image::RgbaImage::from_pixel(64, 64, image::Rgba([0, 120, 0, 255]))
+            .save(&path)
+            .unwrap();
+        assert!(!tile_drawn(cx, Some(path)));
+    }
+
+    #[test]
+    fn the_initial_is_the_trimmed_first_letter_or_a_question_mark() {
+        assert_eq!(initial(" safari"), "S");
+        assert_eq!(initial("Zen Browser"), "Z");
+        assert_eq!(initial("  "), "?");
     }
 
     #[test]
