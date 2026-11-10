@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-10 18:15",
+ "updated": "2026-11-10 18:22",
  "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. All six issues from today's hands-on test have a committed fix: one is wired and five are built. Capture health in the status bar is built and wired. A signed dev build with all of it was opened on 10 Nov at 18:15. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
@@ -55,11 +55,6 @@
   }
  ],
  "now": [
-  {
-   "id": "Spacing",
-   "title": "Status popover spacing",
-   "detail": "The \"Building meaning index\" row gets the same gaps and alignment as the rows around it. Agent working."
-  },
   {
    "id": "Chat",
    "title": "Chat sources",
@@ -614,7 +609,7 @@
   {
    "id": "Approve",
    "title": "Screenshots to approve",
-   "detail": "Insights screens (all shift by 1 pt; the subject page restacks), the onboarding Models tab with the narrower Whisper picker, and the capture-health status bar after its spacing fix. Before/after sheets were opened in Preview."
+   "detail": "Capture health (with the spacing fix), the Insights screens and the onboarding Models tab. All on the \"Waiting for your approval\" page."
   },
   {
    "id": "Drive",
@@ -988,7 +983,7 @@
    "commit": "ed6e0e36",
    "state": "built and wired · screenshot awaiting approval",
    "awaiting": true,
-   "what": "The status bar now shows a source that is waiting (display asleep, system audio reconnecting), a disk-almost-full flag and a clock on PAUSED; the popover lists reconnecting sources and the \"Catching up\" backlog. This is a new screenshot state. You asked for better spacing on the \"Building meaning index\" row: that fix is being made now, so the picture below is the version before it.",
+   "what": "The status bar now shows a source that is waiting (display asleep, system audio reconnecting), a disk-almost-full flag and a clock on PAUSED; the popover lists reconnecting sources and the \"Catching up\" backlog. This is a new screenshot state. You asked for better spacing on the \"Building meaning index\" row: that fix is made; the corrected picture is on the \"Waiting for your approval\" page, and the one below is the version before it.",
    "rows": [
     {
      "heading": "Status bar and popover",
@@ -1012,6 +1007,130 @@
    "commit": "c6fdbe9b (after 8a1fcb2d)",
    "state": "wired",
    "what": "No picture: this changes behaviour, not looks. Settings now shows the microphone, capture support and permissions at once, and the slower keychain and network checks follow, each given at most 10 seconds. A check that fails says \"couldn't check\" instead of showing \"Checking…\" forever. The stuck screen resolution and the microphone error in your screenshot were fixed earlier by 8a1fcb2d, which wired Settings to the real backend; your screenshot came from the build before it. Not driven yet."
+  }
+ ],
+ "approve_verdict": "Three sets need your yes: the capture-health status bar (now with the spacing you asked for), the Insights screens changed by the window-size fix, and the onboarding Models tab. One decision too: whether Settings and onboarding should be centred on a large window.",
+ "approve": [
+  {
+   "anchor": "approve-health",
+   "title": "Capture health: status bar and popover",
+   "toc": "Capture health",
+   "commit": "ed6e0e36 + spacing fix",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "A new screenshot state: a sleeping display, reconnecting system audio and a \"Catching up\" backlog. You asked for better spacing on the \"Building meaning index\" row. Its label now lines up with \"Reading\" and \"Transcribing\", the gap above it matches the gap between two normal rows, and the bar has a little more room. Tauri is as tight as GPUI was, so this is a deliberate improvement over Tauri.",
+   "rows": [
+    {
+     "heading": "The popover, before and after the spacing fix",
+     "shots": [
+      {
+       "file": "approve-popover-light.jpg",
+       "caption": "Light. Left: before. Right: after."
+      },
+      {
+       "file": "approve-popover-dark.jpg",
+       "caption": "Dark. Left: before. Right: after."
+      }
+     ]
+    },
+    {
+     "heading": "The whole screenshot",
+     "shots": [
+      {
+       "file": "approve-health-light.jpg",
+       "caption": "Light, with the spacing fix."
+      },
+      {
+       "file": "approve-health-dark.jpg",
+       "caption": "Dark, with the spacing fix."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "approve-insights",
+   "title": "Insights after the window-size fix",
+   "toc": "Insights",
+   "commit": "a5cd99ce",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "Two kinds of change. The subject page changes for real at the default window size: beside the evidence drawer the page is narrow enough that Tauri's rule applies, so the stats stack under the headline. Every other Insights screen only moves down by 1 pt, because the tab bar is now Tauri's real height; overview and journal are shown as examples of all 20.",
+   "rows": [
+    {
+     "heading": "Subject page (real change)",
+     "shots": [
+      {
+       "file": "approve-insights-subject-light.jpg",
+       "caption": "Light. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "approve-insights-subject-dark.jpg",
+       "caption": "Dark. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "heading": "Overview (1 pt shift only)",
+     "shots": [
+      {
+       "file": "approve-insights-overview-light.jpg",
+       "caption": "Light. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "heading": "Journal (1 pt shift only)",
+     "shots": [
+      {
+       "file": "approve-insights-journal-light.jpg",
+       "caption": "Light. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "approve-models",
+   "title": "Onboarding Models tab: narrower Whisper picker",
+   "toc": "Onboarding Models",
+   "commit": "a5cd99ce",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "The Whisper build picker stretched across the whole column with empty track on its right. It is now only as wide as its options, like every other picker row.",
+   "rows": [
+    {
+     "shots": [
+      {
+       "file": "approve-onboarding-change-models-light.jpg",
+       "caption": "Light. Left: the screenshot you approved earlier today. Right: after."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "approve-centre",
+   "title": "Decision: large windows pinned left, or centred?",
+   "toc": "Large windows",
+   "commit": "no change yet",
+   "state": "your decision",
+   "awaiting": true,
+   "what": "On a large window the Tauri app keeps Settings and onboarding as a column pinned to the left, and GPUI matches it exactly. Centring them is a small change and fixes what you flagged, but GPUI would then differ from Tauri until cut-over. Recommendation: centre.",
+   "rows": [
+    {
+     "shots": [
+      {
+       "file": "resize-settings-general-2400x1000.jpg",
+       "caption": "Settings at 2400 wide. Left to right: GPUI before, GPUI after (unchanged), Tauri."
+      }
+     ]
+    }
+   ]
   }
  ]
 }

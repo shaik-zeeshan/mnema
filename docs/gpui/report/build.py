@@ -121,14 +121,14 @@ def shots_page(g, d, drafts):
     return "\n".join(p)
 
 
-def fixes_page(d, drafts):
-    p = [top("Mnema · GPUI desktop app · 10 Nov 2026", "Today’s fixes: before and after",
-             "Pictures of each fix from your hands-on test. None of the changed screenshots replace the approved "
-             "ones until you approve them, so this is the only place they show.",
+def fixes_page(d, drafts, key="fixes", title="Today’s fixes: before and after",
+               lede="Pictures of each fix from your hands-on test. None of the changed screenshots replace the approved "
+                    "ones until you approve them, so this is the only place they show."):
+    p = [top("Mnema · GPUI desktop app · 10 Nov 2026", title, lede,
              f'Updated {E(d["updated"])} · {link(drafts, "index", "back to the progress report")}'),
          '<div class="pp-verdict"><span class="pp-chip" data-tone="strong">Your call</span>'
-         f'<p>{E(d["fixes_verdict"])}</p></div>']
-    for n, x in enumerate(d["fixes"], 1):
+         f'<p>{E(d[key + "_verdict"])}</p></div>']
+    for n, x in enumerate(d[key], 1):
         p.append(h2(n, x["title"], x["anchor"], x.get("toc")))
         p.append(f'<p>{chip(x["state"], "strong" if x.get("awaiting") else None)} '
                  f'<span class="pp-meta">commit <code>{E(x["commit"])}</code></span></p>')
@@ -178,8 +178,10 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = [(link(drafts, "fixes", "Today’s fixes: before and after"), "10 Nov · before and after pictures of each fix",
-             chip("awaiting your approval", "strong"))]
+    rows = [(link(drafts, "approve", "Waiting for your approval"), "screenshots that need your yes before they become references",
+             chip("awaiting your approval", "strong")),
+            (link(drafts, "fixes", "Today’s fixes: before and after"), "10 Nov · before and after pictures of each fix",
+             chip("built"))]
     rows += [(link(drafts, slug(g), g["title"].split(" — ")[0]), g["note"],
               chip(g["title"].split(" — ")[1], "strong" if g.get("pending") else None)) for g in d["shots"]]
     p.append('<table><thead><tr><th>Page</th><th>Status</th></tr></thead><tbody>' + "".join(
@@ -242,6 +244,10 @@ def main():
 
     # sub-pages first, so the index links to their (possibly new) URLs; they link back to the index
     emit("fixes", "fixes.html", "Today’s fixes", fixes_page(d, drafts), "Mnema GPUI — today's fixes, before and after")
+    emit("approve", "approve.html", "Waiting for your approval",
+         fixes_page(d, drafts, "approve", "Waiting for your approval",
+                    "Every screenshot that needs your yes before it becomes a reference, in one place."),
+         "Mnema GPUI — screenshots waiting for approval")
     for g in d["shots"]:
         name = g["title"].split(" — ")[0]
         emit(slug(g), f"shots-{slug(g)}.html", f"{name} screenshots", shots_page(g, d, drafts), f"Mnema GPUI — {name} screenshots")
