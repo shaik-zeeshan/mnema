@@ -61,8 +61,10 @@ pub struct Shell {
     pub chat: Entity<crate::chat::Chat>,
     pub settings: Entity<crate::settings::Settings>,
     pub insights: Entity<crate::insights::Insights>,
+    /// The licence banner and the deep-link receipt.
+    pub licence: Entity<crate::licence::Licence>,
     focus: FocusHandle,
-    _subscriptions: [Subscription; 5],
+    _subscriptions: [Subscription; 6],
     tick: Option<Task<()>>,
     /// The last failed start's message ("couldn't start · Retry"), until the next start.
     start_error: Option<String>,
@@ -101,9 +103,11 @@ impl Shell {
                 None => std::sync::Arc::new(crate::insights::data::NoBackend),
             };
         let insights = cx.new(|cx| crate::insights::Insights::new(backend, window, cx));
+        let licence = cx.new(crate::licence::Licence::new);
         let subscriptions = [
             cx.subscribe_in(&command, window, Self::on_command),
             cx.subscribe_in(&insights, window, Self::on_insights),
+            cx.observe(&licence, |_, _, cx| cx.notify()),
             // The empty Timeline's "Start recording".
             cx.subscribe(&timeline, |this, _, event, cx| match event {
                 crate::timeline::TimelineEvent::StartRecording => this.start_recording(cx),
@@ -135,6 +139,7 @@ impl Shell {
             chat,
             settings,
             insights,
+            licence,
             focus,
             _subscriptions: subscriptions,
             tick: None,
@@ -180,6 +185,8 @@ impl Shell {
             s.status = status;
             cx.notify();
         });
+        let low_disk = self.model.status.low_disk;
+        self.licence.update(cx, |l, _| l.low_disk = low_disk);
         let recording = (self.model.status.running, self.model.status.user_paused);
         self.insights.update(cx, |i, cx| {
             i.recording = recording;
@@ -374,7 +381,8 @@ impl Shell {
             }
         }))
         .on_action(cx.listener(|this, _: &keymap::CloseOverlay, _, cx| {
-            if this.overlay.is_some() {
+            if this.licence.update(cx, |l, cx| l.close_receipt(cx)) {
+            } else if this.overlay.is_some() {
                 this.overlay = None;
                 cx.notify();
             } else if this.surface == Surface::Settings {
@@ -439,6 +447,7 @@ impl Render for Shell {
             .when(chrome, |el| {
                 el.child(titlebar::render(self, &p, window, cx))
             })
+            .children(crate::licence::render_banner(&self.licence, cx))
             .map(|el| match self.surface {
                 Surface::Timeline => el.child(self.timeline.clone()),
                 Surface::Chat => el.child(self.chat.clone()),
@@ -473,6 +482,7 @@ impl Render for Shell {
                 };
                 el.child(backdrop).child(pop)
             })
+            .children(crate::licence::render_receipt(&self.licence, cx))
     }
 }
 

@@ -1,6 +1,7 @@
 //! Deep links: `on_open_urls` (no `&mut App`) → channel → here, on the main
 //! thread. app-core's `deep_links::route` says what a URL carries; this routes
-//! it: license links start their app-core flow and bring main up, an OAuth
+//! it: license links open the receipt on main (`licence::announce`), start their
+//! app-core flow and bring main up, an OAuth
 //! callback finishes the MCP login, a broker link lands the Timeline on its
 //! frame. The dev bundle's scheme is `mnema-gpui-dev`.
 
@@ -11,6 +12,7 @@ use app_core::AppCore;
 use gpui_kit::App;
 
 use crate::bridge::tokio::Tokio;
+use crate::licence::receipt::Flow;
 
 /// What one URL string asks for (`None` for garbage or a URL that isn't ours).
 pub fn parse(url: &str) -> Option<(url::Url, DeepLink)> {
@@ -38,27 +40,30 @@ fn open(core: &Arc<AppCore>, url: &str, cx: &mut App) {
         log::debug!("deep link ignored: not a Mnema link");
         return;
     };
-    // shortcut: no deep-link receipt modal (LicenseDeepLinkModal.svelte, ~500
-    // lines) and no shell licence banner; a licence link opens Settings › License,
-    // which shows the result through `license_status`.
     // The variant name only: payloads carry keys and ids.
     log::debug!(
         "deep link routed: {}",
         format!("{link:?}").split([' ', '{']).next().unwrap_or("?")
     );
     match link {
+        // The receipt opens first (working face); every result rides the
+        // `license_status` / `license_deep_link_done` events. As Tauri's
+        // dispatcher: main comes up after activation, before the claim and
+        // renewal polls; while onboarding shows, the receipt waits for main.
         DeepLink::LicenseActivate { key } => {
+            crate::licence::announce(Flow::Activate, cx);
             let core = core.clone();
             let task = Tokio::spawn(cx, app_core::licensing::activate_from_deep_link(core, key));
             cx.spawn(async move |cx| {
                 let _ = task.await;
-                let _ = cx.update(|cx| crate::window::open_settings(Some("license"), cx));
+                let _ = cx.update(crate::window::ensure_main);
             })
             .detach();
         }
         DeepLink::LicenseClaim { checkout_id } => {
+            crate::licence::announce(Flow::Claim, cx);
             // Surface the app first: the claim poll can take ~30 s.
-            crate::window::open_settings(Some("license"), cx);
+            crate::window::ensure_main(cx);
             Tokio::spawn(
                 cx,
                 app_core::licensing::claim_from_deep_link(core.clone(), checkout_id),
@@ -66,7 +71,8 @@ fn open(core: &Arc<AppCore>, url: &str, cx: &mut App) {
             .detach();
         }
         DeepLink::LicenseRenewed => {
-            crate::window::open_settings(Some("license"), cx);
+            crate::licence::announce(Flow::Renewed, cx);
+            crate::window::ensure_main(cx);
             Tokio::spawn(
                 cx,
                 app_core::licensing::renewed_from_deep_link(core.clone()),

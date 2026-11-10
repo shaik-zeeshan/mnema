@@ -15,6 +15,8 @@ mod compare;
 mod gallery;
 #[path = "visual/insights.rs"]
 mod insights;
+#[path = "visual/licence.rs"]
+mod licence;
 #[path = "visual/onboarding.rs"]
 mod onboarding;
 #[path = "visual/quick_recall.rs"]
@@ -369,6 +371,7 @@ fn run() -> anyhow::Result<()> {
     failures.extend(chat::goldens(&mut cx, &filters, &THEMES, &populated)?);
     let idle = model_for(FixtureId::Empty).unwrap();
     failures.extend(settings::goldens(&mut cx, &filters, &THEMES, &idle)?);
+    failures.extend(licence::goldens(&mut cx, &filters, &THEMES, &idle)?);
     failures.extend(insights::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(small::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(quick_recall::goldens(&mut cx, &filters, &THEMES)?);

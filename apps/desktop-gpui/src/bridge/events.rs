@@ -115,6 +115,8 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 }
             }
             if let Some(shell) = shell.upgrade() {
+                let licence = shell.read(cx).licence.clone();
+                crate::licence::on_event(&licence, &event, cx);
                 // The Timeline's follow-live switch and retention line are settings too.
                 if !matches!(event, CoreEvent::NativeCaptureSessionChanged(_)) {
                     let timeline = shell.read(cx).timeline.clone();
@@ -172,6 +174,12 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             if let Some(shell) = shell.upgrade() {
                 let timeline = shell.read(cx).timeline.clone();
                 timeline.update(cx, |t, cx| t.on_core_event(&event, cx));
+            }
+        }
+        HostMsg::Event(event @ CoreEvent::LicenseDeepLinkDone(_)) => {
+            if let Some(shell) = shell.upgrade() {
+                let licence = shell.read(cx).licence.clone();
+                crate::licence::on_event(&licence, &event, cx);
             }
         }
         // Onboarding takes download progress.

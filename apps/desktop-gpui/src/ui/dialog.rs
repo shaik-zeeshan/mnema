@@ -9,7 +9,9 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::AnimationExt as _;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{deferred, div, px, Animation, AnyElement, App, ElementId, SharedString, Window};
+use gpui_kit::{
+    deferred, div, px, Animation, AnyElement, App, ElementId, Pixels, SharedString, Window,
+};
 
 use super::{alpha, popover_shadow, Button};
 use crate::theme::{self, motion, radius, size, space, text};
@@ -23,6 +25,7 @@ pub struct Modal {
     lead: Option<AnyElement>,
     body: Vec<AnyElement>,
     on_close: Option<OnClose>,
+    max_w: Pixels,
 }
 
 impl Modal {
@@ -33,7 +36,13 @@ impl Modal {
             lead: None,
             body: Vec::new(),
             on_close: None,
+            max_w: size::MODAL_MAX_W,
         }
+    }
+    /// A narrower panel (default `size::MODAL_MAX_W`).
+    pub fn max_w(mut self, w: Pixels) -> Self {
+        self.max_w = w;
+        self
     }
     /// A swatch / glyph before the title.
     pub fn lead(mut self, el: impl IntoElement) -> Self {
@@ -60,7 +69,7 @@ impl RenderOnce for Modal {
             .id("modal-panel")
             .relative()
             .w_full()
-            .max_w(size::MODAL_MAX_W)
+            .max_w(self.max_w)
             .bg(p.surface_raised)
             .border_1()
             .border_color(p.border_strong)

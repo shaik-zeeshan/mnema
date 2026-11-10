@@ -12,6 +12,7 @@ pub mod gallery;
 pub mod host;
 pub mod insights;
 pub mod keymap;
+pub mod licence;
 #[cfg(test)]
 mod live_tests;
 pub mod logging;
