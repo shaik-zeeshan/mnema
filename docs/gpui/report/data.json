@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-10 17:45",
- "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. Of the six issues from today's hands-on test, one is wired, four are built (two of them wait for your approval of new screenshots) and one is still being worked on. Almost nothing is driven yet: the next step that needs you is a hands-on run of the next signed dev build.",
+ "updated": "2026-11-10 19:10",
+ "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. Of the six issues from today's hands-on test, one is wired, four are built (the onboarding screenshots are approved) and one, window-size behaviour, is still being worked on. Capture health in the status bar is now built and wired. Almost nothing is driven yet: the next step that needs you is a hands-on run of the next signed dev build.",
  "metrics": [
   {
    "label": "Overall",
    "value": "built, being wired",
-   "note": "all screens built; 38 marked shortcuts left; hands-on fixes in progress"
+   "note": "all screens built; 35 marked shortcuts left; hands-on fixes in progress"
   },
   {
    "label": "Backend moved",
@@ -20,12 +20,12 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 246 GPUI (242 + 4 wiring)"
+   "note": "1,338 shared + 71 Tauri + 277 GPUI (273 + 4 wiring); shared and Tauri counts are from before 10 Nov"
   },
   {
    "label": "Screenshots approved",
-   "value": "5 pending",
-   "note": "onboarding screens changed by the 10 Nov layout fix; shown on Today's fixes"
+   "value": "1 pending",
+   "note": "the new status-bar capture-health state; the five onboarding screens were approved on 10 Nov"
   }
  ],
  "bars": [
@@ -61,9 +61,9 @@
    "detail": "Small windows: nothing cut off. Large windows: pages use or centre in the space, as the Tauri app does. Agent working. Not built yet."
   },
   {
-   "id": "Health",
-   "title": "Capture health in the status bar",
-   "detail": "Waiting lanes, the disk-almost-full flag, the paused clock, reconnecting and \"Catching up\" rows. Agent working. Not built yet."
+   "id": "Chat",
+   "title": "Chat sources",
+   "detail": "Real frame thumbnails on source chips, an inline player for audio sources, and recognised-text boxes in the frame peek. Agent working. Not built yet."
   }
  ],
  "done": [
@@ -288,13 +288,19 @@
    "title": "Hover, selected and focus corners",
    "what": "13 places where a highlight had square or wrong corners now follow the design system: choice lists, Insights rows and week tiles, Settings shortcut and reload buttons, MCP tiles, the Quick Recall current turn. Seven proven by picture, six from code. The transcript current-word highlight stays square (GPUI can't round a text background). Built; not driven.",
    "commit": "30e841c5"
+  },
+  {
+   "id": "Gap 1",
+   "title": "Capture health in the status bar and popover",
+   "what": "Waiting lanes (display asleep, system audio reconnecting), the disk-almost-full flag, a clock on PAUSED, reconnecting and \"Catching up\" rows, and the longer AI engine tip. The engine pill now hides when AI is switched off on purpose, as in the Tauri app. Built and wired to the real backend; a real display sleep, Bluetooth switch or nearly-full disk has not been driven.",
+   "commit": "ed6e0e36"
   }
  ],
  "next": [
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "38 marked shortcuts remain: licence banner and deep-link receipt, Chat thumbnails / app icons / inline audio, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip. (Capture health in the status bar is being built now.)"
+   "detail": "35 marked shortcuts remain: licence banner and deep-link receipt, the app-privacy prompt, Chat tool-row app icons and timeline block, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip."
   },
   {
    "id": "Docs",
@@ -315,7 +321,7 @@
   "12 shell and 20 control screenshots approved after viewing.",
   "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09).",
   "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09).",
-  "Onboarding screenshots approved (2026-11-09); five of them changed on 10 Nov and wait for re-approval.",
+  "Onboarding screenshots approved (2026-11-09); the five changed by the layout fix, incl. the new Models state, approved 2026-11-10.",
   "The 101 screenshots refreshed by the polish pass approved (2026-11-10)."
  ],
  "risks": [
@@ -337,12 +343,13 @@
    ]
   },
   {
-   "title": "Onboarding — approved; 5 changed screens await re-approval",
+   "title": "Onboarding — approved",
    "note": "All 8 steps incl. permissions granted/denied, storage blocked, setup done; dark/light.",
    "files": [
     "onboarding-capture",
     "onboarding-capture-blocked",
     "onboarding-change",
+    "onboarding-change-models",
     "onboarding-finale",
     "onboarding-permissions",
     "onboarding-permissions-denied",
@@ -352,13 +359,7 @@
     "onboarding-setup-done",
     "onboarding-voice",
     "onboarding-welcome"
-   ],
-   "pending": {
-    "onboarding-welcome": "The small \"rewinding\" caption at the bottom now shares a baseline with the larger text beside it.",
-    "onboarding-change": "Headings and totals of different sizes now share a baseline. A new Models state was added too.",
-    "onboarding-setup": "Text of different sizes now shares a baseline.",
-    "onboarding-setup-done": "Text of different sizes now shares a baseline."
-   }
+   ]
   },
   {
    "title": "Small windows — approved",
@@ -561,19 +562,19 @@
   },
   {
    "title": "Embedding model list ran off the onboarding window",
-   "state": "built · awaiting approval",
-   "awaiting": true,
+   "state": "built · screenshots approved",
+   "awaiting": false,
    "commit": "e82d4847",
    "anchor": "fix-onboarding",
-   "note": "Now English / Multilingual first, then that group's models, as in today's app. The new screenshot waits for your approval."
+   "note": "Now English / Multilingual first, then that group's models, as in today's app. You approved the new screenshot on 10 Nov."
   },
   {
    "title": "\"Rewinding\" text sat low on the first onboarding page",
-   "state": "built · awaiting approval",
-   "awaiting": true,
+   "state": "built · screenshots approved",
+   "awaiting": false,
    "commit": "e82d4847",
    "anchor": "fix-onboarding",
-   "note": "Text of different sizes on one line now shares a baseline on Welcome, Change settings and Setup. The new screenshots wait for your approval."
+   "note": "Text of different sizes on one line now shares a baseline on Welcome, Change settings and Setup. You approved the new screenshots on 10 Nov."
   },
   {
    "title": "Blurry app icons; icons hidden under the Timeline rails",
@@ -599,8 +600,8 @@
  "waiting": [
   {
    "id": "Approve",
-   "title": "Five onboarding screenshots",
-   "detail": "Welcome, Change settings, the new Models state, Setup and Setup done changed with today's layout fix. Each is shown before and after on the \"Today's fixes\" page; the approved set is unchanged until you say yes."
+   "title": "One new status-bar screenshot",
+   "detail": "The status bar and its popover with a sleeping display, reconnecting system audio and a \"Catching up\" backlog. It is a new state, so it has no earlier version to compare with. Opened in Preview on 10 Nov."
   },
   {
    "id": "Drive",
@@ -608,17 +609,17 @@
    "detail": "Today's fixes are built (Settings is also wired) but none has been used in the real app. The checklist below lists what only a person can check."
   }
  ],
- "fixes_verdict": "Four of today's six issues have pictures here. The onboarding layout fix changes five approved screenshots, so it needs your yes before the new ones become the reference. The icon and corner fixes did not change any approved screenshot enough to need one.",
+ "fixes_verdict": "Four of today's six issues have pictures here. You approved the five changed onboarding screenshots on 10 Nov, so they are now the reference. The icon and corner fixes did not change any approved screenshot enough to need one.",
  "fixes": [
   {
    "anchor": "fix-onboarding",
    "title": "Onboarding: model list fits, text lines up",
    "toc": "Onboarding layout",
    "commit": "e82d4847",
-   "state": "built · awaiting your approval",
-   "awaiting": true,
+   "state": "built · screenshots approved 10 Nov",
+   "awaiting": false,
    "what": "The Semantic Search model row on the Models tab no longer runs off the window: you pick English or Multilingual first, then that group's models, as in today's app. Text of different sizes on one line (the \"rewinding\" caption on Welcome, the headings and totals on Change settings, and Setup) now sits on one baseline.",
-   "how": "Each sheet puts the approved screenshot on the left and today's on the right. The Models tab is a new screenshot, so it has no \"before\". Click any picture to see it full size; the arrow keys step to the next.",
+   "how": "Each sheet puts the earlier approved screenshot on the left and today's on the right. The Models tab is a new screenshot, so it has no \"before\". Click any picture to see it full size; the arrow keys step to the next.",
    "rows": [
     {
      "heading": "Welcome",
