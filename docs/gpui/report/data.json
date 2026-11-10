@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-10 22:30",
- "verdict": "Every screen is built and connected to the real backend, and both hands-on rounds from 10 Nov are fixed. An agent then used the real dev build by hand: most fixes work, and it found five new bugs. A behaviour audit against the old app found one serious gap: the build lacks the Whisper transcriber, so with default settings nothing is transcribed. Fixes are in progress and committed locally only. The step that needs you: unlock the Mac, press Record, and read the real-app test page.",
+ "updated": "2026-11-11 00:00",
+ "verdict": "Every screen is built and connected to the real backend. On 10 Nov both of your hands-on rounds were fixed; then an agent used the real dev build by hand and a behaviour audit compared the two apps, and everything those found is fixed too, including the build that was missing the Whisper transcriber. All of it is in local commits and a signed dev build from midnight; nothing is pushed. What needs you: unlock the Mac, approve two screenshots, and five decisions.",
  "metrics": [
   {
    "label": "Overall",
    "value": "built, being wired",
-   "note": "all screens built; both hands-on rounds fixed; real-app bugs and behaviour gaps being fixed; 28 marked shortcuts left"
+   "note": "all screens built; hands-on rounds, real-app bugs and behaviour gaps fixed; 26 marked shortcuts left"
   },
   {
    "label": "Backend moved",
@@ -20,12 +20,12 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 388 GPUI (383 + 5 wiring); shared and Tauri counts are from before 10 Nov"
+   "note": "1,338 shared + 71 Tauri + 411 GPUI (404 + 5 wiring + 2 engines); shared and Tauri counts are from before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "all",
-   "note": "every reference screenshot is approved as of 10 Nov 21:30"
+   "value": "2 pending",
+   "note": "the developer window's Logs and Capture tabs"
   }
  ],
  "bars": [
@@ -56,19 +56,9 @@
  ],
  "now": [
   {
-   "id": "Engines",
-   "title": "Whisper and the text readers in the build",
-   "detail": "In final tests."
-  },
-  {
-   "id": "Shell",
-   "title": "Dead titlebar buttons, tooltip, app menu, narrow status bar",
-   "detail": "Agent working."
-  },
-  {
-   "id": "Lifecycle",
-   "title": "Auto-start, quit, stale Settings, live numbers, audio links, second launch",
-   "detail": "Agent working."
+   "id": "Pickers",
+   "title": "Settings pickers",
+   "detail": "Transcription and OCR language pickers, the full search-model catalogue, and the voice level meter in Settings. Agent in final tests."
   }
  ],
  "done": [
@@ -365,13 +355,37 @@
    "title": "Chat: app icons on tool rows, the timeline rail in answers, clearer failed-turn messages",
    "what": "Real app icons on tool rows; the timeline answer block as a proper rail; failed turns name the provider and offer the right action, including a compact ChatGPT sign-in. Built and wired; not driven (no chats on the dev copy).",
    "commit": "726d2268"
+  },
+  {
+   "id": "Fix 11",
+   "title": "Whisper and the text readers are in the build",
+   "what": "The new app now compiles in the Whisper transcriber and the Tesseract and PaddleOCR text readers, like the Tauri app. Built; a real transcript not yet seen.",
+   "commit": "09b98b3e"
+  },
+  {
+   "id": "Fix 12",
+   "title": "Titlebar clicks, tooltips, the app menu, the narrow status bar",
+   "what": "Found by using the real app. Built; not re-driven yet.",
+   "commit": "efc4d538"
+  },
+  {
+   "id": "Fix 13",
+   "title": "Auto-start, quit, Settings sync, live numbers, audio links, second launch",
+   "what": "Behaviours the old app had or both apps got wrong. Two are shared-backend fixes that change the Tauri app too. Built; the Tauri app still compiles; auto-start seen waiting correctly in the real log.",
+   "commit": "5cf4af62"
+  },
+  {
+   "id": "Fix 14",
+   "title": "Developer window, licence line, raw codes, microphone list, Settings rail",
+   "what": "Smaller findings from the real-app run. Built; two screenshots await approval.",
+   "commit": "50cdc2d7"
   }
  ],
  "next": [
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "28 marked shortcuts remain: MCP custom connector, debug job inspector, language pickers, voice level meter, the Models tab's per-model size strip, ten text fields whose height setting does nothing, the Timeline's fixed single-letter keys, and making screenshot tests ignore the real mouse pointer."
+   "detail": "26 marked shortcuts remain: MCP custom connector, debug job inspector, the Models tab's per-model size strip, ten text fields whose height setting does nothing, the Timeline's fixed single-letter keys, and making screenshot tests ignore the real mouse pointer."
   },
   {
    "id": "Docs",
@@ -681,13 +695,18 @@
  "waiting": [
   {
    "id": "Unlock",
-   "title": "Unlock the Mac and press Record in the dev app",
-   "detail": "The dev app is running but not recording, and real-app testing is paused while the screen is locked."
+   "title": "Unlock the Mac",
+   "detail": "The new dev build (11 Nov, 00:00) is open and waiting for a display. It should start recording by itself when you unlock; that is the auto-start fix being tested for real."
   },
   {
-   "id": "Read",
-   "title": "The real-app test and behaviour audit",
-   "detail": "What works when actually used, the five bugs found, and the missing transcription engines, on the \"Real-app test and behaviour audit\" page."
+   "id": "Approve",
+   "title": "Two developer-window screenshots",
+   "detail": "Logs and Capture, on the \"Real-app test and behaviour audit\" page."
+  },
+  {
+   "id": "Decide",
+   "title": "Five decisions or looks",
+   "detail": "The fast recording clock, the missing-engine safety check, a CLAUDE.md rule, the new ChatGPT sign-in in Chat, and two older failing tests. Same page, under Decisions."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -1730,8 +1749,55 @@
    ]
   }
  ],
- "round3_verdict": "Most of the day's fixes work when the app is actually used, and the search model does unload and give its memory back. But the run found five real bugs, and the behaviour audit found a serious one: the new app was built without the Whisper transcriber and two text readers, so with the default settings nothing is ever transcribed and no error is shown. Fixes for all of it are with agents, committed locally only. The dev app is running but not recording: the Mac locked itself during the test, so it needs you to unlock and press Record.",
+ "round3_verdict": "Everything found by the real-app test and the behaviour audit is fixed and committed locally, except the items listed under Decisions. A new signed dev build with all of it was built at midnight and opened in the background; the Mac is locked, so it is waiting for a display and should start recording when you unlock. Two screenshots need your approval and five things need a decision or a look. Nothing has been pushed.",
  "round3": [
+  {
+   "anchor": "r3-approve",
+   "title": "Screenshots to approve",
+   "toc": "To approve",
+   "commit": "50cdc2d7",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "Two developer-window screens changed with the fixes below. Logs: the filter chips now wrap to a second line, so none is cut off. Capture: the disk row's two labels join into one when they would overlap. Both are rendered from test data.",
+   "rows": [
+    {
+     "heading": "Developer window › Logs",
+     "shots": [
+      {
+       "file": "r3-debug-logs-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r3-debug-logs-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Developer window › Capture",
+     "shots": [
+      {
+       "file": "r3-debug-capture-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r3-debug-capture-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r3-decide",
+   "title": "Decisions waiting for you",
+   "toc": "Decisions",
+   "commit": "—",
+   "state": "your decision",
+   "awaiting": true,
+   "what": "1. The recording clock runs fast, in both apps. The REC timer and the developer window's \"since\" time read a value that is not the session start; it is a timing anchor that moves earlier each time the screen pauses for inactivity and resumes. The fix stores a real session start in the shared backend and changes the Tauri app too. Recommended: fix it. 2. A safety check so recording refuses to start, with a clear message, if the Whisper engine is ever missing from a build again. Today the jobs retry forever in silence. It changes nothing in a correct build. Recommended: add it. 3. A rule in the project's CLAUDE.md that a click handler must call its handler directly and never send an action through keyboard focus (the cause of the dead titlebar buttons). Recommended: add it. 4. Chat's failed-turn notice now includes a compact ChatGPT sign-in, because the new app had no way to reconnect a signed-out account. It reuses onboarding's sign-in. Have a look when you can. 5. Two older failing tests in the shared backend (microphone restore after an inactivity pause) are not on the known-failures list. They fail without any of today's changes. Worth a separate look.",
+   "rows": []
+  },
   {
    "anchor": "r3-works",
    "title": "Driven and working in the real app",
@@ -1746,30 +1812,30 @@
    "anchor": "r3-engines",
    "title": "Transcription never runs: three engines missing from the build",
    "toc": "Missing engines",
-   "commit": "—",
-   "state": "serious · fix in final tests",
-   "awaiting": true,
-   "what": "The Tauri app is built with the Whisper transcriber and the Tesseract and PaddleOCR text readers. The new app's build left all three out. Whisper is the default, and with it selected every job fails, is treated as a temporary outage, and is retried forever with no message. Settings even shows Whisper as \"installed · available\". In the real app six clips were waiting and retrying. Only Apple's built-in text reading works. An agent is adding the engines to the build and checking the app does not end up depending on libraries a user won't have.",
+   "commit": "09b98b3e",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "The Tauri app is built with the Whisper transcriber and the Tesseract and PaddleOCR text readers; the new app's build left all three out. Whisper is the default, and with it selected every job failed, was treated as a temporary outage, and was retried forever with no message. The fix is two lines in the new app's build file. No other build steps were missing, nothing needs bundling (models download at run time in both apps), and the built app still depends only on libraries that ship with macOS. A new test fails on the old build and passes now. Not confirmed: a real Whisper transcript in the signed app.",
    "rows": []
   },
   {
    "anchor": "r3-titlebar",
    "title": "Titlebar buttons go dead after leaving Settings",
    "toc": "Dead buttons",
-   "commit": "—",
-   "state": "broken · agent working",
-   "awaiting": true,
-   "what": "After Settings › Back to app, the Chats button, the gear and the Timeline / Insights tabs ignore clicks until you click an empty part of the titlebar. The buttons send their action through whatever has keyboard focus, and nothing has focus after Settings closes. The fix covers every click in the app, and returns focus to a sensible place when Settings, a popover or a dialog closes. The same agent is fixing: a tooltip that stays up after the pointer leaves the window, the app menu containing only Quit, the status bar being cut mid-word at the minimum width, and list-style choices showing no hover highlight in the real app.",
+   "commit": "efc4d538",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "After Settings › Back to app, the titlebar buttons ignored clicks. That button had keyboard focus and then disappeared, and the titlebar sent its actions from whatever had focus. Clicks now call the shell directly, and the shell takes focus back whenever the focused element leaves the screen, so shortcuts work without a click too. Also fixed: tooltips hide when the pointer leaves the window; the app menu has the standard items (About, Settings…, Hide, the Edit menu, Window) where it had only Quit; the status bar drops whole items at narrow widths and never cuts one mid-word. Not reproduced: missing hover on list-style choices; a real pointer shows it in tests, so it may have been an artefact of how the app was driven.",
    "rows": []
   },
   {
    "anchor": "r3-lifecycle",
    "title": "Behaviours the old app has that the new one lacked",
    "toc": "Behaviour gaps",
-   "commit": "—",
-   "state": "broken · agent working",
-   "awaiting": true,
-   "what": "Auto-start recording gives up for good if the display is asleep when the app launches, with no retry and no explanation. Quit takes 12 seconds and never logs the final \"completed\" line the Tauri app does. Settings does not notice changes made from the menu bar or a shortcut while it is open, and does not re-check permissions when you return to the window. Insights' tracked time and the status bar's \"today\" figure go stale while the window stays in front. An AI agent's \"open in Mnema\" link to an audio result opens nothing. Launching the app a second time shows an alert instead of bringing the window forward.",
+   "commit": "5cf4af62",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "Auto-start: both apps gave up for good if the display was asleep at launch. Now the start is retried when a display returns, and the status bar says it is waiting. Seen working in the real app's log after the rebuild: with the Mac locked it reported no display yet and kept waiting. Quit: the final \"completed\" line is now logged and each background worker logs that it stopped. Settings notices changes made from the menu bar or a shortcut, merges them with unsaved edits, and re-checks permissions when you return to the window. Insights' tracked time refreshes every minute and the status bar's \"today\" every five. An agent's audio link opens the audio drawer, and says so when the capture is gone. A second launch brings the window forward. Still open: quit took 12 seconds in the real app; on a clean test backend it takes 21 ms, and the machine was heavily loaded at the time.",
    "rows": []
   },
   {
@@ -1784,13 +1850,30 @@
   },
   {
    "anchor": "r3-small",
-   "title": "Smaller things found, queued",
+   "title": "Smaller findings",
    "toc": "Smaller",
-   "commit": "—",
-   "state": "queued",
+   "commit": "50cdc2d7",
+   "state": "fixed · committed, one left for you",
    "awaiting": false,
-   "what": "Settings › License reads \"updates included through .\" with the date missing. Settings › Intelligence shows raw internal codes. The developer window shows the wrong version and the previous session's start time, has overlapping text on its Capture tab, and clips its filter chips. The microphone list offers the app's own \"Mnema System Audio\" device. The Timeline's single-letter keys cannot be rebound, though the Tauri app allows it.",
-   "rows": []
+   "what": "Fixed: the licence line no longer ends in \"through .\"; Settings shows \"AI features are turned off.\" in place of raw codes; the developer window shows the right version, says \"1 source live\", wraps its filter chips and no longer overlaps its disk labels; the app's own \"Mnema System Audio\" device is out of the microphone list (in both apps); the Settings rail highlight follows the scroll. Left for you: the recording clock that runs fast (see Decisions). Not done yet: the Timeline's single-letter keys cannot be rebound.",
+   "rows": [
+    {
+     "shots": [
+      {
+       "file": "r3-item5-dark.jpg",
+       "caption": "Licence line, before and after (test data)."
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "r3-item6-dark.jpg",
+       "caption": "Raw code versus sentence, before and after (test data)."
+      }
+     ]
+    }
+   ]
   },
   {
    "anchor": "r3-notchecked",

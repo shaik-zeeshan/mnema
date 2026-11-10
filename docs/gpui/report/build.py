@@ -254,7 +254,7 @@ def main():
     if d.get("round3"):
         emit("round3", "round3.html", "Real-app test and behaviour audit",
              fixes_page(d, drafts, "round3", "Real-app test and behaviour audit",
-                        "While you were away on 10 Nov: an agent used the real dev build by hand, and another compared what the two apps do behind the scenes. No screenshots here, because captures of the real app show your own screen content."),
+                        "While you were away on 10 Nov: an agent used the real dev build by hand, and another compared what the two apps do behind the scenes. The pictures here are rendered from test data; captures of the real app are not published, because they show your own screen content."),
              "Mnema GPUI — real-app test and behaviour audit")
     if d.get("round2"):
         emit("round2", "round2.html", "Second hands-on round",
