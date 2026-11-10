@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-10 19:14",
- "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. All six issues from today's hands-on test have a committed fix: one is wired and five are built. Capture health in the status bar is built and wired. A signed dev build with all of it was opened on 10 Nov at 18:15. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
+ "updated": "2026-11-10 19:24",
+ "verdict": "Every screen is built and connected to the real backend, and all six issues from the 10 Nov hands-on test have a committed fix. Since then capture health, Chat sources, the licence banner and receipt, and centring on large windows have been added. A signed dev build with all of it was opened at 19:15 on a completely clean state. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
    "label": "Overall",
    "value": "built, being wired",
-   "note": "all screens built; hands-on fixes committed; 32 marked shortcuts left"
+   "note": "all screens built; hands-on fixes committed; 31 marked shortcuts left"
   },
   {
    "label": "Backend moved",
@@ -20,12 +20,12 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 290 GPUI (286 + 4 wiring); shared and Tauri counts are from before 10 Nov"
+   "note": "1,338 shared + 71 Tauri + 330 GPUI (326 + 4 wiring); shared and Tauri counts are from before 10 Nov"
   },
   {
    "label": "Screenshots approved",
-   "value": "all",
-   "note": "incl. capture health, Insights and the onboarding Models tab (10 Nov)"
+   "value": "2 pending",
+   "note": "the two licence banners; receipts are being redesigned"
   }
  ],
  "bars": [
@@ -56,9 +56,14 @@
  ],
  "now": [
   {
-   "id": "Licence",
-   "title": "Licence banner and licence-link receipt",
-   "detail": "Built and wired by its agent; being re-tested before it is committed."
+   "id": "Receipts",
+   "title": "Licence receipts, redesigned",
+   "detail": "Three directions for the activated and device-limit receipts, each built and rendered for real. Agent working."
+  },
+  {
+   "id": "Privacy",
+   "title": "One-time app-privacy prompt",
+   "detail": "The prompt that recommends excluding sensitive apps from capture. Agent working. Not built yet."
   }
  ],
  "done": [
@@ -313,13 +318,19 @@
    "title": "Large windows: Settings and onboarding centred",
    "what": "On a wide window the content column sits in the middle (your ruling; Tauri pins it left). Nothing moves at the default or minimum sizes. Built; not driven.",
    "commit": "e0b3e9f9"
+  },
+  {
+   "id": "Gap 3",
+   "title": "Licence banner and licence-link receipt",
+   "what": "The banner under the titlebar for trial, Read-Only Mode, revoked, lapsed and pending states, and the receipt that opens when you click a licence link. Built and wired to the real backend; a real link or purchase has not been driven. The receipts' look is being redesigned.",
+   "commit": "4506b28c"
   }
  ],
  "next": [
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "32 marked shortcuts remain: the app-privacy prompt, Chat tool-row app icons and timeline block, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip. (The licence banner and deep-link receipt are being built now.)"
+   "detail": "31 marked shortcuts remain: Chat tool-row app icons and timeline block, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip."
   },
   {
    "id": "Docs",
@@ -625,13 +636,13 @@
  "waiting": [
   {
    "id": "Approve",
-   "title": "Four new licence screenshots",
-   "detail": "Trial banner, lapsed banner, activated receipt and device-limit receipt, on the \"Waiting for your approval\" page."
+   "title": "Two licence banner screenshots",
+   "detail": "Trial ending and activation lapsed, on the \"Waiting for your approval\" page."
   },
   {
    "id": "Drive",
-   "title": "Hands-on test of the next signed dev build",
-   "detail": "The dev app's data, settings, models and logs were wiped on 10 Nov so the next signed dev build starts as a true first run. None of today's work has been used in the real app yet. The checklist below lists what only a person can check."
+   "title": "Hands-on test of the clean dev build",
+   "detail": "A signed dev build was opened on 10 Nov at 19:15 on wiped state: no data, settings, models, logs or permissions, so it starts in onboarding as a true first run. It has every fix from today, capture health, Chat sources, centring and the licence banner. None of it has been driven yet."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -1026,16 +1037,16 @@
    "what": "No picture: this changes behaviour, not looks. Settings now shows the microphone, capture support and permissions at once, and the slower keychain and network checks follow, each given at most 10 seconds. A check that fails says \"couldn't check\" instead of showing \"Checking…\" forever. The stuck screen resolution and the microphone error in your screenshot were fixed earlier by 8a1fcb2d, which wired Settings to the real backend; your screenshot came from the build before it. Not driven yet."
   }
  ],
- "approve_verdict": "One set needs your yes: the four new licence screenshots (two banners, two receipts). Everything else on this page is already approved, including the centred layout for large windows.",
+ "approve_verdict": "One set needs your yes: the two licence banners. The two licence receipts are being redesigned in three directions for you to pick from. Everything else on this page is already approved.",
  "approve": [
   {
    "anchor": "approve-licence",
-   "title": "Licence banner and licence-link receipt",
+   "title": "Licence banner (the receipts are being redesigned)",
    "toc": "Licence",
-   "commit": "being re-tested",
-   "state": "built and wired · awaiting your approval",
+   "commit": "4506b28c",
+   "state": "built and wired · banners awaiting your approval",
    "awaiting": true,
-   "what": "Two new pieces. The banner sits under the titlebar: trial ending (more urgent at 7, 3 and 1 days), Read-Only Mode, revoked, activation lapsed with a Re-check button, activation pending, and low disk when no licence banner is showing. Only the trial and pending banners can be closed, and only for that day count. The receipt opens when you click a licence link: it starts as \"Setting up your license\" and then shows activated, pending, renewed, device limit or failed. A licence link no longer opens Settings › License on its own. Not checked: a real licence link or purchase, and whether the banner on the Settings screen runs under the window's traffic-light buttons.",
+   "what": "The banner sits under the titlebar: trial ending (more urgent at 7, 3 and 1 days), Read-Only Mode, revoked, activation lapsed with a Re-check button, activation pending, and low disk when no licence banner is showing. Only the trial and pending banners can be closed, and only for that day count. You asked for the two receipts to be more creative and celebratory, so they are not up for approval: three redesigned directions are being built and will appear here to choose from. The plain versions below are what the current dev build shows. Not checked: a real licence link or purchase, and whether the banner on the Settings screen runs under the window's traffic-light buttons.",
    "rows": [
     {
      "heading": "Banner: trial ending in 2 days",
@@ -1064,7 +1075,7 @@
      ]
     },
     {
-     "heading": "Receipt: activated",
+     "heading": "Receipt: activated (current plain version, being redesigned)",
      "shots": [
       {
        "file": "licence-receipt-activated-light.jpg",
@@ -1077,7 +1088,7 @@
      ]
     },
     {
-     "heading": "Receipt: device limit reached",
+     "heading": "Receipt: device limit reached (current plain version, being redesigned)",
      "shots": [
       {
        "file": "licence-receipt-overcap-light.jpg",
