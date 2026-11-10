@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-10 19:50",
- "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. All six issues from today's hands-on test now have a fix: one is wired, four are built and committed, and the window-size fix is applied and in its test run. Capture health in the status bar is built and wired. Almost nothing is driven yet: the next step that needs you is a hands-on run of the next signed dev build.",
+ "updated": "2026-11-10 18:15",
+ "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. All six issues from today's hands-on test have a committed fix: one is wired and five are built. Capture health in the status bar is built and wired. A signed dev build with all of it was opened on 10 Nov at 18:15. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
    "label": "Overall",
@@ -20,12 +20,12 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 277 GPUI (273 + 4 wiring); shared and Tauri counts are from before 10 Nov"
+   "note": "1,338 shared + 71 Tauri + 280 GPUI (276 + 4 wiring); shared and Tauri counts are from before 10 Nov"
   },
   {
    "label": "Screenshots approved",
-   "value": "1 pending",
-   "note": "the new status-bar capture-health state; the five onboarding screens were approved on 10 Nov"
+   "value": "pending",
+   "note": "Insights (1 pt shift + subject page), the onboarding Models tab, and the new capture-health state"
   }
  ],
  "bars": [
@@ -55,11 +55,6 @@
   }
  ],
  "now": [
-  {
-   "id": "Resize",
-   "title": "Window-size behaviour",
-   "detail": "Applied; 276 tests pass; the screenshot run is finishing before it is committed."
-  },
   {
    "id": "Spacing",
    "title": "Status popover spacing",
@@ -299,6 +294,12 @@
    "title": "Capture health in the status bar and popover",
    "what": "Waiting lanes (display asleep, system audio reconnecting), the disk-almost-full flag, a clock on PAUSED, reconnecting and \"Catching up\" rows, and the longer AI engine tip. The engine pill now hides when AI is switched off on purpose, as in the Tauri app. Built and wired to the real backend; a real display sleep, Bluetooth switch or nearly-full disk has not been driven.",
    "commit": "ed6e0e36"
+  },
+  {
+   "id": "Fix 5",
+   "title": "Window size: small windows no longer cut things off",
+   "what": "The Tauri app's width rules are ported (about 28; GPUI had 3): Settings rows and rail, the Insights tab bar, headline, grids and evidence drawer, the Chat placeholder, the audio drawer transcript, the onboarding Whisper picker. Large windows already matched Tauri. Built; not driven.",
+   "commit": "a5cd99ce"
   }
  ],
  "next": [
@@ -597,9 +598,9 @@
   },
   {
    "title": "Window size: small windows cut off, large windows not using the space",
-   "state": "built · tests running",
-   "commit": "not committed yet",
-   "note": "Small windows: the missing width rules from the Tauri app are ported, so nothing is cut off. Large windows: GPUI already matched Tauri, which also pins Settings and onboarding to the left; centring them is your decision. Applied and passing 276 tests; the screenshot run is still going. Not driven.",
+   "state": "built · screenshots awaiting approval",
+   "commit": "a5cd99ce",
+   "note": "Small windows: the missing width rules from the Tauri app are ported, so nothing is cut off. Large windows: GPUI already matched Tauri, which also pins Settings and onboarding to the left; centring them is your decision. Committed; 276 tests pass. Not driven.",
    "awaiting": true,
    "anchor": "fix-resize"
   }
@@ -613,12 +614,12 @@
   {
    "id": "Approve",
    "title": "Screenshots to approve",
-   "detail": "The capture-health status bar (after its spacing fix), and, once window size is merged, the Insights screenshots that shift by 1 pt and the restacked Insights subject page."
+   "detail": "Insights screens (all shift by 1 pt; the subject page restacks), the onboarding Models tab with the narrower Whisper picker, and the capture-health status bar after its spacing fix. Before/after sheets were opened in Preview."
   },
   {
    "id": "Drive",
    "title": "Hands-on test of the next signed dev build",
-   "detail": "Today's fixes are built (Settings is also wired) but none has been used in the real app. The checklist below lists what only a person can check."
+   "detail": "A signed dev build with all six fixes and capture health was opened on 10 Nov at 18:15. None of it has been used in the real app yet. The checklist below lists what only a person can check."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Still yours to decide: whether Settings and onboarding should be centred on a large window (Tauri pins them left, as GPUI does now), and approval of the capture-health screenshot once its spacing fix lands.",
@@ -900,11 +901,11 @@
    "anchor": "fix-resize",
    "title": "Window size: small windows no longer cut things off",
    "toc": "Window size",
-   "commit": "not committed yet",
-   "state": "built · tests running",
+   "commit": "a5cd99ce",
+   "state": "built · screenshots awaiting approval",
    "awaiting": true,
-   "what": "The Tauri app has about 28 rules for how screens rearrange at different widths, and GPUI had only 3 of them. The rest are now ported: Settings rows, the Insights tab bar, headline, grids and evidence drawer, the Chat placeholder, the audio drawer transcript and the onboarding Whisper picker. 276 tests and 4 wiring tests pass; the screenshot run is still going, so this is applied but not committed. Not driven.",
-   "how": "Every Insights reference screenshot shifts down by 1 pt (the tab bar is now Tauri's real height), and the Insights subject page restacks its stats at the default size. Both will need your approval after the merge.",
+   "what": "The Tauri app has about 28 rules for how screens rearrange at different widths, and GPUI had only 3 of them. The rest are now ported: Settings rows, the Insights tab bar, headline, grids and evidence drawer, the Chat placeholder, the audio drawer transcript and the onboarding Whisper picker. 276 tests and 4 wiring tests pass. Committed; not driven.",
+   "how": "Every Insights reference screenshot shifts down by 1 pt (the tab bar is now Tauri's real height), the Insights subject page restacks its stats at the default size, and the onboarding Models tab shows the narrower Whisper picker. These need your approval before they become the references.",
    "rows": [
     {
      "heading": "Settings › Capture › Video at 640×480",
