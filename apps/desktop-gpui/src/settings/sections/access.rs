@@ -273,7 +273,11 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         None => div()
             .text_size(text::BASE)
             .text_color(p.text_muted)
-            .child("Checking the install\u{2026}")
+            .child(if s.data.complete {
+                "Couldn\u{2019}t check the install."
+            } else {
+                "Checking the install\u{2026}"
+            })
             .into_any_element(),
         Some(c) if !c.bool_at(&["installed"]) => line(
             Tone::Warn,

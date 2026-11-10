@@ -62,6 +62,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 compact(v.num_at(&["tokenUsage", "totalTokens"]).unwrap_or(0.)),
             )
         }
+        None if s.data.complete => "Couldn\u{2019}t read the status.".into(),
         None => "Loading\u{2026}".into(),
     };
     let engine = st.is_some_and(|v| v.bool_at(&["engineAvailable"]));

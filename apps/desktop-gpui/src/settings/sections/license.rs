@@ -112,6 +112,12 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         status = status.extra(chip(label, kind, p));
     }
     status = match st {
+        None if s.data.complete => status.below(line(
+            Tone::Warn,
+            icons::ALERT,
+            "Couldn\u{2019}t read the license status.",
+            p,
+        )),
         None => status.below(line(
             Tone::Neutral,
             icons::LOADER,

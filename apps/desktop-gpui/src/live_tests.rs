@@ -630,3 +630,33 @@ fn every_shell_event_reloads_the_model(cx: &mut TestAppContext) {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+
+// ── Settings ────────────────────────────────────────────────────────────────
+
+/// Opening Settings lands the local reads (mic state, capture support,
+/// permissions) with the recording settings, before any key store answers.
+#[gpui_kit::test]
+fn opening_settings_lands_the_mic_state_and_capture_support(cx: &mut TestAppContext) {
+    let mut live = live();
+    let (_window, shell) = open_shell(cx, &live, None);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go(crate::shell::Surface::Settings, cx)));
+    let settings = cx.read(|cx| shell.read(cx).settings.clone());
+    wait_for(cx, &mut live, &shell, "the settings load", |cx| {
+        cx.read(|cx| settings.read(cx).draft.is_some())
+    });
+    cx.read(|cx| {
+        let s = settings.read(cx);
+        assert!(s.mic_draft.is_some(), "Microphone: couldn't load");
+        assert!(s.data.capture_support.is_some(), "Video: checking support");
+        assert!(s.data.permissions.is_some());
+    });
+    // The vault/keychain/network reads land second, without touching those.
+    wait_for(cx, &mut live, &shell, "the slow reads", |cx| {
+        cx.read(|cx| settings.read(cx).data.complete)
+    });
+    cx.read(|cx| {
+        let s = settings.read(cx);
+        assert!(s.mic_draft.is_some() && s.data.capture_support.is_some());
+        assert!(s.data.license.is_some(), "the seed's license status");
+    });
+}

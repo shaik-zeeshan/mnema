@@ -1,8 +1,12 @@
-//! Settings' one backend door. `load` fills [`SettingsData`] from `AppCore` on
-//! tokio; saves go through [`Backend`] on the background executor, so tests and
-//! goldens swap in `fixture::FixtureBackend`. The live calls are in `live.rs`.
+//! Settings' one backend door. `load_local` then `load_slow` fill
+//! [`SettingsData`] from `AppCore` on tokio; saves go through [`Backend`] on the
+//! background executor, so tests and goldens swap in `fixture::FixtureBackend`.
+//! The live calls are in `live.rs`.
 
+use std::fmt::Display;
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use app_core::recording_settings::{current_recording_settings, RecordingSettingsState};
 use app_core::{AppCore, AppInfraState};
@@ -17,54 +21,39 @@ fn to_json(v: impl Serialize) -> Option<Value> {
     serde_json::to_value(v).ok()
 }
 
-pub async fn load(core: &Arc<AppCore>) -> SettingsData {
+/// Bound on each vault, keychain or network read: one that hangs (a keychain
+/// prompt nobody answers, a dead local endpoint) gives up instead of holding the rest.
+pub const SLOW_READ_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// One slow read, bounded. A failure or a timeout logs one warn line naming
+/// the read (error codes and paths only, never a key) and answers `None`.
+async fn slow<T, E: Display>(what: &str, read: impl Future<Output = Result<T, E>>) -> Option<T> {
+    match tokio::time::timeout(SLOW_READ_TIMEOUT, read).await {
+        Ok(Ok(v)) => Some(v),
+        Ok(Err(e)) => {
+            log::warn!("settings: couldn't read {what}: {e}");
+            None
+        }
+        Err(_) => {
+            log::warn!("settings: {what} timed out after {SLOW_READ_TIMEOUT:?}");
+            None
+        }
+    }
+}
+
+/// The cheap local reads (settings files, in-memory state, OS permission and
+/// support queries): they land first, before any key store or network answers.
+pub fn load_local(core: &Arc<AppCore>) -> SettingsData {
     let mut d = SettingsData::default();
     d.settings = core
         .try_state::<RecordingSettingsState>()
         .map(|s| current_recording_settings(&s));
     d.keyboard = to_json(app_core::keyboard_bindings::load_settings_from_disk(core));
-    let infra = core.try_state::<AppInfraState>();
-    if let Some(infra) = &infra {
-        d.license = app_core::licensing::get_license_status(core, infra)
-            .await
-            .ok();
-        d.user_context = app_core::user_context::commands::get_user_context_status(core, infra)
-            .await
-            .ok()
-            .and_then(to_json);
-    }
     d.storage_usage = to_json(app_core::managed_storage_layout::get_storage_usage(
         core,
         Some(true),
     ));
     d.storage_location = app_core::app_infra::get_storage_location(core).ok();
-    d.ai_status = app_core::ai_runtime::get_ai_runtime_status(core)
-        .await
-        .ok()
-        .and_then(to_json);
-    if let Some(s) = &d.settings {
-        for p in &s.ai_runtime.providers {
-            let req = || serde_json::from_value(json!({ "provider": p.id })).ok();
-            if let Some(r) = req() {
-                if app_core::ai_runtime::ai_runtime_has_provider_key(r).await == Ok(true) {
-                    d.keys_saved.insert(p.id.clone());
-                }
-            }
-            if let Some(r) = req() {
-                if let Ok(Some(end)) = app_core::ai_runtime::ai_runtime_provider_key_ending(r).await
-                {
-                    d.key_endings.insert(p.id.clone(), end);
-                }
-            }
-        }
-        for m in &s.ai_runtime.mcp_servers {
-            if let Ok(r) = serde_json::from_value(json!({ "id": m.id })) {
-                if app_core::ai_runtime::mcp_has_server_secret(r).await == Ok(true) {
-                    d.mcp_secrets.insert(m.id.clone());
-                }
-            }
-        }
-    }
     d.ocr_models = app_core::ocr_models::get_ocr_model_status(core)
         .ok()
         .and_then(to_json);
@@ -78,20 +67,6 @@ pub async fn load(core: &Arc<AppCore>) -> SettingsData {
     d.semantic_models = app_core::semantic_search_models::get_semantic_search_model_status(core)
         .ok()
         .and_then(to_json);
-    d.cli_status = app_core::cli_access::get_cli_status_inner()
-        .await
-        .ok()
-        .and_then(to_json);
-    if let Ok(file) = app_core::cli_access::list_cli_access_grants(core).await {
-        d.grants = to_json(file)
-            .and_then(|v| v["grants"].as_array().cloned())
-            .unwrap_or_default();
-    }
-    if let Ok(file) = app_core::cli_access::list_cli_access_history(core).await {
-        d.history = to_json(file)
-            .and_then(|v| v["events"].as_array().cloned())
-            .unwrap_or_default();
-    }
     d.log_status = app_core::general_app_log::status(core)
         .ok()
         .and_then(to_json);
@@ -108,23 +83,100 @@ pub async fn load(core: &Arc<AppCore>) -> SettingsData {
     d.capture_support = to_json(perms::get_capture_support());
     d.system_audio_blocked = perms::get_system_audio_access_hint(core).should_show;
     d.gecko = to_json(perms::get_browser_url_accessibility_status());
-    d.ask_ai = match app_core::ask_ai::ask_ai_availability(core).await {
-        Ok(a) => to_json(a),
-        Err(e) => {
-            log::warn!("settings: couldn't read Ask AI availability: {e}");
-            None
-        }
-    };
     d.update = app_core::updates::current_status(core).and_then(to_json);
+    d
+}
+
+/// The vault, keychain, database and network reads on top of `d` (the local
+/// answers), each bounded by [`SLOW_READ_TIMEOUT`]; `complete` marks them done.
+pub async fn load_slow(core: &Arc<AppCore>, mut d: SettingsData) -> SettingsData {
+    let infra = core.try_state::<AppInfraState>();
     if let Some(infra) = &infra {
-        if let Ok(Some(owner)) =
-            app_core::voice_enrollment::get_account_owner_person_id(infra).await
-        {
+        d.license = slow(
+            "the license status",
+            app_core::licensing::get_license_status(core, infra),
+        )
+        .await;
+        d.user_context = slow(
+            "the user context status",
+            app_core::user_context::commands::get_user_context_status(core, infra),
+        )
+        .await
+        .and_then(to_json);
+    }
+    d.ai_status = slow(
+        "the AI runtime status",
+        app_core::ai_runtime::get_ai_runtime_status(core),
+    )
+    .await
+    .and_then(to_json);
+    if let Some(s) = d.settings.clone() {
+        for p in &s.ai_runtime.providers {
+            let req = || serde_json::from_value(json!({ "provider": p.id })).ok();
+            if let Some(r) = req() {
+                let has = app_core::ai_runtime::ai_runtime_has_provider_key(r);
+                if slow("a provider key", has).await == Some(true) {
+                    d.keys_saved.insert(p.id.clone());
+                }
+            }
+            if let Some(r) = req() {
+                let ending = app_core::ai_runtime::ai_runtime_provider_key_ending(r);
+                if let Some(Some(end)) = slow("a provider key ending", ending).await {
+                    d.key_endings.insert(p.id.clone(), end);
+                }
+            }
+        }
+        for m in &s.ai_runtime.mcp_servers {
+            if let Ok(r) = serde_json::from_value(json!({ "id": m.id })) {
+                let has = app_core::ai_runtime::mcp_has_server_secret(r);
+                if slow("a connector secret", has).await == Some(true) {
+                    d.mcp_secrets.insert(m.id.clone());
+                }
+            }
+        }
+    }
+    d.cli_status = slow(
+        "the CLI install",
+        app_core::cli_access::get_cli_status_inner(),
+    )
+    .await
+    .and_then(to_json);
+    if let Some(file) = slow(
+        "the CLI access grants",
+        app_core::cli_access::list_cli_access_grants(core),
+    )
+    .await
+    {
+        d.grants = to_json(file)
+            .and_then(|v| v["grants"].as_array().cloned())
+            .unwrap_or_default();
+    }
+    if let Some(file) = slow(
+        "the CLI access history",
+        app_core::cli_access::list_cli_access_history(core),
+    )
+    .await
+    {
+        d.history = to_json(file)
+            .and_then(|v| v["events"].as_array().cloned())
+            .unwrap_or_default();
+    }
+    d.ask_ai = slow(
+        "Ask AI availability",
+        app_core::ask_ai::ask_ai_availability(core),
+    )
+    .await
+    .and_then(to_json);
+    if let Some(infra) = &infra {
+        let owner = app_core::voice_enrollment::get_account_owner_person_id(infra);
+        if let Some(Some(owner)) = slow("the voice owner", owner).await {
             d.voice_owner_id = Some(owner);
-            let people = app_core::app_infra::list_person_profiles(infra)
-                .await
-                .ok()
-                .and_then(to_json);
+            let people = slow(
+                "the person profiles",
+                app_core::app_infra::list_person_profiles(infra),
+            )
+            .await
+            .and_then(to_json);
             d.voice_owner = people
                 .as_ref()
                 .and_then(|p| p.as_array())
@@ -133,22 +185,21 @@ pub async fn load(core: &Arc<AppCore>) -> SettingsData {
                 .or(Some("You".into()));
         }
     }
-    if let Ok(statuses) = app_core::ask_ai::mcp::oauth_flow::mcp_oauth_statuses(core).await {
+    let oauth = app_core::ask_ai::mcp::oauth_flow::mcp_oauth_statuses(core);
+    if let Some(statuses) = slow("the connector sign-ins", oauth).await {
         d.mcp_oauth = to_json(statuses)
             .and_then(|v| v.as_array().cloned())
             .unwrap_or_default();
     }
-    d.deepgram_key =
-        app_core::transcription_deepgram::transcription_has_deepgram_key().await == Ok(true);
+    let deepgram = app_core::transcription_deepgram::transcription_has_deepgram_key();
+    d.deepgram_key = slow("the Deepgram key", deepgram).await == Some(true);
     if let Some(auth) =
         core.try_state::<app_core::transcription_deepgram::DeepgramAuthStatusState>()
     {
-        d.deepgram_auth =
-            app_core::transcription_deepgram::transcription_deepgram_auth_status(&auth)
-                .await
-                .ok()
-                .flatten();
+        let status = app_core::transcription_deepgram::transcription_deepgram_auth_status(&auth);
+        d.deepgram_auth = slow("the Deepgram auth status", status).await.flatten();
     }
+    d.complete = true;
     d
 }
 

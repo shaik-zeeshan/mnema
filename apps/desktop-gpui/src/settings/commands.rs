@@ -11,7 +11,7 @@ use gpui_kit::{div, px, AnyElement, Context, SharedString, Window};
 
 use super::autosave::Unit;
 use super::live::{self, Outcome};
-use super::{icons, Settings};
+use super::{icons, Settings, SettingsData};
 use crate::theme::{self, radius, space, text, Palette};
 use crate::ui::dialog::Modal;
 use crate::ui::{notice, Button, Tone};
@@ -55,25 +55,55 @@ impl Settings {
     /// Re-read every loader. Unsaved edits survive: only a clean page adopts
     /// the re-read settings as its drafts.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.load(false, cx);
+    }
+
+    /// Two landings: the local reads (mic, capture support, permissions…) at
+    /// once, then the vault/keychain/network ones, so a slow or stuck key store
+    /// never holds the rest back. Only the first answer may touch the drafts.
+    pub(crate) fn load(&mut self, reset: bool, cx: &mut Context<Self>) {
+        use crate::bridge::tokio::Tokio;
         let Some(core) = crate::chat::core(cx) else {
             return;
         };
-        let task =
-            crate::bridge::tokio::Tokio::spawn(cx, async move { super::data::load(&core).await });
+        let c = core.clone();
+        let local = Tokio::spawn(cx, async move { super::data::load_local(&c) });
         cx.spawn(async move |this, cx| {
-            if let Ok(data) = task.await {
+            let Ok(local) = local.await else { return };
+            let Ok(rest) = this.update(cx, |s, cx| {
+                let first = local.clone();
+                if reset {
+                    s.set_data(first, cx);
+                } else {
+                    s.land(first, cx);
+                }
+                Tokio::spawn(
+                    cx,
+                    async move { super::data::load_slow(&core, local).await },
+                )
+            }) else {
+                return;
+            };
+            if let Ok(full) = rest.await {
+                // Not `land`: an edit or save since the first answer keeps its drafts.
                 let _ = this.update(cx, |s, cx| {
-                    let dirty = !s.saving.is_empty() || Unit::ALL.iter().any(|u| s.gate(*u).dirty);
-                    if dirty {
-                        s.data = data;
-                        cx.notify();
-                    } else {
-                        s.set_data(data, cx);
-                    }
+                    s.data = full;
+                    cx.notify();
                 });
             }
         })
         .detach();
+    }
+
+    /// Adopt a re-read: the drafts follow it only on a clean page.
+    pub(crate) fn land(&mut self, data: SettingsData, cx: &mut Context<Self>) {
+        let dirty = !self.saving.is_empty() || Unit::ALL.iter().any(|u| self.gate(*u).dirty);
+        if dirty {
+            self.data = data;
+            cx.notify();
+        } else {
+            self.set_data(data, cx);
+        }
     }
 
     /// A settings answer from a one-shot command (the semantic switch, a wipe):

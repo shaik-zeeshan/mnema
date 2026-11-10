@@ -481,18 +481,10 @@ impl Settings {
         slide(&self.sliders.speaker_timeout, minutes, window, cx);
     }
 
-    /// Refill from app-core off the main thread (the real app).
+    /// Refill from app-core off the main thread (the real app); the drafts
+    /// reset to what's saved.
     pub fn reload_all(&mut self, cx: &mut Context<Self>) {
-        let Some(core) = crate::chat::core(cx) else {
-            return;
-        };
-        let task = crate::bridge::tokio::Tokio::spawn(cx, async move { data::load(&core).await });
-        cx.spawn(async move |this, cx| {
-            if let Ok(data) = task.await {
-                let _ = this.update(cx, |this, cx| this.set_data(data, cx));
-            }
-        })
-        .detach();
+        self.load(true, cx);
     }
 
     // ── drafts + autosave ────────────────────────────────────────────────────

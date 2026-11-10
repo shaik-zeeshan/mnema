@@ -33,6 +33,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     let avail = s.data.ask_ai.as_ref();
     let available = avail.is_some_and(|v| v.bool_at(&["available"]));
     let detail = match avail {
+        None if s.data.complete => "Couldn\u{2019}t check Ask AI availability.".to_string(),
         None => "Checking Ask AI availability\u{2026}".to_string(),
         Some(_) if available => "Ask AI can answer over your redacted capture history.".into(),
         Some(v) => v
