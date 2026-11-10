@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-10 20:40",
+ "updated": "2026-11-10 21:04",
  "verdict": "Every screen is built and connected to the real backend, and all six issues from the 10 Nov hands-on test have a committed fix. Since then capture health, Chat sources, the licence banner and receipt, and centring on large windows have been added. A signed dev build with all of it was opened at 19:15 on a completely clean state. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
@@ -20,12 +20,12 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 348 GPUI (343 + 5 wiring); shared and Tauri counts are from before 10 Nov"
+   "note": "1,338 shared + 71 Tauri + 353 GPUI (348 + 5 wiring); shared and Tauri counts are from before 10 Nov"
   },
   {
    "label": "Screenshots approved",
-   "value": "receipts pending",
-   "note": "only the licence receipts are waiting, in their final design"
+   "value": "all",
+   "note": "incl. the licence banners, receipts and the privacy prompt (10 Nov)"
   }
  ],
  "bars": [
@@ -56,19 +56,9 @@
  ],
  "now": [
   {
-   "id": "Receipts",
-   "title": "Licence receipts in the chosen design",
-   "detail": "Timeline for activated, ticket for the device limit, the notched line on both; then renewal, pending, working and failed. Agent working."
-  },
-  {
-   "id": "Hands-on 2",
-   "title": "Quick Recall search, text cursor, developer logs",
-   "detail": "From your clean first run: search always said \"Search failed\", the text cursor looks wrong, and the developer logs show as one merged entry. Agent working."
-  },
-  {
-   "id": "Links",
-   "title": "Links that open, and scroll bars",
-   "detail": "One shared link control and one shared scroll bar, applied everywhere the Tauri app has them. Agent working."
+   "id": "Round 2",
+   "title": "Second hands-on round",
+   "detail": "Search, text cursor and developer logs are fixed and being re-tested; links and scroll bars are with an agent. See the \"Second hands-on round\" page."
   }
  ],
  "done": [
@@ -335,6 +325,12 @@
    "title": "Sensitive-app exclusion prompt",
    "what": "The one-time prompt in Settings that recommends excluding password managers from capture. Built and wired to the real backend; not driven.",
    "commit": "0ae8987e"
+  },
+  {
+   "id": "Design 1",
+   "title": "Licence receipts redesigned",
+   "what": "Activated shows your update window as the app's timeline with a playhead that scrubs to the last included day; the device limit is a ticket with device slots; both have a notched tear line. Renewed, pending, working and failed follow the same design. Built and approved; a real licence link has not been driven.",
+   "commit": "bdf2f1e9"
   }
  ],
  "next": [
@@ -369,7 +365,8 @@
   "Pictures for approval go on the report's \"Waiting for your approval\" page, not in Preview (2026-11-10).",
   "Centred large-window layout approved as shown, incl. the onboarding top and bottom bars following the column (2026-11-10).",
   "Licence receipts: the updates timeline for activated, the ticket with device tiles for the device limit, the notched tear line on both (2026-11-10).",
-  "Sensitive-app exclusion prompt and the two licence banners approved (2026-11-10)."
+  "Sensitive-app exclusion prompt and the two licence banners approved (2026-11-10).",
+  "Final licence receipt design approved, incl. renewed, pending, working and failed (2026-11-10)."
  ],
  "risks": [
   "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -647,11 +644,6 @@
   }
  ],
  "waiting": [
-  {
-   "id": "Receipts",
-   "title": "The final licence receipts",
-   "detail": "Activated, device limit, renewed, pending, working and failed, on the \"Licence receipts\" page."
-  },
   {
    "id": "Drive",
    "title": "Hands-on test of the clean dev build",
@@ -1290,9 +1282,9 @@
    "anchor": "receipt-final",
    "title": "The chosen design, on every receipt",
    "toc": "Final design",
-   "commit": "not merged yet · tests running",
-   "state": "built · awaiting your approval",
-   "awaiting": true,
+   "commit": "bdf2f1e9",
+   "state": "built · approved 10 Nov",
+   "awaiting": false,
    "what": "Your pick, combined: the updates timeline for activated, the ticket with device tiles for the device limit, and the notched tear line on both. The notches are now real bites out of the panel's edge (the border follows the curve), not painted dots, so they hold up over the dimmed backdrop in both themes. The same shell carries to the renewal, pending, working and failed receipts, so the panel keeps its shape as it changes from \"Setting up your license\" to the result. Worth a look: the working and failed receipts keep the \"Updates included through\" label over an empty ruler, which may read oddly on a failure.",
    "rows": [
     {
@@ -1545,5 +1537,89 @@
    ]
   }
  ],
- "receipts_verdict": "The final design is at the top: your pick on every licence receipt, with the notched tear line. It needs your yes before it is merged and becomes the reference. The three original directions are kept below for comparison."
+ "receipts_verdict": "Approved on 10 Nov and merged: the updates timeline for activated, the ticket for the device limit, the notched tear line on both, carried to renewed, pending, working and failed. The three original directions are kept below for comparison.",
+ "round2_verdict": "Five things from your clean first run. Search, the text cursor and the developer logs are fixed and being re-tested before they are committed. Links and scroll bars are with an agent. None of it is in the dev build you have open yet; a new build follows when all five are in.",
+ "round2": [
+  {
+   "anchor": "r2-search",
+   "title": "Quick Recall always said \"Search failed\"",
+   "toc": "Search",
+   "commit": "being re-tested",
+   "state": "fixed · built and wired",
+   "what": "Search needs a small cache for the meaning-based search model. Only the Tauri app ever created it; the startup both apps share did not, so in the new app every search failed before it reached the index. One line in the shared startup fixes it. A failed search now also leaves a warning in the log (never the words you searched for), so it cannot fail silently again. A new test searches a seeded index: it failed with exactly this error before, and passes now. Not driven on your own data yet.",
+   "rows": []
+  },
+  {
+   "anchor": "r2-caret",
+   "title": "The blinking text cursor was too short and sat too high",
+   "toc": "Text cursor",
+   "commit": "being re-tested",
+   "state": "fixed · built",
+   "what": "In every text field the cursor was about 14 pt tall whatever the text size, so in Quick Recall it was half the height it should be, and it also sat about 4 pt above the text there. It is now as tall as the text and sits on it, in every single-line field. One limit: the new app's toolkit draws the cursor 1 pt wide and that cannot be changed without modifying the toolkit; the Tauri app's is 2 pt.",
+   "rows": [
+    {
+     "shots": [
+      {
+       "file": "round2-caret-before-after-dark.jpg",
+       "caption": "Dark. Top row: Quick Recall before, after, and the Tauri app's cursor for reference. Bottom row: an ordinary text field before, after, and Tauri."
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "round2-caret-before-after-light.jpg",
+       "caption": "Light, same layout."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r2-logs",
+   "title": "Developer logs showed everything as one entry",
+   "toc": "Developer logs",
+   "commit": "being re-tested",
+   "state": "fixed · built",
+   "what": "The log reader only understood the Tauri app's line format; the new app writes a different one, so no line was recognised and each got attached to the first. It now reads both. The list does scroll, but with Follow on (the default) each refresh jumps back to the newest line.",
+   "rows": [
+    {
+     "shots": [
+      {
+       "file": "round2-logs-before-after-dark.jpg",
+       "caption": "Dark. Left: before, with real log lines merged. Right: after, one row per line."
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "round2-logs-before-after-light.jpg",
+       "caption": "Light."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r2-links",
+   "title": "Links were plain text and opened nothing",
+   "toc": "Links",
+   "commit": "—",
+   "state": "in progress",
+   "awaiting": true,
+   "what": "A shared link control (looks like a link, shows it on hover, opens your browser), then every place the Tauri app has a link, starting with Settings › About and its third-party list. Agent working.",
+   "rows": []
+  },
+  {
+   "anchor": "r2-scroll",
+   "title": "No scroll bars where content scrolls",
+   "toc": "Scroll bars",
+   "commit": "—",
+   "state": "in progress",
+   "awaiting": true,
+   "what": "A shared scroll bar matched to the Tauri app, applied to every scrolling area: developer logs, Settings, Chat, Insights, the audio drawer, Quick Recall results and long menus. Agent working.",
+   "rows": []
+  }
+ ]
 }

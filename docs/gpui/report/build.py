@@ -178,7 +178,8 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = ([(link(drafts, "receipts", "Licence receipts: the final design"), "your pick on every licence receipt, with the three original directions below",
+    rows = ([(link(drafts, "round2", "Second hands-on round: fixes"), "10 Nov evening · search, text cursor, developer logs, links, scroll bars",
+              chip("in progress", "strong"))] if d.get("round2") else []) + ([(link(drafts, "receipts", "Licence receipts: the final design"), "your pick on every licence receipt, with the three original directions below",
               chip("awaiting your approval", "strong"))] if d.get("receipts") else []) + [(link(drafts, "approve", "Waiting for your approval"), "screenshots that need your yes before they become references",
              chip("awaiting your approval", "strong")),
             (link(drafts, "fixes", "Today’s fixes: before and after"), "10 Nov · before and after pictures of each fix",
@@ -249,6 +250,11 @@ def main():
          fixes_page(d, drafts, "approve", "Waiting for your approval",
                     "Every screenshot that needs your yes before it becomes a reference, in one place."),
          "Mnema GPUI — screenshots waiting for approval")
+    if d.get("round2"):
+        emit("round2", "round2.html", "Second hands-on round",
+             fixes_page(d, drafts, "round2", "Second hands-on round: fixes",
+                        "What you found in the clean first run on 10 Nov, and what was done about each."),
+             "Mnema GPUI — second hands-on round")
     if d.get("receipts"):
         emit("receipts", "receipts.html", "Licence receipts: pick a direction",
              fixes_page(d, drafts, "receipts", "Licence receipts: pick a direction",
