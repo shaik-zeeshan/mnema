@@ -115,7 +115,8 @@ pub mod size {
     pub const BANNER_MIN_H: Pixels = px(38.);
     pub const MODAL_MAX_W: Pixels = px(640.);
     /// The licence deep-link receipt (`.license-receipt__panel`).
-    pub const RECEIPT_MAX_W: Pixels = px(400.);
+    /// Room for a month per ~30 px across a year's update window on the ruler.
+    pub const RECEIPT_MAX_W: Pixels = px(440.);
     pub const STRIP_LIGHT: Pixels = px(12.);
     pub const CAL_CELL_W: Pixels = px(34.);
     pub const CAL_CELL_H: Pixels = px(32.);

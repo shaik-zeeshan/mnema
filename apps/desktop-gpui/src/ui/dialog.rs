@@ -26,6 +26,8 @@ pub struct Modal {
     body: Vec<AnyElement>,
     on_close: Option<OnClose>,
     max_w: Pixels,
+    bare: bool,
+    unpainted: bool,
 }
 
 impl Modal {
@@ -37,6 +39,8 @@ impl Modal {
             body: Vec::new(),
             on_close: None,
             max_w: size::MODAL_MAX_W,
+            bare: false,
+            unpainted: false,
         }
     }
     /// A narrower panel (default `size::MODAL_MAX_W`).
@@ -47,6 +51,18 @@ impl Modal {
     /// A swatch / glyph before the title.
     pub fn lead(mut self, el: impl IntoElement) -> Self {
         self.lead = Some(el.into_any_element());
+        self
+    }
+    /// No title row: the body owns the whole panel (the title still names the
+    /// dialog for VoiceOver) and the × floats in the top-right corner.
+    pub fn bare(mut self) -> Self {
+        self.bare = true;
+        self
+    }
+    /// No fill or border: the body draws its own surface (shaped paper). The
+    /// rise, the rounding and the drop shadow stay.
+    pub fn unpainted(mut self) -> Self {
+        self.unpainted = true;
         self
     }
     pub fn child(mut self, el: impl IntoElement) -> Self {
@@ -65,53 +81,61 @@ impl RenderOnce for Modal {
         let close = self.on_close.clone();
         let (by_scrim, by_key) = (close.clone(), close.clone());
         let fade = motion::MED.as_secs_f32() / motion::SLOW.as_secs_f32();
+        let close_button = Button::icon_only("modal-close", IconName::X.path(), "Close")
+            .ghost()
+            .sm()
+            .when_some(close, |b, f| b.on_click(move |_, window, cx| f(window, cx)));
+        let (head, corner) = if self.bare {
+            let corner = div()
+                .absolute()
+                .top(space::S3)
+                .right(space::S3)
+                .child(close_button);
+            (None, Some(corner))
+        } else {
+            let title = div()
+                .flex()
+                .flex_1()
+                .items_center()
+                .gap(px(10.))
+                .font_weight(theme::W_SEMIBOLD)
+                .text_size(text::XL)
+                .line_height(gpui_kit::relative(1.25))
+                .text_color(p.text_strong)
+                .children(self.lead)
+                .child(self.title.clone());
+            let head = div()
+                .flex()
+                .items_start()
+                .gap(space::S4)
+                .px(space::S5)
+                .pt(space::S5)
+                .pb(space::S4)
+                .border_b_1()
+                .border_color(p.hairline)
+                .child(title)
+                .child(close_button);
+            (Some(head), None)
+        };
         let panel = div()
             .id("modal-panel")
             .relative()
             .w_full()
             .max_w(self.max_w)
-            .bg(p.surface_raised)
-            .border_1()
-            .border_color(p.border_strong)
+            .when(!self.unpainted, |el| {
+                el.bg(p.surface_raised)
+                    .border_1()
+                    .border_color(p.border_strong)
+            })
             .rounded(radius::XL)
             .shadow(popover_shadow(&p))
             .overflow_hidden()
             .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
                 cx.stop_propagation()
             })
-            .child(
-                div()
-                    .flex()
-                    .items_start()
-                    .gap(space::S4)
-                    .px(space::S5)
-                    .pt(space::S5)
-                    .pb(space::S4)
-                    .border_b_1()
-                    .border_color(p.hairline)
-                    .child(
-                        div()
-                            .flex()
-                            .flex_1()
-                            .items_center()
-                            .gap(px(10.))
-                            .font_weight(theme::W_SEMIBOLD)
-                            .text_size(text::XL)
-                            .line_height(gpui_kit::relative(1.25))
-                            .text_color(p.text_strong)
-                            .children(self.lead)
-                            .child(self.title.clone()),
-                    )
-                    .child(
-                        Button::icon_only("modal-close", IconName::X.path(), "Close")
-                            .ghost()
-                            .sm()
-                            .when_some(close, |b, f| {
-                                b.on_click(move |_, window, cx| f(window, cx))
-                            }),
-                    ),
-            )
+            .children(head)
             .children(self.body)
+            .children(corner)
             .with_animation(
                 "modal-rise",
                 Animation::new(motion::SLOW).with_easing(motion::expo),

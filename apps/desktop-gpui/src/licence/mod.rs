@@ -6,14 +6,17 @@
 //! [`announce`]. Policy lives in `banner.rs` / `receipt.rs`; `view.rs` renders.
 
 pub mod banner;
+mod parts;
 pub mod receipt;
+mod ruler;
+mod ticket;
 mod view;
 
 use std::sync::{Arc, Mutex};
 
 use app_core::AppCore;
 use capture_types::{LicenseStatus, ResetDevicesOutcome};
-use gpui_kit::{App, AppContext, Context, Entity, Global, Task};
+use gpui_kit::{App, AppContext, Context, Entity, FocusHandle, Global, Task};
 
 use banner::{Action, Dismiss, Dismissed};
 use receipt::{Done, Flow, Receipt};
@@ -120,6 +123,10 @@ pub struct Licence {
     pub receipt: Receipt,
     backend: Arc<dyn Backend>,
     slow_timer: Option<Task<()>>,
+    /// The receipt's primary action (made on the first episode).
+    primary: Option<FocusHandle>,
+    /// The face the primary action was last focused for (generation, kind).
+    focused: Option<(u64, std::mem::Discriminant<receipt::Face>)>,
 }
 
 impl Licence {
@@ -150,6 +157,8 @@ impl Licence {
             receipt: Receipt::default(),
             backend,
             slow_timer: None,
+            primary: None,
+            focused: None,
         }
     }
 
@@ -173,6 +182,9 @@ impl Licence {
     /// Open the receipt in its working face and arm the 30 s "still working".
     pub fn start(&mut self, flow: Flow, cx: &mut Context<Self>) {
         self.receipt.start(flow, self.status.clone());
+        if self.primary.is_none() {
+            self.primary = Some(cx.focus_handle().tab_stop(true));
+        }
         let generation = self.receipt.generation;
         self.slow_timer = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(receipt::SLOW_AFTER).await;

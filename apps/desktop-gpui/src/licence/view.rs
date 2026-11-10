@@ -1,20 +1,23 @@
 //! Renders the banner (`.mx-banner`, between the titlebar and the surface) and
-//! the receipt (the shared `ui::dialog::Modal`). Everything it shows comes from
-//! `banner::shown` / `receipt::copy`.
+//! the receipt (the shared `ui::dialog::Modal`, unpainted: the receipt draws its
+//! own paper). Everything it shows comes from `banner::shown` / `receipt::copy`;
+//! the device limit is a ticket (`ticket.rs`), every other face the ruler
+//! (`ruler.rs`).
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, AnyElement, App, Entity, Role, SharedString};
+use gpui_kit::{canvas, div, px, AnyElement, App, Entity, Role, SharedString};
 
 use super::banner::{self, Action};
+use super::parts::Parts;
 use super::receipt::{self, Face};
 use super::Licence;
-use crate::theme::{self, size, space, text};
-use crate::ui::chip::{chip, ChipKind};
+use super::{ruler, ticket};
+use crate::theme::{self, size, text};
 use crate::ui::dialog::Modal;
 use crate::ui::notice::{self, strong};
-use crate::ui::{icon, progress, Button};
+use crate::ui::Button;
 
 /// The one shell banner, if any.
 pub fn banner(licence: &Entity<Licence>, cx: &App) -> Option<AnyElement> {
@@ -80,8 +83,9 @@ pub fn receipt(licence: &Entity<Licence>, cx: &App) -> Option<AnyElement> {
     let r = &l.receipt;
     let (face, flow) = (r.face.as_ref().filter(|_| r.open)?, r.flow?);
     let p = theme::tokens(cx);
-    let offset = crate::ui::clock::now(cx).offset();
-    let copy = receipt::copy(face, flow, r.slow, offset);
+    let now = crate::ui::clock::now(cx);
+    let copy = receipt::copy(face, flow, r.slow, now.offset());
+    let title = copy.title;
     let weak = licence.downgrade();
     let close = {
         let weak = weak.clone();
@@ -95,20 +99,13 @@ pub fn receipt(licence: &Entity<Licence>, cx: &App) -> Option<AnyElement> {
             let _ = weak.update(cx, |l, cx| f(l, cx));
         }
     };
-    let glyph: AnyElement = match face {
-        Face::Working => progress::spinner(size::SPIN_LG).into_any_element(),
-        Face::Activated { .. } | Face::Renewed { .. } => div()
-            .text_color(p.accent)
-            .child(icon(IconName::Check.path(), size::SPIN_LG))
-            .into_any_element(),
-        Face::Pending { .. } => div()
-            .text_color(p.accent)
-            .child(icon(IconName::CircleDashed.path(), size::SPIN_LG))
-            .into_any_element(),
-        Face::OverCap { .. } | Face::Failed { .. } => div()
-            .text_color(p.warn)
-            .child(icon(IconName::TriangleAlert.path(), size::SPIN_LG))
-            .into_any_element(),
+    let close_it = |l: &mut Licence, cx: &mut gpui_kit::Context<Licence>| {
+        l.close_receipt(cx);
+    };
+    // The primary action holds the receipt's focus (Enter presses it).
+    let primary = |b: Button| match &l.primary {
+        Some(h) => b.focus_handle(h),
+        None => b,
     };
     let open_link = |id: &'static str, label: &'static str, url: &str| {
         let url = receipt::safe_external(url).map(str::to_string);
@@ -122,31 +119,27 @@ pub fn receipt(licence: &Entity<Licence>, cx: &App) -> Option<AnyElement> {
             .into_any_element()
     };
     let buttons: Vec<AnyElement> = match face {
-        Face::Working => vec![Button::new("receipt-dismiss", "Dismiss")
+        Face::Working => vec![primary(Button::new("receipt-dismiss", "Dismiss"))
             .ghost()
-            .on_click(on(|l, cx| {
-                l.close_receipt(cx);
-            }))
+            .on_click(on(close_it))
             .into_any_element()],
         Face::Activated { .. } | Face::Pending { .. } | Face::Renewed { .. } => {
-            vec![Button::new("receipt-continue", "Continue")
+            vec![primary(Button::new("receipt-continue", "Continue"))
                 .primary()
-                .on_click(on(|l, cx| {
-                    l.close_receipt(cx);
-                }))
+                .on_click(on(close_it))
                 .into_any_element()]
         }
         Face::OverCap { reset_url, buy_url } => vec![
             open_link("receipt-buy", "Buy another license", buy_url),
             open_link("receipt-help", "Help", reset_url),
-            Button::new(
+            primary(Button::new(
                 "receipt-reset",
                 if r.resetting {
                     "Freeing up\u{2026}"
                 } else {
                     "Free up my devices"
                 },
-            )
+            ))
             .primary()
             .busy(r.resetting)
             .disabled(r.resetting)
@@ -156,11 +149,9 @@ pub fn receipt(licence: &Entity<Licence>, cx: &App) -> Option<AnyElement> {
         Face::Failed { .. } => vec![
             Button::new("receipt-close", "Close")
                 .ghost()
-                .on_click(on(|l, cx| {
-                    l.close_receipt(cx);
-                }))
+                .on_click(on(close_it))
                 .into_any_element(),
-            Button::new("receipt-settings", "Open License Settings")
+            primary(Button::new("receipt-settings", "Open License Settings"))
                 .primary()
                 .on_click(on(|l, cx| {
                     l.close_receipt(cx);
@@ -169,52 +160,60 @@ pub fn receipt(licence: &Entity<Licence>, cx: &App) -> Option<AnyElement> {
                 .into_any_element(),
         ],
     };
-    let line = |s: String, color| div().text_color(color).child(SharedString::from(s));
-    let body = div()
-        .id("receipt-body")
-        .role(Role::Group)
-        .aria_label(copy.title)
-        .flex()
-        .flex_col()
-        .gap(space::S1)
-        .px(space::S5)
-        .py(space::S4)
-        .text_size(text::MD)
-        .children(
-            copy.badge
-                .map(|b| div().child(chip(b, ChipKind::Neutral, &p))),
-        )
-        .children(copy.who.map(|w| line(w, p.text)))
-        .children(copy.sub.map(|s| {
-            line(s, p.text_muted)
-                .text_size(text::BASE)
-                .line_height(gpui_kit::relative(1.55))
-        }))
-        .children(
-            copy.was
-                .map(|w| line(w, p.text_faint).text_size(text::BASE).line_through()),
-        )
-        .child(
-            div()
-                .flex()
-                .justify_end()
-                .gap(space::S2)
-                .pt(space::S3)
-                .children(buttons),
-        )
-        .children(r.reset_note.clone().map(|n| {
-            line(n, p.text_muted)
-                .id("receipt-reset-note")
-                .role(Role::Status)
-                .text_size(text::BASE)
-                .test_support()
-        }));
+    let note = r.reset_note.clone().map(|n| {
+        div()
+            .id("receipt-reset-note")
+            .role(Role::Status)
+            .text_size(text::BASE)
+            .text_color(p.text_muted)
+            .child(SharedString::from(n))
+            .test_support()
+            .into_any_element()
+    });
+    let parts = Parts {
+        copy,
+        buttons,
+        note,
+        now,
+    };
+    let body = match face {
+        Face::OverCap { .. } => ticket::render(parts, &p),
+        _ => ruler::render(face, parts, &p),
+    };
     Some(
-        Modal::new("licence-receipt", copy.title)
+        Modal::new("licence-receipt", title)
+            .bare()
+            .unpainted()
             .max_w(size::RECEIPT_MAX_W)
-            .lead(glyph)
             .child(body)
+            .child(focus_primary(licence, face, r.generation))
             .on_close(close)
             .into_any_element(),
     )
+}
+
+/// Moves focus to the primary action once per face (on open and on each
+/// morph), during paint where the window is at hand.
+fn focus_primary(licence: &Entity<Licence>, face: &Face, generation: u64) -> impl IntoElement {
+    let key = (generation, std::mem::discriminant(face));
+    let weak = licence.downgrade();
+    canvas(
+        move |_, window, cx| {
+            let Some(l) = weak.upgrade() else { return };
+            let (focused, handle) = {
+                let l = l.read(cx);
+                (l.focused == Some(key), l.primary.clone())
+            };
+            if focused {
+                return;
+            }
+            l.update(cx, |l, _| l.focused = Some(key));
+            if let Some(h) = handle {
+                window.defer(cx, move |window, cx| h.focus(window, cx));
+            }
+        },
+        |_, _, _, _| {},
+    )
+    .absolute()
+    .size_0()
 }
