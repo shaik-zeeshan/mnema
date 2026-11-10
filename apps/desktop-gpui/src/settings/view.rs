@@ -180,6 +180,11 @@ impl Render for Settings {
             );
         }
 
+        if let Some(v) = self.privacy_prompt() {
+            self.mark_prompt_shown(&v, cx);
+            notices.push(super::privacy_prompt::banner(self, &v, &p, cx));
+        }
+
         let blocks = sections::render(self, window, cx);
         self.item_base = 1 + notices.len();
         self.items = blocks.iter().map(|(id, _)| *id).collect();

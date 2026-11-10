@@ -153,7 +153,12 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
 
 pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
     let d = s.d();
-    let mut rows = vec![row("Excluded Apps")
+    let mut rows: Vec<AnyElement> = s
+        .privacy_prompt()
+        .map(|v| crate::settings::privacy_prompt::section_notice(s, &v, p, cx))
+        .into_iter()
+        .collect();
+    rows.push(row("Excluded Apps")
         .desc("Apps whose visible content is never recorded. Browsers, including private windows, are recorded unless the browser itself is excluded. Mnema does not detect password pages or password fields.")
         .full()
         .control(excluded_list(s, p, cx))
@@ -161,7 +166,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             r.below(line(Tone::Danger, icons::ALERT, s.privacy_error.clone().unwrap_or_default(), p))
         })
         .build(p)
-        .into_any_element()];
+        .into_any_element());
     rows.push(
         row("Filter system audio")
             .desc("Also keep audio from excluded apps out of recordings.")

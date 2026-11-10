@@ -2,7 +2,8 @@
 //! surface, filled from `apps/desktop/parity/fixtures/settings/default.json`,
 //! one per group top plus the deeper sections of the tall groups (each a
 //! 1280x800 viewport, under the offscreen clamp), and the parity shot for
-//! `scripts/parity.sh settings <state>`.
+//! `scripts/parity.sh settings <state>`. `settings-*privacy-prompt-<theme>`
+//! add the one-time Sensitive Capture Protection prompt (catalog below).
 
 use std::path::Path;
 
@@ -10,6 +11,7 @@ use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
 use gpui_kit::{AppContext, VisualTestAppContext};
 use mnema_gpui::settings::fixture::{settings_data, FixtureBackend, STATES};
+use mnema_gpui::settings::privacy_prompt::{PromptData, Recommended};
 use mnema_gpui::shell::{Shell, ShellModel, Surface};
 use mnema_gpui::theme;
 
@@ -17,18 +19,50 @@ use super::compare;
 
 pub const VIEWPORT: (f32, f32) = (1280., 800.);
 
+/// Prompt goldens: `(state, ?tab=)`. The fixture already excludes 1Password
+/// and Passwords, so two of the four catalog apps are pending.
+const PROMPT_STATES: [(&str, &str); 2] = [
+    ("privacy-prompt", "appearance"),
+    ("capture-privacy-prompt", "privacy"),
+];
+
+fn prompt_catalog() -> PromptData {
+    let app = |b: &str, n: &str| Recommended {
+        bundle_id: b.into(),
+        display_name: n.into(),
+    };
+    PromptData {
+        prompt_id: "sensitive_capture_protection_v1_recommended_exclusions".into(),
+        apps: vec![
+            app("com.apple.Passwords", "Apple Passwords"),
+            app("com.apple.keychainaccess", "Keychain Access"),
+            app("com.1password.1password", "1Password"),
+            app("com.bitwarden.desktop", "Bitwarden"),
+        ],
+        closed: false,
+    }
+}
+
+fn tab_for(state: &str) -> anyhow::Result<&'static str> {
+    STATES
+        .iter()
+        .chain(PROMPT_STATES.iter())
+        .find(|(s, _)| *s == state)
+        .map(|(_, t)| *t)
+        .ok_or_else(|| anyhow::anyhow!("no settings state {state}"))
+}
+
 pub fn render(
     cx: &mut VisualTestAppContext,
     shell_model: ShellModel,
     state: &str,
     setting: AppearanceSetting,
 ) -> anyhow::Result<image::RgbaImage> {
-    let tab = STATES
-        .iter()
-        .find(|(s, _)| *s == state)
-        .map(|(_, t)| *t)
-        .ok_or_else(|| anyhow::anyhow!("no settings state {state}"))?;
-    let data = settings_data()?;
+    let tab = tab_for(state)?;
+    let mut data = settings_data()?;
+    if PROMPT_STATES.iter().any(|(s, _)| *s == state) {
+        data.privacy_prompt = Some(prompt_catalog());
+    }
     cx.update(|cx| theme::set_setting(setting, cx));
     let mut settings = None;
     let window = cx.open_offscreen_window(compare::viewport(VIEWPORT), |window, cx| {
@@ -67,7 +101,7 @@ pub fn goldens(
     shell_model: &ShellModel,
 ) -> anyhow::Result<Vec<String>> {
     let mut failures = Vec::new();
-    for (state, _) in STATES {
+    for (state, _) in STATES.iter().chain(PROMPT_STATES.iter()) {
         for (theme_name, setting) in themes {
             let name = format!("settings-{state}-{theme_name}");
             if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {

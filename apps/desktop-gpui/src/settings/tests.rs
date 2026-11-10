@@ -29,7 +29,7 @@ fn open(
     open_at(cx, fail, (1280., 800.))
 }
 
-fn open_at(
+pub(super) fn open_at(
     cx: &mut TestAppContext,
     fail: bool,
     (w, h): (f32, f32),
@@ -64,7 +64,7 @@ fn open_at(
     (window, view, backend)
 }
 
-fn frame(cx: &mut TestAppContext, window: WindowHandle<Root>) {
+pub(super) fn frame(cx: &mut TestAppContext, window: WindowHandle<Root>) {
     cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();
     cx.run_until_parked();

@@ -55,6 +55,8 @@ pub struct SettingsData {
     pub update: Option<Value>,
     pub log_status: Option<Value>,
     pub notices: Option<Value>,
+    /// The Sensitive Capture Protection recommendations + their prompt record.
+    pub privacy_prompt: Option<super::privacy_prompt::PromptData>,
     /// The slow reads (`data::load_slow`) answered or gave up: a `None` among
     /// them now means "couldn't read", not "still checking".
     pub complete: bool,

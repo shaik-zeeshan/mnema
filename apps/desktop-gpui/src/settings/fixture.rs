@@ -100,6 +100,8 @@ pub enum Call {
     /// A provider key went to the vault (the key itself is never recorded).
     SaveKey(String),
     ClearKey(String),
+    /// A one-time prompt record write.
+    Prompt(super::privacy_prompt::Mark),
 }
 
 /// Saves succeed (echoing the draft) unless `fail` is set; every call is recorded.
@@ -142,6 +144,9 @@ impl Backend for FixtureBackend {
         state: &MicrophoneControllerState,
     ) -> Result<MicrophoneControllerState, String> {
         self.record(Call::Mic).map(|_| state.clone())
+    }
+    fn prompt(&self, _: &str, mark: super::privacy_prompt::Mark) -> Result<(), String> {
+        self.record(Call::Prompt(mark))
     }
     /// Every provider answers live (the parity mock's `verify_ai_provider`), unless `fail`.
     fn verify_provider(

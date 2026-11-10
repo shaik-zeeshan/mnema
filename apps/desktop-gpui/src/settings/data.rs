@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 
 use super::autosave::Unit;
 use super::model::SettingsData;
+use super::privacy_prompt::{Mark, PromptData};
 
 fn to_json(v: impl Serialize) -> Option<Value> {
     serde_json::to_value(v).ok()
@@ -199,6 +200,18 @@ pub async fn load_slow(core: &Arc<AppCore>, mut d: SettingsData) -> SettingsData
         let status = app_core::transcription_deepgram::transcription_deepgram_auth_status(&auth);
         d.deepgram_auth = slow("the Deepgram auth status", status).await.flatten();
     }
+    if core.try_state::<RecordingSettingsState>().is_some() {
+        let recs =
+            app_core::sensitive_capture_recommendations::sensitive_capture_recommendations_now(
+                core,
+            );
+        d.privacy_prompt = slow("the sensitive-app recommendations", recs)
+            .await
+            .map(|r| {
+                let state = app_core::one_time_prompts::get_one_time_prompt_state(core);
+                PromptData::from_core(&r, &state)
+            });
+    }
     d.complete = true;
     d
 }
@@ -294,6 +307,11 @@ pub trait Backend: Send + Sync + 'static {
         let _ = next;
         Err("no app core".into())
     }
+    /// `mark_one_time_prompt_shown` / `dismiss_` / `complete_one_time_prompt`.
+    fn prompt(&self, id: &str, mark: Mark) -> Result<(), String> {
+        let _ = (id, mark);
+        Err("no app core".into())
+    }
     /// `update_microphone_controller`.
     fn save_mic(
         &self,
@@ -331,6 +349,17 @@ impl Backend for CoreBackend {
 
     fn save_privacy(&self, next: &RecordingSettings) -> Result<RecordingSettings, String> {
         super::live::save_privacy(&self.0, next)
+    }
+
+    fn prompt(&self, id: &str, mark: Mark) -> Result<(), String> {
+        use app_core::one_time_prompts as p;
+        let id = id.to_string();
+        match mark {
+            Mark::Shown => p::mark_one_time_prompt_shown(id, &self.0),
+            Mark::Dismissed => p::dismiss_one_time_prompt(id, &self.0),
+            Mark::Completed => p::complete_one_time_prompt(id, &self.0),
+        }
+        .map(|_| ())
     }
 
     fn save_keyboard(&self, bindings: &Value) -> Result<Value, String> {

@@ -211,6 +211,36 @@ fn a_privacy_exclusion_is_added_and_removed() {
     assert_eq!(on_disk(&r.core).privacy.filter_system_audio, off);
 }
 
+#[test]
+fn the_sensitive_capture_prompt_records_shown_then_closes_on_dismiss() {
+    use app_core::one_time_prompts::get_one_time_prompt_state;
+    use app_core::sensitive_capture_recommendations::get_sensitive_capture_recommendations;
+    use settings::privacy_prompt::{Mark, PromptData};
+    let r = rig();
+    let backend = settings::data::CoreBackend(r.core.clone());
+    let read = || {
+        let recs = get_sensitive_capture_recommendations(&r.core, &[]);
+        PromptData::from_core(&recs, &get_one_time_prompt_state(&r.core))
+    };
+    let open = read();
+    assert!(
+        !open.closed && !open.apps.is_empty(),
+        "a fresh install sees it"
+    );
+    assert!(settings::privacy_prompt::view(Some(&open), false, &[]).is_some());
+
+    backend.prompt(&open.prompt_id, Mark::Shown).unwrap();
+    assert!(!read().closed, "shown alone keeps it open");
+    backend.prompt(&open.prompt_id, Mark::Dismissed).unwrap();
+    assert!(read().closed, "dismissed for good");
+    assert!(r
+        .core
+        .paths()
+        .config
+        .join("one-time-prompts.json")
+        .is_file());
+}
+
 /// The draft carries the seeded privacy exclusions (always, on a first run), which the full save alone refuses ("Privacy rules must be changed
 /// with dedicated privacy commands") — the founder's failed Finale.
 #[test]

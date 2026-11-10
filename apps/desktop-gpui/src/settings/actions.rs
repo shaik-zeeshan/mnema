@@ -160,11 +160,22 @@ impl Settings {
         mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), capture_types::CaptureErrorResponse>,
         cx: &mut Context<Self>,
     ) {
+        self.privacy_command_then(mutate, |_, _, _| {}, cx);
+    }
+
+    /// [`Self::privacy_command`], then `done(saved?)` once it lands. `false` =
+    /// it never started (nothing loaded, the mutation refused, one in flight).
+    pub fn privacy_command_then(
+        &mut self,
+        mutate: impl FnOnce(&mut RecordingSettings) -> Result<(), capture_types::CaptureErrorResponse>,
+        done: impl FnOnce(&mut Self, bool, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> bool {
         let Some(mut next) = self.saved.clone() else {
-            return;
+            return false;
         };
         if mutate(&mut next).is_err() || self.privacy_in_flight {
-            return;
+            return false;
         }
         self.privacy_in_flight = true;
         self.engine.cancel_all();
@@ -174,6 +185,7 @@ impl Settings {
             let result = job.await;
             let _ = this.update(cx, |this, cx| {
                 this.privacy_in_flight = false;
+                let ok = result.is_ok();
                 match result {
                     Ok(s) => {
                         if let Some(d) = this.draft.as_mut() {
@@ -184,11 +196,13 @@ impl Settings {
                     }
                     Err(e) => this.privacy_error = Some(e),
                 }
+                done(this, ok, cx);
                 this.tick(cx);
                 cx.notify();
             });
         })
         .detach();
         cx.notify();
+        true
     }
 }

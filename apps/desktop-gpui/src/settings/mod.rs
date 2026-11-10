@@ -17,6 +17,7 @@ pub mod model;
 mod rail;
 pub mod reload;
 pub mod row;
+pub mod privacy_prompt;
 pub(crate) mod sections;
 #[cfg(test)]
 mod tests;
@@ -102,6 +103,7 @@ pub struct Ui {
     pub mcp_open: Option<String>,
     /// Model downloads in flight, by `provider:model`: `(done, total, status)`.
     pub downloads: HashMap<String, (u64, Option<u64>, String)>,
+    pub prompt: privacy_prompt::PromptUi,
 }
 
 /// One provider row's reachability check.
