@@ -27,7 +27,7 @@ fn lane(lane: Lane, kind: LaneMod, small: Option<&'static str>, p: &Palette) -> 
     let (fg, mark) = match kind {
         LaneMod::On => (lane_color(lane, p), 1.),
         LaneMod::Paused => (p.status_paused_fg, 1.),
-        LaneMod::Starting => (p.text_muted, 1.),
+        LaneMod::Starting | LaneMod::Waiting => (p.text_muted, 1.),
         LaneMod::Error => (p.danger_text, 1.),
         LaneMod::Off => (p.text_subtle, 0.35),
     };
@@ -36,7 +36,7 @@ fn lane(lane: Lane, kind: LaneMod, small: Option<&'static str>, p: &Palette) -> 
         .size(px(5.))
         .rounded(px(1.))
         .map(|m| match kind {
-            LaneMod::Starting => m.border_1().border_color(fg),
+            LaneMod::Starting | LaneMod::Waiting => m.border_1().border_color(fg),
             LaneMod::Error => m.rounded_full().bg(fg),
             _ => m.bg(fg).opacity(mark),
         });
@@ -82,8 +82,14 @@ fn rec_pill(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoEle
             None,
         ),
     };
-    let clock = match (view.elapsed_clock, m.session_start_ms) {
-        (true, Some(start)) => Some(model::format_clock(clock::now_ms(cx) - start, true)),
+    let clock = match (view.clock, m.session_start_ms) {
+        (Some(model::Clock::Elapsed), Some(start)) => {
+            Some(model::format_clock(clock::now_ms(cx) - start, true))
+        }
+        (Some(model::Clock::Paused), _) => shell
+            .pause_clock
+            .elapsed(cx.background_executor().now())
+            .map(|d| model::format_clock(d.as_millis() as i64, false)),
         _ => None,
     };
     let label = match &clock {
@@ -325,7 +331,7 @@ pub fn render(
             .on_click(cx.listener(move |this, _, _, cx| this.run_flag(&flag, cx)))
             .into_any_element()
     });
-    let resting = (flag.is_none() && rec.kind == RecMod::Paused && !rec.elapsed_clock)
+    let resting = (flag.is_none() && rec.kind == RecMod::Paused && rec.clock.is_none())
         .then(|| div().child("resumes when you’re back").into_any_element());
     let engine = m.engine.as_ref().map(|e| {
         let tone = e.error.then_some((p.warn, p.warn_border));
@@ -333,14 +339,15 @@ pub fn render(
             .flex()
             .items_center()
             .gap(space::S3)
-            .child(
+            .child(with_tip(
                 pill("status-engine", "engine", e.label.to_string(), tone, p).on_click(
                     // `openSettings("intelligence")`, as the Svelte engine pill.
                     |_, _, cx| {
                         cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
                     },
                 ),
-            )
+                e.tip.clone(),
+            ))
             .child(sep(p))
     });
 

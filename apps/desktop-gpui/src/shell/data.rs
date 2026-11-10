@@ -13,6 +13,7 @@ use capture_types::{
     RuntimeSourcesStatus, UsageChartsResponse,
 };
 
+use super::health::{Backlog, Health};
 use super::model::{self, EngineFlag, NotificationRow, ShellModel, StatusBarModel};
 
 /// What the shell's commands answered (`None` = not read / failed).
@@ -36,6 +37,9 @@ pub struct Inputs {
     pub engine: Option<EngineFlag>,
     /// `get_app_notifications`.
     pub notifications: Vec<NotificationRow>,
+    /// The 2 s feed (the parity fixture carries it; `load` leaves it unread).
+    pub health: Option<Health>,
+    pub backlog: Option<Backlog>,
 }
 
 fn session_start_ms(session: Option<&NativeCaptureSession>) -> Option<i64> {
@@ -88,6 +92,11 @@ pub fn build(i: Inputs) -> ShellModel {
         }),
         free_bytes: i.free_bytes,
         local_only: i.settings.as_ref().is_none_or(model::is_local_only),
+        deepgram_transcription: i.settings.as_ref().is_some_and(|s| {
+            s.transcription.enabled
+                && s.transcription.provider == capture_types::AudioTranscriptionProvider::Deepgram
+        }),
+        health: i.health,
         ..Default::default()
     };
     apply_session(&mut status, i.session.as_ref(), i.runtime.as_ref());
@@ -96,6 +105,7 @@ pub fn build(i: Inputs) -> ShellModel {
         status,
         notifications: i.notifications,
         developer_options: i.settings.is_some_and(|s| s.developer_options_enabled),
+        backlog: i.backlog,
     }
 }
 
@@ -153,12 +163,12 @@ pub async fn load(core: &Arc<AppCore>) -> ShellModel {
         }
         None => (None, None),
     };
-    let engine = match settings {
-        Some(_) => app_core::ai_runtime::get_ai_runtime_status(core)
+    let engine = match &settings {
+        Some(s) => app_core::ai_runtime::get_ai_runtime_status(core)
             .await
             .ok()
-            .and_then(|s| serde_json::to_value(s).ok())
-            .and_then(|v| model::engine_flag(&v)),
+            .and_then(crate::quick_recall::data::reshape)
+            .and_then(|status| model::engine_flag(&status, Some(s))),
         None => None,
     };
     let notifications = notifications(core);
@@ -173,6 +183,8 @@ pub async fn load(core: &Arc<AppCore>) -> ShellModel {
         storage: storage.map(|s| s.usage),
         engine,
         notifications,
+        health: None,
+        backlog: None,
     })
 }
 
@@ -193,4 +205,49 @@ pub fn refresh_live(core: &AppCore, status: &mut StatusBarModel) {
     let session = app_core::native_capture::control::current_native_capture_session(core);
     let runtime = runtime_sources(core, session.is_running);
     apply_session(status, Some(&session), runtime.as_ref());
+}
+
+/// `get_capture_health`, reduced to what the bar and popover read. Blocking
+/// (one statfs): call it off the main thread. Never logs: it is polled.
+pub fn health(core: &AppCore) -> Option<Health> {
+    let state = core.try_state::<NativeCaptureState>()?;
+    let dto = app_core::native_capture::capture_health::capture_health_snapshot(&state, core);
+    crate::quick_recall::data::reshape(dto)
+}
+
+/// The popover's "Catching up" reads; each one that fails reads as `None`, as
+/// StatusPop.svelte's `.catch(() => null)`. Blocks on app-core's runtime.
+pub fn backlog(core: &AppCore, deepgram: bool) -> Backlog {
+    let Some(infra) = core.try_state::<AppInfraState>() else {
+        return Backlog::default();
+    };
+    let index = core
+        .block_on(app_core::app_infra::quick_recall::get_quick_recall_index_status(core, &infra))
+        .ok()
+        .and_then(crate::quick_recall::data::reshape);
+    let pipeline = core
+        .block_on(app_core::debug_pipeline::get_processing_pipeline_status(
+            &infra,
+        ))
+        .ok();
+    // Key rejected vs unreachable: only asked while Deepgram jobs are retrying.
+    let retrying = pipeline.as_ref().is_some_and(|lanes| {
+        lanes
+            .iter()
+            .any(|l| l.processor == "audio_transcription" && l.retrying > 0)
+    });
+    let deepgram_auth_error = match core
+        .try_state::<app_core::transcription_deepgram::DeepgramAuthStatusState>()
+    {
+        Some(auth) if deepgram && retrying => core
+            .block_on(app_core::transcription_deepgram::transcription_deepgram_auth_status(&auth))
+            .ok()
+            .flatten(),
+        _ => None,
+    };
+    Backlog {
+        index,
+        pipeline,
+        deepgram_auth_error,
+    }
 }

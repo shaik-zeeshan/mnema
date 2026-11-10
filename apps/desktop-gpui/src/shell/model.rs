@@ -7,6 +7,9 @@ use capture_types::{
     RuntimeSourcesStatus,
 };
 
+use super::health::{self, Backlog, Health};
+use crate::insights::model::{engine_state, AiStatus, Engine, Status};
+
 /// The main window's four surfaces.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
@@ -21,6 +24,9 @@ pub struct ShellModel {
     pub status: StatusBarModel,
     pub notifications: Vec<NotificationRow>,
     pub developer_options: bool,
+    /// The status popover's "Catching up" reads; `None` = not polled in this
+    /// model (a reload keeps the last reading).
+    pub backlog: Option<Backlog>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -145,6 +151,11 @@ pub struct StatusBarModel {
     pub storage_bytes: Option<u64>,
     pub free_bytes: Option<u64>,
     pub local_only: bool,
+    /// Transcription is on and goes to Deepgram (the "Catching up" Deepgram rows).
+    pub deepgram_transcription: bool,
+    /// `get_capture_health` from the 2 s feed (`health.rs`); `None` = unread
+    /// (a reload keeps the last reading).
+    pub health: Option<Health>,
 }
 
 /// `RuntimeSourcesStatus` reduced to what the lanes read.
@@ -180,45 +191,51 @@ pub enum RecMod {
     Stopped,
 }
 
+/// Which clock follows the label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Clock {
+    /// Session elapsed.
+    Elapsed,
+    /// Since the user paused (`health::PauseClock`).
+    Paused,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecView {
     pub kind: RecMod,
     pub label: String,
-    /// The session clock follows the label.
-    pub elapsed_clock: bool,
+    pub clock: Option<Clock>,
 }
 
 pub fn rec_view(m: &StatusBarModel) -> RecView {
-    let v = |kind, label: &str, elapsed_clock| RecView {
+    let v = |kind, label: &str, clock| RecView {
         kind,
         label: label.into(),
-        elapsed_clock,
+        clock,
     };
     if !m.running {
         if m.loading_start {
-            return v(RecMod::Starting, "STARTING…", false);
+            return v(RecMod::Starting, "STARTING…", None);
         }
         if let Some(reason) = &m.stopped_reason {
-            return v(RecMod::Stopped, &format!("STOPPED · {reason}"), false);
+            return v(RecMod::Stopped, &format!("STOPPED · {reason}"), None);
         }
-        return v(RecMod::Off, "NOT RECORDING", false);
+        return v(RecMod::Off, "NOT RECORDING", None);
     }
     if m.low_disk && !m.user_paused {
-        return v(RecMod::Suspended, "PAUSED · low disk", false);
+        return v(RecMod::Suspended, "PAUSED · low disk", None);
     }
-    // shortcut: "PAUSED" shows no clock. The session carries no pause instant;
-    // status-bar.svelte counts from when it saw the pause, which isn't ported.
     if m.user_paused {
-        return v(RecMod::Paused, "PAUSED", false);
+        return v(RecMod::Paused, "PAUSED", Some(Clock::Paused));
     }
     let all_idle = m.runtime.is_none_or(|rt| {
         let requested: Vec<_> = rt.iter().filter(|s| s.requested).collect();
         !requested.is_empty() && requested.iter().all(|s| s.paused)
     });
     if m.inactivity_paused && all_idle {
-        return v(RecMod::Paused, "PAUSED · idle", false);
+        return v(RecMod::Paused, "PAUSED · idle", None);
     }
-    v(RecMod::Running, "REC", true)
+    v(RecMod::Running, "REC", Some(Clock::Elapsed))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,15 +244,19 @@ pub enum LaneMod {
     Off,
     Paused,
     Starting,
+    /// Display asleep, or the system-audio tap reconnecting.
+    Waiting,
     Error,
 }
 
 /// Display-only lanes while starting / recording.
-// shortcut: the `waiting` (display asleep, tap reconnecting) lanes read
-// `get_capture_health` (`capture_health_snapshot` in app-core), which the
-// shell doesn't poll yet; a waiting source shows as starting / on.
 pub fn live_lanes(m: &StatusBarModel) -> [(LaneMod, Option<&'static str>); 3] {
     let running = rec_view(m).kind == RecMod::Running;
+    let health = m.health.as_ref();
+    let display_asleep = health.is_some_and(|h| {
+        h.screen.state == "waiting"
+            && h.screen.reason.as_deref() == Some("capture_display_unavailable")
+    });
     std::array::from_fn(|i| match (m.running, m.runtime) {
         (true, Some(rt)) => {
             let src = rt[i];
@@ -245,6 +266,11 @@ pub fn live_lanes(m: &StatusBarModel) -> [(LaneMod, Option<&'static str>); 3] {
                 (LaneMod::Error, Some("stopped"))
             } else if src.paused {
                 (LaneMod::Paused, running.then_some("idle"))
+            } else if i == 0 && display_asleep {
+                let phrase = crate::small::debug::readouts::reason_phrase;
+                (LaneMod::Waiting, phrase("capture_display_unavailable"))
+            } else if i == 2 && health::sys_audio_reconnecting(health) {
+                (LaneMod::Waiting, Some("reconnecting"))
             } else if src.live {
                 (LaneMod::On, None)
             } else {
@@ -274,10 +300,8 @@ pub struct StatusFlag {
     pub action: String,
 }
 
-/// At most one flag. Recording: privacy > low disk. Stopped: start failure >
-/// read-only > stopped by the system > permission.
-// shortcut: no "disk almost full" flag: it reads the capture-health disk
-// thresholds, which the shell doesn't poll yet (see `live_lanes`).
+/// At most one flag. Recording: privacy > low disk > disk soon. Stopped: start
+/// failure > read-only > stopped by the system > permission.
 pub fn status_flag(m: &StatusBarModel) -> Option<StatusFlag> {
     let flag = |tone, text, action: &str| {
         Some(StatusFlag {
@@ -294,6 +318,14 @@ pub fn status_flag(m: &StatusBarModel) -> Option<StatusFlag> {
         }
         if m.low_disk {
             return flag(Tone::Warn, "free up space ·", "resumes on its own");
+        }
+        if health::disk_soon(m.health.as_ref(), m.running, m.low_disk) {
+            let free = m.health.as_ref().and_then(|h| h.disk.free_bytes);
+            let left = format!(
+                "{} GB left",
+                crate::small::debug::readouts::gb(free.unwrap_or(0) as f64)
+            );
+            return flag(Tone::Info, "disk almost full ·", &left);
         }
         return None;
     }
@@ -316,27 +348,33 @@ pub fn status_flag(m: &StatusBarModel) -> Option<StatusFlag> {
 pub struct EngineFlag {
     pub label: &'static str,
     pub error: bool,
+    /// The pill's tooltip and the popover's "Ask AI" row.
+    pub tip: String,
 }
 
-/// The engine pill from `get_ai_runtime_status`: nothing while healthy.
-// A reduced `engineState` (insights/engine-state.ts) over the status's wire
-// JSON: `AiRuntimeStatus`'s fields are private to app-core, and the parity
-// fixture is that JSON too.
-pub fn engine_flag(status: &serde_json::Value) -> Option<EngineFlag> {
-    let flag = |label, error| Some(EngineFlag { label, error });
-    if status.get("hasProviders").and_then(|v| v.as_bool()) == Some(false) {
-        return flag("not set up", false);
-    }
-    match status.get("reason").and_then(|v| v.as_str()) {
-        Some("vault_denied") => flag("keychain locked", true),
-        Some(r) if r == "local_endpoint_unreachable" || r.starts_with("provider_unreachable:") => {
-            flag("offline", true)
-        }
-        Some(r) if r.starts_with("needs_reconnect:") => flag("needs reconnect", true),
-        _ if status.get("configured").and_then(|v| v.as_bool()) == Some(false) => {
-            flag("not set up", false)
-        }
-        _ => None,
+/// `engineFlag`: the engine pill from `get_ai_runtime_status`, nothing while
+/// healthy or off by choice. Reads Insights' `engine_state` (engine-state.ts).
+pub fn engine_flag(status: &AiStatus, settings: Option<&RecordingSettings>) -> Option<EngineFlag> {
+    let flag = |label, error, tip: String| Some(EngineFlag { label, error, tip });
+    let state = engine_state(&Status {
+        loaded: true,
+        ai: Some(status.clone()),
+        settings: settings.cloned(),
+        ..Default::default()
+    });
+    let vault = status.reason.as_deref() == Some("vault_denied");
+    match state {
+        Engine::Pitch => flag(
+            "not set up",
+            false,
+            "No AI provider set up — Insights shows capture-only views".into(),
+        ),
+        // ADR 0058: an unreachable provider is "offline", never "reconnect".
+        Engine::Unreachable(text) if vault => flag("keychain locked", true, text),
+        Engine::Unreachable(text) => flag("offline", true, format!("{text} Resumes on its own.")),
+        Engine::Fix(text, Some(_)) => flag("needs reconnect", true, text),
+        Engine::Fix(text, None) => flag("not set up", false, text),
+        Engine::Loading | Engine::Off | Engine::On => None,
     }
 }
 

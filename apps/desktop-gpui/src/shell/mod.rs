@@ -6,8 +6,10 @@ pub mod command_field;
 pub mod data;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
+pub mod health;
 pub mod model;
 mod notifications_pop;
+mod pop_rows;
 mod shortcuts_pop;
 mod status_bar;
 mod status_pop;
@@ -66,8 +68,10 @@ pub struct Shell {
     start_error: Option<String>,
     /// A capture command is in flight (`loadingStart/Stop/Pause`).
     capture_busy: bool,
-    /// The 2 s per-source poll while recording.
+    /// The 2 s live feed while recording or while the status popover is open.
     live: Option<Task<()>>,
+    /// "PAUSED 00:12" counts from when the shell saw the pause begin.
+    pub pause_clock: health::PauseClock,
 }
 
 impl Shell {
@@ -137,6 +141,7 @@ impl Shell {
             start_error: None,
             capture_busy: false,
             live: None,
+            pause_clock: health::PauseClock::default(),
         };
         shell.set_model(model, cx);
         shell
@@ -151,6 +156,16 @@ impl Shell {
             model.status.start_error = self.start_error.clone();
         }
         model.status.loading_start |= self.model.status.loading_start && self.capture_busy;
+        // The 2 s feed isn't part of a reload, and a failed read keeps the last
+        // good value (status-live.svelte.ts): keep the readings until the next poll.
+        if model.status.health.is_none() {
+            model.status.health = self.model.status.health.take();
+        }
+        if model.backlog.is_none() {
+            model.backlog = self.model.backlog.take();
+        }
+        let paused = model.status.running && model.status.user_paused;
+        self.pause_clock.observe(paused, cx.background_executor().now());
         self.model = model;
         self.arm_live_poll(cx);
         let s = &self.model.status;
@@ -175,9 +190,9 @@ impl Shell {
             t.developer = developer;
             cx.notify();
         });
-        // The REC clock ticks once a second while it shows (not while the window
-        // is hidden or every screen is asleep).
-        let ticking = model::rec_view(&self.model.status).elapsed_clock;
+        // The REC / PAUSED clock ticks once a second while it shows (not while
+        // the window is hidden or every screen is asleep).
+        let ticking = model::rec_view(&self.model.status).clock.is_some();
         self.tick = ticking.then(|| {
             cx.spawn(async move |this, cx| loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
@@ -219,6 +234,11 @@ impl Shell {
 
     pub fn toggle_overlay(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
         self.overlay = (self.overlay != Some(overlay)).then_some(overlay);
+        if self.overlay == Some(Overlay::Status) {
+            // Opening reads now (health + backlog), as StatusPop.svelte's open poll.
+            self.live = None;
+        }
+        self.arm_live_poll(cx);
         cx.notify();
     }
 

@@ -15,10 +15,10 @@ mod compare;
 mod gallery;
 #[path = "visual/insights.rs"]
 mod insights;
-#[path = "visual/quick_recall.rs"]
-mod quick_recall;
 #[path = "visual/onboarding.rs"]
 mod onboarding;
+#[path = "visual/quick_recall.rs"]
+mod quick_recall;
 #[path = "visual/settings.rs"]
 mod settings;
 #[path = "visual/small.rs"]
@@ -51,46 +51,100 @@ struct State {
     fixture: FixtureId,
     overlay: Option<Overlay>,
     viewport: (f32, f32),
+    /// Edits the parity map before it becomes the model (states only GPUI draws).
+    patch: Option<fn(&mut serde_json::Value)>,
 }
 
-const SHELL_STATES: [State; 6] = [
+/// The 2 s feed's undrawn states: display asleep, the system-audio tap
+/// reconnecting after a device change, and a backlog to catch up on.
+fn capture_health(map: &mut serde_json::Value) {
+    let health = &mut map["get_capture_health"];
+    health["screen"]["state"] = "waiting".into();
+    health["screen"]["reason"] = "capture_display_unavailable".into();
+    health["systemAudio"]["state"] = "reconnecting".into();
+    health["systemAudioTap"]["lastReason"] = "deviceChanged".into();
+    health["systemAudioTap"]["sampleRateHz"] = serde_json::Value::Null;
+    map["get_quick_recall_index_status"] = serde_json::json!({
+        "queuedFrames": 38, "oldestQueuedMs": null,
+        "semanticBuilding": true, "semanticIndexedPercent": 92
+    });
+    let lane = |processor: &str, queued: i64, running: i64, avg: Option<f64>| {
+        serde_json::json!({
+            "processor": processor, "queued": queued, "retrying": 0, "running": running,
+            "completed": 0, "failed": 0, "failedLast24h": 0,
+            "averageCompletedSecondsLast24h": avg, "lastError": null
+        })
+    };
+    map["get_processing_pipeline_status"] = serde_json::json!([
+        lane("ocr", 38, 0, Some(3.2)),
+        lane("audio_transcription", 2, 1, None)
+    ]);
+}
+
+const SHELL_STATES: [State; 7] = [
     State {
         name: "populated",
         fixture: FixtureId::Populated,
         overlay: None,
         viewport: MAIN,
+        patch: None,
     },
     State {
         name: "empty",
         fixture: FixtureId::Empty,
         overlay: None,
         viewport: MAIN,
+        patch: None,
     },
     State {
         name: "recording",
         fixture: FixtureId::Populated,
         overlay: Some(Overlay::Status),
         viewport: MAIN,
+        patch: None,
     },
     State {
         name: "narrow",
         fixture: FixtureId::Populated,
         overlay: None,
         viewport: NARROW,
+        patch: None,
     },
     State {
         name: "notifications",
         fixture: FixtureId::Populated,
         overlay: Some(Overlay::Notifications),
         viewport: MAIN,
+        patch: None,
     },
     State {
         name: "shortcuts",
         fixture: FixtureId::Empty,
         overlay: Some(Overlay::Shortcuts),
         viewport: MAIN,
+        patch: None,
+    },
+    State {
+        name: "capture-health",
+        fixture: FixtureId::Populated,
+        overlay: Some(Overlay::Status),
+        viewport: MAIN,
+        patch: Some(capture_health),
     },
 ];
+
+/// The state's model: the fixture's, or its parity map patched.
+fn state_model(
+    state: &State,
+    base: impl Fn(FixtureId) -> ShellModel,
+) -> anyhow::Result<ShellModel> {
+    let Some(patch) = state.patch else {
+        return Ok(base(state.fixture));
+    };
+    let mut map = fixture::load("shell", state.fixture.name())?;
+    patch(&mut map);
+    fixture::shell_model(&map)
+}
 
 const THEMES: [(&str, AppearanceSetting); 2] = [
     ("dark", AppearanceSetting::Dark),
@@ -280,12 +334,8 @@ fn run() -> anyhow::Result<()> {
             .iter()
             .find(|(t, _)| *t == theme_name)
             .ok_or_else(|| anyhow::anyhow!("no theme {theme_name}"))?;
-        let shot = render(
-            &mut cx,
-            model_for(state.fixture).unwrap(),
-            state,
-            setting.clone(),
-        )?;
+        let model = state_model(state, |id| model_for(id).unwrap())?;
+        let shot = render(&mut cx, model, state, setting.clone())?;
         // Same size as the Tauri shot (Playwright renders at 1x; we capture at 2x).
         let shot = image::imageops::resize(
             &shot,
@@ -305,12 +355,8 @@ fn run() -> anyhow::Result<()> {
             if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {
                 continue;
             }
-            let shot = render(
-                &mut cx,
-                model_for(state.fixture).unwrap(),
-                state,
-                setting.clone(),
-            )?;
+            let model = state_model(state, |id| model_for(id).unwrap())?;
+            let shot = render(&mut cx, model, state, setting.clone())?;
             if let Err(e) = compare::check_golden(&name, &shot) {
                 failures.push(e.to_string());
             }

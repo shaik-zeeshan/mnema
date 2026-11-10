@@ -62,6 +62,7 @@ pub(crate) fn get<T: DeserializeOwned>(map: &Value, path: &[&str]) -> anyhow::Re
 
 pub fn shell_model(map: &Value) -> anyhow::Result<ShellModel> {
     let settings: Option<RecordingSettings> = get(map, &["get_recording_settings"])?;
+    let settings_ref = settings.clone();
     let screen_permission: Option<CapturePermissionState> =
         get(map, &["get_capture_permissions", "permissions", "screen"])?;
     let session: Option<NativeCaptureSession> = get(map, &["get_capture_permissions", "session"])?;
@@ -82,13 +83,31 @@ pub fn shell_model(map: &Value) -> anyhow::Result<ShellModel> {
         usage,
         storage,
         free_bytes,
-        engine: map
-            .get("get_ai_runtime_status")
-            .and_then(model::engine_flag),
+        engine: get::<crate::insights::model::AiStatus>(map, &["get_ai_runtime_status"])?
+            .and_then(|status| model::engine_flag(&status, settings_ref.as_ref())),
         notifications: map
             .get("get_app_notifications")
             .map(model::notification_rows)
             .unwrap_or_default(),
+        health: get(map, &["get_capture_health"])?,
+        backlog: backlog(map)?,
+    }))
+}
+
+/// The popover's "Catching up" reads, when the map carries any of them.
+fn backlog(map: &Value) -> anyhow::Result<Option<super::health::Backlog>> {
+    let keys = [
+        "get_quick_recall_index_status",
+        "get_processing_pipeline_status",
+        "transcription_deepgram_auth_status",
+    ];
+    if keys.iter().all(|k| map.get(k).is_none()) {
+        return Ok(None);
+    }
+    Ok(Some(super::health::Backlog {
+        index: get(map, &[keys[0]])?,
+        pipeline: get(map, &[keys[1]])?,
+        deepgram_auth_error: get(map, &[keys[2]])?,
     }))
 }
 

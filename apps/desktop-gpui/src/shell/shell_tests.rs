@@ -232,3 +232,42 @@ fn alt_chords_match_the_physical_key_not_the_typed_character(cx: &mut TestAppCon
         Some(Overlay::Shortcuts)
     );
 }
+
+#[gpui_kit::test]
+fn the_live_feed_polls_only_while_recording_or_the_status_popover_is_open(cx: &mut TestAppContext) {
+    let (_window, shell) = open(cx);
+    let live = |cx: &mut TestAppContext| cx.read(|cx| shell.read(cx).live.is_some());
+    assert!(!live(cx), "idle and not recording: nothing polls");
+
+    shell.update(cx, |s, cx| s.toggle_overlay(Overlay::Status, cx));
+    cx.run_until_parked();
+    assert!(
+        live(cx),
+        "the popover reads health and the backlog even when stopped"
+    );
+    // Closing through the toggle stops it at once and forgets the health reading.
+    shell.update(cx, |s, cx| {
+        s.model.status.health = Some(health::Health::default());
+        s.toggle_overlay(Overlay::Status, cx)
+    });
+    assert!(!live(cx));
+    assert_eq!(
+        cx.read(|cx| shell.read(cx).model.status.health.clone()),
+        None
+    );
+
+    // Closed another way (the backdrop): the next tick finds nothing wants it.
+    shell.update(cx, |s, cx| s.toggle_overlay(Overlay::Status, cx));
+    cx.run_until_parked();
+    shell.update(cx, |s, cx| {
+        s.overlay = None;
+        cx.notify();
+    });
+    cx.executor()
+        .advance_clock(capture::LIVE_POLL - Duration::from_millis(1));
+    cx.run_until_parked();
+    assert!(live(cx));
+    cx.executor().advance_clock(Duration::from_millis(1));
+    cx.run_until_parked();
+    assert!(!live(cx), "stops on the 2 s tick");
+}

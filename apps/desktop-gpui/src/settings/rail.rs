@@ -290,8 +290,8 @@ fn footer(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settings>)
         RecMod::Starting => (p.text_muted, p.border_strong, p.status_dot),
         RecMod::Off => (p.status_fg, gpui_kit::transparent_black(), p.status_dot),
     };
-    let label = match (view.elapsed_clock, s.status.session_start_ms) {
-        (true, Some(start)) => format!(
+    let label = match (view.clock, s.status.session_start_ms) {
+        (Some(shell_model::Clock::Elapsed), Some(start)) => format!(
             "{} {}",
             view.label,
             shell_model::format_clock(crate::ui::clock::now_ms(cx) - start, true)

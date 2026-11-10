@@ -503,6 +503,15 @@ fn the_shell_model_reads_the_seeded_storage_and_the_session() {
     set_running(core, false);
     shell_data::refresh_live(core, &mut status);
     assert!(!status.running && status.runtime.is_none());
+
+    // The 2 s feed reads app-core directly: capture health (free space on the
+    // seeded root, no thresholds while stopped) and the popover's backlog.
+    let health = shell_data::health(core).expect("capture health");
+    assert!(health.disk.free_bytes.is_some_and(|b| b > 0));
+    assert_eq!(health.disk.pause_threshold_bytes, None);
+    let backlog = shell_data::backlog(core, true);
+    assert!(backlog.index.is_some() && backlog.pipeline.is_some());
+    assert_eq!(backlog.deepgram_auth_error, None, "nothing retrying");
 }
 
 #[gpui_kit::test]

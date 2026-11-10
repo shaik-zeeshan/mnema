@@ -9,12 +9,12 @@ use std::time::Duration;
 use app_core::AppCore;
 use gpui_kit::{AppContext as _, Context};
 
-use super::model::{RowAction, StatusFlag};
-use super::{data, model, Shell};
+use super::model::{RowAction, StatusFlag, Tone};
+use super::{data, model, Overlay, Shell};
 use crate::bridge::tokio::Tokio;
 use crate::native::{self, CaptureResult};
 
-/// `subscribeRuntimeSources`: the per-source poll while recording.
+/// `subscribeRuntimeSources` / `subscribeCaptureHealth` / the popover's poll.
 pub const LIVE_POLL: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -139,7 +139,12 @@ impl Shell {
     pub(super) fn run_flag(&mut self, flag: &StatusFlag, cx: &mut Context<Self>) {
         let m = &self.model.status;
         if m.running {
-            return; // "retrying" / "resumes on its own": status only
+            // "disk almost full" (the only info flag) opens the popover; the
+            // others ("retrying" / "resumes on its own") are status only.
+            if flag.tone == Tone::Info {
+                self.toggle_overlay(Overlay::Status, cx);
+            }
+            return;
         }
         if m.start_error.is_some() {
             self.start_recording(cx);
@@ -221,41 +226,75 @@ impl Shell {
         cx.defer(move |cx| crate::bridge::events::reload_shell(&shell, cx));
     }
 
-    /// While recording, re-read the session and its sources every 2 s.
+    /// The live feed is wanted while recording (the bar) or while the status
+    /// popover is open (it reads health and the backlog even when stopped).
+    fn live_needed(&self) -> bool {
+        self.model.status.running || self.overlay == Some(Overlay::Status)
+    }
+
+    /// While the feed is wanted, re-read the session, its sources and capture
+    /// health now and then every 2 s, plus the backlog while the popover is
+    /// open, off the main thread. Skipped while nothing can render; stops (and
+    /// forgets the health reading) once neither the bar nor the popover needs it.
     pub(super) fn arm_live_poll(&mut self, cx: &mut Context<Self>) {
-        if !self.model.status.running {
-            self.live = None;
+        if !self.live_needed() {
+            if self.live.take().is_some() {
+                self.model.status.health = None;
+            }
             return;
         }
         if self.live.is_some() {
             return;
         }
         self.live = Some(cx.spawn(async move |this, cx| loop {
-            cx.background_executor().timer(LIVE_POLL).await;
             let polled = this.update(cx, |this, cx| {
-                if crate::window::render_idle(cx) {
+                if !this.live_needed() {
+                    // At most one idle wake after the popover closes; it reads nothing.
+                    this.live = None;
+                    this.model.status.health = None;
                     return None;
                 }
-                let core = crate::chat::core(cx)?;
-                let mut status = this.model.status.clone();
-                Some(cx.background_spawn(async move {
-                    data::refresh_live(&core, &mut status);
-                    status
-                }))
-            });
-            let Ok(task) = polled else { break };
-            let Some(task) = task else { continue };
-            let status = task.await;
-            let applied = this.update(cx, |this, cx| {
-                if status != this.model.status {
-                    let mut model = this.model.clone();
-                    model.status = status;
-                    this.set_model(model, cx);
+                if crate::window::render_idle(cx) {
+                    return Some(None);
                 }
+                let Some(core) = crate::chat::core(cx) else {
+                    return Some(None);
+                };
+                let mut status = this.model.status.clone();
+                let open = this.overlay == Some(Overlay::Status);
+                Some(Some(cx.background_spawn(async move {
+                    data::refresh_live(&core, &mut status);
+                    status.health = data::health(&core);
+                    let backlog = open.then(|| data::backlog(&core, status.deepgram_transcription));
+                    (status, backlog)
+                })))
             });
-            if applied.is_err() {
-                break;
+            match polled {
+                Ok(Some(Some(task))) => {
+                    let (status, backlog) = task.await;
+                    let applied = this.update(cx, |this, cx| {
+                        // Released while in flight: don't resurrect a stale reading.
+                        if !this.live_needed() {
+                            return;
+                        }
+                        let mut model = this.model.clone();
+                        model.status = status;
+                        if this.overlay == Some(Overlay::Status) {
+                            model.backlog = backlog.or(model.backlog);
+                        }
+                        // `set_model` keeps the last health when this read failed.
+                        if model != this.model {
+                            this.set_model(model, cx);
+                        }
+                    });
+                    if applied.is_err() {
+                        break;
+                    }
+                }
+                Ok(Some(None)) => {}
+                Ok(None) | Err(_) => break,
             }
+            cx.background_executor().timer(LIVE_POLL).await;
         }));
     }
 }
