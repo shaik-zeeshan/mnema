@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-10 18:22",
+ "updated": "2026-11-10 18:37",
  "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. All six issues from today's hands-on test have a committed fix: one is wired and five are built. Capture health in the status bar is built and wired. A signed dev build with all of it was opened on 10 Nov at 18:15. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
    "label": "Overall",
    "value": "built, being wired",
-   "note": "all screens built; 35 marked shortcuts left; hands-on fixes in progress"
+   "note": "all screens built; hands-on fixes committed; 32 marked shortcuts left once Chat sources is committed"
   },
   {
    "label": "Backend moved",
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "pending",
-   "note": "Insights (1 pt shift + subject page), the onboarding Models tab, and the new capture-health state"
+   "value": "all",
+   "note": "incl. capture health, Insights and the onboarding Models tab (10 Nov)"
   }
  ],
  "bars": [
@@ -58,7 +58,17 @@
   {
    "id": "Chat",
    "title": "Chat sources",
-   "detail": "Real frame thumbnails on source chips, an inline player for audio sources, and recognised-text boxes in the frame peek. Agent working. Not built yet."
+   "detail": "Real frame thumbnails on source chips, an inline player for audio sources, and recognised-text boxes in the frame peek. Built and wired by its agent; being re-tested before it is committed."
+  },
+  {
+   "id": "Centre",
+   "title": "Centring on large windows",
+   "detail": "Settings and onboarding centred when the window is wide. Agent working."
+  },
+  {
+   "id": "Licence",
+   "title": "Licence banner and deep-link receipt",
+   "detail": "The banner in the main window and the receipt shown after a licence link. Agent working. Not built yet."
   }
  ],
  "done": [
@@ -323,7 +333,10 @@
   "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09).",
   "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09).",
   "Onboarding screenshots approved (2026-11-09); the five changed by the layout fix, incl. the new Models state, approved 2026-11-10.",
-  "The 101 screenshots refreshed by the polish pass approved (2026-11-10)."
+  "The 101 screenshots refreshed by the polish pass approved (2026-11-10).",
+  "Capture-health status bar, the 20 Insights screens after the window-size fix, and the onboarding Models tab approved (2026-11-10).",
+  "Large windows: Settings and onboarding are centred in GPUI, a deliberate difference from Tauri (2026-11-10).",
+  "Pictures for approval go on the report's \"Waiting for your approval\" page, not in Preview (2026-11-10)."
  ],
  "risks": [
   "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -593,31 +606,21 @@
   },
   {
    "title": "Window size: small windows cut off, large windows not using the space",
-   "state": "built · screenshots awaiting approval",
+   "state": "built · screenshots approved",
    "commit": "a5cd99ce",
-   "note": "Small windows: the missing width rules from the Tauri app are ported, so nothing is cut off. Large windows: GPUI already matched Tauri, which also pins Settings and onboarding to the left; centring them is your decision. Committed; 276 tests pass. Not driven.",
-   "awaiting": true,
+   "note": "Small windows: the missing width rules from the Tauri app are ported, so nothing is cut off. Large windows: you ruled that Settings and onboarding are centred (Tauri pins them left); that change is being built. Not driven.",
+   "awaiting": false,
    "anchor": "fix-resize"
   }
  ],
  "waiting": [
-  {
-   "id": "Decide",
-   "title": "Large windows: pinned left or centred?",
-   "detail": "Tauri keeps Settings and onboarding as a column pinned to the left on a large window, and GPUI matches it. Centring them is a small change but makes GPUI differ from Tauri until cut-over."
-  },
-  {
-   "id": "Approve",
-   "title": "Screenshots to approve",
-   "detail": "Capture health (with the spacing fix), the Insights screens and the onboarding Models tab. All on the \"Waiting for your approval\" page."
-  },
   {
    "id": "Drive",
    "title": "Hands-on test of the next signed dev build",
    "detail": "A signed dev build with all six fixes and capture health was opened on 10 Nov at 18:15. None of it has been used in the real app yet. The checklist below lists what only a person can check."
   }
  ],
- "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Still yours to decide: whether Settings and onboarding should be centred on a large window (Tauri pins them left, as GPUI does now), and approval of the capture-health screenshot once its spacing fix lands.",
+ "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
  "fixes": [
   {
    "anchor": "fix-onboarding",
@@ -897,10 +900,10 @@
    "title": "Window size: small windows no longer cut things off",
    "toc": "Window size",
    "commit": "a5cd99ce",
-   "state": "built · screenshots awaiting approval",
-   "awaiting": true,
+   "state": "built · screenshots approved 10 Nov",
+   "awaiting": false,
    "what": "The Tauri app has about 28 rules for how screens rearrange at different widths, and GPUI had only 3 of them. The rest are now ported: Settings rows, the Insights tab bar, headline, grids and evidence drawer, the Chat placeholder, the audio drawer transcript and the onboarding Whisper picker. 276 tests and 4 wiring tests pass. Committed; not driven.",
-   "how": "Every Insights reference screenshot shifts down by 1 pt (the tab bar is now Tauri's real height), the Insights subject page restacks its stats at the default size, and the onboarding Models tab shows the narrower Whisper picker. These need your approval before they become the references.",
+   "how": "Every Insights reference screenshot shifts down by 1 pt (the tab bar is now Tauri's real height), the Insights subject page restacks its stats at the default size, and the onboarding Models tab shows the narrower Whisper picker. You approved them on 10 Nov.",
    "rows": [
     {
      "heading": "Settings › Capture › Video at 640×480",
@@ -980,9 +983,9 @@
    "anchor": "fix-health",
    "title": "Capture health in the status bar and popover",
    "toc": "Capture health",
-   "commit": "ed6e0e36",
-   "state": "built and wired · screenshot awaiting approval",
-   "awaiting": true,
+   "commit": "ed6e0e36, 0f148fa6",
+   "state": "built and wired · screenshot approved 10 Nov",
+   "awaiting": false,
    "what": "The status bar now shows a source that is waiting (display asleep, system audio reconnecting), a disk-almost-full flag and a clock on PAUSED; the popover lists reconnecting sources and the \"Catching up\" backlog. This is a new screenshot state. You asked for better spacing on the \"Building meaning index\" row: that fix is made; the corrected picture is on the \"Waiting for your approval\" page, and the one below is the version before it.",
    "rows": [
     {
@@ -1009,15 +1012,34 @@
    "what": "No picture: this changes behaviour, not looks. Settings now shows the microphone, capture support and permissions at once, and the slower keychain and network checks follow, each given at most 10 seconds. A check that fails says \"couldn't check\" instead of showing \"Checking…\" forever. The stuck screen resolution and the microphone error in your screenshot were fixed earlier by 8a1fcb2d, which wired Settings to the real backend; your screenshot came from the build before it. Not driven yet."
   }
  ],
- "approve_verdict": "Three sets need your yes: the capture-health status bar (now with the spacing you asked for), the Insights screens changed by the window-size fix, and the onboarding Models tab. One decision too: whether Settings and onboarding should be centred on a large window.",
+ "approve_verdict": "Nothing is waiting for your approval right now. You approved capture health, the Insights screens and the onboarding Models tab on 10 Nov, and chose centred for large windows. The centring pictures will land here next.",
  "approve": [
+  {
+   "anchor": "approve-centre",
+   "title": "Large windows: centring Settings and onboarding",
+   "toc": "Large windows",
+   "commit": "no change yet",
+   "state": "you chose centred · being built",
+   "awaiting": false,
+   "what": "You chose centred on 10 Nov. An agent is making the change now; the default and minimum window sizes must stay exactly as they are, so only wide windows change. The before/after pictures will appear here when it is back. The picture below is how it looks today (pinned left, as in Tauri).",
+   "rows": [
+    {
+     "shots": [
+      {
+       "file": "resize-settings-general-2400x1000.jpg",
+       "caption": "Settings at 2400 wide. Left to right: GPUI before, GPUI after (unchanged), Tauri."
+      }
+     ]
+    }
+   ]
+  },
   {
    "anchor": "approve-health",
    "title": "Capture health: status bar and popover",
    "toc": "Capture health",
-   "commit": "ed6e0e36 + spacing fix",
-   "state": "awaiting your approval",
-   "awaiting": true,
+   "commit": "ed6e0e36, 0f148fa6",
+   "state": "approved 10 Nov",
+   "awaiting": false,
    "what": "A new screenshot state: a sleeping display, reconnecting system audio and a \"Catching up\" backlog. You asked for better spacing on the \"Building meaning index\" row. Its label now lines up with \"Reading\" and \"Transcribing\", the gap above it matches the gap between two normal rows, and the bar has a little more room. Tauri is as tight as GPUI was, so this is a deliberate improvement over Tauri.",
    "rows": [
     {
@@ -1053,8 +1075,8 @@
    "title": "Insights after the window-size fix",
    "toc": "Insights",
    "commit": "a5cd99ce",
-   "state": "awaiting your approval",
-   "awaiting": true,
+   "state": "approved 10 Nov",
+   "awaiting": false,
    "what": "Two kinds of change. The subject page changes for real at the default window size: beside the evidence drawer the page is narrow enough that Tauri's rule applies, so the stats stack under the headline. Every other Insights screen only moves down by 1 pt, because the tab bar is now Tauri's real height; overview and journal are shown as examples of all 20.",
    "rows": [
     {
@@ -1099,8 +1121,8 @@
    "title": "Onboarding Models tab: narrower Whisper picker",
    "toc": "Onboarding Models",
    "commit": "a5cd99ce",
-   "state": "awaiting your approval",
-   "awaiting": true,
+   "state": "approved 10 Nov",
+   "awaiting": false,
    "what": "The Whisper build picker stretched across the whole column with empty track on its right. It is now only as wide as its options, like every other picker row.",
    "rows": [
     {
@@ -1108,25 +1130,6 @@
       {
        "file": "approve-onboarding-change-models-light.jpg",
        "caption": "Light. Left: the screenshot you approved earlier today. Right: after."
-      }
-     ]
-    }
-   ]
-  },
-  {
-   "anchor": "approve-centre",
-   "title": "Decision: large windows pinned left, or centred?",
-   "toc": "Large windows",
-   "commit": "no change yet",
-   "state": "your decision",
-   "awaiting": true,
-   "what": "On a large window the Tauri app keeps Settings and onboarding as a column pinned to the left, and GPUI matches it exactly. Centring them is a small change and fixes what you flagged, but GPUI would then differ from Tauri until cut-over. Recommendation: centre.",
-   "rows": [
-    {
-     "shots": [
-      {
-       "file": "resize-settings-general-2400x1000.jpg",
-       "caption": "Settings at 2400 wide. Left to right: GPUI before, GPUI after (unchanged), Tauri."
       }
      ]
     }
