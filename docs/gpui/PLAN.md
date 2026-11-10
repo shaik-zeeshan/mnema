@@ -121,7 +121,7 @@ The live URL is https://d9ymz3pr4vyt.postplan.dev. It's public by link, so never
    - **Never build `--release` before S17:** it is the real `day.mnema` app on `~/.mnema`.
    - Accepted drift (Tauri-only, deleted at S17): asset-grant failures log at Warn, not Error, and app icons are returned even if their grant fails.
    - **W3 sweep done (2026-11-09):** 1 high (disabled/busy primary-button label: opacity applied per layer), 13 med, ~18 low. Composites are in worktree agent-ac0c05d6817e8f7c6/target/parity.
-   - **Running:** the W3 polish pass (slot 1, everything except onboarding) and onboarding AI setup (slot 2). Docs pass done (72d74dd7).
+   - **Done:** W3 polish pass (101 baselines refreshed, awaiting founder sign-off), onboarding AI setup (2174f17e), onboarding polish (576d6735), docs pass (72d74dd7). Open from polish: update `uptodate` Install button enabled in Tauri vs disabled in GPUI; Context headline balance; kicker line-height.
    - **Next:** onboarding polish (capture +, voice card, change rows, dot grid), then S17 on the founder's go.
    - Old worktrees (all removed):
    - S3a capture leaves: `/Users/shaikzeeshan/Code/mnema/.claude/worktrees/agent-ac2748086a4bbf839`

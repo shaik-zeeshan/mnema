@@ -1,10 +1,10 @@
 {
-  "updated": "2026-11-09 09:30",
-  "verdict": "About 88% done. The final side-by-side sweep is in: one real bug (disabled green buttons' labels nearly invisible), 13 medium and ~18 small gaps; Quick Recall, Timeline, the main window and debug mini are clean. A polish pass is fixing them; Onboarding AI setup is finishing.",
+  "updated": "2026-11-10 13:30",
+  "verdict": "About 90% done. Everything is built and the polish pass from the final side-by-side sweep is in. What's left: your sign-off on the refreshed screenshots, your hands-on checks, and the cut-over on your go.",
   "metrics": [
     {
       "label": "Overall",
-      "value": "~88%",
+      "value": "~90%",
       "note": "of the whole build"
     },
     {
@@ -23,9 +23,9 @@
       "note": "1,338 shared + 71 Tauri + 214 GPUI, 0 failing"
     },
     {
-      "label": "Screenshots",
-      "value": "212 ✓ · 12 waiting",
-      "note": "Onboarding AI step"
+      "label": "Screenshots approved",
+      "value": "212",
+      "note": "every screen and window"
     }
   ],
   "bars": [
@@ -56,14 +56,9 @@
   ],
   "now": [
     {
-      "id": "Polish",
-      "title": "Fixing the sweep's gaps",
-      "detail": "The disabled-button label bug, provider reachability in Settings, the Chat scope date picker, Insights empty/evidence details, and the small spacing/icon items."
-    },
-    {
-      "id": "Onboarding polish",
-      "title": "The sweep's onboarding gaps",
-      "detail": "“+ add app” for never-recorded apps, Voice card width, Change rows + connector lines, dot-grid background, rewind label, footer spacing."
+      "id": "Waiting",
+      "title": "Waiting for you",
+      "detail": "Sign-off on 101 screenshots refreshed by the polish pass, the hands-on checklist below, then your go for cut-over."
     }
   ],
   "done": [
@@ -248,25 +243,18 @@
       "commit": "f31d8bcd"
     },
     {
-      "id": "Docs",
-      "title": "Docs pass",
-      "what": "AGENTS.md and the capture / Ask AI notes now point at crates/app-core, with a line on the shared AppCore / Host seam.",
-      "commit": "72d74dd7"
-    },
-    {
-      "id": "Sweep",
-      "title": "Final side-by-side sweep",
-      "what": "79 states × 2 themes against today's app (158 composites, all inspected). 1 high, 13 medium, ~18 low gaps; plus a list of places where the mockups and the app disagree.",
-      "commit": "—"
-    },
-    {
-      "id": "S14b",
-      "title": "AI setup inside Onboarding",
-      "what": "Provider + key or ChatGPT sign-in, local-engine scan, model pick. ‘AI ready’ now means a live check passed (today's app never checked); offline reads ‘Can't reach’, not ‘rejected’. Settings' Save/Clear key now work for real.",
-      "commit": "2174f17e"
+      "id": "Polish",
+      "title": "Parity polish pass",
+      "what": "Fixed the gaps from the final sweep: legible disabled buttons, provider reachability check in Settings, chat date-range scope, Insights idle copy with Start recording, evidence pager, CLI tiles, filled pause/stop, small-window spacing.",
+      "commit": "see git log"
     }
   ],
   "next": [
+    {
+      "id": "Docs",
+      "title": "Docs pass",
+      "detail": "AGENTS.md and the capture/Ask AI notes still point at src-tauri paths; update them to app-core."
+    },
     {
       "id": "S17",
       "title": "Cut-over",
@@ -290,18 +278,6 @@
   ],
   "shots": [
     {
-      "title": "Onboarding AI step — new, waiting for sign-off",
-      "note": "Choose provider, entering a key, verifying, ready, rejected key, ChatGPT sign-in; dark/light.",
-      "files": [
-        "onboarding-ai-choose",
-        "onboarding-ai-key",
-        "onboarding-ai-verifying",
-        "onboarding-ai-ready",
-        "onboarding-ai-invalid",
-        "onboarding-ai-chatgpt"
-      ]
-    },
-    {
       "title": "Onboarding — approved",
       "note": "All 8 steps incl. permissions granted/denied, storage blocked, setup done; dark/light.",
       "files": [
@@ -320,7 +296,7 @@
       ]
     },
     {
-      "title": "Small windows — approved",
+      "title": "Small windows — refreshed, waiting for sign-off",
       "note": "Access request, update window, permission helper, developer window and mini mode; dark/light.",
       "files": [
         "access-granted",
@@ -347,7 +323,7 @@
       ]
     },
     {
-      "title": "Quick Recall — approved",
+      "title": "Quick Recall — refreshed, waiting for sign-off",
       "note": "Idle, results, Quick Look, Ask streaming and done, recent, filter popover; dark/light.",
       "files": [
         "quick-recall-idle",
@@ -360,7 +336,7 @@
       ]
     },
     {
-      "title": "Audio drawer — approved",
+      "title": "Audio drawer — refreshed, waiting for sign-off",
       "note": "Peek, expanded reader, speaker repair, not-transcribed; dark/light.",
       "files": [
         "timeline-drawer-peek",
@@ -370,7 +346,7 @@
       ]
     },
     {
-      "title": "Timeline — approved",
+      "title": "Timeline — refreshed, waiting for sign-off",
       "note": "5 states × dark/light.",
       "files": [
         "timeline-populated",
@@ -381,7 +357,7 @@
       ]
     },
     {
-      "title": "Chat — approved",
+      "title": "Chat — refreshed, waiting for sign-off",
       "note": "5 states × dark/light.",
       "files": [
         "chat-empty",
@@ -392,7 +368,7 @@
       ]
     },
     {
-      "title": "Settings — approved",
+      "title": "Settings — refreshed, waiting for sign-off",
       "note": "12 sections × dark/light.",
       "files": [
         "settings-general",
@@ -410,7 +386,7 @@
       ]
     },
     {
-      "title": "Insights — approved",
+      "title": "Insights — refreshed, waiting for sign-off",
       "note": "Every tab, empty and populated, plus a subject page and an open receipt; dark/light.",
       "files": [
         "insights-overview",
@@ -426,7 +402,7 @@
       ]
     },
     {
-      "title": "Main window — approved",
+      "title": "Main window — refreshed, waiting for sign-off",
       "note": "Now shows the real Timeline instead of a placeholder.",
       "files": [
         "shell-populated",
@@ -438,7 +414,7 @@
       ]
     },
     {
-      "title": "Shared controls — approved",
+      "title": "Shared controls — refreshed, waiting for sign-off",
       "note": "Every control in every state.",
       "files": [
         "gallery-buttons",
