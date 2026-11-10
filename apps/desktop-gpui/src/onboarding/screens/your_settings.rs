@@ -266,10 +266,11 @@ impl Onboarding {
                 .into_any_element(),
                 primary("ob-next", "Start", cx, |this, _, cx| this.next(cx)).into_any_element(),
             ],
+            self.inset,
             &p,
         );
         (
-            parts::main_col("ob-settings", false, false, col),
+            parts::main_col("ob-settings", false, false, self.inset, col),
             Some(foot.into_any_element()),
         )
     }

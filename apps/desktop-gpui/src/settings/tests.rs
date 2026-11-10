@@ -341,3 +341,33 @@ fn at_the_minimum_window_a_wide_control_wraps_inside_the_column(cx: &mut TestApp
         "inside the column"
     );
 }
+
+/// The page column's margins inside the scroll area at a window size: (left, width, right).
+fn column_at(cx: &mut TestAppContext, w: f32) -> (f32, f32, f32) {
+    let (_, v, _) = open_at(cx, false, (w, 800.));
+    v.read_with(cx, |s, _| {
+        let area = s.scroll.bounds();
+        let col = s
+            .scroll
+            .bounds_for_item(s.item_base)
+            .expect("first section");
+        (
+            f32::from(col.left() - area.left()),
+            f32::from(col.size.width),
+            f32::from(area.right() - col.right()),
+        )
+    })
+}
+
+#[gpui_kit::test]
+fn at_the_golden_width_the_page_column_keeps_its_place(cx: &mut TestAppContext) {
+    // 1280 − 252 rail = 1028: the 48 px gutter, 760 px column, the rest to its right.
+    assert_eq!(column_at(cx, 1280.), (48., 760., 220.));
+}
+
+#[gpui_kit::test]
+fn on_a_wide_window_the_page_column_centres_right_of_the_rail(cx: &mut TestAppContext) {
+    let (left, width, right) = column_at(cx, 2400.);
+    assert_eq!(width, 760.);
+    assert!((left - right).abs() <= 1., "centred: {left} vs {right}");
+}

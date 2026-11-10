@@ -248,7 +248,7 @@ impl Onboarding {
             cx,
         )
         .gap(space::S4)
-        .px(space::S8)
+        .px(space::S8 + self.inset)
         .pt(space::S3);
         let title = div()
             .flex()
@@ -264,7 +264,7 @@ impl Onboarding {
             .flex_col()
             .items_start()
             .gap(space::S5)
-            .px(space::S8)
+            .px(space::S8 + self.inset)
             .child(kicker("Mnema", &p))
             .child(title)
             .child(

@@ -707,10 +707,11 @@ impl Onboarding {
                 back_btn.ghost().into_any_element(),
                 next_btn.into_any_element(),
             ],
+            self.inset,
             &p,
         );
         (
-            parts::main_col("ob-change", true, true, col),
+            parts::main_col("ob-change", true, true, self.inset, col),
             Some(foot.into_any_element()),
         )
     }

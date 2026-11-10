@@ -158,6 +158,8 @@ pub mod breakpoint {
     pub const TRANSCRIPT_STACK: Pixels = px(820.);
     /// Settings: the rail narrows and the content padding tightens at or below.
     pub const SETTINGS_TIGHT: Pixels = px(800.);
+    /// Settings' page column starts sliding to the centre past this window width.
+    pub const SETTINGS_CENTRE: Pixels = px(1280.);
 }
 
 pub const DISABLED_OPACITY: f32 = 0.4;

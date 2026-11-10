@@ -381,9 +381,15 @@ impl Onboarding {
             .disabled(*phase == FinalePhase::Starting)
             .into_any_element()],
         };
-        let foot = parts::footer(Some(note.into_any_element()), acts, &p);
+        let foot = parts::footer(Some(note.into_any_element()), acts, self.inset, &p);
         (
-            parts::main_col("ob-finale", true, false, vec![split.into_any_element()]),
+            parts::main_col(
+                "ob-finale",
+                true,
+                false,
+                self.inset,
+                vec![split.into_any_element()],
+            ),
             Some(foot.into_any_element()),
         )
     }

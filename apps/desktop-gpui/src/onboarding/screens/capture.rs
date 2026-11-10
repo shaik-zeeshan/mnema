@@ -334,8 +334,8 @@ impl Onboarding {
                 .into_any_element(),
         );
         (
-            parts::main_col("ob-capture", false, false, col),
-            Some(parts::footer(None, acts, &p).into_any_element()),
+            parts::main_col("ob-capture", false, false, self.inset, col),
+            Some(parts::footer(None, acts, self.inset, &p).into_any_element()),
         )
     }
 }

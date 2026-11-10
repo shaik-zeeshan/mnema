@@ -3,7 +3,7 @@
 //! first) and the one save status, with Retry when a save failed.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, AnyElement, Context, MouseButton};
+use gpui_kit::{div, px, AnyElement, Context, MouseButton, Pixels};
 
 use super::autosave::SaveStatus;
 use super::groups::{self};
@@ -13,7 +13,12 @@ use crate::ui::Button;
 
 pub const BAR_H: f32 = 52.;
 
-pub fn render(s: &Settings, scrolled: bool, cx: &mut Context<Settings>) -> AnyElement {
+pub fn render(
+    s: &Settings,
+    scrolled: bool,
+    inset: Pixels,
+    cx: &mut Context<Settings>,
+) -> AnyElement {
     let p = theme::tokens(cx);
     let g = groups::group(s.group);
     let query = s.inputs.search.read(cx).value().trim().to_string();
@@ -71,8 +76,9 @@ pub fn render(s: &Settings, scrolled: bool, cx: &mut Context<Settings>) -> AnyEl
         .items_center()
         .gap(space::S3)
         .h(px(BAR_H))
-        .pl(space::S7)
-        .pr(space::S5)
+        // Aligned with the page column (`view::inset`), not the window edge.
+        .pl(space::S7 + inset)
+        .pr(space::S5 + inset)
         .border_b_1()
         .border_color(if scrolled {
             p.hairline

@@ -228,10 +228,11 @@ impl Onboarding {
         let foot = parts::footer(
             Some("The voiceprint never leaves this device, and recognition labels many turns \u{2014} not every turn.".into_any_element()),
             acts,
+            self.inset,
             &p,
         );
         (
-            parts::main_split("ob-voice", split.into_any_element()),
+            parts::main_split("ob-voice", self.inset, split.into_any_element()),
             Some(foot.into_any_element()),
         )
     }

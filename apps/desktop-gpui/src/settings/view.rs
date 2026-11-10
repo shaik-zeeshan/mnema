@@ -15,6 +15,17 @@ pub const PAGE_MAX_W: f32 = 760.;
 /// `scroll-margin-top` on each section anchor.
 const SCROLL_MARGIN: f32 = 24.;
 
+/// Extra side inset that centres the page column (and the bar's content) in the
+/// area right of the rail on a wide window (founder ruling 2026-11-10: centred,
+/// unlike Tauri). Zero up to `SETTINGS_CENTRE`, so the default and golden
+/// layouts don't move; past it the column slides right until it is centred.
+pub fn inset(window_w: f32, rail_w: f32, pad: f32) -> f32 {
+    let centred = (window_w - rail_w - 2. * pad - PAGE_MAX_W) / 2.;
+    centred
+        .min(window_w - f32::from(breakpoint::SETTINGS_CENTRE))
+        .max(0.)
+}
+
 /// Park `section`'s top just under the column top (a group's first: the top).
 pub fn scroll_to(s: &mut Settings, section: SectionId) {
     let first = groups::group(groups::group_for(section)).sections[0].id;
@@ -74,6 +85,17 @@ impl Render for Settings {
         let p = theme::tokens(cx);
         let g = groups::group(self.group);
         let scrolled = f32::from(self.scroll.offset().y) < -4.;
+        // `.settings-scroll`: padding-inline S5 on a window ≤800 px wide.
+        let pad = if window.viewport_size().width <= breakpoint::SETTINGS_TIGHT {
+            space::S5
+        } else {
+            space::S7
+        };
+        let inset = px(inset(
+            f32::from(window.viewport_size().width),
+            rail::rail_w(window),
+            f32::from(pad),
+        ));
 
         let head = div()
             .flex()
@@ -169,14 +191,7 @@ impl Render for Settings {
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
             .pt(space::S4)
-            // `.settings-scroll`: padding-inline S5 on a window ≤800 px wide.
-            .px(
-                if window.viewport_size().width <= breakpoint::SETTINGS_TIGHT {
-                    space::S5
-                } else {
-                    space::S7
-                },
-            )
+            .px(pad + inset)
             .on_scroll(cx.listener(|this, _: &ScrollEvent, _, cx| {
                 this.spy_suppressed = false;
                 cx.notify();
@@ -212,7 +227,7 @@ impl Render for Settings {
                     .flex_1()
                     .min_w_0()
                     .min_h_0()
-                    .child(bar::render(self, scrolled, cx))
+                    .child(bar::render(self, scrolled, inset, cx))
                     .child(column),
             )
             .children(sections::overlays(self, window, cx))

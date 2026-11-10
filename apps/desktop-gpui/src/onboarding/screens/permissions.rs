@@ -365,10 +365,11 @@ impl Onboarding {
                 })
                 .into_any_element(),
             ],
+            self.inset,
             &p,
         );
         (
-            parts::main_col("ob-perm", false, false, col),
+            parts::main_col("ob-perm", false, false, self.inset, col),
             Some(foot.into_any_element()),
         )
     }

@@ -123,6 +123,8 @@ pub struct Onboarding {
     pub probe_state: ProbeState,
     probe_seq: u64,
     pub native_pixels: Option<f64>,
+    /// `parts::inset` for this frame's window width and step.
+    pub inset: gpui_kit::Pixels,
     pub app_pick: screens::AppPick,
     // Change settings
     pub tab: usize,
@@ -189,6 +191,7 @@ impl Onboarding {
             probe_state: ProbeState::Checking,
             probe_seq: 0,
             native_pixels: None,
+            inset: gpui_kit::px(0.),
             app_pick: Default::default(),
             tab: 0,
             ai: ai::AiSetup::default(),
@@ -401,6 +404,7 @@ impl Render for Onboarding {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         theme::request_fade_frames(window, cx);
         let p = theme::tokens(cx);
+        self.inset = parts::inset(window.viewport_size().width, parts::wide(self.step));
         if self.native_pixels.is_none() {
             self.native_pixels = window
                 .display(cx)
@@ -432,7 +436,7 @@ impl Render for Onboarding {
             .bg(p.bg)
             .font_family(theme::FONT_UI)
             .text_color(p.text)
-            .child(parts::strip(self.step, move |w, cx| close(&(), w, cx), &p))
+            .child(parts::strip(self.step, self.inset, move |w, cx| close(&(), w, cx), &p))
             // A failed load or permission request, in the backend's own words.
             .children(self.error.clone().map(|e| {
                 crate::ui::notice::banner(

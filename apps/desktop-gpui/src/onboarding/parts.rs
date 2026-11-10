@@ -28,9 +28,26 @@ const RULER_GAP: Pixels = px(16.);
 const TICK_W: Pixels = px(2.);
 const GROUP: &str = "ob-bar";
 
+/// Extra side inset that centres the step's column on a wide window (founder
+/// ruling 2026-11-10: centred, unlike Tauri). Zero up to the default width, so
+/// the default and minimum layouts don't move; past it the column slides right
+/// until it is centred. `wide` = the step's column is `COL_W_WIDE`.
+pub fn inset(window_w: Pixels, wide: bool) -> Pixels {
+    let col = if wide { COL_W_WIDE } else { COL_W };
+    let w = f32::from(window_w);
+    let centred = (w - 2. * f32::from(space::S8) - f32::from(col)) / 2.;
+    px(centred.min(w - super::SIZE.0).max(0.))
+}
+
+/// Steps whose content runs at the wide column (Change, Finale) or uncapped (Voice).
+pub fn wide(step: Step) -> bool {
+    matches!(step, Step::Change | Step::Finale | Step::Voice)
+}
+
 /// The 52 px strip: drawn lights (the first closes), step name, tick ruler, `N / 8`.
 pub fn strip(
     step: Step,
+    inset: Pixels,
     on_close: impl Fn(&mut Window, &mut App) + 'static,
     p: &Palette,
 ) -> impl IntoElement {
@@ -86,7 +103,7 @@ pub fn strip(
         .flex_none()
         .items_center()
         .h(STRIP_H)
-        .pr(space::S5)
+        .pr(space::S5 + inset)
         .border_b_1()
         .border_color(p.hairline)
         .on_mouse_down(gpui_kit::MouseButton::Left, |_, window, _| {
@@ -120,7 +137,8 @@ pub fn strip(
                 .min_w_0()
                 .flex()
                 .items_baseline()
-                .pl(space::S2)
+                // The inset on both sides keeps the ruler where it was.
+                .pl(space::S2 + inset)
                 .font_weight(theme::W_MEDIUM)
                 .text_size(text::MD)
                 .line_height(relative(1.))
@@ -158,24 +176,25 @@ pub fn strip(
 }
 
 /// `.ob-main` + `.ob-col`: the scrolling, vertically centred column.
-fn main_outer(id: &'static str, top: bool) -> gpui_kit::Stateful<Div> {
+fn main_outer(id: &'static str, top: bool, inset: Pixels) -> gpui_kit::Stateful<Div> {
     div()
         .id(id)
+        .debug_selector(|| "ob-main".into())
         .flex_1()
         .min_h_0()
         .overflow_y_scroll()
         .flex()
         .flex_col()
         .when(!top, |d| d.justify_center())
-        .px(space::S8)
+        .px(space::S8 + inset)
         .pt(if top { space::S5 } else { space::S7 })
         .pb(space::S6)
 }
 
 /// `.ob-main > .ob-split` (Voice): the split sits straight in the main area,
 /// no `.ob-col` cap, so its columns run to the gutters.
-pub fn main_split(id: &'static str, split: AnyElement) -> AnyElement {
-    main_outer(id, false).child(split).into_any_element()
+pub fn main_split(id: &'static str, inset: Pixels, split: AnyElement) -> AnyElement {
+    main_outer(id, false, inset).child(split).into_any_element()
 }
 
 /// `.ob-stage`'s `mx-texture`: 1 px dots on an 18 px grid (centred on the grid
@@ -219,10 +238,17 @@ pub fn texture(p: &Palette) -> impl IntoElement {
     .size_full()
 }
 
-pub fn main_col(id: &'static str, wide: bool, top: bool, children: Vec<AnyElement>) -> AnyElement {
-    main_outer(id, top)
+pub fn main_col(
+    id: &'static str,
+    wide: bool,
+    top: bool,
+    inset: Pixels,
+    children: Vec<AnyElement>,
+) -> AnyElement {
+    main_outer(id, top, inset)
         .child(
             div()
+                .debug_selector(|| "ob-col".into())
                 .flex()
                 .flex_col()
                 // The dense Change settings column runs tighter (`.change > .ob-col`).
@@ -235,7 +261,7 @@ pub fn main_col(id: &'static str, wide: bool, top: bool, children: Vec<AnyElemen
 }
 
 /// `.ob-foot`: a state line on the left, the actions on the right.
-pub fn footer(note: Option<AnyElement>, acts: Vec<AnyElement>, p: &Palette) -> Div {
+pub fn footer(note: Option<AnyElement>, acts: Vec<AnyElement>, inset: Pixels, p: &Palette) -> Div {
     div()
         .flex()
         .flex_none()
@@ -243,8 +269,8 @@ pub fn footer(note: Option<AnyElement>, acts: Vec<AnyElement>, p: &Palette) -> D
         .gap(space::S2)
         .min_h(FOOT_MIN_H)
         .py(space::S3)
-        .pr(space::S5)
-        .pl(space::S8)
+        .pr(space::S5 + inset)
+        .pl(space::S8 + inset)
         .border_t_1()
         .border_color(p.hairline)
         .bg(mix(p.bg, p.surface, 0.86))

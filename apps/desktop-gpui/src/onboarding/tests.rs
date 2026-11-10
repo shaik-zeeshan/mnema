@@ -544,3 +544,29 @@ fn semantic_search_picks_a_language_group_then_a_build(cx: &mut TestAppContext) 
         assert_eq!(model(o).as_deref(), Some("nomic-embed-text-v1.5"));
     });
 }
+
+/// The step column's margins inside the main area at a window width: (left, width, right).
+fn column_at(view: &Entity<Onboarding>, vcx: &mut VisualTestContext, w: f32) -> (f32, f32, f32) {
+    vcx.simulate_resize(gpui_kit::size(gpui_kit::px(w), gpui_kit::px(800.)));
+    view.update(vcx, |_, cx| cx.notify());
+    vcx.run_until_parked();
+    let main = vcx.debug_bounds("ob-main").expect("main");
+    let col = vcx.debug_bounds("ob-col").expect("column");
+    (
+        f32::from(col.left() - main.left()),
+        f32::from(col.size.width),
+        f32::from(main.right() - col.right()),
+    )
+}
+
+#[gpui_kit::test]
+fn the_step_column_centres_on_a_wide_window_and_holds_at_the_default(cx: &mut TestAppContext) {
+    let (view, vcx, _, _) = open(cx, "granted");
+    go(&view, vcx, Step::Capture);
+    // Default 1120 and minimum 920: pinned at the 64 px gutter, as before.
+    assert_eq!(column_at(&view, vcx, super::SIZE.0), (64., 780., 276.));
+    assert_eq!(column_at(&view, vcx, super::MIN.0), (64., 780., 76.));
+    let (left, width, right) = column_at(&view, vcx, 2400.);
+    assert_eq!(width, 780.);
+    assert!((left - right).abs() <= 1., "centred: {left} vs {right}");
+}
