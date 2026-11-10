@@ -10,12 +10,12 @@ use super::{back, button, primary};
 use crate::onboarding::downloads::DlState;
 use crate::onboarding::flow::Subsystem;
 use crate::onboarding::parts::{self, display, fine, head, prose};
-use crate::onboarding::voice::{self, Phase};
 use crate::onboarding::Onboarding;
 use crate::settings::model::format_bytes;
 use crate::theme::{self, radius, space, text};
 use crate::ui::notice::notice;
 use crate::ui::{kicker, Tone};
+use crate::voice::{self, Phase};
 
 /// `.ob-split`: the instrument column to the right of a 300 px head.
 const HEAD_W: f32 = 300.;
@@ -108,7 +108,7 @@ impl Onboarding {
                         .flex()
                         .items_center()
                         .gap(space::S4)
-                        .child(parts::meter(&t.levels, px(3.), 36., meter_color, false))
+                        .child(voice::meter(&t.levels, px(3.), 36., meter_color, false))
                         .child(parts::mono(t.line(), text::BASE, p.text_muted)),
                 )
                 .children(callout)

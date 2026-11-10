@@ -104,16 +104,30 @@ pub enum Call {
     Prompt(super::privacy_prompt::Mark),
     /// Window focus re-read the permissions.
     Recheck,
+    SelectSemantic(String),
+    /// The fake recorder opened the microphone for a take of this many ms.
+    RecordClip(u64),
+    /// A running take was ended early (the microphone released).
+    CancelClip,
+    Enroll,
 }
 
 /// Saves succeed (echoing the draft) unless `fail` is set; every call is recorded.
+/// The recorder is a fake: it never opens a microphone and answers at once.
 #[derive(Default)]
 pub struct FixtureBackend {
     pub(crate) calls: Mutex<Vec<Call>>,
     /// Each recording-domain save's settings, as sent.
     pub(crate) sent: Mutex<Vec<(Unit, RecordingSettings)>>,
     pub fail: bool,
+    /// What `enroll` answers (`None` = enrolled).
+    pub enrollment: Mutex<Option<crate::voice::Enrollment>>,
+    /// The take's player (`Play the take`).
+    pub player: crate::timeline::audio::fixture::FakePlayer,
 }
+
+/// The fake recorder's clip path.
+pub const CLIP_PATH: &str = "/tmp/mnema-fixture-voice-take.m4a";
 
 impl FixtureBackend {
     pub fn calls(&self) -> Vec<Call> {
@@ -188,5 +202,44 @@ impl Backend for FixtureBackend {
     }
     fn clear_key(&self, provider: &str) -> Result<(), String> {
         self.record(Call::ClearKey(provider.into()))
+    }
+    /// The parity map's `list_semantic_search_supported_models`.
+    fn semantic_catalog(&self) -> Result<Vec<Value>, String> {
+        if self.fail {
+            return Err("fixture: catalog failed".into());
+        }
+        let map = load("settings", "default").map_err(|e| e.to_string())?;
+        Ok(map["list_semantic_search_supported_models"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default())
+    }
+    fn select_semantic_model(&self, model_id: &str) -> Result<u64, String> {
+        self.record(Call::SelectSemantic(model_id.into()))
+            .map(|_| 42)
+    }
+    fn record_clip(&self, ms: u64) -> Result<String, String> {
+        self.record(Call::RecordClip(ms)).map(|_| CLIP_PATH.into())
+    }
+    fn cancel_clip(&self) {
+        self.calls.lock().unwrap().push(Call::CancelClip);
+    }
+    fn mic_level(&self) -> Option<f32> {
+        Some(0.5)
+    }
+    fn enroll(&self, _: &str) -> Result<crate::voice::Enrollment, String> {
+        self.record(Call::Enroll)?;
+        Ok(self
+            .enrollment
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(crate::voice::Enrollment::Enrolled))
+    }
+    fn open_clip(
+        &self,
+        _: &str,
+    ) -> Result<Box<dyn crate::timeline::audio::transport::Player + Send>, String> {
+        Ok(Box::new(self.player.clone()))
     }
 }

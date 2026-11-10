@@ -215,7 +215,7 @@ impl Onboarding {
                     .bg(p.surface)
                     .border_1()
                     .border_color(p.border)
-                    .child(parts::meter(&self.sys_levels, px(4.), 30., color, true))
+                    .child(crate::voice::meter(&self.sys_levels, px(4.), 30., color, true))
                     .child(
                         div()
                             .flex()

@@ -1,6 +1,7 @@
 //! Onboarding behaviour: the step flow, the two hard gates (and the
 //! permissions relaunch hold), close-before-done exits, Setup never blocking,
-//! the 15 s voice take at 14 999 / 15 000 ms, and the Finale's capture start.
+//! the 15 s voice take through the screen (its pure clock is tested in
+//! `crate::voice`), and the Finale's capture start.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -13,13 +14,13 @@ use capture_types::{
 use gpui_kit::{Entity, TestAppContext, VisualTestContext, WindowAppearance};
 use serde_json::json;
 
-use super::data::{Backend, Enrollment};
+use super::data::Backend;
 use super::fixture::FixtureBackend;
 use super::flow::{self, Feature, Features, Intents, Step};
 use super::storage::{self, Probe, ProbeState};
-use super::voice::{self, Phase, Take};
 use super::{FinalePhase, Moment, Onboarding};
 use crate::theme;
+use crate::voice::{self, Phase};
 
 const MS: Duration = Duration::from_millis(1);
 
@@ -242,28 +243,6 @@ fn the_relaunch_is_the_only_permissions_hold() {
         flow::is_granted(P::Unsupported),
         "an unreportable grant must pass, not trap"
     );
-}
-
-#[test]
-fn the_voice_take_ends_at_exactly_fifteen_seconds() {
-    let t0 = std::time::Instant::now();
-    let mut take = Take::default();
-    assert!(take.start(t0));
-    assert!(!take.start(t0), "one take at a time");
-    assert!(
-        !take.tick(t0 + voice::CLIP - MS),
-        "still recording at 14 999 ms"
-    );
-    assert!(matches!(take.phase, Phase::Recording { .. }));
-    assert_eq!(take.line(), "0:15 of about 0:15");
-    assert!(take.tick(t0 + voice::CLIP), "the take ends at 15 000 ms");
-    assert_eq!(take.phase, Phase::Judging);
-    take.judged(Ok(Enrollment::TooShort { duration_ms: 6000 }));
-    assert_eq!(
-        voice::rejection(&Enrollment::TooShort { duration_ms: 6000 }).0,
-        "Too short to learn from"
-    );
-    assert!(take.start(t0), "a rejection can be retried");
 }
 
 #[gpui_kit::test]

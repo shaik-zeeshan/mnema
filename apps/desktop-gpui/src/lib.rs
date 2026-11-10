@@ -25,6 +25,7 @@ pub mod small;
 pub mod theme;
 pub mod timeline;
 pub mod ui;
+pub mod voice;
 pub mod window;
 
 /// The GPUI dev app's bundle id, used when the binary runs outside a bundle.

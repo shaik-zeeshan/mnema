@@ -11,8 +11,8 @@ use super::data::Enrollment;
 use super::downloads::{self, DlState};
 use super::flow::{self, Feature, Step, WorkItem};
 use super::storage::{self, ProbeState, Repair};
-use super::voice;
 use super::{FinalePhase, Moment, Onboarding};
+use crate::voice;
 
 /// The system-audio meter's poll (one bar per poll, ~2.5 s of sound at a glance).
 pub const SYS_POLL: Duration = Duration::from_millis(120);

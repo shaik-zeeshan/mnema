@@ -16,7 +16,6 @@ pub mod fixture;
 pub mod flow;
 pub mod parts;
 pub mod storage;
-pub mod voice;
 
 mod actions;
 mod screens;
@@ -44,7 +43,7 @@ use data::{Backend, Engine, Evidence};
 use downloads::Downloads;
 use flow::{Feature, Features, Intents, ModelFacts, Saved, Step, Subsystem, WorkItem};
 use storage::{Probe, ProbeState};
-use voice::Take;
+use crate::voice::{self, Take};
 
 use crate::theme::{self, radius};
 
@@ -105,7 +104,7 @@ pub struct Onboarding {
     ever_saved: bool,
     pub models: Vec<(Subsystem, ModelFacts)>,
     pub engines: Vec<Engine>,
-    pub semantic: Vec<(String, String, u64, bool)>,
+    pub semantic: Vec<(String, String, u64, bool, bool)>,
     pub recommended: Vec<(String, String)>,
     seeded_apps: bool,
     // Permissions

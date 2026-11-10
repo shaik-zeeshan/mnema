@@ -37,12 +37,12 @@ const ACTIVE_HOURS: f64 = 8.;
 /// The big download total beside its fine print (`.ob-total b`, 22 px).
 const TOTAL: Pixels = px(22.);
 
-type SemanticModel = (String, String, u64, bool);
+/// `(model id, display name, approx bytes, installed, multilingual)`.
+type SemanticModel = (String, String, u64, bool, bool);
 
-/// shortcut: the language comes from the display name's "(Multilingual…)" tag,
-/// not the catalog's `multilingual` flag; read the catalog if a name ever drops it.
+/// The catalog's own `multilingual` flag (`data::semantic_from_status`).
 fn is_multilingual(m: &SemanticModel) -> bool {
-    m.1.contains("(Multilingual")
+    m.4
 }
 
 /// Indices into `semantic` of one language group, in catalog order.

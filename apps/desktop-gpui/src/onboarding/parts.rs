@@ -403,21 +403,3 @@ pub fn track(frac: f32, stalled: bool, max_w: Option<Pixels>, p: &Palette) -> Di
                 .bg(if stalled { p.chart_grey_4 } else { p.accent }),
         )
 }
-
-/// The level meter (`.ob-meter`): one bar per sample, `h(level)` tall.
-pub fn meter(levels: &[f32], bar_w: Pixels, max_h: f32, color: gpui_kit::Hsla, sqrt: bool) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(px(if bar_w > px(3.) { 3. } else { 2. }))
-        .h(px(max_h + 8.))
-        .children(levels.iter().map(|l| {
-            let v = if sqrt { l.max(0.).sqrt() } else { *l };
-            div()
-                .flex_none()
-                .w(bar_w)
-                .h(px(4. + (v * max_h).round()))
-                .rounded(px(2.))
-                .bg(color)
-        }))
-}

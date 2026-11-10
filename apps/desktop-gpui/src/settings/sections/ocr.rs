@@ -7,14 +7,15 @@ use capture_types::{
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context};
 
-use super::ix;
 use super::model_row::{delete_unused_row, model_files, status_row, ModelRow};
+use super::{ix, languages};
 use crate::settings::data::Family;
 use crate::settings::model::{format_bytes, selected_model};
 use crate::settings::row::{row, section};
 use crate::settings::{on, reload, Settings};
 use crate::theme::Palette;
 use crate::ui::chip::ChipKind;
+use crate::ui::combobox::Combobox;
 use crate::ui::input::TextInput;
 use crate::ui::segmented::Segmented;
 use crate::ui::select::Select;
@@ -114,14 +115,30 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 .build(p)
                 .into_any_element(),
         );
-    } else {
-        // shortcut: the Tesseract language combobox (OCR_LANGUAGE_OPTIONS) shows the stored code only.
+    } else if o.provider == OcrProvider::Tesseract {
+        let stored = o
+            .language
+            .as_deref()
+            .filter(|l| !l.is_empty())
+            .unwrap_or("eng");
+        let (sel, shown) = languages::pick(&languages::OCR, stored);
         rows.push(
             row("Language")
                 .control(
-                    div()
-                        .text_color(p.text_muted)
-                        .child(o.language.clone().unwrap_or_else(|| "eng".into())),
+                    div().w(px(240.)).child(
+                        Combobox::new(
+                            "ocr-language",
+                            "OCR language",
+                            languages::OCR.iter().map(|(_, l)| *l),
+                            sel,
+                        )
+                        .placeholder(shown)
+                        .search_placeholder("Search languages\u{2026}")
+                        .disabled(off)
+                        .on_change(on(cx, |s, i: usize, cx| {
+                            s.edit(|d| d.ocr.language = Some(languages::OCR[i].0.into()), cx)
+                        })),
+                    ),
                 )
                 .build(p)
                 .into_any_element(),

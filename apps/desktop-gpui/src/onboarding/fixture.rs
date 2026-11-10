@@ -113,7 +113,10 @@ impl Backend for FixtureBackend {
                 &m["get_semantic_search_model_status"],
             ),
             engines: data::engines_from_status(t),
-            semantic: data::semantic_from_status(&m["get_semantic_search_model_status"]),
+            semantic: data::semantic_from_status(
+                &m["get_semantic_search_model_status"],
+                &m["list_semantic_search_supported_models"],
+            ),
             perms: self.perms(),
             gecko: self.accessibility(),
             owner_enrolled: m["get_account_owner_person_id"].is_i64(),

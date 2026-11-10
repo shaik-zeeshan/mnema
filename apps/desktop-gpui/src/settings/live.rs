@@ -277,23 +277,6 @@ pub fn semantic_download(core: &Arc<AppCore>, model_id: String) -> Outcome {
     Ok(None)
 }
 
-/// The atomic switch: rebuilds the vector table at the model's dimension and
-/// persists the selection together; the index refills in the background.
-pub fn semantic_select(core: &Arc<AppCore>, model_id: String) -> Outcome {
-    let infra = infra(core)?;
-    let cleared = core.block_on(
-        app_core::semantic_search_models::select_semantic_search_model(
-            model_id,
-            core,
-            &infra,
-            &core.state::<RecordingSettingsState>(),
-        ),
-    )?;
-    Ok(Some(format!(
-        "Search model switched. Re-indexing in the background ({cleared} old vectors cleared)."
-    )))
-}
-
 pub fn semantic_delete(core: &Arc<AppCore>, model_id: String) -> Outcome {
     let request = app_core::semantic_search_models::SemanticSearchModelDownloadRequestDto {
         provider: "local".into(),
@@ -500,34 +483,4 @@ pub fn delete_person(core: &Arc<AppCore>, person_id: i64) -> Outcome {
     let request = req(json!({ "personId": person_id }))?;
     core.block_on(app_core::app_infra::delete_person_profile(request, &infra))?;
     Ok(Some("Voiceprint deleted.".into()))
-}
-
-/// One bounded microphone take, then the embedder's verdict on it.
-pub fn enroll_voice(core: &Arc<AppCore>, clip_ms: u64) -> Outcome {
-    use app_core::voice_enrollment::{
-        enroll_account_owner_voice, EnrollAccountOwnerVoiceRequest, VoiceEnrollmentOutcomeDto as O,
-    };
-    let infra = infra(core)?;
-    let clip = core
-        .block_on(
-            app_core::native_capture::microphone::bounded_clip::record_bounded_microphone_clip(
-                clip_ms, core,
-            ),
-        )
-        .map_err(|e| e.message)?;
-    let request = EnrollAccountOwnerVoiceRequest {
-        clip_path: clip,
-        display_name: None,
-    };
-    match core.block_on(enroll_account_owner_voice(request, core, &infra))? {
-        O::Enrolled { .. } => Ok(Some("Voiceprint saved.".into())),
-        O::TooShort { duration_ms } => Err(format!(
-            "Only {:.0} s of speech was heard. Read the whole sentence and try again.",
-            duration_ms as f64 / 1000.
-        )),
-        O::NoSpeech => Err("No speech was heard. Check the microphone and try again.".into()),
-        O::MultipleSpeakers { speaker_count } => Err(format!(
-            "{speaker_count} voices were heard. Record again somewhere quiet, alone."
-        )),
-    }
 }

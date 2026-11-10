@@ -345,6 +345,41 @@ pub trait Backend: Send + Sync + 'static {
         let _ = provider;
         Err("no app core".into())
     }
+    /// `list_semantic_search_supported_models`: the whole embedding catalog (DTO JSON).
+    fn semantic_catalog(&self) -> Result<Vec<Value>, String> {
+        Err("no app core".into())
+    }
+    /// `select_semantic_search_model`: switch models and clear the old vectors
+    /// (the index rebuilds in the background); answers how many were cleared.
+    fn select_semantic_model(&self, model_id: &str) -> Result<u64, String> {
+        let _ = model_id;
+        Err("no app core".into())
+    }
+    /// `record_bounded_microphone_clip`: opens the microphone for `ms`, blocks
+    /// for the take, answers the clip path (`Err` = what to do, in words).
+    fn record_clip(&self, ms: u64) -> Result<String, String> {
+        let _ = ms;
+        Err("no app core".into())
+    }
+    /// End a running take now (Cancel, leaving the section, closing Settings).
+    fn cancel_clip(&self) {}
+    /// `get_microphone_activity_level` (the level meter; `None` = no sample yet).
+    fn mic_level(&self) -> Option<f32> {
+        None
+    }
+    /// `enroll_account_owner_voice` on a recorded take.
+    fn enroll(&self, clip: &str) -> Result<crate::voice::Enrollment, String> {
+        let _ = clip;
+        Err("no app core".into())
+    }
+    /// A player on a recorded take (Play the take).
+    fn open_clip(
+        &self,
+        clip: &str,
+    ) -> Result<Box<dyn crate::timeline::audio::transport::Player + Send>, String> {
+        let _ = clip;
+        Err("no app core".into())
+    }
 }
 
 pub struct CoreBackend(pub Arc<AppCore>);
@@ -426,6 +461,58 @@ impl Backend for CoreBackend {
             serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
         self.0
             .block_on(app_core::ai_runtime::ai_runtime_clear_provider_key(request))
+    }
+
+    fn semantic_catalog(&self) -> Result<Vec<Value>, String> {
+        app_core::semantic_search_models::list_semantic_search_supported_models()
+            .map(|models| models.into_iter().filter_map(to_json).collect())
+    }
+
+    fn select_semantic_model(&self, model_id: &str) -> Result<u64, String> {
+        use app_core::semantic_search_models::select_semantic_search_model;
+        let infra = self
+            .0
+            .try_state::<AppInfraState>()
+            .ok_or("app infrastructure isn't ready")?;
+        let settings = self
+            .0
+            .try_state::<RecordingSettingsState>()
+            .ok_or("settings aren't loaded")?;
+        self.0.block_on(select_semantic_search_model(
+            model_id.into(),
+            &self.0,
+            &infra,
+            &settings,
+        ))
+    }
+
+    fn record_clip(&self, ms: u64) -> Result<String, String> {
+        crate::voice::live::record(&self.0, ms)
+    }
+
+    // shortcut: app-core's bounded recorder has no cancel (it sleeps out its 15 s,
+    // then stops), so the real microphone stays open until the take's own bound;
+    // wire `cancel_bounded_microphone_clip` here once app-core has one.
+    fn cancel_clip(&self) {}
+
+    fn mic_level(&self) -> Option<f32> {
+        app_core::native_capture::microphone::bounded_clip::get_microphone_activity_level()
+    }
+
+    fn enroll(&self, clip: &str) -> Result<crate::voice::Enrollment, String> {
+        let infra = self
+            .0
+            .try_state::<AppInfraState>()
+            .ok_or("app infrastructure isn't ready")?;
+        crate::voice::live::enroll(&self.0, &infra, clip)
+    }
+
+    fn open_clip(
+        &self,
+        clip: &str,
+    ) -> Result<Box<dyn crate::timeline::audio::transport::Player + Send>, String> {
+        crate::native::audio_player::AudioPlayer::open(std::path::Path::new(clip))
+            .map(|p| Box::new(p) as Box<dyn crate::timeline::audio::transport::Player + Send>)
     }
 }
 

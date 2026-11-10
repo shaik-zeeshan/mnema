@@ -7,6 +7,7 @@ mod appearance;
 mod ask_ai;
 mod delete_recent;
 mod developer;
+mod languages;
 mod license;
 mod mcp;
 mod microphone;
@@ -25,6 +26,9 @@ mod updates;
 mod user_context;
 mod video;
 mod voice;
+mod voice_take;
+#[cfg(test)]
+mod pickers_tests;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{div, AnyElement, Context, Window};
@@ -73,11 +77,14 @@ pub fn render(
             (SectionId::Transcription, transcription::render(s, &p, cx)),
             (
                 SectionId::Speakers,
-                stack(vec![speakers::render(s, &p, cx), voice::render(s, &p, cx)]),
+                stack(vec![
+                    speakers::render(s, &p, cx),
+                    voice::render(s, &p, window, cx),
+                ]),
             ),
             (
                 SectionId::SemanticSearch,
-                semantic_search::render(s, &p, cx),
+                semantic_search::render(s, &p, window, cx),
             ),
         ],
         GroupId::Data => vec![

@@ -6,8 +6,8 @@ use capture_types::{AudioTranscriptionMemoryMode, AudioTranscriptionProvider};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context};
 
-use super::ix;
 use super::model_row::{delete_unused_row, model_files, status_row, ModelRow};
+use super::{ix, languages};
 use crate::settings::data::Family;
 use crate::settings::model::{provider_models, selected_model};
 use crate::settings::row::{row, section, Src};
@@ -288,11 +288,30 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     };
     model.controls.extend(select);
     rows.push(model.build("tx-model-row", s, p, cx));
-    // shortcut: the language combobox (TRANSCRIPTION_LANGUAGE_OPTIONS) shows the stored code only.
+    let stored = if t.language.is_empty() {
+        "auto"
+    } else {
+        t.language.as_str()
+    };
+    let (sel, shown) = languages::pick(&languages::TRANSCRIPTION, stored);
     rows.push(
         row("Language")
             .desc("Auto detects the spoken language, or pick a hint. Applies to future audio; queued jobs keep theirs.")
-            .control(div().text_color(p.text_muted).child(if t.language.is_empty() || t.language == "auto" { "Auto-detect".to_string() } else { t.language.clone() }))
+            .control(
+                div().w(px(240.)).child(
+                    Combobox::new(
+                        "tx-language",
+                        "Transcription language",
+                        languages::TRANSCRIPTION.iter().map(|(_, l)| *l),
+                        sel,
+                    )
+                    .placeholder(shown)
+                    .search_placeholder("Search languages\u{2026}")
+                    .on_change(on(cx, |s, i: usize, cx| {
+                        s.edit(|d| d.transcription.language = languages::TRANSCRIPTION[i].0.into(), cx)
+                    })),
+                ),
+            )
             .build(p)
             .into_any_element(),
     );

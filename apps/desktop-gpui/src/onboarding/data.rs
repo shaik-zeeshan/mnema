@@ -25,8 +25,8 @@ pub struct Loaded {
     pub models: Vec<(Subsystem, ModelFacts)>,
     /// `transcription` status providers, for the Engines tab: `(id, name, model ids+bytes)`.
     pub engines: Vec<Engine>,
-    /// Semantic Search catalog: `(model id, display name, approx bytes, installed)`.
-    pub semantic: Vec<(String, String, u64, bool)>,
+    /// Semantic Search catalog: `(model id, display name, approx bytes, installed, multilingual)`.
+    pub semantic: Vec<(String, String, u64, bool, bool)>,
     pub owner_enrolled: bool,
     /// The sensitive-app catalog to exclude on a first run: `(bundle id, name)`.
     pub recommended: Vec<(String, String)>,
@@ -49,14 +49,7 @@ pub struct Evidence {
     pub ocr: Option<String>,
 }
 
-/// `enroll_account_owner_voice`'s tagged outcome.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Enrollment {
-    Enrolled,
-    TooShort { duration_ms: u64 },
-    NoSpeech,
-    MultipleSpeakers { count: usize },
-}
+pub use crate::voice::Enrollment;
 
 pub trait Backend: Send + Sync + 'static {
     fn load(&self) -> Result<Loaded, String>;
@@ -180,17 +173,30 @@ pub fn engines_from_status(status: &Value) -> Vec<Engine> {
         .collect()
 }
 
-pub fn semantic_from_status(status: &Value) -> Vec<(String, String, u64, bool)> {
+/// The status's models, each with the catalog's (`list_semantic_search_supported_models`)
+/// `multilingual` flag; a model the catalog doesn't list falls back to its tier.
+pub fn semantic_from_status(
+    status: &Value,
+    catalog: &Value,
+) -> Vec<(String, String, u64, bool, bool)> {
     status["models"]
         .as_array()
         .into_iter()
         .flatten()
         .filter_map(|m| {
+            let id = m["modelId"].as_str()?;
+            let listed = catalog
+                .as_array()
+                .and_then(|c| c.iter().find(|c| c["modelId"].as_str() == Some(id)));
             Some((
-                m["modelId"].as_str()?.to_string(),
+                id.to_string(),
                 m["displayName"].as_str().unwrap_or_default().to_string(),
                 m["approxDownloadBytes"].as_u64().unwrap_or(0),
                 m["available"].as_bool().unwrap_or(false),
+                match listed {
+                    Some(c) => c["multilingual"].as_bool().unwrap_or(false),
+                    None => m["tier"].as_str() == Some("multilingual"),
+                },
             ))
         })
         .collect()
@@ -282,7 +288,12 @@ impl Backend for CoreBackend {
                 .unwrap_or(false),
             models: models_from(&settings, &transcription, &speaker, &semantic),
             engines: engines_from_status(&transcription),
-            semantic: semantic_from_status(&semantic),
+            semantic: semantic_from_status(
+                &semantic,
+                &app_core::semantic_search_models::list_semantic_search_supported_models()
+                    .map(to_json)
+                    .unwrap_or_default(),
+            ),
             perms: self.permissions()?,
             gecko: self.accessibility(),
             settings,
@@ -408,38 +419,11 @@ impl Backend for CoreBackend {
     }
 
     fn record_clip(&self, ms: u64) -> Result<String, String> {
-        self.0
-            .block_on(
-                app_core::native_capture::microphone::bounded_clip::record_bounded_microphone_clip(
-                    ms, &self.0,
-                ),
-            )
-            .map_err(|e| e.message)
+        crate::voice::live::record(&self.0, ms)
     }
 
     fn enroll(&self, clip: &str) -> Result<Enrollment, String> {
-        use app_core::voice_enrollment::{
-            enroll_account_owner_voice, EnrollAccountOwnerVoiceRequest,
-            VoiceEnrollmentOutcomeDto as O,
-        };
-        let infra = self.infra()?;
-        let request = EnrollAccountOwnerVoiceRequest {
-            clip_path: clip.into(),
-            display_name: None,
-        };
-        Ok(
-            match self
-                .0
-                .block_on(enroll_account_owner_voice(request, &self.0, &infra))?
-            {
-                O::Enrolled { .. } => Enrollment::Enrolled,
-                O::TooShort { duration_ms } => Enrollment::TooShort { duration_ms },
-                O::NoSpeech => Enrollment::NoSpeech,
-                O::MultipleSpeakers { speaker_count } => Enrollment::MultipleSpeakers {
-                    count: speaker_count,
-                },
-            },
-        )
+        crate::voice::live::enroll(&self.0, &*self.infra()?, clip)
     }
 
     fn finish(

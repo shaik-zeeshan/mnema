@@ -1,19 +1,21 @@
 //! Intelligence › Speakers › Your voice (`VoiceEnrollment.svelte`): the
-//! voiceprint read-out, the sentence to read, Record, and auto-labelling.
+//! voiceprint read-out, the sentence to read, a 15 s take with the level meter
+//! and countdown (`voice_take.rs`), review, and auto-labelling.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{div, AnyElement, Context};
+use gpui_kit::TestSupportExt as _;
+use gpui_kit::{div, px, AnyElement, Context, Window};
 
-use crate::settings::row::{hint, row, section};
-use crate::settings::{on, Settings};
+use super::voice_take::{self, VoiceTake};
+use crate::settings::row::{hint, line, row, section};
+use crate::settings::{icons, on, Settings};
 use crate::theme::{radius, space, text, Palette};
 use crate::ui::switch::Switch;
-use crate::ui::Button;
+use crate::ui::{Button, Tone};
+use crate::voice::{self, Phase};
 
-/// `ENROLLMENT_SENTENCE`.
-pub const SENTENCE: &str = "I keep my work on this machine, and I would like Mnema to know my voice. I work on a few things at once, and I would like the transcript to say who said what. Reading this out loud takes about fifteen seconds.";
 /// `ENROLLMENT_CLIP_MS` in seconds.
-const CLIP_SECONDS: u32 = 15;
+const CLIP_SECONDS: u64 = voice::CLIP.as_secs();
 
 /// `recognitionReadout`.
 pub fn readout(owner: Option<&str>, separate: bool, recognize: bool, auto_label: bool) -> String {
@@ -40,21 +42,143 @@ pub fn readout(owner: Option<&str>, separate: bool, recognize: bool, auto_label:
     }
 }
 
-pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
+/// `take.update(..)` for a button's `on_click`.
+fn act(
+    t: &gpui_kit::Entity<VoiceTake>,
+    f: fn(&mut VoiceTake, &mut Context<VoiceTake>),
+) -> impl Fn(&gpui_kit::ClickEvent, &mut Window, &mut gpui_kit::App) + 'static {
+    let t = t.clone();
+    move |_, _, cx| t.update(cx, f)
+}
+
+pub fn render(
+    s: &Settings,
+    p: &Palette,
+    window: &mut Window,
+    cx: &mut Context<Settings>,
+) -> AnyElement {
     let d = s.d();
     let a = &d.speaker_analysis;
     let owner = s.data.voice_owner.as_deref();
-    let record = if owner.is_some() {
-        format!("Record again ({CLIP_SECONDS}s)")
+    let take = voice_take::state(s, window, cx);
+    let v = take.read(cx);
+    let t = &v.take;
+    let readout = readout(
+        owner,
+        a.separate_speakers,
+        a.recognize_saved_people,
+        a.auto_label_owner,
+    );
+    let mut actions: Vec<AnyElement> = Vec::new();
+    if let Phase::Review(_) = t.phase {
+        actions.push(
+            Button::new("voice-use", "Use this take")
+                .on_click(act(&take, VoiceTake::use_take))
+                .into_any_element(),
+        );
+        actions.push(
+            Button::new("voice-discard", "Discard")
+                .ghost()
+                .on_click(act(&take, VoiceTake::discard))
+                .into_any_element(),
+        );
     } else {
-        format!("Record {CLIP_SECONDS} seconds")
+        let label = match t.phase {
+            Phase::Recording { .. } => "Recording".to_string(),
+            Phase::Judging => "Checking the take".to_string(),
+            _ if owner.is_some() => format!("Record again ({CLIP_SECONDS}s)"),
+            _ => format!("Record {CLIP_SECONDS} seconds"),
+        };
+        actions.push(
+            Button::new("voice-record", label)
+                .spinner(t.busy())
+                .disabled(t.busy())
+                .on_click(act(&take, VoiceTake::start))
+                .into_any_element(),
+        );
+        if matches!(t.phase, Phase::Recording { .. }) {
+            actions.push(
+                Button::new("voice-cancel", "Cancel")
+                    .ghost()
+                    .on_click(act(&take, VoiceTake::cancel))
+                    .into_any_element(),
+            );
+        }
+        if let Some(id) = s.data.voice_owner_id {
+            let name = owner.unwrap_or("you").to_string();
+            actions.push(
+                Button::new("voice-delete", "Delete voiceprint")
+                    .danger()
+                    .disabled(t.busy() || s.ui.busy.contains("Voiceprint"))
+                    .on_click(crate::settings::click(cx, move |_, cx| {
+                        crate::settings::confirm(
+                            cx,
+                            "Delete voiceprint",
+                            &format!("Delete the voiceprint saved for {name}? Mnema stops recognising your voice and labels your turns \u{201c}Speaker 1\u{201d} again. Your recordings and transcripts are not touched."),
+                            "Delete",
+                            move |s, cx| {
+                                s.run_command("Voiceprint", cx, move |core| {
+                                    crate::settings::live::delete_person(core, id)
+                                })
+                            },
+                        );
+                    }))
+                    .into_any_element(),
+            );
+        }
+    }
+    let status: Option<AnyElement> = match &t.phase {
+        Phase::Recording { .. } => Some(
+            div()
+                .id("voice-meter")
+                .role(gpui_kit::Role::Status)
+                .aria_label(format!("Recording, {}s left", t.seconds_left()))
+                .flex()
+                .items_center()
+                .gap(space::S3)
+                .child(voice::meter(&t.levels, px(3.), 24., p.source_mic, false))
+                .child(
+                    div()
+                        .text_size(text::BASE)
+                        .text_color(p.text_muted)
+                        .child(format!("Recording \u{b7} {}s left", t.seconds_left())),
+                )
+                .test_support()
+                .into_any_element(),
+        ),
+        Phase::Review(_) => Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(space::S3)
+                .child(
+                    Button::new("voice-play", if v.playing { "Stop" } else { "Play the take" })
+                        .disabled(v.play_failed)
+                        .on_click(act(&take, VoiceTake::toggle_playback)),
+                )
+                .child(hint(
+                    if v.play_failed {
+                        "Playback is unavailable, but the take was recorded \u{2014} use it or record again."
+                    } else {
+                        "Listen back before you save it."
+                    },
+                    p,
+                ))
+                .into_any_element(),
+        ),
+        Phase::Rejected(r) => Some(line(Tone::Warn, icons::ALERT, voice::rejection(r).1, p).into_any_element()),
+        Phase::Failed(e) => Some(line(Tone::Danger, icons::ALERT, e.clone(), p).into_any_element()),
+        _ => None,
     };
     let body = div()
         .flex()
         .flex_col()
         .gap(space::S3)
         .w_full()
-        .child(hint(readout(owner, a.separate_speakers, a.recognize_saved_people, a.auto_label_owner), p))
+        .child(hint(readout, p))
+        .when(v.just_enrolled, |b| {
+            b.child(hint("Saved. Recognising saved people was switched on for you.", p))
+        })
         .child(
             div()
                 .p(space::S3)
@@ -65,43 +189,10 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 .text_size(text::MD)
                 .line_height(gpui_kit::relative(1.6))
                 .text_color(p.text)
-                .child(SENTENCE),
+                .child(voice::SENTENCE),
         )
-        // shortcut: no live level meter or countdown here (onboarding's Voice step has
-        // them); the button reads "Recording…" for the take, then the verdict shows above.
-        .child({
-            let recording = s.ui.busy.contains("Voiceprint");
-            let owner_id = s.data.voice_owner_id;
-            div()
-                .flex()
-                .gap(space::S2)
-                .child(
-                    Button::new("voice-record", if recording { "Recording\u{2026} read the sentence aloud".to_string() } else { record })
-                        .disabled(recording)
-                        .on_click(crate::settings::click(cx, |s, cx| {
-                            s.run_command("Voiceprint", cx, |core| {
-                                crate::settings::live::enroll_voice(core, CLIP_SECONDS as u64 * 1000)
-                            })
-                        })),
-                )
-                .when_some(owner_id, |d, id| {
-                    d.child(Button::new("voice-delete", "Delete voiceprint").danger().on_click(
-                        crate::settings::click(cx, move |_, cx| {
-                            crate::settings::confirm(
-                                cx,
-                                "Delete your voiceprint?",
-                                "Mnema stops labelling your voice. Turns already labelled keep their name.",
-                                "Delete",
-                                move |s, cx| {
-                                    s.run_command("Voiceprint", cx, move |core| {
-                                        crate::settings::live::delete_person(core, id)
-                                    })
-                                },
-                            );
-                        }),
-                    ))
-                })
-        })
+        .children(status)
+        .child(div().flex().gap(space::S2).children(actions))
         .child(hint("The voiceprint never leaves this device. Recognition is imperfect and will not label every turn.", p));
     let rows = vec![
         row("Voiceprint").full().control(body).build(p).into_any_element(),
