@@ -6,8 +6,8 @@ use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    px, size, Bounds, Entity, Focusable, Point, TestAppContext, WindowAppearance, WindowBounds,
-    WindowHandle, WindowOptions,
+    px, size, Bounds, ElementId, Entity, Focusable, Point, TestAppContext, WindowAppearance,
+    WindowBounds, WindowHandle, WindowOptions,
 };
 
 use super::command_field::Mode;
@@ -43,7 +43,8 @@ fn press(cx: &mut TestAppContext, window: WindowHandle<Root>, keys: &str) {
     cx.run_until_parked();
 }
 
-fn click(cx: &mut TestAppContext, window: WindowHandle<Root>, id: &'static str) {
+fn click(cx: &mut TestAppContext, window: WindowHandle<Root>, id: impl Into<ElementId>) {
+    let id = id.into();
     cx.update_window(window.into(), |_, window, cx| {
         window.render_frame(cx);
         window.click(id, cx);
@@ -270,4 +271,135 @@ fn the_live_feed_polls_only_while_recording_or_the_status_popover_is_open(cx: &m
     cx.executor().advance_clock(Duration::from_millis(1));
     cx.run_until_parked();
     assert!(!live(cx), "stops on the 2 s tick");
+}
+
+/// Settings, then its "Back to app" button: the button held keyboard focus and is
+/// gone, the state the real app was in when the titlebar went dead.
+fn back_from_settings(cx: &mut TestAppContext, start: &str) -> (WindowHandle<Root>, Entity<Shell>) {
+    let (window, shell) = open(cx);
+    press(cx, window, start);
+    press(cx, window, "cmd-,");
+    click(cx, window, "settings-back");
+    assert_ne!(cx.read(|cx| shell.read(cx).surface), Surface::Settings);
+    (window, shell)
+}
+
+#[gpui_kit::test]
+fn titlebar_clicks_work_right_after_back_to_app(cx: &mut TestAppContext) {
+    for (start, id, want) in [
+        ("cmd-1", "titlebar-chats", Surface::Chat),
+        ("cmd-1", "titlebar-settings", Surface::Settings),
+        ("cmd-1", "nav-insights", Surface::Insights),
+        ("cmd-2", "nav-timeline", Surface::Timeline),
+    ] {
+        let (window, shell) = back_from_settings(cx, start);
+        click(cx, window, id);
+        assert_eq!(cx.read(|cx| shell.read(cx).surface), want, "{id}");
+    }
+    let (window, shell) = back_from_settings(cx, "cmd-1");
+    let screen = |cx: &mut TestAppContext| cx.read(|cx| shell.read(cx).model.status.selected[0]);
+    let before = screen(cx);
+    click(cx, window, ("status-lane", 0usize));
+    assert_ne!(screen(cx), before, "the screen lane toggles");
+}
+
+#[gpui_kit::test]
+fn shell_shortcuts_work_right_after_back_to_app(cx: &mut TestAppContext) {
+    let (window, shell) = back_from_settings(cx, "cmd-1");
+    let surface = |cx: &mut TestAppContext| cx.read(|cx| shell.read(cx).surface);
+    press(cx, window, "cmd-k");
+    assert!(field_focused(cx, window, &shell), "⌘K");
+    press(cx, window, "escape");
+    press(cx, window, "cmd-j");
+    assert_eq!(
+        cx.read(|cx| shell.read(cx).command.read(cx).mode),
+        Mode::Ask,
+        "⌘J"
+    );
+    press(cx, window, "escape");
+    press(cx, window, "cmd-2");
+    assert_eq!(surface(cx), Surface::Insights, "⌘2");
+    press(cx, window, "cmd-1");
+    assert_eq!(surface(cx), Surface::Timeline, "⌘1");
+    press(cx, window, "/");
+    assert_eq!(
+        cx.read(|cx| shell.read(cx).overlay),
+        Some(Overlay::Shortcuts),
+        "/"
+    );
+    press(cx, window, "escape");
+    press(cx, window, "cmd-,");
+    assert_eq!(surface(cx), Surface::Settings, "⌘,");
+}
+
+/// The populated recording bar plus the engine pill and an idle lane: the real
+/// app's row that ran out of room at 640 px.
+fn full_bar_model() -> ShellModel {
+    let mut m = fixture::shell_model(&fixture::load("shell", "populated").unwrap()).unwrap();
+    let empty = fixture::shell_model(&fixture::load("shell", "empty").unwrap()).unwrap();
+    m.status.engine = empty.status.engine;
+    if let Some(rt) = m.status.runtime.as_mut() {
+        rt[2].paused = true;
+    }
+    m
+}
+
+/// Which readouts show whole at `width`; panics if one shows only in part.
+fn readouts_at(cx: &mut TestAppContext, width: f32) -> Vec<usize> {
+    let model = full_bar_model();
+    let (window, _) = cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(AppearanceSetting::Dark, WindowAppearance::Dark, cx);
+        keymap::bind(&Bindings::default(), cx);
+        let options = WindowOptions {
+            window_bounds: Some(WindowBounds::Windowed(Bounds {
+                origin: Point::default(),
+                size: size(px(width), px(480.)),
+            })),
+            ..Default::default()
+        };
+        gpui_kit::open_window(options, cx, |window, cx| {
+            cx.new(|cx| Shell::new(model, window, cx))
+        })
+        .expect("window")
+    });
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let help = window.find("status-shortcuts").bounds();
+        assert!(help.right() <= px(width), "the ? stays inside at {width}");
+        let row = window.find("status-readouts").bounds();
+        let mut shown = Vec::new();
+        for i in 0..3usize {
+            let Some(el) = window.try_find(("status-readout", i)) else {
+                break;
+            };
+            let b = el.bounds();
+            if b.top() >= row.bottom() {
+                continue; // wrapped onto the clipped line: gone whole
+            }
+            assert!(
+                b.left() >= row.left() && b.right() <= row.right() && b.right() <= help.left(),
+                "readout {i} is cut at {width}: {b:?} in {row:?}"
+            );
+            shown.push(i);
+        }
+        shown
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn status_readouts_drop_out_whole_never_cut(cx: &mut TestAppContext) {
+    assert_eq!(
+        readouts_at(cx, 640.),
+        [0usize; 0],
+        "640: 'today' doesn't fit"
+    );
+    // Storage and "local only" go below 900 px.
+    assert_eq!(readouts_at(cx, 800.), [0], "800: today only");
+    assert_eq!(
+        readouts_at(cx, 1280.),
+        [0, 1, 2],
+        "wide: today, storage, local only"
+    );
 }

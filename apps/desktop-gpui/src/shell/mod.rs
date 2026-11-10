@@ -64,7 +64,7 @@ pub struct Shell {
     /// The licence banner and the deep-link receipt.
     pub licence: Entity<crate::licence::Licence>,
     focus: FocusHandle,
-    _subscriptions: [Subscription; 6],
+    _subscriptions: [Subscription; 8],
     tick: Option<Task<()>>,
     /// The last failed start's message ("couldn't start · Retry"), until the next start.
     start_error: Option<String>,
@@ -123,6 +123,13 @@ impl Shell {
                     this.on_focus(cx);
                 }
             }),
+            cx.subscribe(&settings, |this, _, event, cx| match event {
+                crate::settings::SettingsEvent::Back => this.go(this.last_main, cx),
+                crate::settings::SettingsEvent::OpenDebug => this.open_debug(cx),
+            }),
+            // The focused element left the tree (Settings closed, a popover or the
+            // drawer went away): focus the root again, or every shell key goes dead.
+            cx.on_focus_lost(window, |this, window, cx| window.focus(&this.focus, cx)),
         ];
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
@@ -237,6 +244,23 @@ impl Shell {
             self.settings.update(cx, |s, cx| s.reload_all(cx));
         }
         cx.notify();
+    }
+
+    /// The gear and ⌘,: Settings, or back to where it was opened from.
+    pub fn toggle_settings(&mut self, cx: &mut Context<Self>) {
+        let to = if self.surface == Surface::Settings {
+            self.last_main
+        } else {
+            Surface::Settings
+        };
+        self.go(to, cx);
+    }
+
+    /// Gated on developer options, like `+layout.svelte`'s /debug gate.
+    fn open_debug(&mut self, cx: &mut Context<Self>) {
+        if self.model.developer_options {
+            crate::small::debug::open(cx);
+        }
     }
 
     pub fn toggle_overlay(&mut self, overlay: Overlay, cx: &mut Context<Self>) {
@@ -363,14 +387,9 @@ impl Shell {
             cx.listener(|this, _: &keymap::GoInsights, _, cx| this.go(Surface::Insights, cx)),
         )
         .on_action(cx.listener(|this, _: &keymap::OpenChats, _, cx| this.go(Surface::Chat, cx)))
-        .on_action(cx.listener(|this, _: &keymap::ToggleSettings, _, cx| {
-            let to = if this.surface == Surface::Settings {
-                this.last_main
-            } else {
-                Surface::Settings
-            };
-            this.go(to, cx);
-        }))
+        .on_action(
+            cx.listener(|this, _: &keymap::ToggleSettings, _, cx| this.toggle_settings(cx)),
+        )
         .on_action(cx.listener(|this, _: &keymap::ToggleShortcutsHelp, w, cx| {
             // `/` on Settings focuses its search instead.
             if this.surface == Surface::Settings {
@@ -410,12 +429,7 @@ impl Shell {
                 this.toggle_source(2, cx)
             }),
         )
-        // Gated on developer options, like `+layout.svelte`'s /debug gate.
-        .on_action(cx.listener(|this, _: &keymap::OpenDebug, _, cx| {
-            if this.model.developer_options {
-                crate::small::debug::open(cx);
-            }
-        }))
+        .on_action(cx.listener(|this, _: &keymap::OpenDebug, _, cx| this.open_debug(cx)))
     }
 }
 

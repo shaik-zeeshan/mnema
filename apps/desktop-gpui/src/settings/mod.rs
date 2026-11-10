@@ -40,6 +40,7 @@ use data::Backend;
 use groups::{GroupId, SectionId};
 pub use commands::on_event;
 pub use model::SettingsData;
+pub use view::SettingsEvent;
 
 /// Lucide paths the sections use (served by `assets::MnemaAssets`).
 pub mod icons {

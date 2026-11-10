@@ -1,11 +1,14 @@
 //! `.mx-tip` (lib/components/tooltip.ts): 350 ms hover dwell, instant on keyboard
-//! focus, gone on any scroll. Hover rides GPUI's tooltip (positioned at the
+//! focus, gone on any scroll, a click, the pointer leaving the window or the
+//! window losing key status. Hover rides GPUI's tooltip (positioned at the
 //! pointer, so placement differs from the Svelte one above the trigger); focus
 //! draws the same body above the trigger.
 
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{deferred, div, px, AnyView, App, Context, Div, Global, SharedString, Window};
+use gpui_kit::{
+    deferred, div, px, AnyView, App, Context, Div, Global, SharedString, Subscription, Window,
+};
 
 use crate::theme::{self, leading, radius, size, text, Palette};
 
@@ -19,7 +22,7 @@ fn epoch(cx: &App) -> u64 {
 }
 
 /// Hide every visible tooltip (the kit hides on scroll, pointer-down and Esc;
-/// GPUI already handles pointer-down and leaving).
+/// GPUI already handles pointer-down and leaving the owner, but not leaving the window).
 pub fn hide_all(window: &mut Window, cx: &mut App) {
     cx.default_global::<TipEpoch>().0 += 1;
     window.refresh();
@@ -29,6 +32,8 @@ pub fn hide_all(window: &mut Window, cx: &mut App) {
 pub struct Tip {
     text: SharedString,
     epoch: u64,
+    /// Hides it when the window loses key status (GPUI keeps it up).
+    _deactivate: Option<Subscription>,
 }
 
 impl Tip {
@@ -36,6 +41,7 @@ impl Tip {
         Self {
             text: text.into(),
             epoch: epoch(cx),
+            _deactivate: None,
         }
     }
 }
@@ -70,15 +76,25 @@ pub fn tip_body(text_: SharedString, p: &Palette) -> Div {
         .child(text_)
 }
 
-/// A hover tooltip after the §5 dwell (350 ms), hidden by a scroll over `el`.
+/// A hover tooltip after the §5 dwell (350 ms), hidden by a scroll over `el` or
+/// the pointer leaving the window from it (GPUI only hides on a move inside it).
 pub fn with_tip<E: StatefulInteractiveElement>(el: E, tip: impl Into<SharedString>) -> E {
     let tip = tip.into();
-    el.tooltip(move |_, cx: &mut App| -> AnyView {
+    el.tooltip(move |window, cx: &mut App| -> AnyView {
         let tip = Tip::new(tip.clone(), cx);
-        cx.new(|_| tip).into()
+        cx.new(|cx| Tip {
+            _deactivate: Some(cx.observe_window_activation(window, |_, window, cx| {
+                if !window.is_window_active() {
+                    hide_all(window, cx);
+                }
+            })),
+            ..tip
+        })
+        .into()
     })
     .tooltip_show_delay(theme::motion::TOOLTIP_DWELL)
     .on_scroll(|_, window, cx| hide_all(window, cx))
+    .on_mouse_exit(|_, window, cx| hide_all(window, cx))
 }
 
 /// The keyboard-focus tooltip: no dwell, centred above a `relative()` trigger.

@@ -10,14 +10,13 @@ use std::sync::Arc;
 
 use app_core::{AppCore, Paths, StartError};
 use capture_types::AppearanceSetting;
-use gpui_kit::{actions, App, KeyBinding, Menu, MenuItem};
+use gpui_kit::App;
 use mnema_gpui::bridge::events::{self, Core};
 use mnema_gpui::host::GpuiHost;
+use mnema_gpui::native::app_menu::{self, Quit};
 use mnema_gpui::native::{self, deep_links, hotkeys, notification, sys, tray};
 use mnema_gpui::shell::{DeveloperOptions, ShellModel};
 use mnema_gpui::{assets::MnemaAssets, feel, keymap, logging, theme, window, BUNDLE_ID};
-
-actions!(app, [Quit]);
 
 /// Outside a bundle only; a bundle's `CFBundleShortVersionString` wins.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -114,8 +113,7 @@ fn main() {
         keymap::bind(&bindings, cx);
         let quit_core = core.clone();
         cx.on_action(move |_: &Quit, _| quit_core.shutdown(app_core::ExitKind::Quit));
-        cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
-        cx.set_menus([Menu::new("Mnema").items([MenuItem::action("Quit Mnema", Quit)])]);
+        app_menu::install(cx);
 
         // sharingType is decided before the first show, from the saved setting.
         let developer = native::developer_options(&core);

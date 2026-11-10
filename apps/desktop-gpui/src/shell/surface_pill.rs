@@ -9,7 +9,6 @@ use gpui_kit::{div, px, Animation, Context, ElementId, Pixels, Role};
 use super::model::Surface;
 use super::Shell;
 use crate::assets::{INSIGHTS_GLYPH, TIMELINE_GLYPH};
-use crate::keymap::{GoInsights, GoTimeline};
 use crate::theme::{motion, radius, size, Palette};
 use crate::ui::{icon, with_tip};
 
@@ -117,9 +116,7 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
                 "Timeline  ⌘1",
                 shell.surface == Surface::Timeline,
             )
-            .on_click(
-                cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(GoTimeline), cx)),
-            ),
+            .on_click(cx.listener(|this, _, _, cx| this.go(Surface::Timeline, cx))),
         )
         .child(
             tab(
@@ -128,8 +125,6 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
                 "Insights  ⌘2",
                 shell.surface == Surface::Insights,
             )
-            .on_click(
-                cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(GoInsights), cx)),
-            ),
+            .on_click(cx.listener(|this, _, _, cx| this.go(Surface::Insights, cx))),
         )
 }

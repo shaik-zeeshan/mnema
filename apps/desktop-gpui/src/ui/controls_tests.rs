@@ -154,6 +154,66 @@ fn tooltip_hides_on_scroll(cx: &mut TestAppContext) {
     assert!(!present(cx, window, "tooltip"), "scroll hides the tip");
 }
 
+fn tip_shown_over_tipped(cx: &mut TestAppContext) -> WindowHandle<Root> {
+    let (window, _) = open(cx, tipped);
+    act(cx, window, |w, cx| w.hover("tipped", cx));
+    advance(cx, motion::TOOLTIP_DWELL);
+    assert!(present(cx, window, "tooltip"));
+    window
+}
+
+#[gpui_kit::test]
+fn tooltip_hides_when_the_pointer_leaves_the_window(cx: &mut TestAppContext) {
+    let window = tip_shown_over_tipped(cx);
+    // macOS sends no last move outside the window, only a mouse-exited.
+    act(cx, window, |w, cx| {
+        use gpui_kit::InputEvent as _;
+        let position = w.mouse_position();
+        w.dispatch_event(
+            gpui_kit::MouseExitEvent {
+                position,
+                pressed_button: None,
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    assert!(
+        !present(cx, window, "tooltip"),
+        "leaving the window hides the tip"
+    );
+}
+
+#[gpui_kit::test]
+fn tooltip_hides_when_the_window_loses_key_status(cx: &mut TestAppContext) {
+    // At the window's corner: an activation change re-reads the pointer from the
+    // test platform, (0, 0), which must stay over the owner or the tip hides anyway.
+    let (window, _) = open(cx, |_, _, _| {
+        div()
+            .ml(px(-80.))
+            .mt(px(-80.))
+            .child(Button::new("tipped", "Export").tip("Export the week"))
+            .into_any_element()
+    });
+    act(cx, window, |w, _| w.activate_window());
+    act(cx, window, |w, cx| w.hover("tipped", cx));
+    advance(cx, motion::TOOLTIP_DWELL);
+    assert!(present(cx, window, "tooltip"));
+    gpui_kit::VisualTestContext::from_window(window.into(), cx).deactivate_window();
+    assert!(
+        !present(cx, window, "tooltip"),
+        "an inactive window shows no tip"
+    );
+}
+
+#[gpui_kit::test]
+fn tooltip_hides_when_its_owner_is_clicked(cx: &mut TestAppContext) {
+    let window = tip_shown_over_tipped(cx);
+    act(cx, window, |w, cx| w.click("tipped", cx));
+    assert!(!present(cx, window, "tooltip"), "a click hides the tip");
+}
+
 #[gpui_kit::test]
 fn segmented_thumb_slides_420ms_expo(cx: &mut TestAppContext) {
     let (window, view) = open(cx, |selected, _, cx| {

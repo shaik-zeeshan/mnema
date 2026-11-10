@@ -347,6 +347,8 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
     cx.clear_key_bindings();
     cx.bind_keys(kept.into_iter().chain(ours));
     cx.set_global(Bound(bindings.clone()));
+    // The menu bar reads its shortcuts from the keymap only when it's set.
+    crate::native::app_menu::refresh(cx);
 }
 
 /// One row of the shortcuts sheet.

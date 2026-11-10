@@ -13,6 +13,8 @@ mod chat;
 mod compare;
 #[path = "visual/gallery.rs"]
 mod gallery;
+#[path = "visual/hover.rs"]
+mod hover;
 #[path = "visual/insights.rs"]
 mod insights;
 #[path = "visual/licence.rs"]
@@ -379,6 +381,7 @@ fn run() -> anyhow::Result<()> {
     failures.extend(quick_recall::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(onboarding::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(scroll::checks(&mut cx, &filters)?);
+    failures.extend(hover::checks(&mut cx, &filters)?);
     anyhow::ensure!(failures.is_empty(), failures.join("\n"));
     Ok(())
 }

@@ -63,9 +63,7 @@ pub fn render(s: &Settings, window: &mut Window, cx: &mut Context<Settings>) -> 
         .sm()
         .icon("icons/arrow-left.svg")
         .kbd("Esc")
-        .on_click(|_, window, cx| {
-            window.dispatch_action(Box::new(crate::keymap::CloseOverlay), cx)
-        });
+        .on_click(cx.listener(|_, _, _, cx| cx.emit(super::SettingsEvent::Back)));
     let search = div()
         .flex()
         .items_center()

@@ -4,7 +4,6 @@
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context};
 
-use crate::keymap;
 use crate::settings::model::Json;
 use crate::settings::row::{row, section};
 use crate::settings::{click, on, Settings};
@@ -138,7 +137,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                     .kbd(keys)
                     .soft_disabled(!dev)
                     // The developer window is S15; the action is the shell's ⌘D.
-                    .on_click(|_, window, cx| window.dispatch_action(Box::new(keymap::OpenDebug), cx)),
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::settings::SettingsEvent::OpenDebug))),
             )
             .build(p)
             .when(!dev, |d| d.opacity(theme::DISABLED_OPACITY))

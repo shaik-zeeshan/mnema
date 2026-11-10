@@ -78,6 +78,18 @@ fn spy(s: &mut Settings) {
     }
 }
 
+/// What Settings asks of the shell. Its buttons emit these instead of dispatching
+/// an action through keyboard focus, which may sit nowhere (or on a gone element).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsEvent {
+    /// "Back to app".
+    Back,
+    /// Developer › Developer window "Open".
+    OpenDebug,
+}
+
+impl gpui_kit::EventEmitter<SettingsEvent> for Settings {}
+
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         theme::request_fade_frames(window, cx);

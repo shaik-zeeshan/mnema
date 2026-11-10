@@ -10,7 +10,6 @@ use gpui_kit::{div, px, Context, Div, Hsla, MouseButton, Role, SharedString, Win
 
 use super::model::{self, Lane, LaneMod, RecMod, Tone};
 use super::{Overlay, Shell};
-use crate::keymap::{ToggleSourceMicrophone, ToggleSourceScreen, ToggleSourceSystemAudio};
 use crate::theme::{self, breakpoint, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::{clock, icon, icon_button, sep, with_tip};
 
@@ -252,6 +251,7 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
         );
         let button = div()
             .id(("status-lane", i))
+            .test_support()
             .role(Role::Button)
             .aria_label(format!("{} for the next recording", l.name()))
             .aria_toggled(if on {
@@ -269,11 +269,7 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
             .hover(|s| s.bg(p.wash_strong))
             .when(m.read_only, |el| el.opacity(theme::DISABLED_OPACITY))
             .child(lane(l, kind, small, p))
-            .on_click(cx.listener(move |_, _, window, cx| match i {
-                0 => window.dispatch_action(Box::new(ToggleSourceScreen), cx),
-                1 => window.dispatch_action(Box::new(ToggleSourceMicrophone), cx),
-                _ => window.dispatch_action(Box::new(ToggleSourceSystemAudio), cx),
-            }));
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_source(i, cx)));
         row = row.child(with_tip(button, tip));
     }
     row.into_any_element()
@@ -351,32 +347,45 @@ pub fn render(
             .child(sep(p))
     });
 
-    let mut readouts: Vec<gpui_kit::AnyElement> = Vec::new();
-    if let Some(ms) = m.tracked_ms {
-        readouts.push(
-            div()
-                .child(format!("today {}", model::format_tracked(ms)))
-                .into_any_element(),
-        );
-    }
+    // Below 900 px storage and "local only" go (`.ss-wide`). Whatever still
+    // doesn't fit drops out whole, last first: each readout (with the separator
+    // before it) wraps onto a second line the box's one-line height clips, where
+    // the web clips the last one mid-word. A zero-width first item keeps a line
+    // from ever holding just an overflowing readout. The `?` never shrinks.
+    let mut texts: Vec<String> = Vec::new();
+    texts.extend(
+        m.tracked_ms
+            .map(|ms| format!("today {}", model::format_tracked(ms))),
+    );
     if wide {
-        if let Some(bytes) = m.storage_bytes.filter(|b| *b > 0) {
-            if !readouts.is_empty() {
-                readouts.push(sep(p).into_any_element());
-            }
-            readouts.push(
-                div()
-                    .child(format!("{} stored", model::format_bytes(bytes)))
-                    .into_any_element(),
-            );
-        }
-        if m.local_only {
-            if !readouts.is_empty() {
-                readouts.push(sep(p).into_any_element());
-            }
-            readouts.push(div().child("local only").into_any_element());
-        }
+        texts.extend(
+            m.storage_bytes
+                .filter(|b| *b > 0)
+                .map(|bytes| format!("{} stored", model::format_bytes(bytes))),
+        );
+        texts.extend(m.local_only.then(|| "local only".to_string()));
     }
+    let readouts = div()
+        .id("status-readouts")
+        .test_support()
+        .flex()
+        .flex_wrap()
+        .justify_end()
+        .h_full()
+        .min_w_0()
+        .overflow_hidden()
+        .child(div().h_full())
+        .children(texts.into_iter().enumerate().map(|(i, text)| {
+            div()
+                .id(("status-readout", i))
+                .test_support()
+                .flex()
+                .items_center()
+                .gap(space::S3)
+                .h_full()
+                .when(i > 0, |d| d.pl(space::S3).child(sep(p)))
+                .child(text)
+        }));
 
     div()
         .id("status-bar")
@@ -405,7 +414,7 @@ pub fn render(
         .children(flag)
         .children(resting)
         .children(engine)
-        .children(readouts)
+        .child(readouts)
         .child(
             with_tip(
                 icon_button(

@@ -8,7 +8,7 @@ use gpui_kit::{div, px, Context, MouseButton, Window};
 
 use super::model::{Severity, Surface};
 use super::{surface_pill, Overlay, Shell};
-use crate::keymap::{self, OpenChats, ToggleSettings};
+use crate::keymap;
 use crate::theme::{size, space, Palette};
 use crate::ui::{icon, icon_button, with_tip};
 
@@ -48,54 +48,51 @@ pub fn render(
     };
     let settings_key = keymap::display(&shell.bindings.open_settings);
 
-    let trail =
-        div()
-            .flex()
-            .flex_1()
-            .flex_basis(px(0.))
-            .min_w_0()
-            .h_full()
-            .items_center()
-            .justify_end()
-            .gap(px(2.))
-            .child(
-                with_tip(
-                    icon_button(
-                        "titlebar-chats",
-                        "Chats",
-                        size::H_SM,
-                        shell.surface == Surface::Chat,
-                        p,
-                    ),
+    let trail = div()
+        .flex()
+        .flex_1()
+        .flex_basis(px(0.))
+        .min_w_0()
+        .h_full()
+        .items_center()
+        .justify_end()
+        .gap(px(2.))
+        .child(
+            with_tip(
+                icon_button(
+                    "titlebar-chats",
                     "Chats",
-                )
-                .child(icon(IconName::MessageCircle.path(), size::ICON))
-                .on_click(
-                    cx.listener(|_, _, window, cx| window.dispatch_action(Box::new(OpenChats), cx)),
+                    size::H_SM,
+                    shell.surface == Surface::Chat,
+                    p,
                 ),
+                "Chats",
             )
-            .child(
-                with_tip(
-                    icon_button("titlebar-bell", bell_label, size::H_SM, false, p),
-                    "Notifications",
-                )
-                .aria_expanded(shell.overlay == Some(Overlay::Notifications))
-                .child(icon(IconName::Bell.path(), size::ICON))
-                .children(badge)
-                .on_click(
-                    cx.listener(|this, _, _, cx| this.toggle_overlay(Overlay::Notifications, cx)),
-                ),
+            .child(icon(IconName::MessageCircle.path(), size::ICON))
+            // Clicks call the shell directly: an action dispatch rides keyboard
+            // focus, which can sit on nothing.
+            .on_click(cx.listener(|this, _, _, cx| this.go(Surface::Chat, cx))),
+        )
+        .child(
+            with_tip(
+                icon_button("titlebar-bell", bell_label, size::H_SM, false, p),
+                "Notifications",
             )
-            .child(
-                with_tip(
-                    icon_button("titlebar-settings", "Settings", size::H_SM, false, p),
-                    format!("Settings  {settings_key}"),
-                )
-                .child(icon(IconName::Settings.path(), size::ICON))
-                .on_click(cx.listener(|_, _, window, cx| {
-                    window.dispatch_action(Box::new(ToggleSettings), cx)
-                })),
-            );
+            .aria_expanded(shell.overlay == Some(Overlay::Notifications))
+            .child(icon(IconName::Bell.path(), size::ICON))
+            .children(badge)
+            .on_click(
+                cx.listener(|this, _, _, cx| this.toggle_overlay(Overlay::Notifications, cx)),
+            ),
+        )
+        .child(
+            with_tip(
+                icon_button("titlebar-settings", "Settings", size::H_SM, false, p),
+                format!("Settings  {settings_key}"),
+            )
+            .child(icon(IconName::Settings.path(), size::ICON))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_settings(cx))),
+        );
 
     div()
         .id("titlebar")
