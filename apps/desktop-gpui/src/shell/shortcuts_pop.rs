@@ -43,7 +43,11 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
     let extra = (shell.surface == super::Surface::Timeline)
         .then(|| shell.timeline.read(cx).help_group())
         .flatten();
-    let groups = keymap::help_groups(&shell.bindings, shell.help_state(), extra.into_iter().collect());
+    let groups = keymap::help_groups(
+        &shell.bindings,
+        shell.help_state(),
+        extra.into_iter().collect(),
+    );
     // Two columns, groups flowing left then right (CSS grid 1fr 1fr).
     let (left, right): (Vec<_>, Vec<_>) = groups.iter().enumerate().partition(|(i, _)| i % 2 == 0);
     let column = |gs: Vec<(usize, &HelpGroup)>| {
@@ -77,8 +81,11 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
                 .text_color(p.text_muted)
                 .cursor_pointer()
                 .hover(|s| s.bg(p.wash_strong).text_color(p.text_strong))
-                // shortcut: opens Settings › Shortcuts once S13 lands.
-                .child("Rebind the global ones"),
+                .child("Rebind the global ones")
+                .on_click(cx.listener(|this, _, _, cx| {
+                    this.overlay = None;
+                    cx.defer(|cx| crate::window::open_settings(Some("shortcuts"), cx));
+                })),
         );
     pop_in(
         popover("shortcuts-popover", "Keyboard shortcuts", p)

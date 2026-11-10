@@ -260,6 +260,7 @@ pub fn handle(id: &str, cx: &mut App) {
         PAUSE_TOGGLE_ID => {
             std::thread::spawn(move || {
                 if let Err((title, e)) = super::toggle_pause(&core) {
+                    super::report_capture_error(&core, title, &e, false);
                     show_error(&core, title, e.message);
                 }
             });
@@ -307,6 +308,7 @@ fn recording_toggle(core: Arc<AppCore>, cx: &mut App) {
         let result = done_rx.recv().await;
         let _ = cx.update(|cx| set_operation(StatusBarOperation::Idle, cx));
         if let Ok(Err((title, e))) = result {
+            super::report_capture_error(&core, title, &e, false);
             show_error(&core, title, e.message);
         }
     })

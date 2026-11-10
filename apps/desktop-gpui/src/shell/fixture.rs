@@ -14,7 +14,7 @@ use capture_types::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
-use super::model::{self, NotificationRow, Severity, ShellModel, StatusBarModel};
+use super::model::{self, ShellModel};
 
 /// The fixture map for `surface` / `state`, with `$REPO` resolved like `shoot.ts`.
 pub fn load(surface: &str, state: &str) -> anyhow::Result<Value> {
@@ -60,46 +60,6 @@ pub(crate) fn get<T: DeserializeOwned>(map: &Value, path: &[&str]) -> anyhow::Re
         .with_context(|| format!("fixture {}", path.join(".")))
 }
 
-fn action_label(action: &Value) -> Option<String> {
-    let tab = match action.get("type")?.as_str()? {
-        "open_settings_tab" => action.get("tab").and_then(Value::as_str).unwrap_or(""),
-        "not_recording_reminder" => return Some("Start".into()),
-        _ => return None,
-    };
-    Some(
-        match tab {
-            "about" => "Open update settings",
-            "processing" => "Open OCR settings",
-            "transcription" => "Open transcription settings",
-            "speakers" => "Open speaker settings",
-            "shortcuts" => "Open shortcut settings",
-            _ => "Open settings",
-        }
-        .into(),
-    )
-}
-
-// shortcut: `AppNotification` lives in src-tauri (`native_capture.rs`) until S3,
-// so rows are read field by field here; deserialize the type once it moves.
-fn notifications(map: &Value) -> Vec<NotificationRow> {
-    let rows = map.get("get_app_notifications").and_then(Value::as_array);
-    rows.into_iter()
-        .flatten()
-        .map(|n| NotificationRow {
-            id: n["id"].as_str().unwrap_or_default().into(),
-            severity: match n["severity"].as_str() {
-                Some("error") => Severity::Error,
-                Some("warning") => Severity::Warning,
-                _ => Severity::Info,
-            },
-            title: n["title"].as_str().unwrap_or_default().into(),
-            message: n["message"].as_str().unwrap_or_default().into(),
-            created_at_ms: n["createdAtUnixMs"].as_f64().unwrap_or_default() as i64,
-            action: action_label(&n["action"]),
-        })
-        .collect()
-}
-
 pub fn shell_model(map: &Value) -> anyhow::Result<ShellModel> {
     let settings: Option<RecordingSettings> = get(map, &["get_recording_settings"])?;
     let screen_permission: Option<CapturePermissionState> =
@@ -113,65 +73,28 @@ pub fn shell_model(map: &Value) -> anyhow::Result<ShellModel> {
         Some(free) => Some(free),
         None => get(map, &["get_storage_usage", "freeBytes"])?,
     };
-    let notifications = notifications(map);
-
-    let running = session.as_ref().is_some_and(|s| s.is_running);
-    let session_start_ms = session
-        .as_ref()
-        .and_then(|s| s.source_sessions.as_ref())
-        .and_then(|s| {
-            [&s.screen, &s.microphone, &s.system_audio]
-                .into_iter()
-                .flatten()
-                .map(|m| m.started_at_unix_ms as i64)
-                .min()
-        });
-    let selected = settings.as_ref().map_or([false; 3], |s| {
-        [
-            s.capture_screen,
-            s.capture_microphone,
-            s.capture_system_audio,
-        ]
-    });
-    let status = StatusBarModel {
-        running,
-        loading_start: false,
-        user_paused: session.as_ref().is_some_and(|s| s.is_user_paused),
-        inactivity_paused: session.as_ref().is_some_and(|s| s.is_inactivity_paused),
-        low_disk: session.as_ref().is_some_and(|s| s.is_low_disk_suspended),
-        runtime: runtime.as_ref().map(model::runtime_sources),
-        selected,
+    Ok(super::data::build(super::data::Inputs {
+        settings,
         screen_permission,
-        start_error: None,
-        read_only: matches!(
-            license,
-            Some(LicenseStatus::ReadOnly | LicenseStatus::Revoked)
-        ),
-        stopped_reason: model::stopped_reason_from(&notifications, session_start_ms),
-        session_start_ms,
+        session,
+        runtime,
+        license,
+        usage,
+        storage,
+        free_bytes,
         engine: map
             .get("get_ai_runtime_status")
             .and_then(model::engine_flag),
-        tracked_ms: usage.map(|u| u.time_per_app.iter().map(|a| a.active_ms).sum()),
-        storage_bytes: storage.map(|u| {
-            u.screen_bytes
-                + u.microphone_bytes
-                + u.system_audio_bytes
-                + u.index_bytes
-                + u.models_bytes
-        }),
-        free_bytes,
-        local_only: settings.as_ref().is_none_or(model::is_local_only),
-    };
-    Ok(ShellModel {
-        status,
-        notifications,
-        developer_options: settings.is_some_and(|s| s.developer_options_enabled),
-    })
+        notifications: map
+            .get("get_app_notifications")
+            .map(model::notification_rows)
+            .unwrap_or_default(),
+    }))
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::Severity;
     use super::*;
 
     #[test]

@@ -104,12 +104,12 @@ fn shell_model(id: FixtureId) -> anyhow::Result<ShellModel> {
     let dir = tempfile::tempdir()?;
     let paths = fixtures::seed(dir.path(), id)?;
     let (host, _rx) = GpuiHost::new();
-    let core = AppCore::new(Arc::new(host), paths)?;
+    let core = Arc::new(AppCore::new(Arc::new(host), paths)?);
     let from_core = core.block_on(data::load(&core));
     let map = fixture::load("shell", id.name())?;
     let model = fixture::shell_model(&map)?;
-    // Today app-core answers nothing the shell shows (see data.rs); once it does,
-    // the seeded answer and the parity map must agree.
+    // A bare core (no managed states) answers nothing; the live path is covered
+    // by `src/live_tests`. The goldens show the parity map.
     debug_assert!(from_core.notifications.is_empty());
     Ok(model)
 }

@@ -54,7 +54,8 @@ fn app_chip(a: &ToolActivityEntry, p: &Palette) -> Option<Div> {
         .next()
         .map(|c| c.to_uppercase().to_string())
         .unwrap_or_default();
-    // shortcut: app icons need the S8 image cache; the letter fallback stands in.
+    // shortcut: the letter fallback, not the app's icon (`resolve_app_icons` is
+    // wired for the Timeline; Chat's tool rows don't load icons yet).
     Some(
         div()
             .flex()
@@ -253,8 +254,9 @@ fn error_notice(
         vec![match copy.action {
             Action::Settings => Button::new("chat-err-settings", "Open settings")
                 .sm()
-                // shortcut: Settings navigation is the shell's (S13).
-                .on_click(|_, _, _| log::debug!("chat: error -> settings (S13)"))
+                .on_click(|_, _, cx| {
+                    cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
+                })
                 .into_any_element(),
             Action::NewChat => Button::new("chat-err-new", "New chat")
                 .sm()

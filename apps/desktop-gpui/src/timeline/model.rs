@@ -2,10 +2,9 @@
 //! that turn frames into app bands, audio bars and labels. Views only render
 //! these; `data.rs` (AppCore) and `fixture.rs` (parity JSON) fill them.
 //!
-//! shortcut: `FrameDto`, `AudioSegmentDto`, `FramePreviewDto` and the scrub
-//! interval DTOs live in src-tauri (`app_infra.rs`, `frame_preview.rs`) until
-//! S2 B6, so these are view models, not the wire types; take the moved types
-//! once B6 lands.
+//! These are view models, not app-core's wire DTOs (`FrameDto`, …): times are
+//! unix ms and paths are shared `Arc<Path>`s, which the rail and the scrub
+//! engine read every frame. `data::CoreSource` converts at the door.
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};

@@ -132,6 +132,7 @@ fn stopped_reason_is_history_after_a_newer_session() {
         message: String::new(),
         created_at_ms: 100,
         action: None,
+        kind: Default::default(),
     };
     assert_eq!(
         stopped_reason_from(std::slice::from_ref(&row), None).as_deref(),

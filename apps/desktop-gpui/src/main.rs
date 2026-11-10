@@ -50,13 +50,10 @@ fn main() {
 
     app.run(move |cx| {
         gpui_kit::init(cx);
-        // shortcut: the persisted appearance is in recording settings; Settings ›
-        // Appearance applies it once loaded. Follow the OS until then.
+        // The OS appearance until `AppCore::start` has read the saved settings
+        // (`events::apply_display_settings`, before any window opens).
         theme::init(AppearanceSetting::System, cx.window_appearance(), cx);
         theme::reduce_motion::observe(cx);
-        mnema_gpui::timeline::model::set_24_hour(
-            app_core::clock_format::system_uses_24_hour_time().unwrap_or(false),
-        );
         feel::observe_keystrokes(cx);
 
         let (host, host_rx) = GpuiHost::new();
@@ -105,7 +102,16 @@ fn main() {
         cx.on_window_closed(|cx, _| native::dock::refresh(cx))
             .detach();
 
-        keymap::bind(&keymap::Bindings::default(), cx);
+        // The saved appearance and clock style, and the user's shortcuts.
+        events::apply_display_settings(
+            &app_core::native_capture::control::current_recording_settings_from_core(&core),
+            cx,
+        );
+        let keys = app_core::keyboard_bindings::load_settings_from_disk(&core);
+        let bindings = serde_json::to_value(keys)
+            .map(|v| keymap::Bindings::from_settings(&v))
+            .unwrap_or_default();
+        keymap::bind(&bindings, cx);
         let quit_core = core.clone();
         cx.on_action(move |_: &Quit, _| quit_core.shutdown(app_core::ExitKind::Quit));
         cx.bind_keys([KeyBinding::new("cmd-q", Quit, None)]);
@@ -131,7 +137,8 @@ fn main() {
                 }
             };
             feel::milestone("main_window_opened");
-            events::reload_shell(&shell, cx);
+            // The first read of the bar, and the local-offset stamp (`+layout.svelte`).
+            shell.update(cx, |shell, cx| shell.on_focus(cx));
         } else {
             mnema_gpui::onboarding::open(cx);
             feel::milestone("onboarding_window_opened");

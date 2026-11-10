@@ -153,7 +153,10 @@ impl ScrubEngine {
     }
 
     pub fn exact(&self, frame_id: i64) -> Option<&Preview> {
-        self.exact.iter().find(|(id, _)| *id == frame_id).map(|(_, p)| p)
+        self.exact
+            .iter()
+            .find(|(id, _)| *id == frame_id)
+            .map(|(_, p)| p)
     }
 
     /// Forget everything (reset, jump): a new frame list.
@@ -233,6 +236,21 @@ impl ScrubEngine {
             out.extend(self.ensure_exact(now, f.id));
         }
         out
+    }
+
+    /// `scrub_preview_cache_changed`: new stills exist, so re-ask for the ones
+    /// around the playhead (nothing to do once its exact image is in).
+    pub fn cache_changed(&mut self, now: Instant, frames: &[Frame], active: usize) {
+        let Some(f) = frames.get(active) else { return };
+        if self.exact(f.id).is_some() {
+            return;
+        }
+        self.scrub_gen += 1;
+        if self.batch_in_flight {
+            self.pending_index = Some(active);
+        } else {
+            self.schedule_scrub(now, active, self.scrub_gen);
+        }
     }
 
     /// Fire every timer due at `now`.
@@ -506,7 +524,12 @@ impl ScrubEngine {
             return Vec::new();
         };
         let ids = self.uncached_around(frames, index);
-        if ids.is_empty() && frames.get(index).and_then(|f| self.interval_for(f)).is_some() {
+        if ids.is_empty()
+            && frames
+                .get(index)
+                .and_then(|f| self.interval_for(f))
+                .is_some()
+        {
             return Vec::new();
         }
         self.batch_in_flight = true;
@@ -572,8 +595,9 @@ impl ScrubEngine {
         let mut ready = 0;
         for i in intervals.into_iter().filter(|i| i.preview.is_some()) {
             ready += 1;
-            self.intervals
-                .retain(|o| (&o.segment_key, o.start_offset_ms) != (&i.segment_key, i.start_offset_ms));
+            self.intervals.retain(|o| {
+                (&o.segment_key, o.start_offset_ms) != (&i.segment_key, i.start_offset_ms)
+            });
             self.intervals.push(i);
         }
         if self.intervals.len() > INTERVAL_MAX {

@@ -199,7 +199,8 @@ fn category_color(category: Option<&str>, p: &Palette) -> Hsla {
 }
 
 /// Timeline: one row per interval (category dot, label, range, app).
-/// shortcut: a list, not the Insights rail with app icons; S12 builds the chart.
+/// shortcut: a list, not the Insights rail with app icons (`insights/charts`
+/// has the pieces; the block doesn't use them yet).
 pub fn timeline(title: Option<&str>, items: &[TimelineItem], p: &Palette) -> Div {
     div()
         .flex()

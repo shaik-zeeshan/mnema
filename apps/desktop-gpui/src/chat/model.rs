@@ -123,44 +123,20 @@ impl ChatTurn {
         !self.live()
     }
 
-    /// Apply one op: a 1:1 mirror of the Rust `apply_update_to_view` (esp. the
-    /// `AppendProse` coalescing), plus the UI-only error kind and elapsed time.
-    /// shortcut: a port of src-tauri's reducer; share it once S3 moves ask_ai to app-core.
+    /// Apply one op with app-core's own reducer (`apply_update_to_view`, the one
+    /// the live turn and the reload use), plus the UI-only phase name, error
+    /// kind and elapsed time.
     pub fn apply(&mut self, update: &TurnUpdate, now_ms: i64) {
-        let v = &mut self.view;
+        app_core::ask_ai::apply_update_to_view(&mut self.view, update);
         match update {
-            TurnUpdate::Phase { phase } => v.phase = normalize_phase(phase).into(),
-            TurnUpdate::AppendProse { text } => match v.blocks.last_mut() {
-                Some(AnswerBlock::Prose { markdown }) => markdown.push_str(text),
-                _ => v.blocks.push(AnswerBlock::Prose {
-                    markdown: text.clone(),
-                }),
-            },
-            TurnUpdate::OpenBlock { block } => v.blocks.push(block.clone()),
-            TurnUpdate::Reasoning { text } => match v.reasoning.as_mut() {
-                Some(r) => r.push_str(text),
-                None => v.reasoning = Some(text.clone()),
-            },
-            TurnUpdate::ToolActivity { entry } => v.tool_activities.push(entry.clone()),
-            TurnUpdate::LiveActivity { entry } => v.live_activity = entry.clone(),
-            TurnUpdate::Sources { sources } => v.sources = sources.clone(),
-            TurnUpdate::ContextTokens { tokens } => v.context_tokens = Some(*tokens),
-            TurnUpdate::Engine { provider, model } => {
-                v.provider = Some(provider.clone());
-                v.model = Some(model.clone());
-            }
-            TurnUpdate::Error { message, kind } => {
-                v.error_message = Some(message.clone());
-                v.phase = "error".into();
-                self.error_kind = kind.clone();
-            }
+            TurnUpdate::Phase { phase } => self.view.phase = normalize_phase(phase).into(),
+            TurnUpdate::Error { kind, .. } => self.error_kind = kind.clone(),
             TurnUpdate::Done => {
-                v.phase = "done".into();
-                v.live_activity = None;
                 if let Some(start) = self.started_at_ms {
                     self.elapsed_ms = Some(now_ms - start);
                 }
             }
+            _ => {}
         }
     }
 
@@ -282,6 +258,8 @@ pub struct Engine {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatData {
     pub history: History,
+    /// The search the rows answer (`search_conversations`); empty = the plain list.
+    pub query: String,
     /// None while availability loads.
     pub availability: Option<Availability>,
     pub engine: Engine,

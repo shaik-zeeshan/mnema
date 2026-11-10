@@ -343,6 +343,25 @@ pub fn initialize(core: &AppCore) -> Result<(), AppInfraInitializeError> {
     Ok(())
 }
 
+/// Tests and tools run with `MNEMA_TRIPWIRE_NO_KEYCHAIN=1`. Under it, opening the
+/// real data folders is refused: an invalid test settings file falls back to the
+/// default `~/.mnema`, and on 2026-11-10 a test run touched the real database that way.
+fn refuse_real_data_under_tripwire(base_dir: &std::path::Path) -> Result<(), String> {
+    if std::env::var_os("MNEMA_TRIPWIRE_NO_KEYCHAIN").is_none() {
+        return Ok(());
+    }
+    let Some(home) = dirs::home_dir() else {
+        return Ok(());
+    };
+    if [".mnema", ".mnema-dev"].iter().any(|d| base_dir.starts_with(home.join(d))) {
+        return Err(format!(
+            "tripwire: refusing to open real data at '{}' (MNEMA_TRIPWIRE_NO_KEYCHAIN is set)",
+            base_dir.display()
+        ));
+    }
+    Ok(())
+}
+
 fn resolve_base_dir(core: &AppCore) -> Result<ResolvedAppInfraBaseDir, String> {
     let settings = crate::recording_settings::load_recording_settings_or_default(core);
     let base_dir = crate::managed_storage_layout::ManagedStorageLayout::from_save_directory(
@@ -350,6 +369,7 @@ fn resolve_base_dir(core: &AppCore) -> Result<ResolvedAppInfraBaseDir, String> {
     )
     .base_dir()
     .clone();
+    refuse_real_data_under_tripwire(&base_dir)?;
 
     crate::debug_log::log_info(format!(
         "resolved app infrastructure base directory (save_directory='{}', base_dir='{}')",

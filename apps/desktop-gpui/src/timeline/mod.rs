@@ -102,8 +102,19 @@ pub struct CaptureHint {
     pub screen: bool,
 }
 
+/// What the Timeline asks of the shell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TimelineEvent {
+    /// The empty state's "Start recording".
+    StartRecording,
+}
+
+impl gpui_kit::EventEmitter<TimelineEvent> for TimelineView {}
+
 pub struct TimelineView {
     pub(crate) source: Arc<dyn Source>,
+    /// `followTimelineLive` + the retention window, re-read when settings change.
+    pub settings: data::TimelineSettings,
     pub paging: Paging,
     pub engine: ScrubEngine,
     pub images: Entity<FrameImages>,
@@ -153,6 +164,7 @@ impl TimelineView {
         let stage_size: Rc<Cell<Size<Pixels>>> = Rc::default();
         let mut view = Self {
             source,
+            settings: Default::default(),
             paging: Paging::default(),
             engine: ScrubEngine::default(),
             images: FrameImages::new(stage_size.clone(), cx),

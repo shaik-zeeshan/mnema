@@ -115,9 +115,9 @@ fn empty_state(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
         rec,
         "Nothing recorded yet",
         "Your timeline fills in as Mnema captures your screen, microphone and system audio — all on this Mac.",
-        // shortcut: starting capture is S3 (native_capture); the button is inert until then.
         vec![Button::new("timeline-start", "Start recording")
             .primary()
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(super::TimelineEvent::StartRecording)))
             .into_any_element()],
         p,
     )

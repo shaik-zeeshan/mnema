@@ -6,7 +6,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, Context, Role};
 
-use super::model::{NotificationRow, Severity};
+use super::model::{NotificationRow, RowAction, Severity};
 use super::Shell;
 use crate::theme::{self, leading, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::{clock, icon, kicker, pop_in, popover};
@@ -49,36 +49,80 @@ fn ghost_sm(
         .child(label.to_string())
 }
 
-fn row(i: usize, n: &NotificationRow, now_ms: i64, p: &Palette) -> impl IntoElement {
+fn row(
+    i: usize,
+    n: &NotificationRow,
+    now_ms: i64,
+    p: &Palette,
+    cx: &mut Context<Shell>,
+) -> impl IntoElement {
     let tone = match n.severity {
         Severity::Error => p.danger,
         Severity::Warning => p.warn,
         Severity::Info => p.info,
     };
     let action = n.action.as_ref().map(|label| {
-        div().mt(px(5.)).flex().gap(px(6.)).child(
-            div()
-                .id(("notif-action", i))
-                .role(Role::Button)
-                .flex()
-                .items_center()
-                .h(size::H_SM)
-                .px(px(9.))
-                .rounded(px(5.))
-                .bg(p.surface_raised)
-                .border_1()
-                .border_color(p.border_strong)
-                .text_size(text::BASE)
-                .font_weight(theme::W_MEDIUM)
-                .text_color(p.text_strong)
-                .cursor_pointer()
-                .hover(|s| s.bg(p.surface_hover))
-                // shortcut: actions open Settings tabs / start capture via app-core in S13/S3.
-                .child(label.clone()),
-        )
+        div()
+            .mt(px(5.))
+            .flex()
+            .gap(px(6.))
+            .child(
+                div()
+                    .id(("notif-action", i))
+                    .role(Role::Button)
+                    .flex()
+                    .items_center()
+                    .h(size::H_SM)
+                    .px(px(9.))
+                    .rounded(px(5.))
+                    .bg(p.surface_raised)
+                    .border_1()
+                    .border_color(p.border_strong)
+                    .text_size(text::BASE)
+                    .font_weight(theme::W_MEDIUM)
+                    .text_color(p.text_strong)
+                    .cursor_pointer()
+                    .hover(|s| s.bg(p.surface_hover))
+                    .child(label.clone())
+                    .on_click(
+                        cx.listener(move |this, _, _, cx| this.run_notification(i, false, cx)),
+                    ),
+            )
+            .when(n.kind == RowAction::Reminder, |acts| {
+                acts.child(
+                    ghost_sm(("notif-snooze", i), "Snooze for today", p).on_click(
+                        cx.listener(move |this, _, _, cx| this.run_notification(i, true, cx)),
+                    ),
+                )
+            })
     });
+    // `clear_app_notification`: shown on row hover, out of the row's flow.
+    let id = n.id.clone();
+    let dismiss = div()
+        .id(("notif-dismiss", i))
+        .role(Role::Button)
+        .aria_label("Dismiss notification")
+        .absolute()
+        .right(px(6.))
+        .bottom(px(6.))
+        .flex()
+        .items_center()
+        .justify_center()
+        .size(size::H_SM)
+        .rounded(px(5.))
+        .text_color(p.text_muted)
+        .cursor_pointer()
+        .invisible()
+        .group_hover("notif-row", |s| s.visible())
+        .hover(|s| s.bg(p.wash_strong).text_color(p.text_strong))
+        .child(icon(IconName::X.path(), px(13.)))
+        .on_click(
+            cx.listener(move |this, _, _, cx| this.clear_notifications(Some(id.clone()), cx)),
+        );
     div()
         .id(("notif", i))
+        .group("notif-row")
+        .relative()
         .flex()
         .gap(px(10.))
         .pt(px(9.))
@@ -128,6 +172,7 @@ fn row(i: usize, n: &NotificationRow, now_ms: i64, p: &Palette) -> impl IntoElem
                 .text_color(p.text_subtle)
                 .child(age(now_ms, n.created_at_ms)),
         )
+        .child(dismiss)
 }
 
 pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoElement {
@@ -152,8 +197,10 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
                     .child(rows.len().to_string()),
             )
             .child(div().flex_1())
-            // shortcut: clear_app_notifications not in app-core until S3; wire it then.
-            .child(ghost_sm("notifs-clear", "Clear all", p))
+            .child(
+                ghost_sm("notifs-clear", "Clear all", p)
+                    .on_click(cx.listener(|this, _, _, cx| this.clear_notifications(None, cx))),
+            )
         });
     let body = if rows.is_empty() {
         div()
@@ -188,12 +235,12 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
                     .child("Capture, model and update warnings land here."),
             )
     } else {
-        div()
-            .flex()
-            .flex_col()
-            .gap(px(1.))
-            .p(space::S1)
-            .children(rows.iter().enumerate().map(|(i, n)| row(i, n, now_ms, p)))
+        div().flex().flex_col().gap(px(1.)).p(space::S1).children(
+            rows.iter()
+                .enumerate()
+                .map(|(i, n)| row(i, n, now_ms, p, cx))
+                .collect::<Vec<_>>(),
+        )
     };
     // Right edge on the bell's: titlebar right padding + gear + the 2px gap.
     let right = space::S2 + size::H_SM + px(2.);

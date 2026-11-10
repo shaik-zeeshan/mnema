@@ -23,14 +23,37 @@ pub fn reload_shell(shell: &Entity<Shell>, cx: &mut App) {
     };
     let chat = shell.read(cx).chat.clone();
     chat.update(cx, |chat, cx| chat.reload(cx));
-    let task = Tokio::spawn(cx, async move { data::load(&core).await });
+    let task = Tokio::spawn(cx, async move {
+        let keys = app_core::keyboard_bindings::load_settings_from_disk(&core);
+        let bindings = serde_json::to_value(keys)
+            .map(|v| crate::keymap::Bindings::from_settings(&v))
+            .unwrap_or_default();
+        (data::load(&core).await, bindings)
+    });
     let shell = shell.downgrade();
     cx.spawn(async move |cx| {
-        if let Ok(model) = task.await {
-            let _ = shell.update(cx, |shell, cx| shell.set_model(model, cx));
+        if let Ok((model, bindings)) = task.await {
+            let _ = shell.update(cx, |shell, cx| {
+                shell.bindings = bindings;
+                shell.set_model(model, cx)
+            });
         }
     })
     .detach();
+}
+
+/// The saved appearance and clock style (`theme.svelte.ts`: at startup and on
+/// every `recording_settings_changed`).
+pub fn apply_display_settings(settings: &capture_types::RecordingSettings, cx: &mut App) {
+    crate::theme::set_setting(settings.appearance.clone(), cx);
+    let h24 = match settings.time_format {
+        capture_types::TimeFormatSetting::H24 => true,
+        capture_types::TimeFormatSetting::H12 => false,
+        capture_types::TimeFormatSetting::System => {
+            app_core::clock_format::system_uses_24_hour_time().unwrap_or(false)
+        }
+    };
+    crate::timeline::model::set_24_hour(h24);
 }
 
 /// Does this event change anything the shell shows?
@@ -59,7 +82,7 @@ pub fn spawn(rx: async_channel::Receiver<HostMsg>, cx: &mut App) {
     .detach();
 }
 
-fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
+pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
     match msg {
         HostMsg::Event(CoreEvent::OpenAppNotifications) => {
             if let Some(shell) = shell.upgrade() {
@@ -78,7 +101,25 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             ) {
                 crate::quick_recall::panel::settings_changed(cx);
             }
+            if matches!(
+                event,
+                CoreEvent::RecordingSettingsChanged(_)
+                    | CoreEvent::RecordingSettingsDomainChanged(_)
+            ) {
+                if let Some(core) = cx.try_global::<Core>().map(|c| c.0.clone()) {
+                    let settings =
+                        app_core::native_capture::control::current_recording_settings_from_core(
+                            &core,
+                        );
+                    apply_display_settings(&settings, cx);
+                }
+            }
             if let Some(shell) = shell.upgrade() {
+                // The Timeline's follow-live switch and retention line are settings too.
+                if !matches!(event, CoreEvent::NativeCaptureSessionChanged(_)) {
+                    let timeline = shell.read(cx).timeline.clone();
+                    timeline.update(cx, |t, cx| t.settings_changed(cx));
+                }
                 reload_shell(&shell, cx);
             }
             // Read-Only Mode flips the tray header and Start Recording.
@@ -111,6 +152,8 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             native::tray::refresh(cx);
         }
         HostMsg::Event(CoreEvent::KeyboardBindingsSettingsChanged(payload)) => {
+            // The new app shortcuts bind now (the shell's labels follow in the reload).
+            crate::keymap::bind(&crate::keymap::Bindings::from_settings(&payload), cx);
             if let (Some(core), Ok(settings)) = (
                 cx.try_global::<Core>().map(|c| c.0.clone()),
                 serde_json::from_value(payload),
@@ -121,7 +164,17 @@ fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 reload_shell(&shell, cx);
             }
         }
-        // Surface entities subscribe to theirs as S8+ land; onboarding takes download progress.
+        HostMsg::Event(
+            event @ (CoreEvent::TimelineDataChanged(_)
+            | CoreEvent::ScrubPreviewCacheChanged(_)
+            | CoreEvent::AudioSegmentsChanged),
+        ) => {
+            if let Some(shell) = shell.upgrade() {
+                let timeline = shell.read(cx).timeline.clone();
+                timeline.update(cx, |t, cx| t.on_core_event(&event, cx));
+            }
+        }
+        // Onboarding takes download progress.
         HostMsg::Event(event) => crate::onboarding::on_event(&event, cx),
         HostMsg::OpenWindow(req) if crate::small::open_request(&req, cx) => {}
         HostMsg::OpenWindow(WindowRequest::Main) => {

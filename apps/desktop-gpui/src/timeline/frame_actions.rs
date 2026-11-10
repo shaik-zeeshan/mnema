@@ -161,6 +161,35 @@ impl TimelineView {
         });
     }
 
+    /// `open_captured_url` for the active frame; the dashboard shows its own
+    /// status instead of a dialog (`openCapturedUrl(.., { silent: true })`).
+    fn open_captured_url(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.paging.active_frame().map(|f| f.id) else {
+            return;
+        };
+        self.menu_open = false;
+        cx.notify();
+        let src = self.source.clone();
+        cx.spawn(async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move { src.open_captured_url(id) })
+                .await;
+            this.update(cx, |view, cx| match res {
+                Ok(true) => {}
+                Ok(false) => view.set_status(
+                    Some("No openable page for this result.".into()),
+                    None,
+                    false,
+                    cx,
+                ),
+                Err(e) => view.set_status(Some("Couldn't open URL".into()), Some(e), true, cx),
+            })
+            .ok();
+        })
+        .detach();
+    }
+
     fn copy_text(&mut self, cx: &mut Context<Self>) {
         let text = self
             .ocr
@@ -300,16 +329,15 @@ fn menu(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> AnyEle
             }),
         )
         .children(host.map(|h| {
-            // shortcut: `open_captured_url` (the backend resolves the raw URL behind the
-            // guarded host) is S2 B6; the item shows but stays disabled until then.
             item(
                 "action-open-host",
                 IconName::ExternalLink.path(),
                 h,
                 None,
-                false,
+                true,
                 p,
             )
+            .on_click(cx.listener(|this, _, _, cx| this.open_captured_url(cx)))
         }));
     deferred(pop).with_priority(1).into_any_element()
 }

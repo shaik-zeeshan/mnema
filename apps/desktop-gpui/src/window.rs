@@ -140,6 +140,20 @@ pub fn open_settings(tab: Option<&str>, cx: &mut App) {
     });
 }
 
+/// Bring main up on the Timeline, landed on `frame_id`
+/// (`open_capture_result_in_main_window { kind: "frame" }`).
+pub fn open_frame(frame_id: i64, cx: &mut App) {
+    show_main(cx);
+    let Some(shell) = shell(cx) else {
+        return;
+    };
+    shell.update(cx, |shell, cx| {
+        shell.go(Surface::Timeline, cx);
+        let timeline = shell.timeline.clone();
+        timeline.update(cx, |t, cx| t.jump_to(frame_id, cx));
+    });
+}
+
 /// Every display asleep (`WindowSignal::HideAllViews`).
 #[derive(Default)]
 struct ScreensAsleep(bool);

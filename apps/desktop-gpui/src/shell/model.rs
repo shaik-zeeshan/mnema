@@ -39,6 +39,60 @@ pub struct NotificationRow {
     pub created_at_ms: i64,
     /// The row's button label (`actionLabel` in NotificationsPop.svelte), if any.
     pub action: Option<String>,
+    /// What that button does.
+    pub kind: RowAction,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum RowAction {
+    #[default]
+    None,
+    /// `open_settings_tab`.
+    OpenSettings(String),
+    /// `not_recording_reminder`: Start + Snooze for today.
+    Reminder,
+}
+
+fn row_action(action: &serde_json::Value) -> (Option<String>, RowAction) {
+    let tab = match action.get("type").and_then(|t| t.as_str()) {
+        Some("open_settings_tab") => action.get("tab").and_then(|t| t.as_str()).unwrap_or(""),
+        Some("not_recording_reminder") => return (Some("Start".into()), RowAction::Reminder),
+        _ => return (None, RowAction::None),
+    };
+    let label = match tab {
+        "about" => "Open update settings",
+        "processing" => "Open OCR settings",
+        "transcription" => "Open transcription settings",
+        "speakers" => "Open speaker settings",
+        "shortcuts" => "Open shortcut settings",
+        _ => "Open settings",
+    };
+    (Some(label.into()), RowAction::OpenSettings(tab.into()))
+}
+
+/// `get_app_notifications` / `app_notifications_changed` (the `AppNotification`
+/// list as its wire JSON; the type only serializes) to rows.
+pub fn notification_rows(list: &serde_json::Value) -> Vec<NotificationRow> {
+    list.as_array()
+        .into_iter()
+        .flatten()
+        .map(|n| {
+            let (action, kind) = row_action(&n["action"]);
+            NotificationRow {
+                id: n["id"].as_str().unwrap_or_default().into(),
+                severity: match n["severity"].as_str() {
+                    Some("error") => Severity::Error,
+                    Some("warning") => Severity::Warning,
+                    _ => Severity::Info,
+                },
+                title: n["title"].as_str().unwrap_or_default().into(),
+                message: n["message"].as_str().unwrap_or_default().into(),
+                created_at_ms: n["createdAtUnixMs"].as_f64().unwrap_or_default() as i64,
+                action,
+                kind,
+            }
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,8 +206,8 @@ pub fn rec_view(m: &StatusBarModel) -> RecView {
     if m.low_disk && !m.user_paused {
         return v(RecMod::Suspended, "PAUSED · low disk", false);
     }
-    // shortcut: no pause instant on the session, so "PAUSED" has no clock until
-    // S3 moves capture state (status-bar.svelte counts from when it saw the pause).
+    // shortcut: "PAUSED" shows no clock. The session carries no pause instant;
+    // status-bar.svelte counts from when it saw the pause, which isn't ported.
     if m.user_paused {
         return v(RecMod::Paused, "PAUSED", false);
     }
@@ -178,7 +232,8 @@ pub enum LaneMod {
 
 /// Display-only lanes while starting / recording.
 // shortcut: the `waiting` (display asleep, tap reconnecting) lanes read
-// `get_capture_health`, which is not in app-core until S3; wire it then.
+// `get_capture_health` (`capture_health_snapshot` in app-core), which the
+// shell doesn't poll yet; a waiting source shows as starting / on.
 pub fn live_lanes(m: &StatusBarModel) -> [(LaneMod, Option<&'static str>); 3] {
     let running = rec_view(m).kind == RecMod::Running;
     std::array::from_fn(|i| match (m.running, m.runtime) {
@@ -221,7 +276,8 @@ pub struct StatusFlag {
 
 /// At most one flag. Recording: privacy > low disk. Stopped: start failure >
 /// read-only > stopped by the system > permission.
-// shortcut: "disk almost full" reads capture health thresholds (S3).
+// shortcut: no "disk almost full" flag: it reads the capture-health disk
+// thresholds, which the shell doesn't poll yet (see `live_lanes`).
 pub fn status_flag(m: &StatusBarModel) -> Option<StatusFlag> {
     let flag = |tone, text, action: &str| {
         Some(StatusFlag {
@@ -263,8 +319,9 @@ pub struct EngineFlag {
 }
 
 /// The engine pill from `get_ai_runtime_status`: nothing while healthy.
-// shortcut: a reduced `engineState` (insights/engine-state.ts) over the status
-// JSON, because `AiRuntimeStatus` lives in src-tauri until S2; use the type then.
+// A reduced `engineState` (insights/engine-state.ts) over the status's wire
+// JSON: `AiRuntimeStatus`'s fields are private to app-core, and the parity
+// fixture is that JSON too.
 pub fn engine_flag(status: &serde_json::Value) -> Option<EngineFlag> {
     let flag = |label, error| Some(EngineFlag { label, error });
     if status.get("hasProviders").and_then(|v| v.as_bool()) == Some(false) {

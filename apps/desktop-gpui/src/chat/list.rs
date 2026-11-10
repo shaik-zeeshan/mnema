@@ -69,11 +69,14 @@ pub fn render(
         )
         .into_any_element(),
         History::Rows(rows) => {
-            // shortcut: filters locally until search_conversations lands in app-core (S3).
+            // Rows that already answer this search (`search_conversations` also
+            // matches answers) show as they are; otherwise filter locally meanwhile.
+            let answered = chat.data.query.to_lowercase() == query;
             let shown: Vec<_> = rows
                 .iter()
                 .filter(|r| {
                     query.is_empty()
+                        || answered
                         || r.title.to_lowercase().contains(&query)
                         || r.preview.to_lowercase().contains(&query)
                 })
@@ -241,8 +244,9 @@ pub fn render(
                     ),
                 "Change the default in Settings → AI",
             )
-            // shortcut: opening Settings › Intelligence from here is the shell's (S13).
-            .on_click(|_, _, _| log::debug!("chat: default model -> settings (S13)"))
+            .on_click(|_, _, cx| {
+                cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
+            })
         }))
 }
 

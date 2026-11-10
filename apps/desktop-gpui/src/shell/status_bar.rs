@@ -5,6 +5,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, Context, Div, Hsla, MouseButton, Role, SharedString, Window};
 
 use super::model::{self, Lane, LaneMod, RecMod, Tone};
@@ -118,7 +119,11 @@ fn rec_pill(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoEle
         .on_click(cx.listener(|this, _, _, cx| this.toggle_overlay(Overlay::Status, cx)))
 }
 
-fn record_controls(shell: &Shell, p: &Palette) -> Vec<gpui_kit::AnyElement> {
+fn record_controls(
+    shell: &Shell,
+    p: &Palette,
+    cx: &mut Context<Shell>,
+) -> Vec<gpui_kit::AnyElement> {
     let m = &shell.model.status;
     if m.running {
         let pause_label = if m.user_paused {
@@ -131,19 +136,20 @@ fn record_controls(shell: &Shell, p: &Palette) -> Vec<gpui_kit::AnyElement> {
         } else {
             crate::assets::FILL_PAUSE
         };
-        // shortcut: pause / stop call native_capture, not in app-core until S3.
         return vec![
             with_tip(
                 icon_button("status-pause", pause_label, size::H_MINI, false, p),
                 pause_label,
             )
             .child(icon(glyph, size::ICON_XS))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx)))
             .into_any_element(),
             with_tip(
                 icon_button("status-stop", "Stop recording", size::H_MINI, false, p),
                 "Stop recording",
             )
             .child(icon(crate::assets::FILL_STOP, size::ICON_XS))
+            .on_click(cx.listener(|this, _, _, cx| this.stop_recording(cx)))
             .into_any_element(),
         ];
     }
@@ -173,7 +179,9 @@ fn record_controls(shell: &Shell, p: &Palette) -> Vec<gpui_kit::AnyElement> {
                 .rounded_full()
                 .bg(if off { p.text_strong } else { p.danger }),
         )
-        .child("Record");
+        .child("Record")
+        .on_click(cx.listener(|this, _, _, cx| this.start_recording(cx)))
+        .test_support();
     vec![with_tip(
         record,
         format!(
@@ -272,7 +280,7 @@ fn pill(
     bold: String,
     tone: Option<(Hsla, Hsla)>,
     p: &Palette,
-) -> impl IntoElement {
+) -> gpui_kit::Stateful<gpui_kit::Div> {
     let (fg, border, dot, strong) = match tone {
         Some((tone, border)) => (tone, border, tone, tone),
         None => (p.text_muted, p.border_strong, p.status_dot, p.text),
@@ -312,7 +320,10 @@ pub fn render(
             Tone::Warn => (p.warn, p.warn_border),
             Tone::Danger => (p.danger, p.danger_border),
         };
-        pill("status-flag", f.text, f.action, Some(tone), p).into_any_element()
+        let flag = f.clone();
+        pill("status-flag", f.text, f.action, Some(tone), p)
+            .on_click(cx.listener(move |this, _, _, cx| this.run_flag(&flag, cx)))
+            .into_any_element()
     });
     let resting = (flag.is_none() && rec.kind == RecMod::Paused && !rec.elapsed_clock)
         .then(|| div().child("resumes when you’re back").into_any_element());
@@ -322,13 +333,14 @@ pub fn render(
             .flex()
             .items_center()
             .gap(space::S3)
-            .child(pill(
-                "status-engine",
-                "engine",
-                e.label.to_string(),
-                tone,
-                p,
-            ))
+            .child(
+                pill("status-engine", "engine", e.label.to_string(), tone, p).on_click(
+                    // `openSettings("intelligence")`, as the Svelte engine pill.
+                    |_, _, cx| {
+                        cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
+                    },
+                ),
+            )
             .child(sep(p))
     });
 
@@ -379,7 +391,7 @@ pub fn render(
         .whitespace_nowrap()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
         .child(rec_pill(shell, p, cx))
-        .children(record_controls(shell, p))
+        .children(record_controls(shell, p, cx))
         .child(sep(p))
         .child(lanes(shell, p, cx))
         .child(div().flex_1())

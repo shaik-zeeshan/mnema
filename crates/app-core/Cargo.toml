@@ -85,6 +85,10 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png"]
 tempfile = "3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
+# candle's `metal` feature on macOS, so Semantic Search embeds on the Apple GPU
+# (ADR 0037) in every host of app-core, not only the Tauri one. Cargo unions this
+# with the base entry above; the path must match it exactly.
+semantic-search = { path = "../semantic-search", features = ["metal"] }
 cidre = { version = "0.15", default-features = false, features = ["av", "blocks", "cf", "cg", "cm", "iio", "ns", "ut", "macos_15_0"] }
 cocoa = "0.26"
 core-foundation = "0.10"

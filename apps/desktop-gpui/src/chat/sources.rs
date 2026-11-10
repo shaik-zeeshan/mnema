@@ -21,7 +21,8 @@ fn when(iso: &str, now: time::OffsetDateTime) -> String {
 }
 
 /// The 44×28 thumbnail slot: three placeholder lines until previews load.
-/// shortcut: frame thumbnails need the S8 preview/image cache; placeholders until then.
+/// shortcut: placeholder lines, not the frame's thumbnail (`get_frame_scrub_previews`
+/// isn't read here; the peek shows the real image).
 fn thumb(p: &Palette) -> Div {
     div()
         .w(px(44.))
@@ -102,10 +103,10 @@ pub fn row(turn: i64, sources: &[Source], p: &Palette, cx: &mut Context<Chat>) -
                             ),
                     )
                     .on_click(cx.listener(move |this, _, _, cx| {
-                        // shortcut: a frame with no id opens in the Timeline (S8's door).
+                        // A frame source always carries its id; without one there is
+                        // nothing to peek or land on.
                         if src.frame_id.is_some() {
-                            this.peek = Some(src.clone());
-                            cx.notify();
+                            this.peek_frame(src.clone(), cx);
                         }
                     })),
                 tip,
@@ -126,8 +127,10 @@ pub fn row(turn: i64, sources: &[Source], p: &Palette, cx: &mut Context<Chat>) -
                         ))),
                     url.clone(),
                 )
-                // shortcut: open_captured_url not in app-core until S3; wire it then.
-                .on_click(|_, _, _| log::debug!("chat: open captured url (S3)"))
+                .on_click(cx.listener({
+                    let frame_id = s.frame_id;
+                    move |this, _, _, cx| this.open_captured_url(frame_id, cx)
+                }))
                 .into_any_element(),
             );
         }
@@ -161,8 +164,9 @@ pub fn row(turn: i64, sources: &[Source], p: &Palette, cx: &mut Context<Chat>) -
                     )),
                 "Play this clip",
             )
-            // shortcut: the inline ReceiptViewer audio player is S12's.
-            .on_click(|_, _, _| log::debug!("chat: play audio source (S12)"))
+            // shortcut: no inline ReceiptViewer in Chat yet (Insights has one in
+            // `insights/journal/receipt.rs`); the chip is a label until it is shared.
+            .on_click(|_, _, _| log::debug!("chat: audio source has no inline player yet"))
             .into_any_element(),
         );
     }
@@ -183,13 +187,46 @@ pub fn row(turn: i64, sources: &[Source], p: &Palette, cx: &mut Context<Chat>) -
         .children(kids)
 }
 
-/// FrameDetailModal, minimal: the frame's app, window and time, and the way
-/// into the Timeline.
-/// shortcut: the frame image, OCR panel and match boxes need S8's preview
-/// pipeline; this shows the facts and the hand-off.
-pub fn frame_modal(s: &Source, p: &Palette, cx: &mut Context<Chat>) -> impl IntoElement {
+/// FrameDetailModal: the frame's image, its app, window and time, the
+/// recognised text, and the way into the Timeline.
+/// shortcut: no OCR box overlay or match outlines here (the text shows as a
+/// block); the Timeline, one click away, draws both.
+pub fn frame_modal(
+    chat: &Chat,
+    s: &Source,
+    p: &Palette,
+    cx: &mut Context<Chat>,
+) -> impl IntoElement {
     let now = crate::ui::clock::now(cx);
     let close = cx.entity().downgrade();
+    let frame_id = s.frame_id;
+    let image = chat.peek_data.image.clone().map(|path| {
+        div()
+            .id("chat-frame-image")
+            .w_full()
+            .h(px(280.))
+            .rounded(radius::MD)
+            .overflow_hidden()
+            .bg(p.surface_subtle)
+            .child(
+                gpui_kit::img(path)
+                    .size_full()
+                    .object_fit(gpui_kit::ObjectFit::Contain),
+            )
+    });
+    let recognised = chat.peek_data.text.clone().map(|t| {
+        div()
+            .id("chat-frame-text")
+            .max_h(px(140.))
+            .overflow_y_scroll()
+            .p(space::S3)
+            .rounded(radius::MD)
+            .bg(p.surface_subtle)
+            .font_family(FONT_MONO)
+            .text_size(text::BASE)
+            .text_color(p.text_muted)
+            .child(SharedString::from(t))
+    });
     Modal::new(
         "chat-frame-modal",
         s.app_name
@@ -204,6 +241,7 @@ pub fn frame_modal(s: &Source, p: &Palette, cx: &mut Context<Chat>) -> impl Into
             .p(space::S5)
             .text_size(text::MD)
             .text_color(p.text)
+            .children(image)
             .children(
                 s.window_title
                     .clone()
@@ -216,12 +254,16 @@ pub fn frame_modal(s: &Source, p: &Palette, cx: &mut Context<Chat>) -> impl Into
                     .text_color(p.text_subtle)
                     .child(SharedString::from(when(&s.started_at, now))),
             )
+            .children(recognised)
             .child(
                 div().child(
                     Button::new("chat-frame-open", "Open in timeline")
                         .sm()
-                        // shortcut: open_capture_result_in_main_window is S8's surface switch.
-                        .on_click(|_, _, _| log::debug!("chat: open frame in timeline (S8)")),
+                        // `open_capture_result_in_main_window { kind: "frame" }`.
+                        .on_click(move |_, _, cx| {
+                            let Some(id) = frame_id else { return };
+                            cx.defer(move |cx| crate::window::open_frame(id, cx));
+                        }),
                 ),
             ),
     )

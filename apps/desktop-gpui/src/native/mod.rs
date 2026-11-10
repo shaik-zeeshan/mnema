@@ -108,6 +108,41 @@ pub fn now_unix_ms() -> u64 {
 /// A capture command's failure: the dialog title and the error.
 pub type CaptureResult = Result<(), (&'static str, CaptureErrorResponse)>;
 
+/// The bell row a failed capture command leaves.
+pub const CAPTURE_COMMAND_FAILED_ID: &str = "capture_command_failed";
+
+/// A capture command failed: it must reach the user, never just the log. Always
+/// a bell row carrying the error's message; `dialog` adds the "Recording error"
+/// alert the Svelte controls show (not for a global shortcut pressed in another app).
+pub fn report_capture_error(
+    core: &AppCore,
+    title: &str,
+    error: &CaptureErrorResponse,
+    dialog: bool,
+) {
+    log::error!("{title}: [{}]", error.code);
+    if core
+        .try_state::<app_core::native_capture::app_notifications::AppNotificationsState>()
+        .is_some()
+    {
+        app_core::native_capture::app_notifications::push_error_app_notification(
+            core,
+            CAPTURE_COMMAND_FAILED_ID,
+            title,
+            &error.message,
+            None,
+            now_unix_ms(),
+        );
+    }
+    if dialog {
+        core.host().message(app_core::MessageDialog {
+            title: "Recording error".into(),
+            message: error.message.clone(),
+            kind: app_core::DialogKind::Error,
+        });
+    }
+}
+
 /// Start or stop recording. Blocks (streams open/flush): call off the main thread.
 pub fn toggle_recording(core: &Arc<AppCore>, origin: &str) -> CaptureResult {
     use app_core::native_capture::control;

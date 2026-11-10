@@ -58,7 +58,9 @@ pub mod web_fetch;
 
 use self::broker::*;
 use self::live::*;
-pub use self::live::{get_ask_ai_last_turn_usage, turn_in_flight, AskAiTokenUsage};
+pub use self::live::{
+    apply_update_to_view, get_ask_ai_last_turn_usage, turn_in_flight, AskAiTokenUsage,
+};
 use self::persist::*;
 use self::prompt::*;
 use self::turn::*;

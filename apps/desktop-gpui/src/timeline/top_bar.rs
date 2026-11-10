@@ -110,9 +110,9 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
                             .ghost()
                             .sm()
                             .h(size::CMD_H)
-                            // shortcut: `reprocess_captured_frame_ocr` is S2 B6 (app_infra).
-                            .disabled(true)
-                            .tip("Rerun OCR for the active frame with current settings"),
+                            .disabled(v.ocr.status == OcrStatus::Running)
+                            .tip("Rerun OCR for the active frame with current settings")
+                            .on_click(cx.listener(|this, _, _, cx| this.rerun_ocr(cx))),
                     )
                 })
                 .child(ocr_toggle.children(count))

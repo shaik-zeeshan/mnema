@@ -68,6 +68,7 @@ fn picker(chat: &Chat, docked: bool, cx: &mut Context<Chat>) -> ModelPicker {
     };
     let this = cx.entity().downgrade();
     let open_this = this.clone();
+    let star_this = this.clone();
     let picker = ModelPicker::new("chat-model", spec)
         .trigger(trigger)
         .up(docked)
@@ -77,8 +78,9 @@ fn picker(chat: &Chat, docked: bool, cx: &mut Context<Chat>) -> ModelPicker {
         .on_select(move |engine, _, cx| {
             let _ = this.update(cx, |c, cx| c.select_model(engine, cx));
         })
-        // shortcut: starring writes the AI settings (S13's settings door); logged until then.
-        .on_favorite(|_, _, _| log::debug!("chat: star model (lands with S13)"));
+        .on_favorite(move |engine, _, cx| {
+            let _ = star_this.update(cx, |c, cx| c.toggle_favorite(engine, cx));
+        });
     if chat.force_picker {
         picker.force_open()
     } else {

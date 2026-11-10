@@ -89,6 +89,8 @@ pub struct Chat {
     pub pool_failures: Vec<ProviderFailure>,
     pub pool_loading: bool,
     pub peek: Option<Source>,
+    /// The peeked frame's image and recognised text, once loaded.
+    pub peek_data: data::FramePeek,
     pub steps_open: HashSet<i64>,
     pub reason_open: HashSet<i64>,
     pub renaming: Option<Rename>,
@@ -101,6 +103,8 @@ pub struct Chat {
     pub force_picker: bool,
     /// Which placeholder the composer shows (docked = "Ask a follow-up…").
     docked_placeholder: bool,
+    /// Drops a stale list / search answer.
+    load_generation: u64,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -155,11 +159,10 @@ impl Chat {
             }),
             cx.subscribe_in(&search, window, |this, _, e: &InputEvent, _, cx| {
                 if matches!(e, InputEvent::Change) {
-                    // shortcut: search_conversations not in app-core until S3; the
-                    // list filters what it has locally until then.
+                    // `search_conversations`; the list filters what it has until it answers.
+                    this.reload(cx);
                     cx.notify();
                 }
-                let _ = this;
             }),
             cx.subscribe_in(
                 &rename_input,
@@ -190,6 +193,7 @@ impl Chat {
             pool_failures: Vec::new(),
             pool_loading: false,
             peek: None,
+            peek_data: Default::default(),
             steps_open: HashSet::new(),
             reason_open: HashSet::new(),
             renaming: None,
@@ -200,6 +204,7 @@ impl Chat {
             scroll: ScrollHandle::new(),
             force_picker: false,
             docked_placeholder: false,
+            load_generation: 0,
             _subscriptions: subs,
         }
     }
@@ -212,10 +217,21 @@ impl Chat {
     /// Refill the list + engine facts off-thread.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
         let Some(core) = core(cx) else { return };
-        let task = crate::bridge::tokio::Tokio::spawn(cx, async move { data::load(&core).await });
+        // `refreshHistory`: a search when the box has text, else the plain list;
+        // a generation token drops an out-of-order answer.
+        let query = self.search.read(cx).value().trim().to_string();
+        self.load_generation += 1;
+        let generation = self.load_generation;
+        let task = crate::bridge::tokio::Tokio::spawn(cx, async move {
+            data::load(&core, &query).await
+        });
         cx.spawn(async move |this, cx| {
             if let Ok(data) = task.await {
-                let _ = this.update(cx, |this, cx| this.set_data(data, cx));
+                let _ = this.update(cx, |this, cx| {
+                    if this.load_generation == generation {
+                        this.set_data(data, cx)
+                    }
+                });
             }
         })
         .detach();
@@ -481,7 +497,11 @@ impl Render for Chat {
             .bg(p.bg)
             .child(list::render(self, narrow, &p, window, cx))
             .child(thread::render(self, &p, window, cx))
-            .children(self.peek.clone().map(|s| sources::frame_modal(&s, &p, cx)))
+            .children(
+                self.peek
+                    .clone()
+                    .map(|s| sources::frame_modal(self, &s, &p, cx)),
+            )
             .child(self.toasts.clone())
     }
 }

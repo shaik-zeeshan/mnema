@@ -48,7 +48,70 @@ impl TimelineView {
         fetch_with(self.source.clone(), cx, f, then);
     }
 
+    /// Recording settings changed: re-read follow-live and the retention window.
+    pub fn settings_changed(&mut self, cx: &mut Context<Self>) {
+        self.fetch(
+            cx,
+            |s| s.settings(),
+            |view, settings, _| view.settings = settings,
+        );
+    }
+
+    /// The Timeline's invalidations (`+page.svelte`'s three listeners).
+    pub fn on_core_event(&mut self, event: &app_core::CoreEvent, cx: &mut Context<Self>) {
+        use app_core::CoreEvent as E;
+        match event {
+            E::AudioSegmentsChanged => self.refresh_side_data(cx),
+            // The cache grew: re-ask for the stills around the playhead.
+            E::ScrubPreviewCacheChanged(_) => {
+                if crate::window::render_idle(cx) {
+                    return;
+                }
+                let now = cx.background_executor().now();
+                self.engine
+                    .cache_changed(now, &self.paging.frames, self.paging.active);
+                self.arm_timer(cx);
+            }
+            E::TimelineDataChanged(p)
+                if matches!(p.reason.as_str(), "retention" | "delete_recent_capture") =>
+            {
+                let active = self.paging.active_frame().map(|f| f.id);
+                let before = self.paging.frames.len();
+                self.paging
+                    .frames
+                    .retain(|f| !p.deleted_frame_ids.contains(&f.id));
+                if self.paging.frames.len() != before {
+                    let kept =
+                        active.and_then(|id| self.paging.frames.iter().position(|f| f.id == id));
+                    let last = self.paging.frames.len().saturating_sub(1);
+                    self.paging.active = kept.unwrap_or(self.paging.active.min(last));
+                    self.sync_scroll();
+                    if kept.is_none() && !self.paging.frames.is_empty() {
+                        self.set_status(
+                            Some("This capture was deleted — showing the nearest frame.".into()),
+                            None,
+                            true,
+                            cx,
+                        );
+                    }
+                    self.after_active(false, cx);
+                }
+                self.audio
+                    .retain(|s| !p.deleted_audio_segment_ids.contains(&s.id));
+                if self
+                    .selected_audio
+                    .is_some_and(|(id, _)| p.deleted_audio_segment_ids.contains(&id))
+                {
+                    self.selected_audio = None;
+                }
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
     pub(super) fn start(&mut self, cx: &mut Context<Self>) {
+        self.settings_changed(cx);
         self.fetch(
             cx,
             |s| s.take_landing(),
@@ -201,9 +264,8 @@ impl TimelineView {
             move |s| paging::walk_head(head, |before| s.list_frames(before, POLL_PAGE)),
             move |view, outcome, cx| {
                 let was_empty = view.paging.frames.is_empty();
-                // shortcut: `followTimelineLive` is a recording setting not in
-                // app-core until S2; parked frames stay under the caret until then.
-                match view.paging.finish_poll(generation, outcome, false) {
+                let follow = view.settings.follow_live;
+                match view.paging.finish_poll(generation, outcome, follow) {
                     AfterPoll::Merged if was_empty => view.new_frames(cx),
                     AfterPoll::Merged => {
                         view.sync_scroll();

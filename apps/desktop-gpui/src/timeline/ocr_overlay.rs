@@ -64,6 +64,58 @@ impl TimelineView {
     }
 }
 
+impl TimelineView {
+    /// "rerun OCR": reprocess the active frame, then show the new job's boxes.
+    pub(super) fn rerun_ocr(&mut self, cx: &mut Context<Self>) {
+        let Some(id) = self.paging.active_frame().map(|f| f.id) else {
+            return;
+        };
+        // Only pixels that belong to this frame: its own artifact or its exact
+        // video position, never another frame's fallback image.
+        let source_image = self
+            .engine
+            .display()
+            .filter(|d| {
+                d.frame_id == id
+                    && d.exact
+                    && matches!(
+                        d.source_kind,
+                        super::model::SourceKind::OriginalFrame
+                            | super::model::SourceKind::VideoFallback
+                    )
+            })
+            .map(|d| d.path.to_path_buf());
+        self.ocr.frame_id = Some(id);
+        self.ocr.visible = true;
+        self.ocr.status = OcrStatus::Running;
+        self.ocr.boxes.clear();
+        self.ocr.error = None;
+        self.ocr.hovered = None;
+        cx.notify();
+        let src = self.source.clone();
+        cx.spawn(async move |this, cx| {
+            let res = cx
+                .background_executor()
+                .spawn(async move { src.rerun_ocr(id, source_image) })
+                .await;
+            this.update(cx, |view, cx| {
+                if view.ocr.frame_id != Some(id) {
+                    return; // the playhead moved on
+                }
+                (view.ocr.status, view.ocr.boxes, view.ocr.error) = match res {
+                    Ok(None) => (OcrStatus::Missing, Vec::new(), None),
+                    Ok(Some(b)) if b.is_empty() => (OcrStatus::Empty, b, None),
+                    Ok(Some(b)) => (OcrStatus::Success, b, None),
+                    Err(e) => (OcrStatus::Error, Vec::new(), Some(e)),
+                };
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
+    }
+}
+
 pub fn render(
     v: &TimelineView,
     rect: Option<Bounds<Pixels>>,

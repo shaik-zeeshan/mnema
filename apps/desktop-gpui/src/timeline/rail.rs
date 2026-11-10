@@ -400,13 +400,15 @@ pub fn render(
             .into_any_element(),
         )
     } else if v.paging.exhausted && n - active <= PREFETCH_AHEAD {
-        // shortcut: the retention suffix ("frames older than N days are removed")
-        // needs recording settings, not in app-core until S2.
+        let text = match v.settings.keep_days {
+            Some(days) => format!("Start of history · frames older than {days} days are removed"),
+            None => "Start of history".to_string(),
+        };
         Some(
             crate::ui::notice::inline(
                 crate::ui::Tone::Neutral,
                 Some(icon(IconName::Info.path(), sz::ICON_SM).into_any_element()),
-                vec!["Start of history".into_any_element()],
+                vec![text.into_any_element()],
                 p,
             )
             .into_any_element(),

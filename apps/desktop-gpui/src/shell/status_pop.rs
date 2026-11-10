@@ -30,9 +30,11 @@ pub enum RowTone {
     Neutral,
 }
 
-// shortcut: `status-pop.ts` reads `get_capture_health` (reconnecting / waiting
-// rows) and the processing backlog ("Catching up"); neither is in app-core until
-// S3. Rows here come from the runtime sources the status bar already holds.
+// shortcut: `status-pop.ts` also reads `get_capture_health` (reconnecting /
+// waiting rows) and the processing backlog ("Catching up"). Both are in app-core
+// now (`capture_health_snapshot`, `debug_pipeline`) but not read here yet: rows
+// come from the runtime sources the status bar already holds. Upgrade with the
+// 2 s health poll (`shell/capture.rs::arm_live_poll`).
 pub fn capture_rows(m: &StatusBarModel) -> Option<Vec<PopRow>> {
     let rt = m.runtime.filter(|_| m.running)?;
     Some(
@@ -195,7 +197,8 @@ pub fn render(shell: &Shell, p: &Palette, _cx: &mut Context<Shell>) -> impl Into
             } else {
                 RowTone::Neutral
             }),
-            // shortcut: the engine's full tip text comes with `AiRuntimeStatus` (S2).
+            // shortcut: the short label only; `engineFlag`'s longer tip text
+            // (provider name, what to do) isn't ported.
             value: format!("Engine {}", e.label),
         };
         group("AI", p).child(row(&r, p))

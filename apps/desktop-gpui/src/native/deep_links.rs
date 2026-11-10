@@ -38,8 +38,9 @@ fn open(core: &Arc<AppCore>, url: &str, cx: &mut App) {
         log::debug!("deep link ignored: not a Mnema link");
         return;
     };
-    // shortcut: the license receipt modal (`license_deep_link`) has no GPUI
-    // surface yet; Settings › License shows the result through `license_status`.
+    // shortcut: no deep-link receipt modal (LicenseDeepLinkModal.svelte, ~500
+    // lines) and no shell licence banner; a licence link opens Settings › License,
+    // which shows the result through `license_status`.
     // The variant name only: payloads carry keys and ids.
     log::debug!(
         "deep link routed: {}",

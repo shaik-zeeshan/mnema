@@ -229,7 +229,7 @@ fn off_main(
     let core = core.clone();
     std::thread::spawn(move || {
         if let Err((title, e)) = f(&core) {
-            log::error!("global shortcut: {title}: [{}] {}", e.code, e.message);
+            crate::native::report_capture_error(&core, title, &e, false);
         }
     });
 }

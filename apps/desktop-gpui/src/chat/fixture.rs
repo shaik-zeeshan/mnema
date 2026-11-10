@@ -26,6 +26,7 @@ pub fn chat_fixture(state: &str) -> anyhow::Result<ChatFixture> {
     Ok(ChatFixture {
         data: ChatData {
             history: History::Rows(rows),
+            query: String::new(),
             availability,
             engine: settings
                 .as_ref()

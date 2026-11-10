@@ -83,8 +83,7 @@ impl Default for Bindings {
 
 impl Bindings {
     /// From `get_keyboard_bindings_settings` JSON; a missing or reserved entry keeps its default.
-    // shortcut: `KeyboardBindingsSettings` lives in src-tauri until S2 moves
-    // keyboard_bindings; read the typed struct then.
+    // Reads the wire JSON: the settings event carries it, and so does the parity fixture.
     pub fn from_settings(settings: &Value) -> Self {
         let mut b = Self::default();
         let pick = |slot: &mut String, group: &str, key: &str| {
@@ -239,7 +238,8 @@ fn user_binding<A: Action>(keys: &str, action: A, context: &str, cx: &App) -> Op
 }
 
 /// Install the app's bindings (gpui-kit's own component bindings stay).
-// shortcut: a settings change appends; S13 rebinding clears ours first.
+// shortcut: a settings change appends (the new keys win; a replaced key stays
+// bound until restart), upgrade when GPUI can unbind one binding.
 pub fn bind(bindings: &Bindings, cx: &mut App) {
     let shell = Some(SHELL_CONTEXT);
     let field = Some(IN_COMMAND_FIELD);

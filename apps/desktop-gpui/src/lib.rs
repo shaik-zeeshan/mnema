@@ -12,6 +12,8 @@ pub mod gallery;
 pub mod host;
 pub mod insights;
 pub mod keymap;
+#[cfg(test)]
+mod live_tests;
 pub mod logging;
 pub mod native;
 pub mod quick_recall;

@@ -21,6 +21,73 @@ fn title_from(question: &str) -> String {
 }
 
 impl Chat {
+    /// A frame chip: open the peek, then fill in its image and recognised text.
+    pub(super) fn peek_frame(&mut self, src: super::Source, cx: &mut Context<Self>) {
+        let frame_id = src.frame_id;
+        self.peek = Some(src);
+        self.peek_data = Default::default();
+        cx.notify();
+        let (Some(core), Some(id)) = (core(cx), frame_id) else {
+            return;
+        };
+        let task = Tokio::spawn(cx, async move { data::frame_peek(&core, id).await });
+        cx.spawn(async move |this, cx| {
+            let Ok(peek) = task.await else { return };
+            let _ = this.update(cx, |this, cx| {
+                if this.peek.as_ref().and_then(|p| p.frame_id) == Some(id) {
+                    this.peek_data = peek;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// A host chip (`openCapturedUrl`): the backend opens the page; a frame with
+    /// no openable page, or a failure, says so.
+    pub(super) fn open_captured_url(&mut self, frame_id: Option<i64>, cx: &mut Context<Self>) {
+        let (Some(core), Some(id)) = (core(cx), frame_id) else {
+            return;
+        };
+        let task = Tokio::spawn(cx, async move { data::open_captured_url(&core, id).await });
+        cx.spawn(async move |this, cx| {
+            let message = match task.await {
+                Ok(Ok(true)) => return,
+                Ok(Ok(false)) => "No openable page for this result.".to_string(),
+                Ok(Err(e)) => format!("Couldn't open page: {e}"),
+                Err(e) => format!("Couldn't open page: {e}"),
+            };
+            let _ = this.update(cx, |this, cx| {
+                this.toasts.update(cx, |t, cx| {
+                    t.push(crate::ui::toast::Toast::danger(message), cx)
+                });
+            });
+        })
+        .detach();
+    }
+
+    /// The picker's star: save the starred list, then re-read the engine facts.
+    pub(super) fn toggle_favorite(&mut self, engine: (String, String), cx: &mut Context<Self>) {
+        let Some(core) = core(cx) else { return };
+        let task = Tokio::spawn(cx, async move {
+            let worker = core.clone();
+            core.spawn_blocking(move || data::toggle_favorite(&worker, engine))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(Err(e)) = result {
+                    let toast = crate::ui::toast::Toast::danger(format!("Couldn't save: {e}"));
+                    this.toasts.update(cx, |t, cx| t.push(toast, cx));
+                }
+                this.reload(cx);
+            });
+        })
+        .detach();
+    }
+
     /// Send the composer (or re-send `resend` for Regenerate / Retry).
     pub fn send(&mut self, resend: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         let question = resend

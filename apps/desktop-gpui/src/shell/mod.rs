@@ -1,6 +1,7 @@
 //! The main window: titlebar, the current surface, the status bar, and the three
 //! popovers. Holds view state only; `data.rs` fills [`ShellModel`] from AppCore.
 
+mod capture;
 pub mod command_field;
 pub mod data;
 #[cfg(feature = "fixtures")]
@@ -59,13 +60,23 @@ pub struct Shell {
     pub settings: Entity<crate::settings::Settings>,
     pub insights: Entity<crate::insights::Insights>,
     focus: FocusHandle,
-    _subscriptions: [Subscription; 3],
+    _subscriptions: [Subscription; 5],
     tick: Option<Task<()>>,
+    /// The last failed start's message ("couldn't start · Retry"), until the next start.
+    start_error: Option<String>,
+    /// A capture command is in flight (`loadingStart/Stop/Pause`).
+    capture_busy: bool,
+    /// The 2 s per-source poll while recording.
+    live: Option<Task<()>>,
 }
 
 impl Shell {
     pub fn new(model: ShellModel, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let source = std::sync::Arc::new(crate::timeline::data::CoreSource);
+        let source: std::sync::Arc<dyn crate::timeline::data::Source> = match crate::chat::core(cx)
+        {
+            Some(core) => std::sync::Arc::new(crate::timeline::data::CoreSource(core)),
+            None => std::sync::Arc::new(crate::timeline::data::NoSource),
+        };
         Self::with_timeline_source(model, source, window, cx)
     }
 
@@ -89,9 +100,20 @@ impl Shell {
         let subscriptions = [
             cx.subscribe_in(&command, window, Self::on_command),
             cx.subscribe_in(&insights, window, Self::on_insights),
+            // The empty Timeline's "Start recording".
+            cx.subscribe(&timeline, |this, _, event, cx| match event {
+                crate::timeline::TimelineEvent::StartRecording => this.start_recording(cx),
+            }),
             // System appearance follows the OS (theme::set_system ignores it when pinned).
             cx.observe_window_appearance(window, |_, window, cx| {
                 theme::set_system(window.appearance(), cx)
+            }),
+            // Window focus: re-read what the bar shows and stamp the local UTC
+            // offset (`+layout.svelte`'s focus handlers).
+            cx.observe_window_activation(window, |this, window, cx| {
+                if window.is_window_active() {
+                    this.on_focus(cx);
+                }
             }),
         ];
         let focus = cx.focus_handle();
@@ -112,13 +134,25 @@ impl Shell {
             focus,
             _subscriptions: subscriptions,
             tick: None,
+            start_error: None,
+            capture_busy: false,
+            live: None,
         };
         shell.set_model(model, cx);
         shell
     }
 
-    pub fn set_model(&mut self, model: ShellModel, cx: &mut Context<Self>) {
+    pub fn set_model(&mut self, mut model: ShellModel, cx: &mut Context<Self>) {
+        // A reload doesn't know about the command in flight or the last failed start.
+        if model.status.running {
+            self.start_error = None;
+        }
+        if model.status.start_error.is_none() {
+            model.status.start_error = self.start_error.clone();
+        }
+        model.status.loading_start |= self.model.status.loading_start && self.capture_busy;
         self.model = model;
+        self.arm_live_poll(cx);
         let s = &self.model.status;
         let hint = crate::timeline::CaptureHint {
             capturing: s.running,
@@ -244,21 +278,11 @@ impl Shell {
                 self.timeline.update(cx, |t, cx| t.jump_to(id, cx));
             }
             crate::insights::InsightsEvent::StartRecording => {
-                let Some(core) = crate::chat::core(cx) else {
-                    return;
-                };
-                let paused = self.model.status.running && self.model.status.user_paused;
-                // Capture start/resume opens streams: never on the main thread.
-                std::thread::spawn(move || {
-                    let r = if paused {
-                        crate::native::toggle_pause(&core)
-                    } else {
-                        crate::native::toggle_recording(&core, "insights")
-                    };
-                    if let Err((title, e)) = r {
-                        log::error!("insights: {title}: [{}] {}", e.code, e.message);
-                    }
-                });
+                if self.model.status.running && self.model.status.user_paused {
+                    self.toggle_pause(cx);
+                } else {
+                    self.start_recording(cx);
+                }
             }
         }
     }
@@ -276,9 +300,10 @@ impl Shell {
         if s.running || s.read_only {
             return;
         }
-        // shortcut: persisting the selection needs recording settings in app-core (S2).
         s.selected[i] = !s.selected[i];
+        let selected = s.selected[i];
         cx.notify();
+        self.save_source(i, selected, cx);
     }
 
     fn register_actions(
