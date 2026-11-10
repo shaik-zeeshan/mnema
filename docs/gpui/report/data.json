@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-11 00:00",
+ "updated": "2026-11-11 01:22",
  "verdict": "Every screen is built and connected to the real backend. On 10 Nov both of your hands-on rounds were fixed; then an agent used the real dev build by hand and a behaviour audit compared the two apps, and everything those found is fixed too, including the build that was missing the Whisper transcriber. All of it is in local commits and a signed dev build from midnight; nothing is pushed. What needs you: unlock the Mac, approve two screenshots, and five decisions.",
  "metrics": [
   {
    "label": "Overall",
    "value": "built, being wired",
-   "note": "all screens built; hands-on rounds, real-app bugs and behaviour gaps fixed; 26 marked shortcuts left"
+   "note": "all screens built; hands-on rounds, real-app bugs and behaviour gaps fixed; 21 marked shortcuts left"
   },
   {
    "label": "Backend moved",
@@ -20,7 +20,7 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 411 GPUI (404 + 5 wiring + 2 engines); shared and Tauri counts are from before 10 Nov; the Tauri app compiles"
+   "note": "1,338 shared + 71 Tauri + 430 GPUI (423 + 5 wiring + 2 engines); shared and Tauri counts are from before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
@@ -56,9 +56,9 @@
  ],
  "now": [
   {
-   "id": "Pickers",
-   "title": "Settings pickers",
-   "detail": "Transcription and OCR language pickers, the full search-model catalogue, and the voice level meter in Settings. Agent in final tests."
+   "id": "MCP",
+   "title": "Settings › MCP",
+   "detail": "The custom connector form, a toggle per tool, and sign-in stages inside the dialog. Agent working. Not built yet."
   }
  ],
  "done": [
@@ -379,13 +379,31 @@
    "title": "Developer window, licence line, raw codes, microphone list, Settings rail",
    "what": "Smaller findings from the real-app run. Built; two screenshots await approval.",
    "commit": "50cdc2d7"
+  },
+  {
+   "id": "Gap 6",
+   "title": "Settings pickers: languages, the search-model catalogue, voice take",
+   "what": "A searchable transcription language list, the Tesseract language picker, the full search-model catalogue with a re-index confirm, and the 15-second voice take with a live level meter in Settings. Built and wired; not driven.",
+   "commit": "5e7e4042"
+  },
+  {
+   "id": "Fix 15",
+   "title": "Cancelling a voice take releases the microphone at once",
+   "what": "The shared recorder used to hold the microphone for the full 15 seconds even after Cancel, leaving the step, closing the window or quitting. It now stops at once on all of those. The Tauri app's own call is unchanged. Built; the microphone indicator going off has not been seen in the signed app.",
+   "commit": "1e9d4c95"
+  },
+  {
+   "id": "Test 1",
+   "title": "Screenshot tests no longer see the real mouse pointer",
+   "what": "The cause of three false alarms on 10 Nov. Every test window now has its pointer parked outside it before the first frame; three full runs gave identical results.",
+   "commit": "79621b4b"
   }
  ],
  "next": [
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "26 marked shortcuts remain: MCP custom connector, debug job inspector, the Models tab's per-model size strip, ten text fields whose height setting does nothing, the Timeline's fixed single-letter keys, and making screenshot tests ignore the real mouse pointer."
+   "detail": "21 marked shortcuts remain: the debug job inspector, the Models tab's per-model size strip, ten text fields whose height setting does nothing, and the Timeline's fixed single-letter keys."
   },
   {
    "id": "Docs",
@@ -696,7 +714,7 @@
   {
    "id": "Unlock",
    "title": "Unlock the Mac",
-   "detail": "The new dev build (11 Nov, 00:00) is open and waiting for a display. It should start recording by itself when you unlock; that is the auto-start fix being tested for real."
+   "detail": "The dev build from 11 Nov 00:00 is open and waiting for a display; its log shows it retrying and waiting, as designed. It should start recording by itself when you unlock. A newer build with the Settings pickers and the microphone fix will replace it once the MCP work lands."
   },
   {
    "id": "Approve",
@@ -705,8 +723,8 @@
   },
   {
    "id": "Decide",
-   "title": "Five decisions or looks",
-   "detail": "The fast recording clock, the missing-engine safety check, a CLAUDE.md rule, the new ChatGPT sign-in in Chat, and two older failing tests. Same page, under Decisions."
+   "title": "Six decisions or looks",
+   "detail": "The fast recording clock, the missing-engine safety check, a CLAUDE.md rule, the new ChatGPT sign-in in Chat, two older failing tests, and the microphone-cancel change made in your absence. On the real-app test page, under Decisions."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -1795,7 +1813,7 @@
    "commit": "—",
    "state": "your decision",
    "awaiting": true,
-   "what": "1. The recording clock runs fast, in both apps. The REC timer and the developer window's \"since\" time read a value that is not the session start; it is a timing anchor that moves earlier each time the screen pauses for inactivity and resumes. The fix stores a real session start in the shared backend and changes the Tauri app too. Recommended: fix it. 2. A safety check so recording refuses to start, with a clear message, if the Whisper engine is ever missing from a build again. Today the jobs retry forever in silence. It changes nothing in a correct build. Recommended: add it. 3. A rule in the project's CLAUDE.md that a click handler must call its handler directly and never send an action through keyboard focus (the cause of the dead titlebar buttons). Recommended: add it. 4. Chat's failed-turn notice now includes a compact ChatGPT sign-in, because the new app had no way to reconnect a signed-out account. It reuses onboarding's sign-in. Have a look when you can. 5. Two older failing tests in the shared backend (microphone restore after an inactivity pause) are not on the known-failures list. They fail without any of today's changes. Worth a separate look.",
+   "what": "1. The recording clock runs fast, in both apps. The REC timer and the developer window's \"since\" time read a value that is not the session start; it is a timing anchor that moves earlier each time the screen pauses for inactivity and resumes. The fix stores a real session start in the shared backend and changes the Tauri app too. Recommended: fix it. 2. A safety check so recording refuses to start, with a clear message, if the Whisper engine is ever missing from a build again. Today the jobs retry forever in silence. It changes nothing in a correct build. Recommended: add it. 3. A rule in the project's CLAUDE.md that a click handler must call its handler directly and never send an action through keyboard focus (the cause of the dead titlebar buttons). Recommended: add it. 4. Chat's failed-turn notice now includes a compact ChatGPT sign-in, because the new app had no way to reconnect a signed-out account. It reuses onboarding's sign-in. Have a look when you can. 5. Two older failing tests in the shared backend (microphone restore after an inactivity pause) are not on the known-failures list. They fail without any of today's changes. Worth a separate look. 6. One shared-code change was made without waiting for you: cancelling a voice take now releases the microphone at once (commit 1e9d4c95). A Cancel button that leaves the microphone on is a privacy defect. If you would rather remove the Cancel button to match the Tauri app, it is easy to undo.",
    "rows": []
   },
   {
