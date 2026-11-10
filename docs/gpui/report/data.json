@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-10 18:05",
- "verdict": "Every screen is built, but the first hands-on run showed many were still on test data. Two wiring passes have since connected them to the real backend, and the six issues from today's hands-on test are being fixed now. \"Built\" means it renders and passes tests; \"wired\" means it talks to the real backend; \"driven\" means someone used it in the real app. Almost nothing is driven yet.",
+ "updated": "2026-11-10 17:45",
+ "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. Of the six issues from today's hands-on test, one is wired, four are built (two of them wait for your approval of new screenshots) and one is still being worked on. Almost nothing is driven yet: the next step that needs you is a hands-on run of the next signed dev build.",
  "metrics": [
   {
    "label": "Overall",
@@ -25,7 +25,7 @@
   {
    "label": "Screenshots approved",
    "value": "5 pending",
-   "note": "onboarding screens changed by the 10 Nov layout fix"
+   "note": "onboarding screens changed by the 10 Nov layout fix; shown on Today's fixes"
   }
  ],
  "bars": [
@@ -64,11 +64,6 @@
    "id": "Health",
    "title": "Capture health in the status bar",
    "detail": "Waiting lanes, the disk-almost-full flag, the paused clock, reconnecting and \"Catching up\" rows. Agent working. Not built yet."
-  },
-  {
-   "id": "Sign-off",
-   "title": "Waiting for you",
-   "detail": "Five onboarding screenshots changed by today's fix (Welcome, Change settings, Models, Setup, Setup done). Before/after sheets were opened in Preview."
   }
  ],
  "done": [
@@ -299,7 +294,7 @@
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "38 marked shortcuts remain: capture health in the status bar, licence banner and deep-link receipt, Chat thumbnails / app icons / inline audio, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip."
+   "detail": "38 marked shortcuts remain: licence banner and deep-link receipt, Chat thumbnails / app icons / inline audio, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip. (Capture health in the status bar is being built now.)"
   },
   {
    "id": "Docs",
@@ -320,7 +315,7 @@
   "12 shell and 20 control screenshots approved after viewing.",
   "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09).",
   "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09).",
-  "Onboarding screenshots approved (2026-11-09).",
+  "Onboarding screenshots approved (2026-11-09); five of them changed on 10 Nov and wait for re-approval.",
   "The 101 screenshots refreshed by the polish pass approved (2026-11-10)."
  ],
  "risks": [
@@ -330,7 +325,19 @@
  ],
  "shots": [
   {
-   "title": "Onboarding — approved",
+   "title": "Onboarding AI step — approved",
+   "note": "Choose provider, entering a key, verifying, ready, rejected key, ChatGPT sign-in; dark/light.",
+   "files": [
+    "onboarding-ai-choose",
+    "onboarding-ai-key",
+    "onboarding-ai-verifying",
+    "onboarding-ai-ready",
+    "onboarding-ai-invalid",
+    "onboarding-ai-chatgpt"
+   ]
+  },
+  {
+   "title": "Onboarding — approved; 5 changed screens await re-approval",
    "note": "All 8 steps incl. permissions granted/denied, storage blocked, setup done; dark/light.",
    "files": [
     "onboarding-capture",
@@ -345,7 +352,13 @@
     "onboarding-setup-done",
     "onboarding-voice",
     "onboarding-welcome"
-   ]
+   ],
+   "pending": {
+    "onboarding-welcome": "The small \"rewinding\" caption at the bottom now shares a baseline with the larger text beside it.",
+    "onboarding-change": "Headings and totals of different sizes now share a baseline. A new Models state was added too.",
+    "onboarding-setup": "Text of different sizes now shares a baseline.",
+    "onboarding-setup-done": "Text of different sizes now shares a baseline."
+   }
   },
   {
    "title": "Small windows — approved",
@@ -536,5 +549,347 @@
     "tag": "signed build"
    }
   ]
- }
+ },
+ "words": "How to read the states: built = it renders and passes tests; wired = it talks to the real backend; driven = someone used it in the real app. Nothing below is driven yet.",
+ "issues": [
+  {
+   "title": "Settings: screen resolution stuck, microphone error",
+   "state": "wired",
+   "commit": "8a1fcb2d, c6fdbe9b",
+   "anchor": "fix-settings",
+   "note": "Your screenshot came from the build just before 8a1fcb2d, which wired Settings to the real backend. c6fdbe9b then made Settings show the quick local reads at once and say \"couldn't check\" instead of \"Checking…\" forever. Not driven."
+  },
+  {
+   "title": "Embedding model list ran off the onboarding window",
+   "state": "built · awaiting approval",
+   "awaiting": true,
+   "commit": "e82d4847",
+   "anchor": "fix-onboarding",
+   "note": "Now English / Multilingual first, then that group's models, as in today's app. The new screenshot waits for your approval."
+  },
+  {
+   "title": "\"Rewinding\" text sat low on the first onboarding page",
+   "state": "built · awaiting approval",
+   "awaiting": true,
+   "commit": "e82d4847",
+   "anchor": "fix-onboarding",
+   "note": "Text of different sizes on one line now shares a baseline on Welcome, Change settings and Setup. The new screenshots wait for your approval."
+  },
+  {
+   "title": "Blurry app icons; icons hidden under the Timeline rails",
+   "state": "built",
+   "commit": "5a63d7e2",
+   "anchor": "fix-icons",
+   "note": "Each icon is scaled once to the exact size the screen needs, and drawn above the Timeline's bands and ticks. Not checked on a real Retina or 1× screen."
+  },
+  {
+   "title": "Square corners on hover and selection highlights",
+   "state": "built",
+   "commit": "30e841c5",
+   "anchor": "fix-hover",
+   "note": "13 places now follow the design system's rounded corners. The transcript's current-word highlight stays square because GPUI cannot round a text background."
+  },
+  {
+   "title": "Window size: small windows cut off, large windows not using the space",
+   "state": "in progress",
+   "commit": "—",
+   "note": "An agent is working on it. Not built yet."
+  }
+ ],
+ "waiting": [
+  {
+   "id": "Approve",
+   "title": "Five onboarding screenshots",
+   "detail": "Welcome, Change settings, the new Models state, Setup and Setup done changed with today's layout fix. Each is shown before and after on the \"Today's fixes\" page; the approved set is unchanged until you say yes."
+  },
+  {
+   "id": "Drive",
+   "title": "Hands-on test of the next signed dev build",
+   "detail": "Today's fixes are built (Settings is also wired) but none has been used in the real app. The checklist below lists what only a person can check."
+  }
+ ],
+ "fixes_verdict": "Four of today's six issues have pictures here. The onboarding layout fix changes five approved screenshots, so it needs your yes before the new ones become the reference. The icon and corner fixes did not change any approved screenshot enough to need one.",
+ "fixes": [
+  {
+   "anchor": "fix-onboarding",
+   "title": "Onboarding: model list fits, text lines up",
+   "toc": "Onboarding layout",
+   "commit": "e82d4847",
+   "state": "built · awaiting your approval",
+   "awaiting": true,
+   "what": "The Semantic Search model row on the Models tab no longer runs off the window: you pick English or Multilingual first, then that group's models, as in today's app. Text of different sizes on one line (the \"rewinding\" caption on Welcome, the headings and totals on Change settings, and Setup) now sits on one baseline.",
+   "how": "Each sheet puts the approved screenshot on the left and today's on the right. The Models tab is a new screenshot, so it has no \"before\". Click any picture to see it full size; the arrow keys step to the next.",
+   "rows": [
+    {
+     "heading": "Welcome",
+     "shots": [
+      {
+       "file": "onboarding-welcome-dark.jpg",
+       "caption": "Welcome, dark. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "onboarding-welcome-light.jpg",
+       "caption": "Welcome, light. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "heading": "Change settings",
+     "shots": [
+      {
+       "file": "onboarding-change-dark.jpg",
+       "caption": "Change settings, dark. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "onboarding-change-light.jpg",
+       "caption": "Change settings, light. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "heading": "Change settings › Models (new)",
+     "shots": [
+      {
+       "file": "onboarding-change-models-dark.jpg",
+       "caption": "Models tab, dark: language first, then that group's models. New screenshot, no before."
+      },
+      {
+       "file": "onboarding-change-models-light.jpg",
+       "caption": "Models tab, light. New screenshot, no before."
+      }
+     ]
+    },
+    {
+     "heading": "Setup",
+     "shots": [
+      {
+       "file": "onboarding-setup-dark.jpg",
+       "caption": "Setup, dark. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "onboarding-setup-light.jpg",
+       "caption": "Setup, light. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "heading": "Setup done",
+     "shots": [
+      {
+       "file": "onboarding-setup-done-dark.jpg",
+       "caption": "Setup done, dark. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "onboarding-setup-done-light.jpg",
+       "caption": "Setup done, light. Left: the approved screenshot. Right: after the fix."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "fix-icons",
+   "title": "App icons: sharp, and above the Timeline rails",
+   "toc": "App icons",
+   "commit": "5a63d7e2",
+   "state": "built",
+   "what": "App icons are stored at 1024 px and were shrunk to about 16 px in one crude step, which made them blurry and jagged. Each is now scaled once to the exact size the screen needs. On the Timeline the icon now sits above the coloured bands and tick marks instead of under them. Not checked yet on a real Retina or 1× screen.",
+   "rows": [
+    {
+     "heading": "Timeline rail, magnified 3×",
+     "shots": [
+      {
+       "file": "icons-timeline-rail-dark-before-x3.jpg",
+       "caption": "Dark, before: blurry icons with tick marks drawn over them"
+      },
+      {
+       "file": "icons-timeline-rail-dark-after-x3.jpg",
+       "caption": "Dark, after: sharp icons above the ticks"
+      }
+     ]
+    },
+    {
+     "shots": [
+      {
+       "file": "icons-timeline-rail-light-before-x3.jpg",
+       "caption": "Light, before"
+      },
+      {
+       "file": "icons-timeline-rail-light-after-x3.jpg",
+       "caption": "Light, after"
+      }
+     ]
+    },
+    {
+     "heading": "Old and new scaling side by side",
+     "shots": [
+      {
+       "file": "icons-grid-old-img-vs-new-app_icon-x3.jpg",
+       "caption": "Safari, Finder and Notes at three sizes, magnified 3×. In each pair the old scaling is on the left and the new on the right."
+      }
+     ]
+    },
+    {
+     "heading": "Update window",
+     "shots": [
+      {
+       "file": "icons-update-available-dark-baseline-vs-new-x5.jpg",
+       "caption": "The Mnema icon in the update window, magnified 5×. Left: approved screenshot. Right: after the fix."
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "fix-hover",
+   "title": "Hover, selected and focus corners",
+   "toc": "Hover corners",
+   "commit": "30e841c5",
+   "state": "built",
+   "what": "13 places where a highlight had square or wrong corners now follow the design system's rounded corners. Seven were proven by picture and six from the code; the close-up crops below show the pictured ones (choice lists appear twice, for hover and for keyboard focus). The transcript's current-word highlight stays square: GPUI cannot round a text background.",
+   "rows": [
+    {
+     "heading": "CLI access window: the selected scope row",
+     "shots": [
+      {
+       "file": "hover-access-scope-list-selected-before.jpg",
+       "caption": "CLI access window: the selected scope row: before"
+      },
+      {
+       "file": "hover-access-scope-list-selected-after.jpg",
+       "caption": "CLI access window: the selected scope row: after"
+      }
+     ]
+    },
+    {
+     "heading": "Choice list with keyboard focus",
+     "shots": [
+      {
+       "file": "hover-gallery-choice-list-focus-before.jpg",
+       "caption": "Choice list with keyboard focus: before"
+      },
+      {
+       "file": "hover-gallery-choice-list-focus-after.jpg",
+       "caption": "Choice list with keyboard focus: after"
+      }
+     ]
+    },
+    {
+     "heading": "Choice list on hover",
+     "shots": [
+      {
+       "file": "hover-gallery-choice-list-hover-before.jpg",
+       "caption": "Choice list on hover: before"
+      },
+      {
+       "file": "hover-gallery-choice-list-hover-after.jpg",
+       "caption": "Choice list on hover: after"
+      }
+     ]
+    },
+    {
+     "heading": "Insights › Context: a statement row on hover",
+     "shots": [
+      {
+       "file": "hover-insights-context-statement-before.jpg",
+       "caption": "Insights › Context: a statement row on hover: before"
+      },
+      {
+       "file": "hover-insights-context-statement-after.jpg",
+       "caption": "Insights › Context: a statement row on hover: after"
+      }
+     ]
+    },
+    {
+     "heading": "Insights › Context: an inferred-view row on hover",
+     "shots": [
+      {
+       "file": "hover-insights-context-steer-before.jpg",
+       "caption": "Insights › Context: an inferred-view row on hover: before"
+      },
+      {
+       "file": "hover-insights-context-steer-after.jpg",
+       "caption": "Insights › Context: an inferred-view row on hover: after"
+      }
+     ]
+    },
+    {
+     "heading": "Insights › Journal: the selected day tile",
+     "shots": [
+      {
+       "file": "hover-insights-journal-week-day-before.jpg",
+       "caption": "Insights › Journal: the selected day tile: before"
+      },
+      {
+       "file": "hover-insights-journal-week-day-after.jpg",
+       "caption": "Insights › Journal: the selected day tile: after"
+      }
+     ]
+    },
+    {
+     "heading": "Insights › Overview: the date button on hover",
+     "shots": [
+      {
+       "file": "hover-insights-overview-date-period-hover-before.jpg",
+       "caption": "Insights › Overview: the date button on hover: before"
+      },
+      {
+       "file": "hover-insights-overview-date-period-hover-after.jpg",
+       "caption": "Insights › Overview: the date button on hover: after"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › Shortcuts: a shortcut button on hover",
+     "shots": [
+      {
+       "file": "hover-settings-shortcuts-key-button-hover-before.jpg",
+       "caption": "Settings › Shortcuts: a shortcut button on hover: before"
+      },
+      {
+       "file": "hover-settings-shortcuts-key-button-hover-after.jpg",
+       "caption": "Settings › Shortcuts: a shortcut button on hover: after"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › Shortcuts: the reload button on hover",
+     "shots": [
+      {
+       "file": "hover-settings-shortcuts-reload-hover-before.jpg",
+       "caption": "Settings › Shortcuts: the reload button on hover: before"
+      },
+      {
+       "file": "hover-settings-shortcuts-reload-hover-after.jpg",
+       "caption": "Settings › Shortcuts: the reload button on hover: after"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "fix-settings",
+   "title": "Settings loads the quick parts first",
+   "toc": "Settings loader",
+   "commit": "c6fdbe9b (after 8a1fcb2d)",
+   "state": "wired",
+   "what": "No picture: this changes behaviour, not looks. Settings now shows the microphone, capture support and permissions at once, and the slower keychain and network checks follow, each given at most 10 seconds. A check that fails says \"couldn't check\" instead of showing \"Checking…\" forever. The stuck screen resolution and the microphone error in your screenshot were fixed earlier by 8a1fcb2d, which wired Settings to the real backend; your screenshot came from the build before it. Not driven yet."
+  }
+ ]
 }
