@@ -3,9 +3,30 @@
 
 use gpui_kit::{App, Context};
 
-use super::{Insights, G_OVERVIEW};
+use super::{stats, Insights, Tab, G_OVERVIEW};
+use crate::ui::{calendar::Unit, clock};
 
 impl Insights {
+    /// The shell's 60 s beat while Insights shows (`Overview.svelte`,
+    /// `DayTimeline.svelte`): new capture moves tracked time without any event.
+    /// While recording, Overview re-reads a period that includes now; the
+    /// Journal re-reads today unless recording is paused. `true` = it re-read.
+    pub fn tick(&mut self, cx: &mut Context<Self>) -> bool {
+        let (running, paused) = self.recording;
+        if !running {
+            return false;
+        }
+        let now = clock::now_ms(cx);
+        let current = self.overview_window(cx).1 > now;
+        let today = stats::window(self.day, Unit::Day, self.offset(cx)).1 > now;
+        match self.tab {
+            Tab::Overview if current => self.load_overview(cx),
+            Tab::Journal if !paused && today => self.reload(cx),
+            _ => return false,
+        }
+        true
+    }
+
     /// Re-read: write this period's read again now (`regenerate_user_context_digest`,
     /// a model call), then show it or the reason it couldn't be written.
     pub fn reread(&mut self, cx: &mut Context<Self>) {

@@ -107,6 +107,17 @@ pub fn show_main(cx: &mut App) -> Option<AnyWindowHandle> {
     Some(handle)
 }
 
+/// Bring main forward if it is on screen (the developer window closed).
+pub fn focus_main_if_visible(cx: &mut App) {
+    let Some(handle) = cx.try_global::<Main>().map(|m| m.handle) else {
+        return;
+    };
+    let visible = handle.update(cx, |_, window, _| crate::native::is_visible(window));
+    if visible.unwrap_or(false) {
+        show_main(cx);
+    }
+}
+
 /// ⌘⌥M: hide when visible and focused, else show and focus.
 pub fn toggle_main(cx: &mut App) {
     let Some(handle) = cx.try_global::<Main>().map(|m| m.handle) else {

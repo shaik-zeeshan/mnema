@@ -272,3 +272,26 @@ fn the_evidence_drawer_overlays_and_the_page_stays_put(cx: &mut TestAppContext) 
         "a sheet pushes nothing"
     );
 }
+
+/// The 60 s tracked-time beat reads only while recording: Overview while its
+/// period includes now, the Journal on today unless recording is paused.
+#[gpui_kit::test]
+fn the_tracked_time_beat_reads_only_while_recording_at_the_latest(cx: &mut TestAppContext) {
+    let (_, v, _) = open(cx);
+    let gen = |cx: &mut TestAppContext| v.read_with(cx, |i, _| i.gens[super::G_OVERVIEW]);
+    let tick = |cx: &mut TestAppContext| v.update(cx, |i, cx| i.tick(cx));
+    assert!(!tick(cx), "not recording: nothing");
+    v.update(cx, |i, _| i.recording = (true, true));
+    let before = gen(cx);
+    assert!(tick(cx), "Overview keeps counting through a pause");
+    assert_eq!(gen(cx), before + 1, "the overview re-read");
+    v.update(cx, |i, _| i.period.0 -= time::Duration::days(30));
+    assert!(!tick(cx), "a past period never moves");
+
+    v.update(cx, |i, cx| i.set_tab(Tab::Journal, cx));
+    assert!(!tick(cx), "the Journal waits while paused");
+    v.update(cx, |i, _| i.recording = (true, false));
+    assert!(tick(cx), "today, recording");
+    v.update(cx, |i, _| i.day -= time::Duration::days(1));
+    assert!(!tick(cx), "yesterday never moves");
+}

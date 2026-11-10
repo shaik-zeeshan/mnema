@@ -119,7 +119,15 @@ pub(super) fn spawn_processing_worker_loop(
     ));
 
     let mut shutdown_rx = background_workers.subscribe();
+    let stop_line = format!(
+        "stopped app infrastructure {worker_name} worker (base_dir='{}')",
+        base_dir_display
+    );
+    // Logged however the task ends, an abort at quit included (even before its
+    // first poll: the guard is part of the future from the start).
+    let stop = super::workers::OnStop::new(move || crate::debug_log::log_info(stop_line));
     let handle = runtime.spawn(async move {
+        let _stop = stop;
         let mut consecutive_failures = 0u64;
 
         loop {
@@ -179,11 +187,6 @@ pub(super) fn spawn_processing_worker_loop(
                 }
             }
         }
-
-        crate::debug_log::log_info(format!(
-            "stopped app infrastructure {worker_name} worker (base_dir='{}')",
-            base_dir_display
-        ));
     });
     // Processing workers pull from the queue-backed Processing Job table, so an
     // aborted in-flight job is reclaimed (requeued) on next launch. Track them

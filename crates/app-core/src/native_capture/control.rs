@@ -29,7 +29,7 @@ use crate::native_capture::permissions::get_capture_support;
 use crate::native_capture::runtime::{self, validate_start_request};
 use crate::native_capture::settings;
 use crate::recording_settings::{
-    current_auto_start, current_recording_settings, initialize_recording_settings_state_from_disk,
+    current_recording_settings, initialize_recording_settings_state_from_disk,
     RecordingSettingsState,
 };
 use crate::AppCore;
@@ -308,12 +308,20 @@ fn start_native_capture_inner(
             return Ok(NativeCaptureSessionResponse { session });
         }
         Err(error) => {
-            debug_log::log_error(format!(
+            let message = format!(
                 "failed to start native capture ({origin}, requested_sources={}): [{}] {}",
                 format_capture_source_flags(&requested_sources_for_log),
                 error.code,
                 error.message
-            ));
+            );
+            // Auto-start waits out a missing display (ADR 0021): not a give-up.
+            if origin.starts_with("auto-start")
+                && crate::native_capture::auto_start::is_display_unavailable(&error)
+            {
+                debug_log::log_warn(message);
+            } else {
+                debug_log::log_error(message);
+            }
             return Err(error);
         }
     };
@@ -397,16 +405,7 @@ pub fn initialize_recording_settings_from_disk(core: &AppCore) {
     log_loaded_recording_settings(loaded.source, &loaded.settings);
 }
 
-pub fn maybe_auto_start_native_capture(core: &Arc<AppCore>) {
-    let settings_state = core.state::<RecordingSettingsState>();
-    let auto_start_enabled = current_auto_start(&settings_state);
-
-    if !auto_start_enabled {
-        return;
-    }
-
-    let _ = start_native_capture_from_core("auto-start", core);
-}
+pub use crate::native_capture::auto_start::maybe_auto_start_native_capture;
 
 pub fn current_native_capture_session(core: &AppCore) -> capture_types::NativeCaptureSession {
     let state = core.state::<NativeCaptureState>();

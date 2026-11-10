@@ -140,6 +140,8 @@ pub struct TimelineView {
     pub developer: bool,
     /// The AudioDrawer's segment and the seek into it (ms); `None` closes it.
     pub selected_audio: Option<(i64, i64)>,
+    /// A landed segment (`land_audio`), kept on the lane until its drawer closes.
+    pub(crate) pinned_audio: Option<AudioSegment>,
     pub drawer: Option<Entity<audio::AudioDrawer>>,
     /// What a drawer is built from (goldens and tests swap in fixtures).
     pub drawer_deps: audio::Deps,
@@ -187,6 +189,7 @@ impl TimelineView {
             capture: CaptureHint::default(),
             developer: false,
             selected_audio: None,
+            pinned_audio: None,
             drawer: None,
             drawer_deps: audio::Deps::live(cx),
             bar_hover: None,
@@ -321,6 +324,7 @@ impl TimelineView {
 
     pub fn close_drawer(&mut self, cx: &mut Context<Self>) {
         self.selected_audio = None;
+        self.pinned_audio = None;
         self.drawer = None;
         self._drawer_sub = None;
         cx.notify();
@@ -329,6 +333,27 @@ impl TimelineView {
 
 /// Bind the Timeline's keys on the shell root (the dispatch path runs through
 /// the shell's focus, not the surface's div).
+/// Show main on the Timeline, landed on audio segment `id` with its drawer open
+/// (an agent's link, a Quick Recall audio hit, an Insights audio ref): see
+/// [`TimelineView::land_audio`].
+pub fn open_audio(
+    id: i64,
+    seek_ms: i64,
+    aligned: Option<i64>,
+    recall: Option<(String, bool)>,
+    cx: &mut gpui_kit::App,
+) {
+    crate::window::show_main(cx);
+    let Some(shell) = crate::window::shell(cx) else {
+        return;
+    };
+    shell.update(cx, |s, cx| {
+        s.go(crate::shell::Surface::Timeline, cx);
+        s.timeline
+            .update(cx, |t, cx| t.land_audio(id, seek_ms, aligned, recall, cx));
+    });
+}
+
 pub fn register_actions(
     el: gpui_kit::Stateful<gpui_kit::Div>,
     view: &Entity<TimelineView>,

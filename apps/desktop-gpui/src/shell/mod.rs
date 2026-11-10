@@ -72,6 +72,10 @@ pub struct Shell {
     capture_busy: bool,
     /// The 2 s live feed while recording or while the status popover is open.
     live: Option<Task<()>>,
+    /// The 60 s beat: Insights' tracked time, and every 5th the bar's "today".
+    _beat: Task<()>,
+    /// What the beat re-read: the bar's "today", Insights (tests count them).
+    pub(crate) beat_reads: (u32, u32),
     /// "PAUSED 00:12" counts from when the shell saw the pause begin.
     pub pause_clock: health::PauseClock,
 }
@@ -153,6 +157,8 @@ impl Shell {
             start_error: None,
             capture_busy: false,
             live: None,
+            _beat: Self::start_beat(cx),
+            beat_reads: (0, 0),
             pause_clock: health::PauseClock::default(),
         };
         shell.set_model(model, cx);

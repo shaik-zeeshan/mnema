@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use gpui_kit::{px, Context, Resource, ScrollEvent, Window};
 
-use super::data::Source;
-use super::model::{audio_moment, Landing, SLOT_W};
+use super::data::{Res, Source};
+use super::model::{audio_moment, AudioSegment, Landing, SLOT_W};
 use super::paging::{self, AfterPoll, HEAD_POLL, PAGE_SIZE, POLL_PAGE};
 use super::scrub_engine::Effect;
 use super::TimelineView;
@@ -16,6 +16,10 @@ use super::TimelineView;
 pub const AUDIO_PADDING_MS: i64 = 60_000;
 /// `LIVE_EDGE_PAD_MS`: episodes are fetched this far past the newest frame.
 const EPISODE_EDGE_PAD_MS: i64 = 10 * 60_000;
+/// `jumpToFrameNearAudioMoment`: the latest frame up to a capture segment back,
+/// else the first within the backend's alignment window after.
+const AUDIO_FRAME_LOOKBACK_MS: i64 = 5 * 60_000;
+const AUDIO_FRAME_LOOKAHEAD_MS: i64 = 10_000;
 
 /// Run `f` with the source on the background executor, then `then` on the view.
 fn fetch_with<T: Send + 'static>(
@@ -103,6 +107,7 @@ impl TimelineView {
                     .is_some_and(|(id, _)| p.deleted_audio_segment_ids.contains(&id))
                 {
                     self.selected_audio = None;
+                    self.pinned_audio = None;
                 }
                 cx.notify();
             }
@@ -487,6 +492,14 @@ impl TimelineView {
                 view.audio_loading = false;
                 match audio {
                     Ok(mut segs) => {
+                        // A landed segment stays on the lane wherever the stage moved.
+                        if let Some(pin) = view
+                            .pinned_audio
+                            .as_ref()
+                            .filter(|p| !segs.iter().any(|s| s.id == p.id))
+                        {
+                            segs.push(pin.clone());
+                        }
                         segs.sort_by_key(|s| s.start_ms);
                         view.audio = segs;
                         view.audio_error = None;
@@ -557,6 +570,62 @@ impl TimelineView {
             }
             None => {}
         }
+    }
+
+    /// Land on audio segment `id` with its drawer open `seek_ms` in
+    /// (`openBrokerCaptureResult`'s audio branch): an agent's "open in Mnema"
+    /// link, a Quick Recall audio hit (`recall` = its query, by meaning), an
+    /// Insights audio ref. The stage moves to `aligned`, else the frame nearest
+    /// the moment; the segment stays pinned to the lane. A gone one says so.
+    pub fn land_audio(
+        &mut self,
+        id: i64,
+        seek_ms: i64,
+        aligned: Option<i64>,
+        recall: Option<(String, bool)>,
+        cx: &mut Context<Self>,
+    ) {
+        self.fetch(
+            cx,
+            move |s| {
+                let found = s.audio_segment(id)?;
+                Ok(found.map(|seg| {
+                    let at = seg.start_ms + seek_ms;
+                    let near = |a, b| s.latest_in_range(a, b).ok().flatten().map(|f| f.id);
+                    let frame = aligned
+                        .or_else(|| near(at - AUDIO_FRAME_LOOKBACK_MS, at))
+                        .or_else(|| near(at, at + AUDIO_FRAME_LOOKAHEAD_MS));
+                    (seg, frame)
+                }))
+            },
+            move |view, found: Res<Option<(AudioSegment, Option<i64>)>>, cx| {
+                let Ok(Some((seg, frame))) = found else {
+                    let gone = "That capture is no longer available.";
+                    view.set_status(Some(gone.into()), None, true, cx);
+                    return;
+                };
+                if !view.audio.iter().any(|a| a.id == seg.id) {
+                    view.audio.push(seg.clone());
+                    view.audio.sort_by_key(|a| a.start_ms);
+                }
+                view.selected_audio = Some((seg.id, seek_ms));
+                view.pinned_audio = Some(seg);
+                match (frame, recall) {
+                    (Some(frame_id), Some((query, by_meaning))) => view.land(
+                        Landing {
+                            query,
+                            frame_id,
+                            screen: false,
+                            by_meaning,
+                        },
+                        cx,
+                    ),
+                    (Some(frame_id), None) => view.jump_to(frame_id, cx),
+                    (None, _) => {}
+                }
+                cx.notify();
+            },
+        );
     }
 
     /// P: open the AudioDrawer (S9) on the segment under the active frame.

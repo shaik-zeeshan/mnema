@@ -213,11 +213,47 @@ impl Shell {
     /// Window focus (and first show): re-read the bar and stamp the local UTC
     /// offset, so User Context labels Activity times in the user's clock.
     pub fn on_focus(&mut self, cx: &mut Context<Self>) {
+        // Settings re-checks what System Settings may have changed meanwhile.
+        if self.surface == super::Surface::Settings {
+            self.settings.update(cx, |s, cx| s.on_window_focus(cx));
+        }
         let Some(core) = crate::chat::core(cx) else {
             return;
         };
         stamp_local_offset(&core, cx);
         self.reload(cx);
+    }
+
+    /// One 60 s beat (`Overview.svelte`'s / `DayTimeline.svelte`'s interval): a
+    /// visible Insights refreshes its tracked time, and every 5th beat re-reads
+    /// the bar's "today" (`StatusBar.svelte`'s 5 min). Skipped while nothing of
+    /// the main window can be seen.
+    pub(super) fn start_beat(cx: &mut Context<Self>) -> gpui_kit::Task<()> {
+        cx.spawn(async move |this, cx| {
+            let mut beats = 0u64;
+            loop {
+                cx.background_executor().timer(INSIGHTS_BEAT).await;
+                beats += 1;
+                let today = beats % (TODAY_BEAT.as_secs() / INSIGHTS_BEAT.as_secs()) == 0;
+                let alive = this.update(cx, |this, cx| {
+                    if crate::window::render_idle(cx) {
+                        return;
+                    }
+                    if this.surface == super::Surface::Insights
+                        && this.insights.update(cx, |i, cx| i.tick(cx))
+                    {
+                        this.beat_reads.1 += 1;
+                    }
+                    if today {
+                        this.beat_reads.0 += 1;
+                        this.reload(cx);
+                    }
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        })
     }
 
     /// Re-read the model once this update is over (`reload_shell` reads the shell).
@@ -298,6 +334,11 @@ impl Shell {
         }));
     }
 }
+
+/// Insights' tracked-time refresh while recording.
+pub(super) const INSIGHTS_BEAT: Duration = Duration::from_secs(60);
+/// The status bar's "today" re-read.
+pub(super) const TODAY_BEAT: Duration = Duration::from_secs(300);
 
 /// `user_context_stamp_local_offset`, fire-and-forget: a failed stamp never
 /// breaks anything.

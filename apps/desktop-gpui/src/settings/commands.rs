@@ -99,10 +99,33 @@ impl Settings {
     pub(crate) fn land(&mut self, data: SettingsData, cx: &mut Context<Self>) {
         let dirty = !self.saving.is_empty() || Unit::ALL.iter().any(|u| self.gate(*u).dirty);
         if dirty {
+            // Unsaved edits stay; every field they didn't touch takes the re-read
+            // value, so the next save never writes a stale one back.
+            self.rebase(&data);
             self.data = data;
+            self.tick(cx);
             cx.notify();
         } else {
             self.set_data(data, cx);
+        }
+    }
+
+    /// A re-read under unsaved edits: each draft keeps the fields the user
+    /// changed and takes the new value everywhere else; then saved moves on.
+    fn rebase(&mut self, data: &SettingsData) {
+        if let Some(new) = &data.settings {
+            let merged = merge(&self.saved, &self.draft, new);
+            self.needs_sync |= merged != self.draft;
+            self.draft = merged;
+            self.saved = Some(new.clone());
+        }
+        if let Some(new) = &data.keyboard {
+            self.kb_draft = merge(&self.kb_saved, &self.kb_draft, new);
+            self.kb_saved = Some(new.clone());
+        }
+        if let Some(new) = &data.mic {
+            self.mic_draft = merge(&self.mic_saved, &self.mic_draft, new);
+            self.mic_saved = Some(new.clone());
         }
     }
 
@@ -126,12 +149,45 @@ impl Settings {
         });
     }
 
+    /// Window focus (`+page.svelte`'s and the privacy picker's focus handlers):
+    /// re-read what System Settings may have changed, and an open picker's apps.
+    /// The drafts are never touched, so unsaved edits stay.
+    pub fn on_window_focus(&mut self, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let task = cx.background_spawn(async move { backend.recheck_access() });
+        cx.spawn(async move |this, cx| {
+            let Some(d) = task.await else { return };
+            let _ = this.update(cx, |s, cx| {
+                s.data.permissions = d.permissions;
+                s.data.system_audio_blocked = d.system_audio_blocked;
+                s.data.gecko = d.gecko;
+                cx.notify();
+            });
+        })
+        .detach();
+        if self
+            .ui
+            .app_picker
+            .as_ref()
+            .is_some_and(|apps| !apps.is_empty())
+        {
+            self.list_apps(cx);
+        }
+    }
+
     /// "Add app…": list the installed apps, then show the picker.
     pub fn open_app_picker(&mut self, cx: &mut Context<Self>) {
         if crate::chat::core(cx).is_none() {
             return;
         }
         self.ui.app_picker = Some(Vec::new());
+        self.list_apps(cx);
+    }
+
+    fn list_apps(&mut self, cx: &mut Context<Self>) {
+        if crate::chat::core(cx).is_none() {
+            return;
+        }
         let task = crate::bridge::tokio::Tokio::spawn(cx, async move {
             app_core::native_capture::app_candidates::list_privacy_app_candidates().await
         });
@@ -375,7 +431,8 @@ impl Settings {
             E::UserContextChanged
             | E::McpAuthorizationChanged(_)
             | E::MicrophoneControllerChanged(_)
-            | E::RecordingSettingsChanged(_) => {
+            | E::RecordingSettingsChanged(_)
+            | E::RecordingSettingsDomainChanged(_) => {
                 self.refresh(cx);
                 return;
             }
@@ -408,6 +465,53 @@ impl Settings {
             }
         }
         cx.notify();
+    }
+}
+
+/// Three-way merge through JSON: where the draft still equals what was saved,
+/// take the new value; objects merge per key; any other edit is the user's and stays.
+fn merge<T: serde::Serialize + serde::de::DeserializeOwned + Clone>(
+    saved: &Option<T>,
+    draft: &Option<T>,
+    new: &T,
+) -> Option<T> {
+    let (Some(saved), Some(draft)) = (saved, draft) else {
+        return Some(new.clone());
+    };
+    let json = |v: &T| serde_json::to_value(v).ok();
+    let merged = match (json(saved), json(draft), json(new)) {
+        (Some(s), Some(d), Some(n)) => serde_json::from_value(merge_value(&s, &d, n)).ok(),
+        _ => None,
+    };
+    Some(merged.unwrap_or_else(|| draft.clone()))
+}
+
+fn merge_value(
+    saved: &serde_json::Value,
+    draft: &serde_json::Value,
+    new: serde_json::Value,
+) -> serde_json::Value {
+    use serde_json::Value;
+    if draft == saved {
+        return new;
+    }
+    match (saved, draft, new) {
+        (Value::Object(s), Value::Object(d), Value::Object(mut n)) => {
+            for (k, dv) in d {
+                let sv = s.get(k).unwrap_or(&Value::Null);
+                match n.remove(k) {
+                    Some(nv) => {
+                        n.insert(k.clone(), merge_value(sv, dv, nv));
+                    }
+                    None if dv != sv => {
+                        n.insert(k.clone(), dv.clone());
+                    }
+                    None => {}
+                }
+            }
+            Value::Object(n)
+        }
+        _ => draft.clone(),
     }
 }
 

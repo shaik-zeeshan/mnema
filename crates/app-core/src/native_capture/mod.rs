@@ -6,6 +6,7 @@
 pub mod activity;
 pub mod app_candidates;
 pub mod app_notifications;
+pub mod auto_start;
 #[cfg(target_os = "macos")]
 pub mod browser_url_ax;
 pub mod capture_health;

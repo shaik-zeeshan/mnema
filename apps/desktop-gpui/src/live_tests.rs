@@ -670,6 +670,33 @@ fn opening_settings_lands_the_mic_state_and_capture_support(cx: &mut TestAppCont
     });
 }
 
+/// A source switched from the tray (no Settings involved) reaches an open
+/// Settings page: the router hands the settings events to it too.
+#[gpui_kit::test]
+fn an_open_settings_page_follows_a_tray_source_switch(cx: &mut TestAppContext) {
+    let mut live = live();
+    let (_window, shell) = open_shell(cx, &live, None);
+    cx.update(|cx| shell.update(cx, |s, cx| s.go(crate::shell::Surface::Settings, cx)));
+    let settings = cx.read(|cx| shell.read(cx).settings.clone());
+    wait_for(cx, &mut live, &shell, "the settings load", |cx| {
+        cx.read(|cx| settings.read(cx).draft.is_some())
+    });
+    assert!(!cx.read(|cx| settings.read(cx).d().capture_screen));
+
+    let sources = capture_types::CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: false,
+    };
+    app_core::native_capture::settings_update::update_recording_sources_from_core(
+        &live.core, sources,
+    )
+    .expect("saved");
+    wait_for(cx, &mut live, &shell, "Settings re-reads", |cx| {
+        cx.read(|cx| settings.read(cx).d().capture_screen)
+    });
+}
+
 // ── Quick Recall ────────────────────────────────────────────────────────────
 
 /// The embedder's state comes from app-core's default states (the Tauri builder

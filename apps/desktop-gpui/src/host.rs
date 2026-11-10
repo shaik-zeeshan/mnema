@@ -73,6 +73,12 @@ impl Host for GpuiHost {
     }
 
     fn exit(&self, kind: ExitKind) {
-        self.send(HostMsg::Exit(kind));
+        match kind {
+            // Ended right here, on the shutdown task's thread (as the Tauri host
+            // does): a hop to the main thread waited behind whatever it was doing.
+            ExitKind::Quit => crate::native::quit::exit_after_graceful_exit(),
+            // A relaunch needs `cx.restart()`, on the main thread.
+            ExitKind::Restart => self.send(HostMsg::Exit(kind)),
+        }
     }
 }

@@ -320,7 +320,14 @@ pub fn open(cx: &mut App) {
     super::open_or_focus::<DebugWindow>(
         super::Kind::Debug,
         cx,
-        |window, cx| cx.new(|cx| DebugWindow::new(Arc::new(data::CoreDebug(core)), window, cx)),
+        |window, cx| {
+            cx.new(|cx| {
+                // Closing it (×, Esc) brings main forward, as the Tauri app does.
+                cx.on_release(|_, cx| cx.defer(crate::window::focus_main_if_visible))
+                    .detach();
+                DebugWindow::new(Arc::new(data::CoreDebug(core)), window, cx)
+            })
+        },
         |_, _, _| {},
     );
 }

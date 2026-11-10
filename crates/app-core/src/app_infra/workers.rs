@@ -14,6 +14,24 @@ use super::*;
 // so an abort here rolls back cleanly and the work re-runs on next launch.
 const BACKGROUND_WORKER_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// Runs its closure when dropped: a worker's "stopped" line still lands when a
+/// graceful exit aborts it mid-job (the abort drops the worker's future).
+pub(super) struct OnStop<F: FnOnce()>(Option<F>);
+
+impl<F: FnOnce()> OnStop<F> {
+    pub(super) fn new(f: F) -> Self {
+        Self(Some(f))
+    }
+}
+
+impl<F: FnOnce()> Drop for OnStop<F> {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct BackgroundWorkersControl {
     inner: Arc<BackgroundWorkersControlInner>,
@@ -296,7 +314,12 @@ mod tests {
                 // Only abort() ends it.
                 let abortable_finished = Arc::new(AtomicBool::new(false));
                 let abortable_flag = abortable_finished.clone();
+                // Its "stopped" line (an `OnStop`) must still run, before shutdown returns.
+                let stop_logged = Arc::new(AtomicBool::new(false));
+                let stop_flag = stop_logged.clone();
+                let stop = OnStop::new(move || stop_flag.store(true, Ordering::SeqCst));
                 control.track_abortable(tokio::spawn(async move {
+                    let _stop = stop;
                     tokio::time::sleep(Duration::from_secs(3600)).await;
                     abortable_flag.store(true, Ordering::SeqCst);
                 }));
@@ -315,6 +338,10 @@ mod tests {
                 assert!(
                     !abortable_finished.load(Ordering::SeqCst),
                     "abortable worker must be cancelled mid-job, not run to completion"
+                );
+                assert!(
+                    stop_logged.load(Ordering::SeqCst),
+                    "an aborted worker still logs its stop line before shutdown returns"
                 );
                 assert!(
                     cooperative_exited.load(Ordering::SeqCst),

@@ -2676,12 +2676,22 @@ fn finalize_startup_result<T>(
     match start_result {
         Ok(started) => Ok(started),
         Err(start_error) => {
-            capture_runtime::error_log!(
-                "[capture-screen] capture startup failed for {}: [{}] {}",
-                session_dir.display(),
-                start_error.code,
-                start_error.message
-            );
+            // No display (asleep, locked) is transient liveness (ADR 0021): the caller waits for one.
+            if start_error.code == "capture_display_unavailable" {
+                capture_runtime::warn_log!(
+                    "[capture-screen] capture startup found no display for {}: [{}] {}",
+                    session_dir.display(),
+                    start_error.code,
+                    start_error.message
+                );
+            } else {
+                capture_runtime::error_log!(
+                    "[capture-screen] capture startup failed for {}: [{}] {}",
+                    session_dir.display(),
+                    start_error.code,
+                    start_error.message
+                );
+            }
 
             if should_preserve_runtime_on_startup_error(&start_error) {
                 return Err(start_error);

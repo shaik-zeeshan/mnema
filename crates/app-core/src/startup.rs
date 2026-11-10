@@ -57,6 +57,7 @@ pub fn manage_default_states(core: &AppCore) {
     core.manage(crate::recording_settings::RecordingSettingsState::default());
     core.manage(crate::onboarding_state::OnboardingStateStore::default());
     core.manage(crate::exit::AppExitCoordinatorState::default());
+    core.manage(crate::native_capture::auto_start::PendingAutoStartState::default());
     core.manage(crate::native_capture::metadata::CaptureMetadataState::default());
     core.manage(crate::native_capture::privacy::PrivacyFilterRefreshState::default());
     core.manage(crate::broker_authorization_channel::BrokerAuthorizationChannelState::default());

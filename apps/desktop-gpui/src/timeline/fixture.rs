@@ -311,6 +311,10 @@ impl Source for FixtureSource {
         Ok(self.audio.clone())
     }
 
+    fn audio_segment(&self, id: i64) -> Res<Option<AudioSegment>> {
+        Ok(self.audio.iter().find(|a| a.id == id).cloned())
+    }
+
     fn episodes(&self, _: i64, _: i64) -> Res<Vec<Activity>> {
         self.log(Call::Episodes);
         Ok(self.episodes.clone())

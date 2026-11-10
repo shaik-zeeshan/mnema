@@ -398,40 +398,38 @@ impl QuickRecall {
                     .and_then(|i| self.visible_results().get(i))
                     .is_some_and(Ranked::meaning)
             });
-        let landing = match target {
-            Target::Frame(frame_id) => Some(crate::timeline::model::Landing {
-                query,
-                frame_id,
-                screen: true,
-                by_meaning: meaning,
-            }),
-            // shortcut: an audio hit lands on its aligned frame, not in the audio drawer:
-            // `TimelineView::selected_audio` only opens a segment of the day already
-            // loaded, so this needs a `land_audio(segment, seek)` there (wiring pass A's).
-            Target::Audio { aligned, .. } => {
-                aligned.map(|frame_id| crate::timeline::model::Landing {
-                    query,
-                    frame_id,
-                    screen: false,
-                    by_meaning: meaning,
-                })
-            }
-        };
-        cx.defer(move |cx| open_in_timeline(landing, cx));
+        cx.defer(move |cx| open_in_timeline(target, query, meaning, cx));
         self.dismiss(cx);
     }
 }
 
-fn open_in_timeline(landing: Option<crate::timeline::model::Landing>, cx: &mut App) {
+/// A frame hit lands on its frame; an audio hit opens its segment in the drawer
+/// at the matched span, on its aligned frame.
+fn open_in_timeline(target: Target, query: String, by_meaning: bool, cx: &mut App) {
+    let frame_id = match target {
+        Target::Frame(frame_id) => frame_id,
+        Target::Audio {
+            segment,
+            span,
+            aligned,
+        } => {
+            let recall = Some((query, by_meaning));
+            return crate::timeline::open_audio(segment, span as i64, aligned, recall, cx);
+        }
+    };
     crate::window::show_main(cx);
     let Some(shell) = crate::window::shell(cx) else {
         return;
     };
     shell.update(cx, |s, cx| {
         s.go(crate::shell::Surface::Timeline, cx);
-        if let Some(l) = landing {
-            s.timeline.update(cx, |t, cx| t.land(l, cx));
-        }
+        let landing = crate::timeline::model::Landing {
+            query,
+            frame_id,
+            screen: true,
+            by_meaning,
+        };
+        s.timeline.update(cx, |t, cx| t.land(landing, cx));
     });
 }
 

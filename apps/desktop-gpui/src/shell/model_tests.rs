@@ -82,6 +82,9 @@ fn one_flag_with_documented_precedence() {
     assert_eq!(status_flag(&m).unwrap().action, "Open System Settings");
     m.read_only = true;
     assert_eq!(status_flag(&m).unwrap().action, "buy a license");
+    // Auto-start found no display at launch: say why it isn't recording yet.
+    m.waiting_for_display = true;
+    assert_eq!(status_flag(&m).unwrap().action, "starts when it wakes");
     m.start_error = Some("boom".into());
     assert_eq!(status_flag(&m).unwrap().action, "Retry");
     let m = StatusBarModel {

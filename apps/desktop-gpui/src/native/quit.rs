@@ -50,6 +50,12 @@ pub fn install(core: Arc<AppCore>) {
     let _ = ORIGINAL_TERMINATE.set(previous as usize);
 }
 
+/// `AppCore::shutdown` finished: its last log line, then end the process.
+pub fn exit_after_graceful_exit() -> ! {
+    log::info!("completed graceful app exit; exiting without running process static destructors");
+    exit_now()
+}
+
 /// The graceful exit is done: end the process now, skipping static destructors
 /// (as the Tauri app does; ORT and Metal teardown can hang at exit).
 pub fn exit_now() -> ! {

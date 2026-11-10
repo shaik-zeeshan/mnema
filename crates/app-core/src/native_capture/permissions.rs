@@ -126,6 +126,8 @@ async fn request_system_audio_permission(_core: &AppCore) -> Result<(), String> 
 pub fn get_capture_permissions(core: &Arc<AppCore>) -> CapturePermissionsResponse {
     #[cfg(target_os = "macos")]
     recover_screen_capture_after_possible_missed_wake(core.clone());
+    // The focus re-poll also covers an unlock that changed no display.
+    crate::native_capture::auto_start::retry_pending_auto_start(core);
 
     let state = core.state::<NativeCaptureState>();
 

@@ -255,16 +255,17 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 .hover(move |s| s.text_color(muted.1))
                 .child("Open newest in Timeline")
                 .child(icon(IconName::ArrowRight.path(), px(12.)))
-                .on_click(cx.listener(move |_, _, _, cx| {
-                    // shortcut: an audio ref opens the Timeline without its drawer: the drawer
-                    // opens only for a segment in the Timeline's loaded day, so it needs a
-                    // `TimelineView` landing that moves there first (timeline is wiring pass A's).
-                    cx.emit(if r.subject_type == "frame" {
-                        crate::insights::InsightsEvent::OpenFrame(r.subject_id)
-                    } else {
-                        crate::insights::InsightsEvent::OpenTimeline
-                    })
-                }))
+                .on_click(
+                    cx.listener(move |_, _, _, cx| match r.subject_type.as_str() {
+                        "frame" => cx.emit(crate::insights::InsightsEvent::OpenFrame(r.subject_id)),
+                        // The segment, with its drawer open.
+                        "audio_segment" => {
+                            let id = r.subject_id;
+                            cx.defer(move |cx| crate::timeline::open_audio(id, 0, None, None, cx));
+                        }
+                        _ => cx.emit(crate::insights::InsightsEvent::OpenTimeline),
+                    }),
+                )
         }));
     // Evidence, newest first, then the origin (`buildTimeline`).
     // shortcut: the "replaced an earlier take" audit row is left out, and the

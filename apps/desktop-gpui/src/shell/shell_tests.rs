@@ -403,3 +403,35 @@ fn status_readouts_drop_out_whole_never_cut(cx: &mut TestAppContext) {
         "wide: today, storage, local only"
     );
 }
+
+#[gpui_kit::test]
+fn the_beat_rereads_insights_every_minute_and_today_every_five(cx: &mut TestAppContext) {
+    let (_window, shell) = open(cx);
+    shell.update(cx, |s, cx| {
+        s.go(Surface::Insights, cx);
+        s.insights.update(cx, |i, _| i.recording = (true, false));
+    });
+    let reads = |cx: &mut TestAppContext| cx.read(|cx| shell.read(cx).beat_reads);
+    let ms = Duration::from_millis(1);
+    let advance = |d: Duration, cx: &mut TestAppContext| {
+        cx.executor().advance_clock(d);
+        cx.run_until_parked();
+    };
+    advance(capture::INSIGHTS_BEAT - ms, cx);
+    assert_eq!(reads(cx), (0, 0), "59.999 s: nothing yet");
+    advance(ms, cx);
+    assert_eq!(
+        reads(cx),
+        (0, 1),
+        "60 s: Insights re-reads its tracked time"
+    );
+    advance(capture::TODAY_BEAT - capture::INSIGHTS_BEAT - ms, cx);
+    assert_eq!(reads(cx), (0, 4), "4:59.999: the bar's today not yet");
+    advance(ms, cx);
+    assert_eq!(reads(cx), (1, 5), "5 min: the bar re-reads today");
+
+    // Off Insights, only the bar's 5 min read runs.
+    shell.update(cx, |s, cx| s.go(Surface::Timeline, cx));
+    advance(capture::TODAY_BEAT, cx);
+    assert_eq!(reads(cx), (2, 5));
+}

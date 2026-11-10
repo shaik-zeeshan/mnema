@@ -80,12 +80,19 @@ pub fn load_local(core: &Arc<AppCore>) -> SettingsData {
             e.message
         ),
     }
-    d.permissions = to_json(perms::get_capture_permissions(core).permissions);
     d.capture_support = to_json(perms::get_capture_support());
-    d.system_audio_blocked = perms::get_system_audio_access_hint(core).should_show;
-    d.gecko = to_json(perms::get_browser_url_accessibility_status());
+    load_access(core, &mut d);
     d.update = app_core::updates::current_status(core).and_then(to_json);
     d
+}
+
+/// What changes outside the app (System Settings): capture permissions, the
+/// system-audio evidence hint, the browser-URL Accessibility grant. Local reads.
+pub fn load_access(core: &Arc<AppCore>, d: &mut SettingsData) {
+    use app_core::native_capture::permissions as perms;
+    d.permissions = to_json(perms::get_capture_permissions(core).permissions);
+    d.system_audio_blocked = perms::get_system_audio_access_hint(core).should_show;
+    d.gecko = to_json(perms::get_browser_url_accessibility_status());
 }
 
 /// The vault, keychain, database and network reads on top of `d` (the local
@@ -312,6 +319,10 @@ pub trait Backend: Send + Sync + 'static {
         let _ = (id, mark);
         Err("no app core".into())
     }
+    /// Window focus: [`load_access`] only (`None` = nothing to re-read).
+    fn recheck_access(&self) -> Option<SettingsData> {
+        None
+    }
     /// `update_microphone_controller`.
     fn save_mic(
         &self,
@@ -339,6 +350,11 @@ pub trait Backend: Send + Sync + 'static {
 pub struct CoreBackend(pub Arc<AppCore>);
 
 impl Backend for CoreBackend {
+    fn recheck_access(&self) -> Option<SettingsData> {
+        let mut d = SettingsData::default();
+        load_access(&self.0, &mut d);
+        Some(d)
+    }
     fn save_domain(
         &self,
         unit: Unit,

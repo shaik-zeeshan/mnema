@@ -86,7 +86,8 @@ fn open(core: &Arc<AppCore>, url: &str, cx: &mut App) {
     }
 }
 
-/// Re-authorize the signed opaque id, then land the Timeline on its frame.
+/// Re-authorize the signed opaque id, then land the Timeline on its frame, or
+/// on its audio segment with the drawer open (a gone one says so).
 fn broker_open(core: &Arc<AppCore>, opaque_id: String, cx: &mut App) {
     let config = core.paths().config.clone();
     let task = Tokio::spawn(cx, async move {
@@ -100,6 +101,9 @@ fn broker_open(core: &Arc<AppCore>, opaque_id: String, cx: &mut App) {
             return;
         };
         let _ = cx.update(|cx| {
+            if let (None, Some(segment)) = (capture.frame_id, capture.audio_segment_id) {
+                return crate::timeline::open_audio(segment, 0, None, None, cx);
+            }
             crate::window::show_main(cx);
             let Some(shell) = crate::window::shell(cx) else {
                 return;

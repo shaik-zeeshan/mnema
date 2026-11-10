@@ -42,6 +42,10 @@ pub trait Source: Send + Sync + 'static {
     fn cancel_video(&self) {}
     /// `list_audio_segments` over the loaded window (padded).
     fn audio_segments(&self, start_ms: i64, end_ms: i64) -> Res<Vec<AudioSegment>>;
+    /// `get_audio_segment`: `None` = gone (deleted, retention).
+    fn audio_segment(&self, _id: i64) -> Res<Option<AudioSegment>> {
+        Ok(None)
+    }
     /// `list_user_context_activities` (band colours only).
     fn episodes(&self, start_ms: i64, end_ms: i64) -> Res<Vec<Activity>>;
     /// `resolve_app_icons`: bundle id → icon PNG on disk.
@@ -130,6 +134,19 @@ pub struct CoreSource(pub Arc<AppCore>);
 // ponytail: a blocking poll on a background thread; a job-finished event is the upgrade.
 const OCR_WAIT: Duration = Duration::from_secs(30);
 const OCR_POLL: Duration = Duration::from_millis(750);
+
+fn audio_segment(a: ai::AudioSegmentDto) -> AudioSegment {
+    AudioSegment {
+        id: a.id,
+        source: match a.source_kind {
+            ::app_infra::AudioSegmentSourceKind::Microphone => AudioSource::Microphone,
+            _ => AudioSource::SystemAudio,
+        },
+        segment_index: a.segment_index,
+        start_ms: ms(&a.started_at),
+        end_ms: ms(&a.ended_at),
+    }
+}
 
 fn iso(ms: i64) -> String {
     time::OffsetDateTime::from_unix_timestamp_nanos(ms as i128 * 1_000_000)
@@ -390,19 +407,17 @@ impl Source for CoreSource {
         let rows = self
             .0
             .block_on(ai::list_audio_segments(request, &self.infra()?))?;
-        Ok(rows
-            .into_iter()
-            .map(|a| AudioSegment {
-                id: a.id,
-                source: match a.source_kind {
-                    ::app_infra::AudioSegmentSourceKind::Microphone => AudioSource::Microphone,
-                    _ => AudioSource::SystemAudio,
-                },
-                segment_index: a.segment_index,
-                start_ms: ms(&a.started_at),
-                end_ms: ms(&a.ended_at),
-            })
-            .collect())
+        Ok(rows.into_iter().map(audio_segment).collect())
+    }
+
+    fn audio_segment(&self, id: i64) -> Res<Option<AudioSegment>> {
+        let request = ai::GetAudioSegmentRequest {
+            audio_segment_id: id,
+        };
+        let found = self
+            .0
+            .block_on(ai::get_audio_segment(request, &self.infra()?))?;
+        Ok(found.map(audio_segment))
     }
 
     fn episodes(&self, start_ms: i64, end_ms: i64) -> Res<Vec<Activity>> {

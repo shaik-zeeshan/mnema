@@ -32,6 +32,7 @@ fn main() {
     // dev); a bare `cargo run` binary has none and runs as the dev app.
     let updater = app_core::updates::UpdaterConfig::for_main_bundle(BUNDLE_ID, VERSION);
     let paths = Paths::from_env(&updater.app.identifier);
+    let bundle_id = updater.app.identifier.clone();
     logging::init(&paths.log);
     log::info!("mnema-gpui starting");
 
@@ -83,7 +84,7 @@ fn main() {
         let report = match started {
             Ok(report) => report,
             Err(StartError::AlreadyRunning) => {
-                already_running(cx);
+                already_running(&bundle_id, cx);
                 return;
             }
             Err(StartError::Failed(e)) => {
@@ -96,6 +97,8 @@ fn main() {
             hotkeys::install(keys, cx);
         }
         sys::observe_sleep_wake(&core, cx);
+        // A second launch asks this instance to show main.
+        native::single_instance::observe(&bundle_id, cx);
         notification::on_response(core.clone(), cx);
         spawn_os_events(core.clone(), tray_rx, key_rx, cx);
         cx.on_window_closed(|cx, _| native::dock::refresh(cx))
@@ -169,9 +172,14 @@ fn spawn_os_events(
     .detach();
 }
 
-/// Another Mnema holds the data lock: say so, then exit. The alert runs from a
-/// spawned task, outside any `App` borrow (a modal loop inside one panics).
-fn already_running(cx: &mut App) {
+/// Another Mnema holds the data lock: hand this launch over to it (it shows its
+/// main window) and exit. Only if it can't be found, say so in an alert. The
+/// alert runs from a spawned task, outside any `App` borrow (a modal loop inside
+/// one panics).
+fn already_running(bundle_id: &str, cx: &mut App) {
+    if native::single_instance::hand_over(bundle_id) {
+        native::quit::exit_now();
+    }
     log::warn!("another Mnema instance holds the data directory lock; exiting");
     cx.activate(true);
     cx.spawn(async move |_| {

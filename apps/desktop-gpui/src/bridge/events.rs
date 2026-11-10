@@ -121,6 +121,9 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 if !matches!(event, CoreEvent::NativeCaptureSessionChanged(_)) {
                     let timeline = shell.read(cx).timeline.clone();
                     timeline.update(cx, |t, cx| t.settings_changed(cx));
+                    // Settings follows changes made elsewhere (tray, a shortcut, the CLI).
+                    let settings = shell.read(cx).settings.clone();
+                    settings.update(cx, |s, cx| s.on_event(&event, cx));
                 }
                 reload_shell(&shell, cx);
             }
@@ -212,7 +215,7 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
         // The graceful exit is done (`AppCore::shutdown`): end now, or relaunch.
         // `restart` spawns the relaunch, then `terminate:` reaches the swizzle,
         // which sees the exit is final and ends the process.
-        HostMsg::Exit(ExitKind::Quit) => native::quit::exit_now(),
+        HostMsg::Exit(ExitKind::Quit) => native::quit::exit_after_graceful_exit(),
         HostMsg::Exit(ExitKind::Restart) => {
             log::info!("completed graceful app exit; relaunching");
             cx.restart()

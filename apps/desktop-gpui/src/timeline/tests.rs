@@ -382,3 +382,43 @@ fn arrows_step_one_and_shift_ten_and_j_opens_the_jumper(cx: &mut TestAppContext)
         "Esc closes the jumper first"
     );
 }
+
+/// An agent's link / a Quick Recall audio hit / an Insights audio ref lands on
+/// the segment with its drawer open at the seek, on the frame nearest the
+/// moment; a segment that's gone says so (`openBrokerCaptureResult`).
+#[gpui_kit::test]
+fn land_audio_opens_the_segment_at_its_moment_or_says_it_is_gone(cx: &mut TestAppContext) {
+    let src = FixtureSource::from_map(&json!({
+        "get_frame_preview": { "mimeType": "image/webp", "sourceKind": "original_frame" },
+        "list_audio_segments": [{
+            "id": 77, "sourceKind": "microphone", "segmentIndex": 1,
+            "startedAt": "2026-11-04T09:01:36Z", "endedAt": "2026-11-04T09:02:06Z"
+        }]
+    }))
+    .with_frames(frames(30));
+    let (_, v, _) = open(cx, src);
+
+    // 20 s before the newest frame, 1.5 s in: the latest frame at or before is 10 back.
+    v.update(cx, |t, cx| t.land_audio(77, 1500, None, None, cx));
+    cx.run_until_parked();
+    v.read_with(cx, |t, _| {
+        assert_eq!(
+            t.selected_audio,
+            Some((77, 1500)),
+            "the drawer opens at the seek"
+        );
+        assert_eq!(t.paging.active_frame().map(|f| f.id), Some(9990));
+        assert!(t.pinned_audio.is_some());
+    });
+    v.update(cx, |t, cx| t.close_drawer(cx));
+    assert!(v.read_with(cx, |t, _| t.pinned_audio.is_none()));
+
+    v.update(cx, |t, cx| t.land_audio(404, 0, None, None, cx));
+    cx.run_until_parked();
+    v.read_with(cx, |t, _| {
+        assert_eq!(t.selected_audio, None);
+        let status = t.status.as_ref().expect("a visible note");
+        assert_eq!(status.message, "That capture is no longer available.");
+        assert!(status.error);
+    });
+}

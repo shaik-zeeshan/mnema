@@ -142,6 +142,8 @@ pub struct StatusBarModel {
     /// Screen Recording permission, when read.
     pub screen_permission: Option<CapturePermissionState>,
     pub start_error: Option<String>,
+    /// Auto-start found no display at launch and starts when one returns.
+    pub waiting_for_display: bool,
     pub read_only: bool,
     pub stopped_reason: Option<String>,
     /// Earliest source start of the running session (unix ms).
@@ -331,6 +333,9 @@ pub fn status_flag(m: &StatusBarModel) -> Option<StatusFlag> {
     }
     if m.start_error.is_some() {
         return flag(Tone::Danger, "couldn't start ·", "Retry");
+    }
+    if m.waiting_for_display {
+        return flag(Tone::Info, "no display yet ·", "starts when it wakes");
     }
     if m.read_only {
         return flag(Tone::Danger, "read-only ·", "buy a license");

@@ -189,6 +189,8 @@ fn retry_screen_capture_recovery_after_system_wake(
 
 #[cfg(target_os = "macos")]
 pub fn recover_screen_capture_after_system_wake(core: Arc<AppCore>) {
+    // A launch that found no display starts recording now (ADR 0021).
+    crate::native_capture::auto_start::retry_pending_auto_start(&core);
     if !begin_system_wake_recovery() {
         return;
     }
@@ -339,7 +341,8 @@ pub fn handle_screens_did_sleep(core: &AppCore) {
     core.host().emit(CoreEvent::ScreensDidSleep);
 }
 
-pub fn handle_screens_did_wake(core: &AppCore) {
+pub fn handle_screens_did_wake(core: &std::sync::Arc<AppCore>) {
     core.host().window_signal(WindowSignal::HideAllViews(false));
     core.host().emit(CoreEvent::ScreensDidWake);
+    crate::native_capture::auto_start::retry_pending_auto_start(core);
 }

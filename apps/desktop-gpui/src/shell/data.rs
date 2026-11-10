@@ -172,7 +172,7 @@ pub async fn load(core: &Arc<AppCore>) -> ShellModel {
         None => None,
     };
     let notifications = notifications(core);
-    build(Inputs {
+    let mut model = build(Inputs {
         settings,
         screen_permission: permissions.map(|p| p.permissions.screen),
         session,
@@ -185,7 +185,11 @@ pub async fn load(core: &Arc<AppCore>) -> ShellModel {
         notifications,
         health: None,
         backlog: None,
-    })
+    });
+    model.status.waiting_for_display = core
+        .try_state::<app_core::native_capture::auto_start::PendingAutoStartState>()
+        .is_some_and(|s| s.is_pending());
+    model
 }
 
 pub fn notifications(core: &AppCore) -> Vec<NotificationRow> {

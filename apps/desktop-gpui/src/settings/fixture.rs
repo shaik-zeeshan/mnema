@@ -102,18 +102,30 @@ pub enum Call {
     ClearKey(String),
     /// A one-time prompt record write.
     Prompt(super::privacy_prompt::Mark),
+    /// Window focus re-read the permissions.
+    Recheck,
 }
 
 /// Saves succeed (echoing the draft) unless `fail` is set; every call is recorded.
 #[derive(Default)]
 pub struct FixtureBackend {
     pub(crate) calls: Mutex<Vec<Call>>,
+    /// Each recording-domain save's settings, as sent.
+    pub(crate) sent: Mutex<Vec<(Unit, RecordingSettings)>>,
     pub fail: bool,
 }
 
 impl FixtureBackend {
     pub fn calls(&self) -> Vec<Call> {
         self.calls.lock().unwrap().clone()
+    }
+    /// The last save of `unit`'s settings, as sent.
+    pub fn last_sent(&self, unit: Unit) -> Option<RecordingSettings> {
+        let sent = self.sent.lock().unwrap();
+        sent.iter()
+            .rev()
+            .find(|(u, _)| *u == unit)
+            .map(|(_, s)| s.clone())
     }
     fn record(&self, c: Call) -> Result<(), String> {
         self.calls.lock().unwrap().push(c);
@@ -131,6 +143,7 @@ impl Backend for FixtureBackend {
         unit: Unit,
         draft: &RecordingSettings,
     ) -> Result<RecordingSettings, String> {
+        self.sent.lock().unwrap().push((unit, draft.clone()));
         self.record(Call::Domain(unit)).map(|_| draft.clone())
     }
     fn save_keyboard(&self, bindings: &Value) -> Result<Value, String> {
@@ -147,6 +160,14 @@ impl Backend for FixtureBackend {
     }
     fn prompt(&self, _: &str, mark: super::privacy_prompt::Mark) -> Result<(), String> {
         self.record(Call::Prompt(mark))
+    }
+    /// System audio now reads as possibly blocked.
+    fn recheck_access(&self) -> Option<SettingsData> {
+        let _ = self.record(Call::Recheck);
+        Some(SettingsData {
+            system_audio_blocked: true,
+            ..Default::default()
+        })
     }
     /// Every provider answers live (the parity mock's `verify_ai_provider`), unless `fail`.
     fn verify_provider(

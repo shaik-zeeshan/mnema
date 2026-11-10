@@ -480,3 +480,81 @@ fn rail_follows_scrolling_through_intelligence(cx: &mut TestAppContext) {
         assert_eq!(s.section, ids[1]);
     });
 }
+
+/// The tray flips the microphone source while an auto-start edit waits for its
+/// 450 ms: the re-read merges (the edit stays, the mic takes the tray's value),
+/// and the next sources save sends the tray's mic, never the stale one.
+#[gpui_kit::test]
+fn an_outside_change_under_an_unsaved_edit_merges_and_is_never_written_back(
+    cx: &mut TestAppContext,
+) {
+    let (_, v, b) = open(cx, false);
+    v.update(cx, |s, cx| s.edit(|d| d.auto_start = !d.auto_start, cx));
+    let edited = v.read_with(cx, |s, _| s.d().auto_start);
+
+    let mut outside = settings_data().expect("fixture");
+    let tray = outside
+        .settings
+        .as_ref()
+        .map(|s| !s.capture_microphone)
+        .unwrap();
+    outside.settings.as_mut().unwrap().capture_microphone = tray;
+    v.update(cx, |s, cx| s.land(outside, cx));
+    assert_eq!(
+        v.read_with(cx, |s, _| (s.d().capture_microphone, s.d().auto_start)),
+        (tray, edited),
+        "the edit stays; the untouched field takes the re-read value"
+    );
+
+    advance(cx, RECORDING_DEBOUNCE);
+    let timing = b.last_sent(Unit::CaptureTiming).expect("the edit saved");
+    assert_eq!(timing.auto_start, edited);
+
+    // A source switch next saves at once: with the tray's mic.
+    v.update(cx, |s, cx| {
+        s.edit(|d| d.capture_screen = !d.capture_screen, cx)
+    });
+    cx.run_until_parked();
+    let sent = b.last_sent(Unit::CaptureSources).expect("sources saved");
+    assert_eq!(sent.capture_microphone, tray, "never the stale value");
+}
+
+/// A clean page adopts a re-read whole.
+#[gpui_kit::test]
+fn a_clean_page_adopts_an_outside_change(cx: &mut TestAppContext) {
+    let (_, v, b) = open(cx, false);
+    let mut outside = settings_data().expect("fixture");
+    let tray = outside
+        .settings
+        .as_ref()
+        .map(|s| !s.capture_microphone)
+        .unwrap();
+    outside.settings.as_mut().unwrap().capture_microphone = tray;
+    v.update(cx, |s, cx| s.land(outside, cx));
+    advance(cx, RECORDING_DEBOUNCE);
+    assert_eq!(v.read_with(cx, |s, _| s.d().capture_microphone), tray);
+    assert!(b.calls().is_empty(), "nothing to save");
+}
+
+/// Window focus re-reads the permissions and access hints, never the drafts.
+#[gpui_kit::test]
+fn window_focus_rechecks_access_without_touching_an_unsaved_edit(cx: &mut TestAppContext) {
+    let (_, v, b) = open(cx, false);
+    v.update(cx, |s, cx| s.edit(|d| d.auto_start = !d.auto_start, cx));
+    let draft = v.read_with(cx, |s, _| s.d());
+    assert!(!v.read_with(cx, |s, _| s.data.system_audio_blocked));
+    v.update(cx, |s, cx| s.on_window_focus(cx));
+    cx.run_until_parked();
+    assert_eq!(saves(&b, Call::Recheck), 1);
+    assert!(v.read_with(cx, |s, _| s.data.system_audio_blocked));
+    assert_eq!(
+        v.read_with(cx, |s, _| s.d()),
+        draft,
+        "the edit is untouched"
+    );
+    assert_eq!(
+        v.read_with(cx, |s, _| s.gate(Unit::CaptureTiming).dirty),
+        true,
+        "and still saves"
+    );
+}
