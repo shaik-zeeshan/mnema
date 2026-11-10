@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-10 18:37",
+ "updated": "2026-11-10 19:01",
  "verdict": "Every screen is built, and two wiring passes have connected them to the real backend. All six issues from today's hands-on test have a committed fix: one is wired and five are built. Capture health in the status bar is built and wired. A signed dev build with all of it was opened on 10 Nov at 18:15. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
    "label": "Overall",
    "value": "built, being wired",
-   "note": "all screens built; hands-on fixes committed; 32 marked shortcuts left once Chat sources is committed"
+   "note": "all screens built; hands-on fixes committed; 32 marked shortcuts left"
   },
   {
    "label": "Backend moved",
@@ -20,7 +20,7 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 280 GPUI (276 + 4 wiring); shared and Tauri counts are from before 10 Nov"
+   "note": "1,338 shared + 71 Tauri + 290 GPUI (286 + 4 wiring); shared and Tauri counts are from before 10 Nov"
   },
   {
    "label": "Screenshots approved",
@@ -56,19 +56,14 @@
  ],
  "now": [
   {
-   "id": "Chat",
-   "title": "Chat sources",
-   "detail": "Real frame thumbnails on source chips, an inline player for audio sources, and recognised-text boxes in the frame peek. Built and wired by its agent; being re-tested before it is committed."
+   "id": "Licence",
+   "title": "Licence banner and deep-link receipt",
+   "detail": "The banner in the main window and the receipt shown after a licence link. Agent working. Not built yet."
   },
   {
    "id": "Centre",
    "title": "Centring on large windows",
-   "detail": "Settings and onboarding centred when the window is wide. Agent working."
-  },
-  {
-   "id": "Licence",
-   "title": "Licence banner and deep-link receipt",
-   "detail": "The banner in the main window and the receipt shown after a licence link. Agent working. Not built yet."
+   "detail": "Built by its agent; being re-tested before it is committed."
   }
  ],
  "done": [
@@ -305,13 +300,25 @@
    "title": "Window size: small windows no longer cut things off",
    "what": "The Tauri app's width rules are ported (about 28; GPUI had 3): Settings rows and rail, the Insights tab bar, headline, grids and evidence drawer, the Chat placeholder, the audio drawer transcript, the onboarding Whisper picker. Large windows already matched Tauri. Built; not driven.",
    "commit": "a5cd99ce"
+  },
+  {
+   "id": "Gap 2",
+   "title": "Chat sources: thumbnails, inline audio, text boxes",
+   "what": "Source chips show the frame's real thumbnail; an audio source opens an inline player whose frames follow the sound; the frame peek draws recognised-text boxes when you press Show OCR. Built and wired to the real backend; real sound and real frames have not been driven in the signed app. Per-turn transcript rows and silent fast-forward in the inline player are not built (Insights' player lacks them too).",
+   "commit": "c54d974b"
+  },
+  {
+   "id": "Fix 6",
+   "title": "Status popover spacing",
+   "what": "The \"Building meaning index\" row lines up with the rows around it and has the same gaps. Built; screenshot approved.",
+   "commit": "0f148fa6"
   }
  ],
  "next": [
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "35 marked shortcuts remain: licence banner and deep-link receipt, the app-privacy prompt, Chat tool-row app icons and timeline block, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip."
+   "detail": "32 marked shortcuts remain: the app-privacy prompt, Chat tool-row app icons and timeline block, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip. (The licence banner and deep-link receipt are being built now.)"
   },
   {
    "id": "Docs",
@@ -614,6 +621,11 @@
   }
  ],
  "waiting": [
+  {
+   "id": "Look",
+   "title": "Centred layout on large windows",
+   "detail": "Before and after at 2400 and 1600 wide are on the \"Waiting for your approval\" page. Say if the top-bar and bottom-bar alignment in onboarding should be different."
+  },
   {
    "id": "Drive",
    "title": "Hands-on test of the next signed dev build",
@@ -1012,22 +1024,59 @@
    "what": "No picture: this changes behaviour, not looks. Settings now shows the microphone, capture support and permissions at once, and the slower keychain and network checks follow, each given at most 10 seconds. A check that fails says \"couldn't check\" instead of showing \"Checking…\" forever. The stuck screen resolution and the microphone error in your screenshot were fixed earlier by 8a1fcb2d, which wired Settings to the real backend; your screenshot came from the build before it. Not driven yet."
   }
  ],
- "approve_verdict": "Nothing is waiting for your approval right now. You approved capture health, the Insights screens and the onboarding Models tab on 10 Nov, and chose centred for large windows. The centring pictures will land here next.",
+ "approve_verdict": "One thing to look at: the centred layout for large windows, which you asked for. No reference screenshot changes (the default sizes are untouched), so this is a look-and-say, not a formal approval. Everything else on this page is already approved.",
  "approve": [
   {
    "anchor": "approve-centre",
-   "title": "Large windows: centring Settings and onboarding",
+   "title": "Large windows: Settings and onboarding centred",
    "toc": "Large windows",
-   "commit": "no change yet",
-   "state": "you chose centred · being built",
-   "awaiting": false,
-   "what": "You chose centred on 10 Nov. An agent is making the change now; the default and minimum window sizes must stay exactly as they are, so only wide windows change. The before/after pictures will appear here when it is back. The picture below is how it looks today (pinned left, as in Tauri).",
+   "commit": "being re-tested",
+   "state": "built · please look",
+   "awaiting": true,
+   "what": "On a wide window the content column now sits in the middle instead of at the left. Nothing moves at the default or minimum window sizes: Settings stays as it is up to 1280 px wide and onboarding up to 1120 px, then the column slides toward the centre as the window grows, with no jump. Two choices to check: in Settings the breadcrumb and \"All changes saved\" follow the column; in onboarding the step name and the \"1 / 8\" counter in the top bar, and the Back / Continue buttons in the bottom bar, also line up with the column, so they don't end up far from the content. Only the dark theme was rendered.",
    "rows": [
     {
+     "heading": "Settings › General at 2400 wide",
      "shots": [
       {
-       "file": "resize-settings-general-2400x1000.jpg",
-       "caption": "Settings at 2400 wide. Left to right: GPUI before, GPUI after (unchanged), Tauri."
+       "file": "centre-settings-general-2400x1000.jpg",
+       "caption": "Top: before (pinned left, as in Tauri). Bottom: after (centred)."
+      }
+     ]
+    },
+    {
+     "heading": "Settings › Capture at 1600 wide",
+     "shots": [
+      {
+       "file": "centre-settings-capture-1600x1000.jpg",
+       "caption": "Top: before (pinned left, as in Tauri). Bottom: after (centred)."
+      }
+     ]
+    },
+    {
+     "heading": "Onboarding › Welcome at 2400 wide",
+     "shots": [
+      {
+       "file": "centre-onboarding-welcome-2400x1000.jpg",
+       "caption": "Top: before (pinned left, as in Tauri). Bottom: after (centred). Note the step name and counter in the top bar."
+      }
+     ]
+    },
+    {
+     "heading": "Onboarding › Models at 2400 wide",
+     "shots": [
+      {
+       "file": "centre-onboarding-change-models-2400x1000.jpg",
+       "caption": "Top: before (pinned left, as in Tauri). Bottom: after (centred). Note the bottom bar's buttons."
+      }
+     ]
+    },
+    {
+     "heading": "Onboarding › Setup at 1600 wide",
+     "shots": [
+      {
+       "file": "centre-onboarding-setup-1600x1000.jpg",
+       "caption": "Top: before (pinned left, as in Tauri). Bottom: after (centred)."
       }
      ]
     }
