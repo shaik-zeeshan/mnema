@@ -140,7 +140,7 @@ pub fn render(
         s if s.starts_with("permissions") => Step::Permissions,
         s if s.starts_with("capture") => Step::Capture,
         "settings" => Step::YourSettings,
-        s if s == "change" || s.starts_with("ai-") => Step::Change,
+        s if s.starts_with("change") || s.starts_with("ai-") => Step::Change,
         s if s.starts_with("setup") => Step::Setup,
         "voice" => Step::Voice,
         _ => Step::Finale,
@@ -175,6 +175,12 @@ pub fn render(
                 ("local", "nomic-embed-text-v1.5", "completed", 548_000_000),
             ],
         ),
+        "change-models" => cx.update(|cx| {
+            o.update(cx, |o, cx| {
+                o.tab = 2;
+                cx.notify();
+            })
+        }),
         // The first frame and its OCR land on the evidence poll.
         "finale" => cx.advance_clock(onboarding::EVIDENCE_POLL),
         _ => {}

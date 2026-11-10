@@ -6,14 +6,15 @@
 
 use capture_types::AudioTranscriptionProvider;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, Context, Hsla, Window};
+use gpui_kit::{div, px, relative, AnyElement, Context, Hsla, Pixels, Window};
 
 use super::{button, on_ix, primary};
 use crate::onboarding::flow::{Feature, LockFix, ModelFacts, Subsystem};
 use crate::onboarding::parts::{self, fine, head};
 use crate::onboarding::{storage, Onboarding};
 use crate::settings::model::format_bytes;
-use crate::theme::{self, space, text, Palette};
+use crate::theme::{self, leading, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::choice::{Choice, ChoiceOption};
 use crate::ui::notice::notice;
 use crate::ui::segmented::Segmented;
@@ -32,6 +33,58 @@ const SHARE_AUDIO: f64 = 23.;
 const SHARE_TRANSCRIPT: f64 = 4.5;
 const TRANSCRIPT_VECTOR_MB: f64 = 2.;
 const ACTIVE_HOURS: f64 = 8.;
+
+/// The big download total beside its fine print (`.ob-total b`, 22 px).
+const TOTAL: Pixels = px(22.);
+
+type SemanticModel = (String, String, u64, bool);
+
+/// shortcut: the language comes from the display name's "(Multilingual…)" tag,
+/// not the catalog's `multilingual` flag; read the catalog if a name ever drops it.
+fn is_multilingual(m: &SemanticModel) -> bool {
+    m.1.contains("(Multilingual")
+}
+
+/// Indices into `semantic` of one language group, in catalog order.
+fn family_builds(semantic: &[SemanticModel], multilingual: bool) -> Vec<usize> {
+    (0..semantic.len())
+        .filter(|&i| is_multilingual(&semantic[i]) == multilingual)
+        .collect()
+}
+
+/// `model-budget.ts` `SHORT_LABELS`: pill labels; others drop the "(…)" tag.
+fn short_label(m: &SemanticModel) -> &str {
+    match m.0.as_str() {
+        "nomic-embed-text-v1.5" => "Nomic",
+        "stella_en_400M_v5" => "Stella",
+        "multilingual-e5-small" => "E5 Small",
+        "bge-m3" => "BGE-M3",
+        "snowflake-arctic-embed-l-v2.0" => "Snowflake",
+        "gte-modernbert-base" => "GTE",
+        "granite-embedding-english-r2" => "Granite R2",
+        "granite-embedding-small-english-r2" => "Granite Small",
+        _ => m.1.split(" (").next().unwrap_or(&m.1),
+    }
+}
+
+/// A kicker with its note on one baseline (`.ob-pane__head`).
+fn kicker_note(label: &str, note: gpui_kit::Div, p: &Palette, cx: &gpui_kit::App) -> AnyElement {
+    baseline::row(
+        vec![
+            (
+                Line::new(FONT_MONO, text::XS, parts::FINE_LH),
+                kicker(label, p).into_any_element(),
+            ),
+            (
+                Line::new(FONT_UI, text::BASE, parts::FINE_LH),
+                note.into_any_element(),
+            ),
+        ],
+        cx,
+    )
+    .gap(space::S3)
+    .into_any_element()
+}
 
 fn provider_id(p: AudioTranscriptionProvider) -> &'static str {
     app_core::audio_transcription_models::provider_id_for_settings(p)
@@ -159,6 +212,13 @@ impl Onboarding {
             self.draft.transcription.model_id = m.0.clone();
             self.refresh_facts();
             cx.notify();
+        }
+    }
+
+    /// Picks the first build in the English or Multilingual group.
+    pub fn set_semantic_family(&mut self, multilingual: bool, cx: &mut Context<Self>) {
+        if let Some(&ix) = family_builds(&self.semantic, multilingual).first() {
+            self.set_semantic_model(ix, cx);
         }
     }
 
@@ -290,13 +350,12 @@ impl Onboarding {
     }
 
     fn features_pane(&self, cx: &mut Context<Self>, p: &Palette) -> Vec<AnyElement> {
-        let mut v = vec![div()
-            .flex()
-            .items_baseline()
-            .gap(space::S3)
-            .child(kicker("What Mnema will do", p))
-            .child(fine("Indented rows need the row above them.", p))
-            .into_any_element()];
+        let mut v = vec![kicker_note(
+            "What Mnema will do",
+            fine("Indented rows need the row above them.", p),
+            p,
+            cx,
+        )];
         v.push(
             parts::ruled(
                 None,
@@ -377,13 +436,22 @@ impl Onboarding {
             )
         };
         let kv = |k: &'static str, val: String| {
-            div()
-                .flex()
-                .gap(px(6.))
-                .text_size(text::BASE)
-                .text_color(p.text_subtle)
-                .child(k)
-                .child(parts::mono(val, text::BASE, p.text_strong).font_weight(theme::W_MEDIUM))
+            baseline::row(
+                vec![
+                    (
+                        Line::new(FONT_UI, text::BASE, leading::BODY),
+                        div().text_color(p.text_subtle).child(k).into_any_element(),
+                    ),
+                    (
+                        Line::new(FONT_MONO, text::BASE, leading::ONE),
+                        parts::mono(val, text::BASE, p.text_strong)
+                            .font_weight(theme::W_MEDIUM)
+                            .into_any_element(),
+                    ),
+                ],
+                cx,
+            )
+            .gap(px(6.))
         };
         v.push(
             div()
@@ -492,19 +560,18 @@ impl Onboarding {
                 format_bytes(crate::onboarding::flow::work_bytes(&work) as f64)
             )
         };
-        let mut v = vec![div()
-            .flex()
-            .items_baseline()
-            .gap(space::S3)
-            .child(kicker("Transcription", p))
-            .child(fine(
+        let mut v = vec![kicker_note(
+            "Transcription",
+            fine(
                 format!(
                     "Engine: {} \u{2014} chosen on Engines. This screen picks its build.",
                     engine.map_or("Whisper", |e| e.name.as_str())
                 ),
                 p,
-            ))
-            .into_any_element()];
+            ),
+            p,
+            cx,
+        )];
         if t_models.len() > 1 {
             v.push(
                 Segmented::new("ob-t-model", "Transcription build", t_models, t_sel)
@@ -516,27 +583,61 @@ impl Onboarding {
         }
         v.push(kicker("Semantic Search", p).into_any_element());
         if !self.semantic.is_empty() {
+            // `ModelPickers.svelte`: a language group, then that group's builds
+            // under short labels. One segment per catalog model ran off the window.
+            let multi = self.semantic.get(s_sel).is_some_and(is_multilingual);
+            let builds = family_builds(&self.semantic, multi);
+            let at = builds.iter().position(|&i| i == s_sel).unwrap_or(0);
+            let labels: Vec<&str> = builds
+                .iter()
+                .map(|&i| short_label(&self.semantic[i]))
+                .collect();
             v.push(
-                Segmented::new(
-                    "ob-s-model",
-                    "Semantic Search model",
-                    self.semantic
-                        .iter()
-                        .map(|m| m.1.split(" (").next().unwrap_or(&m.1).to_string()),
-                    s_sel,
-                )
-                .on_change(on_ix(cx, |this, ix, cx| this.set_semantic_model(ix, cx)))
-                .into_any_element(),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(space::S3)
+                    .child(
+                        Segmented::new(
+                            "ob-s-family",
+                            "Semantic Search languages",
+                            ["English", "Multilingual"],
+                            multi as usize,
+                        )
+                        .on_change(on_ix(cx, |this, ix, cx| {
+                            this.set_semantic_family(ix == 1, cx)
+                        })),
+                    )
+                    .when(builds.len() > 1, |row| {
+                        row.child(
+                            Segmented::new("ob-s-model", "Semantic Search model", labels, at)
+                                .on_change(on_ix(cx, move |this, ix, cx| {
+                                    if let Some(&i) = builds.get(ix) {
+                                        this.set_semantic_model(i, cx)
+                                    }
+                                })),
+                        )
+                    })
+                    .into_any_element(),
             );
         }
         v.push(
-            div()
-                .flex()
-                .items_baseline()
-                .gap(space::S3)
-                .child(parts::mono(total, px(22.), p.text_strong))
-                .child(fine("to download before any of this works", p))
-                .into_any_element(),
+            baseline::row(
+                vec![
+                    (
+                        Line::new(FONT_MONO, TOTAL, leading::ONE),
+                        parts::mono(total, TOTAL, p.text_strong).into_any_element(),
+                    ),
+                    (
+                        Line::new(FONT_UI, text::BASE, parts::FINE_LH),
+                        fine("to download before any of this works", p).into_any_element(),
+                    ),
+                ],
+                cx,
+            )
+            .gap(space::S3)
+            .into_any_element(),
         );
         v
     }

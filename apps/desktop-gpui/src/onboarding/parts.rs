@@ -17,6 +17,8 @@ pub const DISPLAY: Pixels = px(36.);
 pub const HERO: Pixels = px(76.);
 pub const FINALE_TITLE: Pixels = px(60.);
 pub const PCT: Pixels = px(72.);
+/// `.ob-fine` line height (× its 12 px size).
+pub const FINE_LH: f32 = 1.5;
 /// `.ob-col` / `.ob-change .ob-col` max widths.
 pub const COL_W: Pixels = px(780.);
 pub const COL_W_WIDE: Pixels = px(900.);
@@ -289,7 +291,7 @@ pub fn prose(s: impl Into<SharedString>, p: &Palette) -> Div {
 pub fn fine(s: impl Into<SharedString>, p: &Palette) -> Div {
     div()
         .text_size(text::BASE)
-        .line_height(relative(1.5))
+        .line_height(relative(FINE_LH))
         .text_color(p.text_subtle)
         .child(s.into())
 }

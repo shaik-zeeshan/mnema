@@ -531,3 +531,16 @@ fn never_recorded_add_picks_an_installed_app_into_the_draft_only(cx: &mut TestAp
         assert_eq!(o.draft.privacy.excluded_apps.len(), before);
     });
 }
+
+#[gpui_kit::test]
+fn semantic_search_picks_a_language_group_then_a_build(cx: &mut TestAppContext) {
+    let (view, vcx, _, _) = open(cx, "granted");
+    view.update(vcx, |o, cx| {
+        assert_eq!(o.semantic.len(), 8, "the fixture carries the full catalog");
+        let model = |o: &Onboarding| o.draft.semantic_search.model_id.clone();
+        o.set_semantic_family(true, cx);
+        assert_eq!(model(o).as_deref(), Some("multilingual-e5-small"));
+        o.set_semantic_family(false, cx);
+        assert_eq!(model(o).as_deref(), Some("nomic-embed-text-v1.5"));
+    });
+}

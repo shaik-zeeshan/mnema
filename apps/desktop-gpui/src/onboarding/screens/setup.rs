@@ -10,9 +10,14 @@ use crate::onboarding::downloads::DlState;
 use crate::onboarding::parts::{self, fine, head};
 use crate::onboarding::Onboarding;
 use crate::settings::model::format_bytes;
-use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::theme::{self, leading, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::notice::{inline, notice};
 use crate::ui::{icon, Tone};
+
+/// The big percentage and its smaller "%" (`.ob-pct`).
+const PCT_LH: f32 = 0.9;
+const PCT_UNIT: gpui_kit::Pixels = px(28.);
 
 fn line(runs: &[(&str, Option<(FontWeight, Hsla)>)], p: &Palette) -> AnyElement {
     div()
@@ -121,21 +126,24 @@ impl Onboarding {
                 &p,
             )
         };
-        let pct_el = div()
-            .flex()
-            .items_baseline()
-            .font_family(FONT_MONO)
-            .font_weight(gpui_kit::FontWeight::LIGHT)
-            .text_size(parts::PCT)
-            .line_height(relative(0.9))
-            .text_color(p.text_strong)
-            .child(pct.to_string())
-            .child(
-                div()
-                    .text_size(px(28.))
-                    .text_color(p.text_subtle)
-                    .child("%"),
-            );
+        let pct_el = baseline::row(
+            vec![
+                (
+                    Line::new(FONT_MONO, parts::PCT, PCT_LH),
+                    div().child(pct.to_string()).into_any_element(),
+                ),
+                (
+                    Line::new(FONT_MONO, PCT_UNIT, PCT_LH),
+                    div()
+                        .text_color(p.text_subtle)
+                        .child("%")
+                        .into_any_element(),
+                ),
+            ],
+            cx,
+        )
+        .font_weight(gpui_kit::FontWeight::LIGHT)
+        .text_color(p.text_strong);
 
         let mut col = vec![
             crate::ui::kicker("Setup", &p).into_any_element(),
@@ -272,28 +280,38 @@ impl Onboarding {
                             .items_center()
                             .gap(space::S3)
                             .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .items_baseline()
-                                    .gap(space::S2)
-                                    .font_weight(theme::W_MEDIUM)
-                                    .text_size(text::MD)
-                                    .text_color(if off && state != DlState::Ready {
+                                baseline::row(
+                                    vec![
+                                        (
+                                            Line::new(FONT_UI, text::MD, leading::BODY),
+                                            div().child(item.name()).into_any_element(),
+                                        ),
+                                        (
+                                            Line::new(FONT_MONO, text::BASE, leading::ONE),
+                                            parts::mono(
+                                                format!(
+                                                    "{}{}",
+                                                    if item.approx() { "about " } else { "" },
+                                                    format_bytes(item.bytes as f64)
+                                                ),
+                                                text::BASE,
+                                                p.text_subtle,
+                                            )
+                                            .into_any_element(),
+                                        ),
+                                    ],
+                                    cx,
+                                )
+                                .flex_1()
+                                .gap(space::S2)
+                                .font_weight(theme::W_MEDIUM)
+                                .text_color(
+                                    if off && state != DlState::Ready {
                                         p.text_subtle
                                     } else {
                                         p.text_strong
-                                    })
-                                    .child(item.name())
-                                    .child(parts::mono(
-                                        format!(
-                                            "{}{}",
-                                            if item.approx() { "about " } else { "" },
-                                            format_bytes(item.bytes as f64)
-                                        ),
-                                        text::BASE,
-                                        p.text_subtle,
-                                    )),
+                                    },
+                                ),
                             )
                             .child(st),
                     )

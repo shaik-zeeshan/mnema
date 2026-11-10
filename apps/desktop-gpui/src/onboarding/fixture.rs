@@ -14,7 +14,7 @@ use super::flow::WorkItem;
 use super::storage::Probe;
 
 /// Golden / parity states: `(state, fixture file)`.
-pub const STATES: [(&str, &str); 18] = [
+pub const STATES: [(&str, &str); 19] = [
     ("welcome", "default"),
     ("permissions", "default"),
     ("permissions-granted", "granted"),
@@ -23,6 +23,8 @@ pub const STATES: [(&str, &str); 18] = [
     ("capture-blocked", "tiny"),
     ("settings", "granted"),
     ("change", "granted"),
+    // Change settings › Models over the full eight-model embedding catalog.
+    ("change-models", "granted"),
     ("setup", "granted"),
     ("setup-done", "granted"),
     ("voice", "installed"),

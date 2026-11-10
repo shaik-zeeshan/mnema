@@ -14,7 +14,8 @@ use gpui_kit::{
 
 use super::primary;
 use crate::onboarding::{parts, Onboarding};
-use crate::theme::{self, motion, radius, space, text, Palette, FONT_MONO};
+use crate::theme::{self, leading, motion, radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::{kicker, mix};
 
 const TILES: [[u8; 5]; 8] = [
@@ -226,27 +227,29 @@ impl Onboarding {
                     .rounded_b(px(5.))
                     .bg(p.accent),
             );
-        let rail = div()
+        // `.film__tag` "◂◂ rewinding" (CSS uppercases it); the glyph is Lucide's rewind.
+        let tag = div()
             .flex()
-            .items_baseline()
-            .gap(space::S4)
-            .px(space::S8)
-            .pt(space::S3)
-            .child(
-                // `.film__tag` "◂◂ rewinding" (CSS uppercases it); the glyph is Lucide's rewind.
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .font_family(FONT_MONO)
-                    .font_weight(theme::W_MEDIUM)
-                    .text_size(text::XS)
-                    .text_color(p.text_subtle)
-                    .child(crate::ui::icon("icons/rewind.svg", text::XS))
-                    .child("REWINDING"),
-            )
-            .child(tc_el)
-            .child(read_el);
+            .items_center()
+            .gap(px(4.))
+            .font_weight(theme::W_MEDIUM)
+            .text_color(p.text_subtle)
+            .child(crate::ui::icon("icons/rewind.svg", text::XS))
+            .child("REWINDING");
+        let rail = baseline::row(
+            vec![
+                (
+                    Line::new(FONT_MONO, text::XS, leading::BODY),
+                    tag.into_any_element(),
+                ),
+                (Line::new(FONT_MONO, text::MD, leading::BODY), tc_el),
+                (Line::new(FONT_UI, text::BASE, leading::BODY), read_el),
+            ],
+            cx,
+        )
+        .gap(space::S4)
+        .px(space::S8)
+        .pt(space::S3);
         let title = div()
             .flex()
             .flex_col()
