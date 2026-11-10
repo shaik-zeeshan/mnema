@@ -419,39 +419,6 @@ pub fn open_speech_pane(core: &Arc<AppCore>) -> Outcome {
     Ok(None)
 }
 
-/// `mcp_list_server_tools`: connects if needed, then names what it offers.
-pub fn mcp_tools(core: &Arc<AppCore>, id: String) -> Outcome {
-    let listed = core.block_on(app_core::ask_ai::mcp::manager::mcp_list_server_tools(
-        core, id,
-    ));
-    // Local (stdio) connectors run through npx: say so when Node is missing.
-    let tools = to_json(listed.map_err(|e| {
-        match core.block_on(app_core::ask_ai::mcp::node_check::mcp_check_node()) {
-            Some(_) => e,
-            None => {
-                format!("{e} Node.js (npx) wasn't found on this Mac; local connectors need it.")
-            }
-        }
-    })?);
-    let names: Vec<&str> = tools
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|t| t["name"].as_str())
-        .collect();
-    Ok(Some(if names.is_empty() {
-        "Connected. This connector offers no tools.".into()
-    } else {
-        format!("{} tools: {}", names.len(), names.join(", "))
-    }))
-}
-
-/// Opens the browser consent; the outcome arrives as an MCP OAuth event.
-pub fn mcp_oauth_begin(core: &Arc<AppCore>, id: String) -> Outcome {
-    core.block_on(app_core::ask_ai::mcp::oauth_flow::mcp_oauth_begin(core, id))?;
-    Ok(Some("Approve the connector in your browser.".into()))
-}
-
 pub fn mcp_oauth_disconnect(core: &Arc<AppCore>, id: String) -> Outcome {
     core.block_on(app_core::ask_ai::mcp::oauth_flow::mcp_oauth_disconnect(
         core, id,

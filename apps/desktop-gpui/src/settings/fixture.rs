@@ -30,6 +30,23 @@ pub const STATES: [(&str, &str); 12] = [
     ("about", "license"),
 ];
 
+/// MCP golden states over Intelligence: `(state, the modal to open)`.
+pub const MCP_STATES: [(&str, &str); 3] = [
+    ("mcp-custom-form", "form"),
+    ("mcp-tool-list", "tools"),
+    ("mcp-oauth-idle", "oauth"),
+];
+
+/// Open one [`MCP_STATES`] modal (`which`) over the page.
+pub fn open_mcp_state(
+    s: &mut super::Settings,
+    which: &str,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::Context<super::Settings>,
+) {
+    super::sections::mcp::fixture_state(s, which, window, cx);
+}
+
 pub fn settings_data() -> anyhow::Result<SettingsData> {
     let map = load("settings", "default")?;
     let v = |k: &str| map.get(k).cloned().filter(|v| !v.is_null());
@@ -110,6 +127,13 @@ pub enum Call {
     /// A running take was ended early (the microphone released).
     CancelClip,
     Enroll,
+    /// An MCP secret went to the vault (the secret itself is never recorded).
+    McpSetSecret(String),
+    McpClearSecret(String),
+    McpTools(String),
+    McpOAuthBegin(String),
+    McpOAuthStatuses,
+    McpCheckNode,
 }
 
 /// Saves succeed (echoing the draft) unless `fail` is set; every call is recorded.
@@ -126,6 +150,14 @@ pub struct FixtureBackend {
     pub player: crate::timeline::audio::fixture::FakePlayer,
     /// The recorder answers "cancelled" (a quit ended the take).
     pub clip_cancelled: Mutex<bool>,
+    /// What `mcp_tools` lists: `(name, description)`.
+    pub mcp_tools: Mutex<Vec<(String, Option<String>)>>,
+    /// What `mcp_oauth_statuses` answers (`{ id, state }`).
+    pub mcp_oauth: Mutex<Vec<Value>>,
+    /// `mcp_check_node` answers "not found".
+    pub no_node: bool,
+    /// When set, `mcp_tools` / `mcp_set_secret` / `mcp_oauth_begin` fail with it.
+    pub mcp_error: Mutex<Option<String>>,
 }
 
 /// The fake recorder's clip path.
@@ -142,6 +174,12 @@ impl FixtureBackend {
             .rev()
             .find(|(u, _)| *u == unit)
             .map(|(_, s)| s.clone())
+    }
+    fn mcp_failure(&self) -> Result<(), String> {
+        match self.mcp_error.lock().unwrap().clone() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
     fn record(&self, c: Call) -> Result<(), String> {
         self.calls.lock().unwrap().push(c);
@@ -244,5 +282,29 @@ impl Backend for FixtureBackend {
         _: &str,
     ) -> Result<Box<dyn crate::timeline::audio::transport::Player + Send>, String> {
         Ok(Box::new(self.player.clone()))
+    }
+    fn mcp_tools(&self, id: &str) -> Result<Vec<(String, Option<String>)>, String> {
+        self.record(Call::McpTools(id.into()))?;
+        self.mcp_failure()?;
+        Ok(self.mcp_tools.lock().unwrap().clone())
+    }
+    fn mcp_set_secret(&self, id: &str, _secret: &str) -> Result<(), String> {
+        self.record(Call::McpSetSecret(id.into()))?;
+        self.mcp_failure()
+    }
+    fn mcp_clear_secret(&self, id: &str) -> Result<(), String> {
+        self.record(Call::McpClearSecret(id.into()))
+    }
+    fn mcp_oauth_begin(&self, id: &str) -> Result<(), String> {
+        self.record(Call::McpOAuthBegin(id.into()))?;
+        self.mcp_failure()
+    }
+    fn mcp_oauth_statuses(&self) -> Option<Vec<Value>> {
+        self.calls.lock().unwrap().push(Call::McpOAuthStatuses);
+        Some(self.mcp_oauth.lock().unwrap().clone())
+    }
+    fn mcp_check_node(&self) -> Result<Option<String>, String> {
+        self.calls.lock().unwrap().push(Call::McpCheckNode);
+        Ok((!self.no_node).then(|| "v22.11.0".into()))
     }
 }

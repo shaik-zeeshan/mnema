@@ -102,6 +102,8 @@ pub struct Ui {
     pub app_picker: Option<Vec<(String, String)>>,
     /// The connector whose Configure fields are open.
     pub mcp_open: Option<String>,
+    /// The MCP modals: Add / Edit / Connect steps, tool curation, Node probe.
+    pub(crate) mcp: sections::mcp::McpUi,
     /// Model downloads in flight, by `provider:model`: `(done, total, status)`.
     pub downloads: HashMap<String, (u64, Option<u64>, String)>,
     pub prompt: privacy_prompt::PromptUi,

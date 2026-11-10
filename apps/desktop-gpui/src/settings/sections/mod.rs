@@ -9,7 +9,7 @@ mod delete_recent;
 mod developer;
 mod languages;
 mod license;
-mod mcp;
+pub(crate) mod mcp;
 mod microphone;
 mod model_row;
 mod ocr;

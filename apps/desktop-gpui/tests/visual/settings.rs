@@ -10,7 +10,9 @@ use std::path::Path;
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
 use gpui_kit::{AppContext, VisualTestAppContext};
-use mnema_gpui::settings::fixture::{settings_data, FixtureBackend, STATES};
+use mnema_gpui::settings::fixture::{
+    open_mcp_state, settings_data, FixtureBackend, MCP_STATES, STATES,
+};
 use mnema_gpui::settings::privacy_prompt::{PromptData, Recommended};
 use mnema_gpui::shell::{Shell, ShellModel, Surface};
 use mnema_gpui::theme;
@@ -43,7 +45,18 @@ fn prompt_catalog() -> PromptData {
     }
 }
 
+/// The MCP modals open over Intelligence.
+fn mcp_modal(state: &str) -> Option<&'static str> {
+    MCP_STATES
+        .iter()
+        .find(|(s, _)| *s == state)
+        .map(|(_, m)| *m)
+}
+
 fn tab_for(state: &str) -> anyhow::Result<&'static str> {
+    if mcp_modal(state).is_some() {
+        return Ok("intelligence");
+    }
     STATES
         .iter()
         .chain(PROMPT_STATES.iter())
@@ -73,7 +86,19 @@ pub fn render(
         });
         let s = shell.read(cx).settings.clone();
         s.update(cx, |s, cx| {
-            s.set_backend(std::sync::Arc::new(FixtureBackend::default()));
+            let backend = FixtureBackend::default();
+            *backend.mcp_tools.lock().unwrap() = vec![
+                (
+                    "search_code".into(),
+                    Some("Search code across your repositories.".into()),
+                ),
+                (
+                    "get_issue".into(),
+                    Some("Read one issue and its comments.".into()),
+                ),
+                ("create_pull_request".into(), None),
+            ];
+            s.set_backend(std::sync::Arc::new(backend));
             s.set_data(data, cx)
         });
         settings = Some(s);
@@ -85,6 +110,11 @@ pub fn render(
         cx.run_until_parked();
         if step == 1 {
             cx.update(|cx| settings.update(cx, |s, cx| s.open_tab(tab, cx)));
+        }
+        if let (2, Some(which)) = (step, mcp_modal(state)) {
+            cx.update_window(window.into(), |_, window, cx| {
+                settings.update(cx, |s, cx| open_mcp_state(s, which, window, cx))
+            })?;
         }
         cx.update_window(window.into(), |_, window, _| window.refresh())?;
     }
@@ -101,7 +131,11 @@ pub fn goldens(
     shell_model: &ShellModel,
 ) -> anyhow::Result<Vec<String>> {
     let mut failures = Vec::new();
-    for (state, _) in STATES.iter().chain(PROMPT_STATES.iter()) {
+    for (state, _) in STATES
+        .iter()
+        .chain(PROMPT_STATES.iter())
+        .chain(MCP_STATES.iter())
+    {
         for (theme_name, setting) in themes {
             let name = format!("settings-{state}-{theme_name}");
             if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {

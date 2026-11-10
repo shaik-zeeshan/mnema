@@ -381,6 +381,36 @@ pub trait Backend: Send + Sync + 'static {
         let _ = clip;
         Err("no app core".into())
     }
+    /// `mcp_list_server_tools`: connects the connector (an npx cold boot takes
+    /// seconds) and answers its tools as `(name, description)`.
+    fn mcp_tools(&self, id: &str) -> Result<Vec<(String, Option<String>)>, String> {
+        let _ = id;
+        Err("no app core".into())
+    }
+    /// `mcp_set_server_secret` into the vault, by connector id. Never logs the secret.
+    fn mcp_set_secret(&self, id: &str, secret: &str) -> Result<(), String> {
+        let _ = (id, secret);
+        Err("no app core".into())
+    }
+    /// `mcp_clear_server_secret`.
+    fn mcp_clear_secret(&self, id: &str) -> Result<(), String> {
+        let _ = id;
+        Err("no app core".into())
+    }
+    /// `mcp_oauth_begin`: app-core opens the browser at the consent page; the
+    /// callback lands later as `McpAuthorizationChanged`.
+    fn mcp_oauth_begin(&self, id: &str) -> Result<(), String> {
+        let _ = id;
+        Err("no app core".into())
+    }
+    /// `mcp_oauth_statuses`: `{ id, state }` per OAuth connector (`None` = unread).
+    fn mcp_oauth_statuses(&self) -> Option<Vec<Value>> {
+        None
+    }
+    /// `mcp_check_node`: `Ok(None)` = Node isn't on the login-shell PATH.
+    fn mcp_check_node(&self) -> Result<Option<String>, String> {
+        Err("no app core".into())
+    }
 }
 
 pub struct CoreBackend(pub Arc<AppCore>);
@@ -513,6 +543,46 @@ impl Backend for CoreBackend {
     ) -> Result<Box<dyn crate::timeline::audio::transport::Player + Send>, String> {
         crate::native::audio_player::AudioPlayer::open(std::path::Path::new(clip))
             .map(|p| Box::new(p) as Box<dyn crate::timeline::audio::transport::Player + Send>)
+    }
+
+    fn mcp_tools(&self, id: &str) -> Result<Vec<(String, Option<String>)>, String> {
+        use app_core::ask_ai::mcp::{manager, node_check};
+        let core = &self.0;
+        match core.block_on(manager::mcp_list_server_tools(core, id.to_string())) {
+            Ok(tools) => Ok(tools.into_iter().map(|t| (t.name, t.description)).collect()),
+            // Local (stdio) connectors run through npx: say so when Node is missing.
+            Err(e) => Err(match core.block_on(node_check::mcp_check_node()) {
+                Some(_) => e,
+                None => {
+                    format!("{e} Node.js (npx) wasn't found on this Mac; local connectors need it.")
+                }
+            }),
+        }
+    }
+
+    fn mcp_set_secret(&self, id: &str, secret: &str) -> Result<(), String> {
+        super::live::mcp_set_secret(&self.0, id, secret).map(|_| ())
+    }
+
+    fn mcp_clear_secret(&self, id: &str) -> Result<(), String> {
+        super::live::mcp_clear_secret(&self.0, id).map(|_| ())
+    }
+
+    fn mcp_oauth_begin(&self, id: &str) -> Result<(), String> {
+        use app_core::ask_ai::mcp::oauth_flow::mcp_oauth_begin;
+        self.0.block_on(mcp_oauth_begin(&self.0, id.to_string()))
+    }
+
+    fn mcp_oauth_statuses(&self) -> Option<Vec<Value>> {
+        use app_core::ask_ai::mcp::oauth_flow::mcp_oauth_statuses;
+        let statuses = self.0.block_on(mcp_oauth_statuses(&self.0)).ok()?;
+        to_json(statuses).and_then(|v| v.as_array().cloned())
+    }
+
+    fn mcp_check_node(&self) -> Result<Option<String>, String> {
+        Ok(self
+            .0
+            .block_on(app_core::ask_ai::mcp::node_check::mcp_check_node()))
     }
 }
 
