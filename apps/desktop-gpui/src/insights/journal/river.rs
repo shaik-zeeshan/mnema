@@ -303,9 +303,15 @@ fn side(
                 .items_center()
                 .gap(px(4.))
                 .py(px(6.))
-                .rounded(radius::SM)
-                .when(sel, |e| e.bg(p.wash_strong))
-                .when(!d.future, |e| e.cursor_pointer().hover(|s| s.bg(p.wash)))
+                .rounded(radius::MD)
+                // `[aria-pressed]`: surface + strong hairline (inset: no layout shift).
+                .when(sel, |e| {
+                    e.bg(p.surface)
+                        .shadow(vec![crate::ui::inset(p.border_strong, px(1.))])
+                })
+                .when(!d.future, |e| {
+                    e.cursor_pointer().hover(|s| s.bg(p.surface_hover))
+                })
                 .child(
                     div()
                         .w(px(14.))

@@ -569,8 +569,9 @@ fn list(
                     .px(space::S2)
                     .border_b_1()
                     .border_color(p.hairline)
+                    .rounded(radius::SM)
                     .cursor_pointer()
-                    .hover(|s| s.bg(p.wash))
+                    .hover(|s| s.bg(p.surface_hover))
                     .child(
                         div()
                             .w(px(180.))

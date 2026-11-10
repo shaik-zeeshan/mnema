@@ -170,7 +170,7 @@ pub fn trigger(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
         .h(size::CMD_H)
         .pl(px(9.))
         .pr(px(10.))
-        .rounded(px(6.))
+        .rounded(radius::SM)
         .border_1()
         .border_color(border)
         .bg(p.surface_raised)

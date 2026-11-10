@@ -136,7 +136,7 @@ pub fn icon_button(
         .items_center()
         .justify_center()
         .size(h)
-        .rounded(px(5.))
+        .rounded(radius::BTN_SM)
         .text_color(fg)
         .when_some(bg, |el, bg| el.bg(bg))
         .cursor_pointer()

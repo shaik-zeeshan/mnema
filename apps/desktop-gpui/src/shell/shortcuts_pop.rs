@@ -7,7 +7,7 @@ use gpui_kit::{div, px, relative, Context, Role};
 
 use super::Shell;
 use crate::keymap::{self, HelpGroup};
-use crate::theme::{self, size, space, text, Palette};
+use crate::theme::{self, radius, size, space, text, Palette};
 use crate::ui::{kbd, kicker, pop_in, popover};
 
 fn group(g: &HelpGroup, p: &Palette) -> impl IntoElement {
@@ -75,7 +75,7 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
                 .items_center()
                 .h(size::H_SM)
                 .px(px(9.))
-                .rounded(px(5.))
+                .rounded(radius::BTN_SM)
                 .text_size(text::BASE)
                 .font_weight(theme::W_MEDIUM)
                 .text_color(p.text_muted)

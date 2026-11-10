@@ -8,7 +8,7 @@ use gpui_kit::{div, px, AnyElement, Context, SharedString};
 
 use crate::settings::row::{row, section, state_word};
 use crate::settings::{click, commands, icons, live, on, Settings};
-use crate::theme::{self, radius, space, text, Palette};
+use crate::theme::{self, space, text, Palette};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::dialog::Modal;
 use crate::ui::empty::{empty, EmptyLayout};
@@ -382,12 +382,12 @@ pub fn picker(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Option<A
             .flex_col()
             .gap(px(4.))
             .p(space::S3)
-            .rounded(radius::LG)
+            .rounded(px(10.)) // McpConnectorCatalog `.tile`
             .border_1()
             .border_color(p.border)
             .bg(p.surface)
             .cursor_pointer()
-            .hover(|st| st.bg(p.wash_strong))
+            .hover(|st| st.bg(p.surface_hover).border_color(p.border_hover))
             .child(
                 div()
                     .text_size(text::MD)

@@ -280,7 +280,7 @@ fn greeting(chat: &Chat, p: &Palette, window: &mut Window, cx: &mut Context<Chat
                                 .gap(px(6.))
                                 .h(size::H_SM)
                                 .px(px(9.))
-                                .rounded(px(5.))
+                                .rounded(radius::BTN_SM)
                                 .bg(p.surface_raised)
                                 .border_1()
                                 .border_color(p.border_strong)

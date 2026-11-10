@@ -290,7 +290,9 @@ impl RenderOnce for DateInput {
             })
             .pl(px(10.))
             .pr(px(6.))
-            .rounded(px(6.))
+            // In the period capsule only the outer (left) corners round, inside its 1 px border.
+            .when(self.period.is_none(), |d| d.rounded(radius::SM))
+            .when(self.period.is_some(), |d| d.rounded_l(radius::SM - px(1.)))
             .when(self.period.is_none(), |d| {
                 d.border_1().border_color(border).bg(cap_bg)
             })
@@ -614,7 +616,7 @@ impl RenderOnce for DateInput {
             .when(self.period.is_some(), |d| {
                 d.items_stretch()
                     .h(size::H_MD)
-                    .rounded(px(6.))
+                    .rounded(radius::SM)
                     .border_1()
                     .border_color(border)
                     .bg(p.surface_raised)

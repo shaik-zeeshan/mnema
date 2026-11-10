@@ -12,7 +12,7 @@ use gpui_kit::{
 };
 
 use super::{focus_handle, focus_visible, icon, mix, outline, progress, tooltip, Force};
-use crate::theme::{self, size, text, Palette};
+use crate::theme::{self, radius, size, text, Palette};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Variant {
@@ -267,7 +267,7 @@ impl RenderOnce for Button {
             .height
             .unwrap_or(if sm { size::H_SM } else { size::H_MD });
         let (pad, fs, r, gap) = if sm {
-            (px(9.), text::BASE, px(5.), px(6.))
+            (px(9.), text::BASE, radius::BTN_SM, px(6.))
         } else {
             (px(12.), text::MD, px(6.), px(7.))
         };

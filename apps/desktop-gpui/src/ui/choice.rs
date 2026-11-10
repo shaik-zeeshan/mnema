@@ -130,6 +130,7 @@ impl RenderOnce for Choice {
         let list = self.list;
         let dense = self.dense;
         let all = Rc::new(self.options.clone());
+        let count = self.options.len();
         let opts = self.options.iter().enumerate().map(|(ix, o)| {
             let forced = self
                 .force
@@ -217,6 +218,10 @@ impl RenderOnce for Choice {
                     .pr(px(44.))
                     .py(px(if dense { 9. } else { 11. }))
                     .when(ix > 0, |el| el.border_t_1().border_color(p.hairline))
+                    // GPUI clips to a square, so the end rows round their own fill
+                    // and focus ring to the stack's inner corner (12 px − 1 px border).
+                    .when(ix == 0, |el| el.rounded_t(radius::LG - px(1.)))
+                    .when(ix + 1 == count, |el| el.rounded_b(radius::LG - px(1.)))
                     .when(on, |el| el.bg(p.wash_strong))
                     .when(!on && hover, |el| el.bg(p.wash))
                     .when(!on && !o.disabled, |el| el.hover(move |s| s.bg(wash)))

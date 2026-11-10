@@ -407,7 +407,7 @@ pub fn feed(
                         .border_b_1()
                         .border_color(p.hairline)
                         .cursor_pointer()
-                        .hover(|s| s.bg(p.wash))
+                        .group("insights-change")
                         .when(fading, |d| d.opacity(0.6))
                         .child(
                             div()
@@ -420,6 +420,7 @@ pub fn feed(
                                     div()
                                         .text_size(text::MD)
                                         .text_color(p.text_strong)
+                                        .group_hover("insights-change", |s| s.text_color(p.accent))
                                         .child(c.statement.clone()),
                                 )
                                 .child(

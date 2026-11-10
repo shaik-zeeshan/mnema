@@ -218,7 +218,7 @@ pub fn app_picker(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Opti
                 .gap(space::S3)
                 .px(space::S3)
                 .py(px(7.))
-                .rounded(radius::MD)
+                .rounded(radius::SM)
                 .cursor_pointer()
                 .hover(|st| st.bg(p.wash_strong))
                 .child(

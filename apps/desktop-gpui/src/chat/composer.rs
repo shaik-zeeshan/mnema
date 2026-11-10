@@ -461,7 +461,7 @@ pub fn render(
                         .min_w_0()
                         .h(size::H_MD)
                         .px(px(12.))
-                        .rounded(px(6.))
+                        .rounded(radius::SM)
                         .bg(p.surface_raised)
                         .border_1()
                         .border_color(p.border_strong)

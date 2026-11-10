@@ -265,7 +265,7 @@ impl QuickRecall {
                                 .gap(px(8.))
                                 .px(px(4.))
                                 .py(px(2.))
-                                .rounded(radius::XS)
+                                .rounded(radius::SM)
                                 .when(cur, |d| d.bg(p.wash_strong))
                                 .text_size(text::SM)
                                 .line_height(relative(1.45))

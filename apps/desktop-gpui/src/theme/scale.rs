@@ -61,6 +61,8 @@ pub mod radius {
     pub const LG: Pixels = px(12.);
     pub const XL: Pixels = px(16.);
     pub const PILL: Pixels = px(999.);
+    /// `.mx-btn--sm` corner (`--_r: 5px`): small buttons, icon buttons.
+    pub const BTN_SM: Pixels = px(5.);
 }
 
 /// Control heights (`--h-sm` 26, `--h-md` 32) plus the shell's fixed bars (§3.6).

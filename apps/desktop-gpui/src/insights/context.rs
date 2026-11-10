@@ -16,7 +16,7 @@ use super::parts::{
 };
 use super::subjects::tiers::pct;
 use super::Insights;
-use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::{clock, icon, kicker, nid, Button, Tone};
@@ -366,6 +366,7 @@ fn standing(
             .px(space::S3)
             .border_t_1()
             .border_color(p.hairline)
+            .rounded(radius::SM)
             .hover(|s| s.bg(p.wash))
             .when(!r.in_prompt, |d| d.opacity(0.38))
             .child(
@@ -583,13 +584,13 @@ fn side(d: &ContextData, p: &Palette, cx: &mut Context<Insights>) -> Div {
                             .border_t_1()
                             .border_color(p.hairline)
                             .cursor_pointer()
-                            .hover(|s| s.bg(p.wash))
+                            .text_color(p.text_strong)
+                            .hover(|s| s.text_color(p.accent))
                             .child(
                                 div()
                                     .flex()
                                     .gap(space::S2)
                                     .text_size(text::BASE)
-                                    .text_color(p.text_strong)
                                     .child(div().flex_1().child(c.statement.clone()))
                                     .child(
                                         div()

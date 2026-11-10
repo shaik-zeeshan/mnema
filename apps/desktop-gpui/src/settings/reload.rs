@@ -55,7 +55,7 @@ pub fn button(
         .items_center()
         .justify_center()
         .size(size::H_SM)
-        .rounded(radius::MD)
+        .rounded(radius::BTN_SM)
         .text_color(p.text_muted)
         .map(|el| {
             if spinning {

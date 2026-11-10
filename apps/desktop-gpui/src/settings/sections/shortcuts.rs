@@ -357,7 +357,7 @@ fn chord(
         .items_center()
         .h(theme::size::H_MD)
         .px(space::S3)
-        .rounded(theme::radius::MD)
+        .rounded(theme::radius::SM)
         .border_1()
         .border_color(p.border_strong)
         .bg(p.surface)
@@ -365,7 +365,7 @@ fn chord(
         .font_weight(theme::W_MEDIUM)
         .text_color(p.text)
         .cursor_pointer()
-        .hover(|st| st.bg(p.wash_strong))
+        .hover(|st| st.bg(p.surface_hover))
         .child(inner)
         .on_click(click(cx, move |s, cx| {
             s.ui.kb_listening = if s.ui.kb_listening == Some(id) {
