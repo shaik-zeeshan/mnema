@@ -5,13 +5,17 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, Context, Hsla, SharedString};
+use gpui_kit::{div, px, relative, Context, Hsla, Pixels, SharedString};
 
 use super::pop_rows::{self, CaptureGroup, CatchingUp, PopRow, RowTone};
 use super::Shell;
 use crate::keymap;
 use crate::theme::{self, size, space, text, Palette};
 use crate::ui::{icon, kbd, kicker, pop_in, popover, progress, Button};
+
+/// The leading dot's width; the meaning-index bar insets by it plus the gap so
+/// its label lines up with the rows' label column.
+const DOT: Pixels = px(7.);
 
 fn row(r: &PopRow, p: &Palette, cx: &mut Context<Shell>) -> impl IntoElement {
     let tone: Hsla = match r.tone {
@@ -23,7 +27,7 @@ fn row(r: &PopRow, p: &Palette, cx: &mut Context<Shell>) -> impl IntoElement {
     let dot = div()
         .flex_none()
         .mt(px(5.))
-        .size(px(7.))
+        .size(DOT)
         .rounded_full()
         .map(|d| match r.ring {
             true => d.border(px(1.5)).border_color(p.text_muted),
@@ -144,13 +148,16 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
             .when(!list.is_empty(), |g| g.child(rows(&list, p, cx)))
             .children(meaning_percent.map(|pct| {
                 let pct = pct.round();
+                // Rows sit at line-height 1.4 and this label at 1, so the extra
+                // S1 above and below matches the gap between two rows.
                 div()
-                    .pt(px(2.))
-                    .child(progress::progress_meta(
-                        "Building meaning index",
-                        format!("{pct}%"),
-                        p,
-                    ))
+                    .pt(space::S1)
+                    .pb(space::S1)
+                    .pl(DOT + space::S2)
+                    .child(
+                        progress::progress_meta("Building meaning index", format!("{pct}%"), p)
+                            .mb(space::S2),
+                    )
                     .child(progress::progress(Some(pct as f32 / 100.), p))
             })),
     });
