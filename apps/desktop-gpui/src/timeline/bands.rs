@@ -8,8 +8,8 @@ use std::rc::Rc;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{
-    div, fill, img, linear_color_stop, linear_gradient, point, px, size, AnyElement, Bounds,
-    Context, Hsla, Pixels, Role, SharedString, Window,
+    div, fill, linear_color_stop, linear_gradient, point, px, size, AnyElement, Bounds, Context,
+    Hsla, Pixels, Role, SharedString, Window,
 };
 
 use super::model::{
@@ -17,6 +17,7 @@ use super::model::{
 };
 use super::TimelineView;
 use crate::theme::{self, radius, text, Palette, FONT_MONO};
+use crate::ui::app_icon::{app_icon, Src};
 use crate::ui::{alpha, mix, nid, spread, with_tip};
 
 /// `timelineAppRuns` is O(frames); it's recomputed only when the frame list
@@ -140,7 +141,7 @@ pub fn icons(
                 .font_weight(gpui_kit::FontWeight::BOLD)
                 .text_color(p.text_strong)
                 .child(match icon {
-                    Some(path) => img(path).size(px(14.)).into_any_element(),
+                    Some(path) => app_icon(Src::File(path), 14.).into_any_element(),
                     None => SharedString::from(r.fallback.clone()).into_any_element(),
                 })
                 .into_any_element(),

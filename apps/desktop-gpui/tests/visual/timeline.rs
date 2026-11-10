@@ -2,7 +2,7 @@
 //! main window over the parity fixtures the Svelte stub serves
 //! (`apps/desktop/parity/fixtures/timeline/*.json`).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -209,8 +209,19 @@ pub fn shoot(
     shell: ShellModel,
     setting: AppearanceSetting,
 ) -> anyhow::Result<image::RgbaImage> {
+    shoot_with(cx, state, shell, setting, Vec::new())
+}
+
+/// [`shoot`], with `resolve_app_icons` answering `icons`.
+fn shoot_with(
+    cx: &mut VisualTestAppContext,
+    state: &State,
+    shell: ShellModel,
+    setting: AppearanceSetting,
+    icons: Vec<(String, PathBuf)>,
+) -> anyhow::Result<image::RgbaImage> {
     cx.update(|cx| theme::set_setting(setting, cx));
-    let source = Arc::new(FixtureSource::load(state.fixture)?);
+    let source = Arc::new(FixtureSource::load(state.fixture)?.with_icons(icons));
     let src = source.clone();
     let mut timeline = None;
     let window = cx.open_offscreen_window(
@@ -260,7 +271,50 @@ pub fn goldens(
             }
         }
     }
+    if filters.is_empty()
+        || filters
+            .iter()
+            .any(|f| "timeline-icons".contains(f.as_str()))
+    {
+        if let Err(e) = icons_paint_over_the_rail(cx, shell_model) {
+            failures.push(format!("timeline-icons: {e:#}"));
+        }
+    }
     Ok(failures)
+}
+
+/// The rail's app icons paint over its bands and ticks (founder report
+/// 2026-11-10: "below the rails"). A solid magenta icon must come through
+/// untinted: a band or tick painted over it shifts every pixel it covers.
+fn icons_paint_over_the_rail(
+    cx: &mut VisualTestAppContext,
+    shell_model: &dyn Fn(&str) -> ShellModel,
+) -> anyhow::Result<()> {
+    const MAGENTA: [u8; 3] = [255, 0, 255];
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("magenta.png");
+    image::RgbaImage::from_pixel(64, 64, image::Rgba([255, 0, 255, 255])).save(&path)?;
+    // Only the older Arc run: the readout (Slack, the active frame) is never
+    // covered, so its icon would pass on its own.
+    let icons = vec![("company.thebrowser.Browser".to_string(), path)];
+    let state = &STATES[0];
+    let shot = shoot_with(
+        cx,
+        state,
+        shell_model(state.shell),
+        AppearanceSetting::Dark,
+        icons,
+    )?;
+    let clean = shot
+        .pixels()
+        .filter(|p| (0..3).all(|c| p[c].abs_diff(MAGENTA[c]) <= 3))
+        .count();
+    // One 14 pt icon at 2x is 28² px; allow its anti-aliased rim.
+    anyhow::ensure!(
+        clean >= 28 * 28 / 2,
+        "only {clean} untinted icon pixels: something paints over the rail's app icons"
+    );
+    Ok(())
 }
 
 /// Writes `<dir>/gpui.png` for one `surfaces.ts` timeline state, at 1x.

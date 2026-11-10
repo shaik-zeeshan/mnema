@@ -46,6 +46,7 @@ pub struct FixtureSource {
     pub fail_list: Mutex<bool>,
     /// Answer scrub availability with one ready still per frame.
     pub scrub_ready: bool,
+    icons: Vec<(String, PathBuf)>,
 }
 
 fn ms(s: &str) -> i64 {
@@ -183,6 +184,12 @@ impl FixtureSource {
         self
     }
 
+    /// Answer `resolve_app_icons` with these (bundle id, PNG) pairs.
+    pub fn with_icons(mut self, icons: Vec<(String, PathBuf)>) -> Self {
+        self.icons = icons;
+        self
+    }
+
     /// Replace the frames (tests and the bench tile them out).
     pub fn with_frames(self, frames: Vec<Frame>) -> Self {
         *self.frames.lock().unwrap() = frames;
@@ -310,7 +317,7 @@ impl Source for FixtureSource {
     }
 
     fn app_icons(&self, _: &[String]) -> Vec<(String, PathBuf)> {
-        Vec::new()
+        self.icons.clone()
     }
 
     fn match_boxes(&self, frame_id: i64, _: &str, _: bool) -> Res<Vec<MatchBox>> {

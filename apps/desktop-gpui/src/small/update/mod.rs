@@ -5,20 +5,16 @@
 
 pub mod model;
 
-use std::sync::Arc;
-
 use capture_types::LicenseStatus;
 use gpui_kit::base::{TextView, TextViewStyle};
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    div, img, px, relative, AnyElement, App, AppContext, Context, Global, Image, ImageFormat,
-    Render, Window,
-};
+use gpui_kit::{div, px, relative, AnyElement, App, AppContext, Context, Global, Render, Window};
 use serde_json::Value;
 
 use super::parts::{b, frame, h2, inset_panel, note, para, spec_row};
 use crate::settings::model::{format_bytes, Json};
 use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::ui::app_icon::{app_icon, Src};
 use crate::ui::window_strip::WindowStrip;
 use crate::ui::{icon, kicker, progress, Button, Tone};
 use model::{Key, LineIcon, LineTone};
@@ -30,10 +26,7 @@ pub const MIN: (f32, f32) = (420., 240.);
 const RENEWAL_CHECKOUT_URL: &str = "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_Tihx0GjXAe53ljFFHWh4wxUwb3u0KSVLBvJ5b00hFyi/redirect";
 
 /// The real bundle icon (`static/app-icon.png`, a copy of the 128@2x icon).
-pub fn app_icon() -> Arc<Image> {
-    static BYTES: &[u8] = include_bytes!("../../../../desktop/static/app-icon.png");
-    Arc::new(Image::from_bytes(ImageFormat::Png, BYTES.to_vec()))
-}
+pub const APP_ICON: Src = Src::Bundled(include_bytes!("../../../../desktop/static/app-icon.png"));
 
 /// The newest status app-core published, so a window opened later starts there.
 #[derive(Default)]
@@ -56,7 +49,6 @@ pub struct UpdateWindow {
     pub action_error: Option<String>,
     pub acting: bool,
     pub notes_open: bool,
-    icon: Arc<Image>,
 }
 
 impl UpdateWindow {
@@ -67,7 +59,6 @@ impl UpdateWindow {
             action_error: None,
             acting: false,
             notes_open: false,
-            icon: app_icon(),
         }
     }
 
@@ -188,7 +179,7 @@ impl UpdateWindow {
             .px(space::S5)
             .pt(space::S5)
             .pb(space::S4)
-            .child(img(self.icon.clone()).flex_none().size(px(44.)))
+            .child(app_icon(APP_ICON, 44.))
             .child(
                 div()
                     .flex()

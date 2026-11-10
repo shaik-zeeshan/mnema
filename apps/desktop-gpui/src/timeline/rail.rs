@@ -1,7 +1,8 @@
 //! `.timeline__rail-wrap`: the 36 px rail (masked edges, 8 px slots against the
 //! fixed centre caret, 1×8 / 16 major ticks), the audio lane, the paging note,
 //! and the readout that flies 9 px over 190 ms in the scrub direction.
-//! Ticks and bands are painted in one canvas; only the visible window
+//! Bands and resting ticks paint in one canvas under the app icons, the
+//! active tick, edge mask and carets in one over them; only the visible window
 //! (half a viewport + `VIEWPORT_BUFFER` each side) is drawn.
 
 use std::time::Duration;
@@ -10,7 +11,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    canvas, div, fill, img, linear_color_stop, linear_gradient, point, px, size, Animation,
+    canvas, div, fill, linear_color_stop, linear_gradient, point, px, size, Animation,
     AnimationExt as _, AnyElement, Bounds, Context, ElementId, MouseButton, PathBuilder, Role,
     SharedString, Window,
 };
@@ -20,6 +21,7 @@ use super::model::{category_color, category_for_span, clock_label, day_label, lo
 use super::paging::{render_window, PREFETCH_AHEAD};
 use super::TimelineView;
 use crate::theme::{self, motion, radius, size as sz, text, Palette, FONT_MONO};
+use crate::ui::app_icon::{app_icon, Src};
 use crate::ui::{alpha, icon, mix, spread};
 
 /// `.timeline-rail { height: 36px }`.
@@ -27,6 +29,20 @@ pub const RAIL_H: f32 = 36.;
 /// `READOUT_FLY_OFFSET_PX` / `READOUT_FLY_DURATION_MS`.
 pub const READOUT_FLY_PX: f32 = 9.;
 pub const READOUT_FLY: Duration = Duration::from_millis(190);
+
+/// One tick: `tw`×`th`, centred on (`x`, `mid`).
+fn tick(x: f32, mid: f32, tw: f32, th: f32, color: gpui_kit::Hsla, window: &mut Window) {
+    window.paint_quad(
+        fill(
+            Bounds::new(
+                point(px(x - tw / 2.), px(mid - th / 2.)),
+                size(px(tw), px(th)),
+            ),
+            color,
+        )
+        .corner_radii(px(0.5)),
+    );
+}
 
 fn caret(down: bool, x: f32, y: f32, color: gpui_kit::Hsla, window: &mut Window) {
     let mut b = PathBuilder::fill();
@@ -96,7 +112,7 @@ fn readout(
                 .and_then(|b| v.icons.get(b))
                 .cloned();
             let inner = match path {
-                Some(path) => img(path).size(px(18.)).into_any_element(),
+                Some(path) => app_icon(Src::File(path), 18.).into_any_element(),
                 None => SharedString::from(f.app_fallback()).into_any_element(),
             };
             let tile = div()
@@ -268,6 +284,7 @@ pub fn render(
         },
         // One layer: every primitive shares its z-order, so ~300 tick quads skip
         // the scene's per-primitive overlap search (same pixels, painted in order).
+        // This is the layer *under* the app icons (`.tl-group` and its resting ticks).
         move |b, _, window, _| {
             window.paint_layer(b, |window| {
                 let c = f32::from(b.left()) + f32::from(b.size.width) / 2.;
@@ -281,63 +298,64 @@ pub fn render(
                 let (lo, hi) = (f32::from(b.left()) - SLOT_W, f32::from(b.right()) + SLOT_W);
                 for i in ticks.clone() {
                     let x = slot_x(c, advance, i);
-                    if x < lo || x > hi {
+                    if x < lo || x > hi || i == active || hovered == Some(i) {
                         continue;
                     }
                     // A major tick sits at the oldest frame of a run an older run follows.
                     let major = tick_runs
                         .binary_search_by_key(&i, |r| r.end)
                         .is_ok_and(|k| tick_runs[k].boundary_frame_id.is_some());
-                    let (tw, th, color) = if i == active {
-                        (2., 22., accent)
-                    } else if hovered == Some(i) {
-                        (1., 12., muted)
-                    } else if major {
-                        (1., 16., subtle)
+                    let (th, color) = if major {
+                        (16., subtle)
                     } else {
-                        (1., 8., border_strong)
+                        (8., border_strong)
                     };
-                    if i == active {
-                        // `0 0 0 1px glow, 0 0 10px glow`: a ring plus a soft halo.
-                        for (pad, a) in [(5., 0.35), (1., 1.)] {
-                            window.paint_quad(
-                                fill(
-                                    Bounds::new(
-                                        point(px(x - tw / 2. - pad), px(mid - th / 2. - pad)),
-                                        size(px(tw + pad * 2.), px(th + pad * 2.)),
-                                    ),
-                                    alpha(glow, a * glow.a),
-                                )
-                                .corner_radii(px(pad)),
-                            );
-                        }
-                    }
-                    window.paint_quad(
-                        fill(
-                            Bounds::new(
-                                point(px(x - tw / 2.), px(mid - th / 2.)),
-                                size(px(tw), px(th)),
-                            ),
-                            color,
-                        )
-                        .corner_radii(px(0.5)),
-                    );
+                    tick(x, mid, 1., th, color, window);
                 }
-                // The CSS mask fades 5% at each end to the page behind.
-                let edge = f32::from(b.size.width) * 0.05;
-                for (x, from, to) in [(b.left(), 0., 1.), (b.right() - px(edge), 1., 0.)] {
-                    window.paint_quad(fill(
-                        Bounds::new(point(x, b.top()), size(px(edge), b.size.height)),
-                        linear_gradient(
-                            90.,
-                            linear_color_stop(alpha(bg, 1. - from), 0.),
-                            linear_color_stop(alpha(bg, 1. - to), 1.),
-                        ),
-                    ));
-                }
-                caret(true, c, f32::from(b.top()) - 1., subtle, window);
-                caret(false, c, f32::from(b.top()) + 30., subtle, window);
             })
+        },
+    )
+    .absolute()
+    .inset_0();
+    // Over the icons: the active and hovered ticks, the edge mask and the carets.
+    let over = canvas(
+        |_, _, _| {},
+        move |b, _, window, _| {
+            let c = f32::from(b.left()) + f32::from(b.size.width) / 2.;
+            let mid = f32::from(b.top()) + 1. + 8. + 9.;
+            if let Some(i) = hovered.filter(|&h| h != active) {
+                tick(slot_x(c, advance, i), mid, 1., 12., muted, window);
+            }
+            let x = slot_x(c, advance, active);
+            let (tw, th) = (2., 22.);
+            // `0 0 0 1px glow, 0 0 10px glow`: a ring plus a soft halo.
+            for (pad, a) in [(5., 0.35), (1., 1.)] {
+                window.paint_quad(
+                    fill(
+                        Bounds::new(
+                            point(px(x - tw / 2. - pad), px(mid - th / 2. - pad)),
+                            size(px(tw + pad * 2.), px(th + pad * 2.)),
+                        ),
+                        alpha(glow, a * glow.a),
+                    )
+                    .corner_radii(px(pad)),
+                );
+            }
+            tick(x, mid, tw, th, accent, window);
+            // The CSS mask fades 5% at each end to the page behind.
+            let edge = f32::from(b.size.width) * 0.05;
+            for (x, from, to) in [(b.left(), 0., 1.), (b.right() - px(edge), 1., 0.)] {
+                window.paint_quad(fill(
+                    Bounds::new(point(x, b.top()), size(px(edge), b.size.height)),
+                    linear_gradient(
+                        90.,
+                        linear_color_stop(alpha(bg, 1. - from), 0.),
+                        linear_color_stop(alpha(bg, 1. - to), 1.),
+                    ),
+                ));
+            }
+            caret(true, c, f32::from(b.top()) - 1., subtle, window);
+            caret(false, c, f32::from(b.top()) + 30., subtle, window);
         },
     )
     .absolute()
@@ -356,9 +374,10 @@ pub fn render(
         .bg(p.surface)
         .overflow_hidden()
         .cursor_pointer()
+        .child(paint)
         .children(bands::icons(v, &runs, range, centre, p))
         .children(bands::match_mark(v, centre, p))
-        .child(paint)
+        .child(over)
         .on_mouse_move(
             cx.listener(move |this, e: &gpui_kit::MouseMoveEvent, _, cx| {
                 let w = f32::from(this.rail_w.get());

@@ -8,13 +8,14 @@ use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    div, img, px, transparent_black, App, Context, Div, HighlightStyle, Role, SharedString,
-    StyledText, UnderlineStyle, Window,
+    div, px, transparent_black, App, Context, Div, HighlightStyle, Role, SharedString, StyledText,
+    UnderlineStyle, Window,
 };
 
 use super::tokens::{mirror_segments, pill_label, pill_operators, Pill, Seg};
 use super::{EmptyState, Mode, QuickRecall};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
+use crate::ui::app_icon::{app_icon, Src};
 use crate::ui::{alpha, icon, kbd, mix, progress};
 
 /// The field's type: 19 px / 34 px line.
@@ -34,7 +35,7 @@ impl QuickRecall {
             .and_then(|i| self.icons.get(i))
             .or_else(|| self.icons.get(name));
         match path {
-            Some(path) => img(path.clone()).flex_none().size(px(s)).into_any_element(),
+            Some(path) => app_icon(Src::File(path.clone()), s).into_any_element(),
             None => div()
                 .flex()
                 .flex_none()

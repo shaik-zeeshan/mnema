@@ -4,6 +4,7 @@
 //! caller owns the value and passes an `on_change`; open / animation / focus
 //! bookkeeping lives in keyed element state.
 
+pub mod app_icon;
 pub mod baseline;
 pub mod button;
 pub mod calendar;

@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use capture_types::CapturePermissionState;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, img, px, relative, App, AppContext, Context, Image, Render, Task, Window};
+use gpui_kit::{div, px, relative, App, AppContext, Context, Render, Task, Window};
 
 use crate::theme::{self, radius, size, space, text, FONT_MONO};
 use crate::ui::{icon, progress, Button};
@@ -100,7 +100,6 @@ pub struct PermissionHelper {
     pub kind: PermKind,
     pub granted: bool,
     checker: Arc<dyn GrantCheck>,
-    icon: Arc<Image>,
     _poll: Task<()>,
 }
 
@@ -110,7 +109,6 @@ impl PermissionHelper {
             kind,
             granted: false,
             checker,
-            icon: super::update::app_icon(),
             _poll: Task::ready(()),
         };
         this.start(kind, cx);
@@ -194,7 +192,7 @@ impl Render for PermissionHelper {
                         crate::ui::alpha(gpui_kit::white(), 0.1),
                         px(1.),
                     )])
-                    .child(img(self.icon.clone()).size_full()),
+                    .child(crate::ui::app_icon::app_icon(super::update::APP_ICON, 40.)),
             )
             .child(
                 div()
