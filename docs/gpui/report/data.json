@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-10 19:24",
+ "updated": "2026-11-10 19:55",
  "verdict": "Every screen is built and connected to the real backend, and all six issues from the 10 Nov hands-on test have a committed fix. Since then capture health, Chat sources, the licence banner and receipt, and centring on large windows have been added. A signed dev build with all of it was opened at 19:15 on a completely clean state. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
@@ -635,6 +635,11 @@
  ],
  "waiting": [
   {
+   "id": "Pick",
+   "title": "Licence receipt direction",
+   "detail": "Three built directions are on the \"Licence receipts: pick a direction\" page."
+  },
+  {
    "id": "Approve",
    "title": "Two licence banner screenshots",
    "detail": "Trial ending and activation lapsed, on the \"Waiting for your approval\" page."
@@ -1260,5 +1265,137 @@
     }
    ]
   }
- ]
+ ],
+ "receipts": [
+  {
+   "anchor": "receipt-d1",
+   "title": "Direction 1: the receipt",
+   "toc": "1 · The receipt",
+   "commit": "not merged · one switch selects it",
+   "state": "option",
+   "awaiting": true,
+   "what": "A literal receipt: a ticket with notched edges, the details in rows (who it is licensed to, updates through, activated on) and a round ACTIVATED stamp. Mostly a still image. Device limit: four device tiles, three in use and this Mac outlined in amber as the one that doesn't fit.",
+   "rows": [
+    {
+     "heading": "Activated",
+     "shots": [
+      {
+       "file": "receipt-d1-activated-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "receipt-d1-activated-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Device limit reached",
+     "shots": [
+      {
+       "file": "receipt-d1-overcap-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "receipt-d1-overcap-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "receipt-d2",
+   "title": "Direction 2: the updates timeline",
+   "toc": "2 · Updates timeline",
+   "commit": "not merged · one switch selects it",
+   "state": "option",
+   "awaiting": true,
+   "what": "Mnema's own timeline ruler, running from today to the date your updates are included through. A playhead scrubs forward along it while the date counts up and lands on the final day. Device limit: one bar per device, with this Mac as an empty dashed bar.",
+   "rows": [
+    {
+     "heading": "Activated",
+     "shots": [
+      {
+       "file": "receipt-d2-activated-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "receipt-d2-activated-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "How it moves (once, then rests)",
+     "shots": [
+      {
+       "file": "receipt-d2-motion-dark.jpg",
+       "caption": "Frames at 100, 250, 600 and 1600 ms: the playhead runs to the end of the ruler and the date counts up to match."
+      }
+     ]
+    },
+    {
+     "heading": "Device limit reached",
+     "shots": [
+      {
+       "file": "receipt-d2-overcap-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "receipt-d2-overcap-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "receipt-d3",
+   "title": "Direction 3: the seal",
+   "toc": "3 · The seal",
+   "commit": "not merged · one switch selects it",
+   "state": "option",
+   "awaiting": true,
+   "what": "A centred seal: a check inside a ring, with tick marks that sweep round once like the Timeline's ticks. The most classic \"it worked\" of the three. Device limit: a 3 / 3 gauge with an amber marker.",
+   "rows": [
+    {
+     "heading": "Activated",
+     "shots": [
+      {
+       "file": "receipt-d3-activated-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "receipt-d3-activated-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "How it moves (once, then rests)",
+     "shots": [
+      {
+       "file": "receipt-d3-motion-dark.jpg",
+       "caption": "Frames at 100, 250, 600 and 1600 ms: the ticks sweep round the ring, then the check appears."
+      }
+     ]
+    },
+    {
+     "heading": "Device limit reached",
+     "shots": [
+      {
+       "file": "receipt-d3-overcap-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "receipt-d3-overcap-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "receipts_verdict": "Pick one, or mix: the activated look from one direction and the device-limit look from another. My suggestion is Direction 3 for the activated receipt (it reads as a celebration at a glance) with Direction 1's device tiles for the device limit (they show the problem most plainly). The names and dates are test data; whether a real licence carries the holder's name and the updates date is being confirmed by the agent that built these."
 }

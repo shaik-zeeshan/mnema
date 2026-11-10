@@ -178,7 +178,8 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = [(link(drafts, "approve", "Waiting for your approval"), "screenshots that need your yes before they become references",
+    rows = ([(link(drafts, "receipts", "Licence receipts: pick a direction"), "three redesigned directions, built and rendered",
+              chip("your pick", "strong"))] if d.get("receipts") else []) + [(link(drafts, "approve", "Waiting for your approval"), "screenshots that need your yes before they become references",
              chip("awaiting your approval", "strong")),
             (link(drafts, "fixes", "Today’s fixes: before and after"), "10 Nov · before and after pictures of each fix",
              chip("built"))]
@@ -248,6 +249,11 @@ def main():
          fixes_page(d, drafts, "approve", "Waiting for your approval",
                     "Every screenshot that needs your yes before it becomes a reference, in one place."),
          "Mnema GPUI — screenshots waiting for approval")
+    if d.get("receipts"):
+        emit("receipts", "receipts.html", "Licence receipts: pick a direction",
+             fixes_page(d, drafts, "receipts", "Licence receipts: pick a direction",
+                        "Three redesigned directions for the receipt you see after buying Mnema, each built and rendered in the real app."),
+             "Mnema GPUI — licence receipt directions")
     for g in d["shots"]:
         name = g["title"].split(" — ")[0]
         emit(slug(g), f"shots-{slug(g)}.html", f"{name} screenshots", shots_page(g, d, drafts), f"Mnema GPUI — {name} screenshots")
