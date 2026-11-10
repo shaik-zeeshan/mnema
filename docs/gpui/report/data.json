@@ -1,489 +1,533 @@
 {
-  "updated": "2026-11-10 14:10",
-  "verdict": "About 90% done. Everything is built and the polish pass from the final side-by-side sweep is in. What's left: your sign-off on the refreshed screenshots, your hands-on checks, and the cut-over on your go.",
-  "metrics": [
-    {
-      "label": "Overall",
-      "value": "~90%",
-      "note": "of the whole build"
-    },
-    {
-      "label": "Backend moved",
-      "value": "~90%",
-      "note": "the Tauri app is down from ~104k to ~9.5k Rust lines"
-    },
-    {
-      "label": "Screens built",
-      "value": "9 of 9",
-      "note": "all screens and windows"
-    },
-    {
-      "label": "Tests passing",
-      "value": "1,623",
-      "note": "1,338 shared + 71 Tauri + 214 GPUI, 0 failing"
-    },
-    {
-      "label": "Screenshots approved",
-      "value": "all",
-      "note": "every screen and window, incl. the polish refresh"
-    }
-  ],
-  "bars": [
-    {
-      "label": "Groundwork (plan, spike, tooling)",
-      "pct": 100
-    },
-    {
-      "label": "Backend move (S1–S4)",
-      "pct": 100
-    },
-    {
-      "label": "Native layer (S7)",
-      "pct": 95
-    },
-    {
-      "label": "Screens (S5, S6, S8–S15)",
-      "pct": 100
-    },
-    {
-      "label": "Packaging + updater (S16)",
-      "pct": 90
-    },
-    {
-      "label": "Cut-over (S17)",
-      "pct": 0
-    }
-  ],
-  "now": [
-    {
-      "id": "Waiting",
-      "title": "Waiting for you",
-      "detail": "The hands-on checklist below (dev bundle + signed build), the startup-log comparison, then an explicit go for cut-over."
-    }
-  ],
-  "done": [
-    {
-      "id": "T0",
-      "title": "Plan, agents, skill, hooks",
-      "what": "The slice plan, four specialised agents, a conventions skill every agent loads, and hooks that format code and enforce the 800-line cap.",
-      "commit": "2c315085"
-    },
-    {
-      "id": "P0",
-      "title": "Side-by-side screenshot tool",
-      "what": "One command shoots GPUI | Tauri | mockup for any screen and state, so every gap is visible.",
-      "commit": "0abcfa90"
-    },
-    {
-      "id": "S0",
-      "title": "Spike: proved the stack",
-      "what": "All 11 risky pieces work in GPUI: fonts, transparent titlebar, Quick Recall-style panel, hidden from screen capture, tray, global hotkey, mnema:// links, database on tokio, graceful ⌘Q, offscreen golden screenshots. First paint ~160 ms; 0% CPU when hidden.",
-      "commit": "0c403fb9"
-    },
-    {
-      "id": "Rust pin",
-      "title": "Toolchain pinned to 1.99.1",
-      "what": "GPUI needs Rust ≥1.93; the repo now pins stable so local builds match CI.",
-      "commit": "e6739709"
-    },
-    {
-      "id": "S1",
-      "title": "Shared backend crate",
-      "what": "app-core: the seam both apps run on (host, paths, events, one runtime, typed state). The Tauri app runs on it unchanged.",
-      "commit": "f45ddec5"
-    },
-    {
-      "id": "S2 B0–B1",
-      "title": "First backend moves",
-      "what": "Logging, recording settings, model-download lock, and 7 self-contained modules (clock format, speaker helper, OCR budget, …).",
-      "commit": "d9820408, 630dab6f"
-    },
-    {
-      "id": "S5",
-      "title": "GPUI main window",
-      "what": "Titlebar, status bar, themes with system follow and cross-fade, keyboard shortcuts, notifications / shortcuts / status popovers. 33 behaviour tests.",
-      "commit": "0e168b10"
-    },
-    {
-      "id": "S2 B2 + B5",
-      "title": "More backend moves",
-      "what": "ChatGPT login, app log, storage, debug status, licensing, licence-list refresh, shortcut model. Fixed a regression where ‘open app log’ lost its error message.",
-      "commit": "ff8c2a36"
-    },
-    {
-      "id": "S2 B3",
-      "title": "Model downloads + semantic search",
-      "what": "OCR, transcription and speaker model downloads, the download lock, semantic search models, worker and query (SQL byte-identical).",
-      "commit": "f83ea6ea, 07df67e8"
-    },
-    {
-      "id": "S16a",
-      "title": "Update install gate",
-      "what": "An update installs only if Apple-signed by your own team with the same bundle id (and the CLI helper too). Caught and fixed a forgeable team check before it landed.",
-      "commit": "1c5d32bd"
-    },
-    {
-      "id": "S6",
-      "title": "Shared controls",
-      "what": "Every control the app uses, themed to the redesign: buttons, segmented, switch, inputs, selects, date picker, popovers, tooltips, toasts, modals, notices, skeletons, chips.",
-      "commit": "c04e5ae2"
-    },
-    {
-      "id": "S16b",
-      "title": "Updater core",
-      "what": "Update settings, status machine and the licence update-window gate moved to the shared crate.",
-      "commit": "9d609663"
-    },
-    {
-      "id": "S2 B4",
-      "title": "AI runtime + user context",
-      "what": "AI provider resolution (incl. the ChatGPT token-refresh gate, unchanged), user context, privacy rules, sensitive-app recommendations.",
-      "commit": "ebd213ac"
-    },
-    {
-      "id": "S2 B6",
-      "title": "Database layer",
-      "what": "Setup, workers' control, the frame pipeline, timeline/search/speaker commands, retention policy, Quick Recall's backend, CLI access and the CLI approval channel — 50 SQL strings unchanged, 1,356 tests green.",
-      "commit": "e8198e04"
-    },
-    {
-      "id": "S8",
-      "title": "Timeline screen",
-      "what": "Stage with OCR + match overlays, the scrub rail with app bands and audio lane, date jumper, frame actions, image cache; every timing constant tested at its boundary. Matches Tauri within ~1 px. Scroll-smoothness needs a performance pass (a few stutters up to 170 ms).",
-      "commit": "2a17488a"
-    },
-    {
-      "id": "S11",
-      "title": "Chat screen",
-      "what": "List, thread, live-streaming answers (prose, bars, dossier, timeline), sources, composer with Send/Stop, model picker, scope. Near pixel match with Tauri after 3 fix rounds.",
-      "commit": "bc38c3bb"
-    },
-    {
-      "id": "S2 B6b",
-      "title": "Frame previews",
-      "what": "The preview pipeline (frame and scrub previews, cache) moved to the shared crate; the backend move's S2 step is complete.",
-      "commit": "26e994bb"
-    },
-    {
-      "id": "S3a",
-      "title": "Recording engine move — part 1",
-      "what": "Capture runtime, system audio, browser URL, metadata, capture health, and most of activity, microphone and privacy moved to the shared crate; 1,364 tests green.",
-      "commit": "5467e174"
-    },
-    {
-      "id": "S13",
-      "title": "Settings screen",
-      "what": "Rail with search, save status, scroll-spy, all sections; autosave timings (450 / 0 / 250 ms) and the 500 ms reload spin tested. Saves that need the recording engine, native dialogs or the updater wait for those steps.",
-      "commit": "daf681ab"
-    },
-    {
-      "id": "S3b",
-      "title": "Recording engine move — part 2",
-      "what": "segments.rs (the heart of recording) and the recording lifecycle moved in 12 files; every moved function diffed against the original; 1,370 tests green.",
-      "commit": "84ff6911"
-    },
-    {
-      "id": "S12",
-      "title": "Insights screen",
-      "what": "Overview, Journal with the receipt timelapse, Subjects with the evidence drawer and the 5-second Undo, Context (live). Six chart types.",
-      "commit": "b934b8ed"
-    },
-    {
-      "id": "S3c+d",
-      "title": "Recording engine move — finished",
-      "what": "Recording controls, settings apply, MCP connectors, the not-recording reminder, Ask AI and conversations, and every piece that was waiting. 1,375 backend tests green.",
-      "commit": "824c20bc"
-    },
-    {
-      "id": "S4",
-      "title": "Startup and shutdown",
-      "what": "One shared start, deferred-start and graceful-exit sequence; a test pins all 32 startup steps in today's order; every quit path goes through it.",
-      "commit": "4ea3fb16"
-    },
-    {
-      "id": "S15",
-      "title": "Small windows",
-      "what": "CLI access request (live), update window, permission helper, developer window with mini mode.",
-      "commit": "fa8b93c9"
-    },
-    {
-      "id": "S7",
-      "title": "Native layer",
-      "what": "The GPUI app runs the shared startup and graceful quit; tray, global hotkeys, mnema:// links, single instance, Dock, native dialogs, reminder notification, a dev .app bundle. Checked unattended: links, single instance, hidden-from-capture, Dock, ⌘⌥M, ⌘Q.",
-      "commit": "c1e48d62"
-    },
-    {
-      "id": "S8-perf",
-      "title": "Timeline smoothness",
-      "what": "A correct frame-time measurement; scrubbing now costs ~2–6 ms of work per frame (budget 8), Chat streaming ~2.5 ms. Remaining drops come from system memory pressure.",
-      "commit": "c365b475"
-    },
-    {
-      "id": "S9",
-      "title": "Audio drawer + leaner image cache",
-      "what": "Transcript with word-by-word karaoke, speaker-coloured waveform, speaker repair, native playback, drawer keys. The Timeline image cache now keeps compressed frames like today's app: memory 1.2 GB → 0.33 GB.",
-      "commit": "9ce0e7a2"
-    },
-    {
-      "id": "S10",
-      "title": "Quick Recall panel",
-      "what": "The ⌘⌥Space floating panel: search with filter pills and ghost completion, best moment, Quick Look strip, Ask with streaming answers and citations, recent rows. Appears ~18 ms after the hotkey (target 50).",
-      "commit": "675f8439"
-    },
-    {
-      "id": "S14",
-      "title": "Onboarding",
-      "what": "The 8-step setup window; only Capture & Storage blocks (your ruling); downloads never block; Voice 15 s; Finale starts recording and shows the first frame + OCR. Main never opens before setup is done.",
-      "commit": "cbc83041"
-    },
-    {
-      "id": "S16",
-      "title": "Packaging + updater",
-      "what": "A bundle script that builds and signs Mnema.app with the CLI helper and notarisation; the update flow (signature, Apple same-team check, swap with rollback, relaunch); an opt-in CI job. No Homebrew libraries in the release binary.",
-      "commit": "f31d8bcd"
-    },
-    {
-      "id": "Polish",
-      "title": "Parity polish pass",
-      "what": "Fixed the gaps from the final sweep: legible disabled buttons, provider reachability check in Settings, chat date-range scope, Insights idle copy with Start recording, evidence pager, CLI tiles, filled pause/stop, small-window spacing.",
-      "commit": "see git log"
-    }
-  ],
-  "next": [
-    {
-      "id": "Docs",
-      "title": "Docs pass",
-      "detail": "AGENTS.md and the capture/Ask AI notes still point at src-tauri paths; update them to app-core."
-    },
-    {
-      "id": "S17",
-      "title": "Cut-over",
-      "detail": "On your go: GPUI becomes Mnema (day.mnema), Tauri and Svelte are deleted, CI and docs updated."
-    }
-  ],
-  "rulings": [
-    "Side by side, not a rewrite in place; Tauri keeps shipping until cut-over.",
-    "Pin stable Rust (1.99.1).",
-    "Solid tinted surfaces instead of in-window blur (titlebar, popovers).",
-    "The titlebar section icons may stay the app's own drawings.",
-    "12 shell and 20 control screenshots approved after viewing.",
-    "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09).",
-    "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09).",
-    "Onboarding screenshots approved (2026-11-09).",
-    "The 101 screenshots refreshed by the polish pass approved (2026-11-10)."
-  ],
-  "risks": [
-    "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
-    "The recording engine now runs from the shared crate; it still needs a real recording smoke test, and permission flows need your signed build.",
-    "Screens may need several fix rounds to match pixel-for-pixel; the Timeline will show how many."
-  ],
-  "shots": [
-    {
-      "title": "Onboarding — approved",
-      "note": "All 8 steps incl. permissions granted/denied, storage blocked, setup done; dark/light.",
-      "files": [
-        "onboarding-capture",
-        "onboarding-capture-blocked",
-        "onboarding-change",
-        "onboarding-finale",
-        "onboarding-permissions",
-        "onboarding-permissions-denied",
-        "onboarding-permissions-granted",
-        "onboarding-settings",
-        "onboarding-setup",
-        "onboarding-setup-done",
-        "onboarding-voice",
-        "onboarding-welcome"
-      ]
-    },
-    {
-      "title": "Small windows — approved",
-      "note": "Access request, update window, permission helper, developer window and mini mode; dark/light.",
-      "files": [
-        "access-granted",
-        "access-no-request",
-        "access-request",
-        "access-widen",
-        "debug-ai",
-        "debug-capture",
-        "debug-logs",
-        "debug-mini-mini",
-        "debug-not-recording",
-        "debug-overview-issues",
-        "debug-overview-ok",
-        "debug-pipeline",
-        "permission-helper-granted",
-        "permission-helper-waiting",
-        "update-available",
-        "update-check-failed",
-        "update-checking",
-        "update-downloading",
-        "update-install-failed",
-        "update-ready",
-        "update-uptodate"
-      ]
-    },
-    {
-      "title": "Quick Recall — approved",
-      "note": "Idle, results, Quick Look, Ask streaming and done, recent, filter popover; dark/light.",
-      "files": [
-        "quick-recall-idle",
-        "quick-recall-results",
-        "quick-recall-quicklook",
-        "quick-recall-ask-streaming",
-        "quick-recall-ask-done",
-        "quick-recall-recent",
-        "quick-recall-filter"
-      ]
-    },
-    {
-      "title": "Audio drawer — approved",
-      "note": "Peek, expanded reader, speaker repair, not-transcribed; dark/light.",
-      "files": [
-        "timeline-drawer-peek",
-        "timeline-drawer-expanded",
-        "timeline-drawer-repair",
-        "timeline-drawer-no-transcript"
-      ]
-    },
-    {
-      "title": "Timeline — approved",
-      "note": "5 states × dark/light.",
-      "files": [
-        "timeline-populated",
-        "timeline-empty",
-        "timeline-stale",
-        "timeline-matches",
-        "timeline-narrow"
-      ]
-    },
-    {
-      "title": "Chat — approved",
-      "note": "5 states × dark/light.",
-      "files": [
-        "chat-empty",
-        "chat-list",
-        "chat-mid-stream",
-        "chat-done",
-        "chat-error"
-      ]
-    },
-    {
-      "title": "Settings — approved",
-      "note": "12 sections × dark/light.",
-      "files": [
-        "settings-general",
-        "settings-general-shortcuts",
-        "settings-capture",
-        "settings-capture-video",
-        "settings-capture-privacy",
-        "settings-intelligence",
-        "settings-intelligence-askai",
-        "settings-intelligence-ocr",
-        "settings-intelligence-speakers",
-        "settings-data",
-        "settings-data-access",
-        "settings-about"
-      ]
-    },
-    {
-      "title": "Insights — approved",
-      "note": "Every tab, empty and populated, plus a subject page and an open receipt; dark/light.",
-      "files": [
-        "insights-overview",
-        "insights-overview-empty",
-        "insights-journal",
-        "insights-journal-empty",
-        "insights-receipt",
-        "insights-subjects",
-        "insights-subjects-empty",
-        "insights-subject",
-        "insights-context",
-        "insights-context-empty"
-      ]
-    },
-    {
-      "title": "Main window — approved",
-      "note": "Now shows the real Timeline instead of a placeholder.",
-      "files": [
-        "shell-populated",
-        "shell-empty",
-        "shell-recording",
-        "shell-notifications",
-        "shell-shortcuts",
-        "shell-narrow"
-      ]
-    },
-    {
-      "title": "Shared controls — approved",
-      "note": "Every control in every state.",
-      "files": [
-        "gallery-buttons",
-        "gallery-fields",
-        "gallery-choice",
-        "gallery-select",
-        "gallery-date",
-        "gallery-overlays",
-        "gallery-feedback",
-        "gallery-empty",
-        "gallery-loading",
-        "gallery-status"
-      ]
-    }
-  ],
-  "checklist": {
-    "intro": "Things only a person (or a signed build) can check. Build the dev app with `bash scripts/bundle-gpui-app.sh --dev` and open it with `open`; it runs on a copy of your dev data. Quit your real Mnema first.",
-    "items": [
-      {
-        "try": "Tray before onboarding",
-        "right": "Set the copy's onboarding-state.json aside, open the bundle, click the tray icon: Complete Setup / Settings / Quit Mnema.",
-        "tag": "dev bundle"
-      },
-      {
-        "try": "Tray after onboarding",
-        "right": "Full menu. A lone source can't be unchecked; Delete Last 1 Minute… shows a warning sheet; Exclude Current App… (Safari in front) confirms then says App Excluded; Quit is graceful.",
-        "tag": "dev bundle"
-      },
-      {
-        "try": "Settings › Storage › Browse… and Insights › Context › delete",
-        "right": "A folder picker opens and the path appears; deleting a statement shows a ‘Delete context’ sheet.",
-        "tag": "dev bundle"
-      },
-      {
-        "try": "⌘⌥R / ⌘⌥P with recording, then ⌘Q while recording",
-        "right": "Recording starts/stops; on ⌘Q the log shows ‘stopped active native capture during graceful app exit’ before exit.",
-        "tag": "signed build"
-      },
-      {
-        "try": "Shortcut conflict",
-        "right": "Bind ⌘⌥Space in another app, relaunch: a ‘Global shortcuts unavailable’ notification row appears.",
-        "tag": "dev bundle"
-      },
-      {
-        "try": "Not-recording reminder",
-        "right": "Stay stopped 30+ minutes; allow notifications; both Start and Snooze for today work.",
-        "tag": "signed build"
-      },
-      {
-        "try": "Sleep/wake while recording",
-        "right": "Log shows will-sleep, recovery on wake, screens sleep/wake; the REC clock and Timeline polling pause while screens sleep.",
-        "tag": "signed build"
-      },
-      {
-        "try": "A settings change that needs a restart",
-        "right": "The app relaunches by itself.",
-        "tag": "dev bundle"
-      },
-      {
-        "try": "Onboarding with real permissions (signed build)",
-        "right": "Delete the dev onboarding state, open the signed build: onboarding opens, not main. Screen: Allow → relaunch notice → resumes. Deny → recovery + permission helper; focusing re-checks. Mic ticks; system audio shows ‘Sound is arriving’ (never a tick). Voice 15 s enrols. Finale starts recording and shows a real frame + OCR. Closing early quits.",
-        "tag": "signed build"
-      },
-      {
-        "try": "Updater with your identity (dev bundle only)",
-        "right": "Run the ignored gate tests with MNEMA_TEST_SIGNING_IDENTITY. Build A (0.1.27) and B (0.1.28) with --dev and a local test feed; A updates to B and relaunches. A tampered archive and an ad-hoc (wrong-team) re-sign are both refused with ‘This update isn't signed by Mnema.’ and the old app stays. mnema-cli status works. Never build --release before cut-over: it is the real app on your real data.",
-        "tag": "signed build"
-      }
-    ]
+ "updated": "2026-11-10 16:40",
+ "verdict": "Every screen is built, but the first hands-on run showed many were still on test data. Two wiring passes have since connected them to the real backend, and the six issues from today's hands-on test are being fixed now. \"Built\" means it renders and passes tests; \"wired\" means it talks to the real backend; \"driven\" means someone used it in the real app. Almost nothing is driven yet.",
+ "metrics": [
+  {
+   "label": "Overall",
+   "value": "built, being wired",
+   "note": "all screens built; 38 marked shortcuts left; hands-on fixes in progress"
+  },
+  {
+   "label": "Backend moved",
+   "value": "~90%",
+   "note": "the Tauri app is down from ~104k to ~9.5k Rust lines"
+  },
+  {
+   "label": "Screens built",
+   "value": "9 of 9",
+   "note": "all screens and windows"
+  },
+  {
+   "label": "Tests passing",
+   "value": "1,623",
+   "note": "1,338 shared + 71 Tauri + 214 GPUI, 0 failing (GPUI now 239 + 4 wiring)"
+  },
+  {
+   "label": "Screenshots approved",
+   "value": "5 pending",
+   "note": "onboarding screens changed by the 10 Nov layout fix"
   }
+ ],
+ "bars": [
+  {
+   "label": "Groundwork (plan, spike, tooling)",
+   "pct": 100
+  },
+  {
+   "label": "Backend move (S1–S4)",
+   "pct": 100
+  },
+  {
+   "label": "Native layer (S7)",
+   "pct": 95
+  },
+  {
+   "label": "Screens (S5, S6, S8–S15)",
+   "pct": 100
+  },
+  {
+   "label": "Packaging + updater (S16)",
+   "pct": 90
+  },
+  {
+   "label": "Cut-over (S17)",
+   "pct": 0
+  }
+ ],
+ "now": [
+  {
+   "id": "Icons",
+   "title": "App icons: blurry, and under the Timeline rails",
+   "detail": "Agent working. Not built yet."
+  },
+  {
+   "id": "Hover",
+   "title": "Square hover and focus corners",
+   "detail": "Design-system sweep across every screen. Agent working. Not built yet."
+  },
+  {
+   "id": "Sign-off",
+   "title": "Waiting for you",
+   "detail": "Five onboarding screenshots changed by today's fix (Welcome, Change settings, Models, Setup, Setup done). Before/after sheets were opened in Preview."
+  }
+ ],
+ "done": [
+  {
+   "id": "T0",
+   "title": "Plan, agents, skill, hooks",
+   "what": "The slice plan, four specialised agents, a conventions skill every agent loads, and hooks that format code and enforce the 800-line cap.",
+   "commit": "2c315085"
+  },
+  {
+   "id": "P0",
+   "title": "Side-by-side screenshot tool",
+   "what": "One command shoots GPUI | Tauri | mockup for any screen and state, so every gap is visible.",
+   "commit": "0abcfa90"
+  },
+  {
+   "id": "S0",
+   "title": "Spike: proved the stack",
+   "what": "All 11 risky pieces work in GPUI: fonts, transparent titlebar, Quick Recall-style panel, hidden from screen capture, tray, global hotkey, mnema:// links, database on tokio, graceful ⌘Q, offscreen golden screenshots. First paint ~160 ms; 0% CPU when hidden.",
+   "commit": "0c403fb9"
+  },
+  {
+   "id": "Rust pin",
+   "title": "Toolchain pinned to 1.99.1",
+   "what": "GPUI needs Rust ≥1.93; the repo now pins stable so local builds match CI.",
+   "commit": "e6739709"
+  },
+  {
+   "id": "S1",
+   "title": "Shared backend crate",
+   "what": "app-core: the seam both apps run on (host, paths, events, one runtime, typed state). The Tauri app runs on it unchanged.",
+   "commit": "f45ddec5"
+  },
+  {
+   "id": "S2 B0–B1",
+   "title": "First backend moves",
+   "what": "Logging, recording settings, model-download lock, and 7 self-contained modules (clock format, speaker helper, OCR budget, …).",
+   "commit": "d9820408, 630dab6f"
+  },
+  {
+   "id": "S5",
+   "title": "GPUI main window",
+   "what": "Titlebar, status bar, themes with system follow and cross-fade, keyboard shortcuts, notifications / shortcuts / status popovers. 33 behaviour tests.",
+   "commit": "0e168b10"
+  },
+  {
+   "id": "S2 B2 + B5",
+   "title": "More backend moves",
+   "what": "ChatGPT login, app log, storage, debug status, licensing, licence-list refresh, shortcut model. Fixed a regression where ‘open app log’ lost its error message.",
+   "commit": "ff8c2a36"
+  },
+  {
+   "id": "S2 B3",
+   "title": "Model downloads + semantic search",
+   "what": "OCR, transcription and speaker model downloads, the download lock, semantic search models, worker and query (SQL byte-identical).",
+   "commit": "f83ea6ea, 07df67e8"
+  },
+  {
+   "id": "S16a",
+   "title": "Update install gate",
+   "what": "An update installs only if Apple-signed by your own team with the same bundle id (and the CLI helper too). Caught and fixed a forgeable team check before it landed.",
+   "commit": "1c5d32bd"
+  },
+  {
+   "id": "S6",
+   "title": "Shared controls",
+   "what": "Every control the app uses, themed to the redesign: buttons, segmented, switch, inputs, selects, date picker, popovers, tooltips, toasts, modals, notices, skeletons, chips.",
+   "commit": "c04e5ae2"
+  },
+  {
+   "id": "S16b",
+   "title": "Updater core",
+   "what": "Update settings, status machine and the licence update-window gate moved to the shared crate.",
+   "commit": "9d609663"
+  },
+  {
+   "id": "S2 B4",
+   "title": "AI runtime + user context",
+   "what": "AI provider resolution (incl. the ChatGPT token-refresh gate, unchanged), user context, privacy rules, sensitive-app recommendations.",
+   "commit": "ebd213ac"
+  },
+  {
+   "id": "S2 B6",
+   "title": "Database layer",
+   "what": "Setup, workers' control, the frame pipeline, timeline/search/speaker commands, retention policy, Quick Recall's backend, CLI access and the CLI approval channel — 50 SQL strings unchanged, 1,356 tests green.",
+   "commit": "e8198e04"
+  },
+  {
+   "id": "S8",
+   "title": "Timeline screen",
+   "what": "Stage with OCR + match overlays, the scrub rail with app bands and audio lane, date jumper, frame actions, image cache; every timing constant tested at its boundary. Matches Tauri within ~1 px. Scroll-smoothness needs a performance pass (a few stutters up to 170 ms).",
+   "commit": "2a17488a"
+  },
+  {
+   "id": "S11",
+   "title": "Chat screen",
+   "what": "List, thread, live-streaming answers (prose, bars, dossier, timeline), sources, composer with Send/Stop, model picker, scope. Near pixel match with Tauri after 3 fix rounds.",
+   "commit": "bc38c3bb"
+  },
+  {
+   "id": "S2 B6b",
+   "title": "Frame previews",
+   "what": "The preview pipeline (frame and scrub previews, cache) moved to the shared crate; the backend move's S2 step is complete.",
+   "commit": "26e994bb"
+  },
+  {
+   "id": "S3a",
+   "title": "Recording engine move — part 1",
+   "what": "Capture runtime, system audio, browser URL, metadata, capture health, and most of activity, microphone and privacy moved to the shared crate; 1,364 tests green.",
+   "commit": "5467e174"
+  },
+  {
+   "id": "S13",
+   "title": "Settings screen",
+   "what": "Rail with search, save status, scroll-spy, all sections; autosave timings (450 / 0 / 250 ms) and the 500 ms reload spin tested. Saves that need the recording engine, native dialogs or the updater wait for those steps.",
+   "commit": "daf681ab"
+  },
+  {
+   "id": "S3b",
+   "title": "Recording engine move — part 2",
+   "what": "segments.rs (the heart of recording) and the recording lifecycle moved in 12 files; every moved function diffed against the original; 1,370 tests green.",
+   "commit": "84ff6911"
+  },
+  {
+   "id": "S12",
+   "title": "Insights screen",
+   "what": "Overview, Journal with the receipt timelapse, Subjects with the evidence drawer and the 5-second Undo, Context (live). Six chart types.",
+   "commit": "b934b8ed"
+  },
+  {
+   "id": "S3c+d",
+   "title": "Recording engine move — finished",
+   "what": "Recording controls, settings apply, MCP connectors, the not-recording reminder, Ask AI and conversations, and every piece that was waiting. 1,375 backend tests green.",
+   "commit": "824c20bc"
+  },
+  {
+   "id": "S4",
+   "title": "Startup and shutdown",
+   "what": "One shared start, deferred-start and graceful-exit sequence; a test pins all 32 startup steps in today's order; every quit path goes through it.",
+   "commit": "4ea3fb16"
+  },
+  {
+   "id": "S15",
+   "title": "Small windows",
+   "what": "CLI access request (live), update window, permission helper, developer window with mini mode.",
+   "commit": "fa8b93c9"
+  },
+  {
+   "id": "S7",
+   "title": "Native layer",
+   "what": "The GPUI app runs the shared startup and graceful quit; tray, global hotkeys, mnema:// links, single instance, Dock, native dialogs, reminder notification, a dev .app bundle. Checked unattended: links, single instance, hidden-from-capture, Dock, ⌘⌥M, ⌘Q.",
+   "commit": "c1e48d62"
+  },
+  {
+   "id": "S8-perf",
+   "title": "Timeline smoothness",
+   "what": "A correct frame-time measurement; scrubbing now costs ~2–6 ms of work per frame (budget 8), Chat streaming ~2.5 ms. Remaining drops come from system memory pressure.",
+   "commit": "c365b475"
+  },
+  {
+   "id": "S9",
+   "title": "Audio drawer + leaner image cache",
+   "what": "Transcript with word-by-word karaoke, speaker-coloured waveform, speaker repair, native playback, drawer keys. The Timeline image cache now keeps compressed frames like today's app: memory 1.2 GB → 0.33 GB.",
+   "commit": "9ce0e7a2"
+  },
+  {
+   "id": "S10",
+   "title": "Quick Recall panel",
+   "what": "The ⌘⌥Space floating panel: search with filter pills and ghost completion, best moment, Quick Look strip, Ask with streaming answers and citations, recent rows. Appears ~18 ms after the hotkey (target 50).",
+   "commit": "675f8439"
+  },
+  {
+   "id": "S14",
+   "title": "Onboarding",
+   "what": "The 8-step setup window; only Capture & Storage blocks (your ruling); downloads never block; Voice 15 s; Finale starts recording and shows the first frame + OCR. Main never opens before setup is done.",
+   "commit": "cbc83041"
+  },
+  {
+   "id": "S16",
+   "title": "Packaging + updater",
+   "what": "A bundle script that builds and signs Mnema.app with the CLI helper and notarisation; the update flow (signature, Apple same-team check, swap with rollback, relaunch); an opt-in CI job. No Homebrew libraries in the release binary.",
+   "commit": "f31d8bcd"
+  },
+  {
+   "id": "Polish",
+   "title": "Parity polish pass",
+   "what": "Fixed the gaps from the final sweep: legible disabled buttons, provider reachability check in Settings, chat date-range scope, Insights idle copy with Start recording, evidence pager, CLI tiles, filled pause/stop, small-window spacing.",
+   "commit": "see git log"
+  },
+  {
+   "id": "Wire A",
+   "title": "Shell, Timeline and Chat on the real backend",
+   "what": "Recording controls, the Timeline and Chat now read and write real data instead of test data. Wired, tested; not driven end to end.",
+   "commit": "202d5a9e"
+  },
+  {
+   "id": "Wire B",
+   "title": "Onboarding, Settings, debug and Insights on the real backend",
+   "what": "The onboarding finish step, Settings saves, the developer window and the remaining Insights pieces. This also fixed the stuck Screen Resolution and the microphone error seen in the 14:45 screenshot (that build predated it). Wired, tested; not driven.",
+   "commit": "8a1fcb2d"
+  },
+  {
+   "id": "Fix 1",
+   "title": "Settings loads in two steps",
+   "what": "Local reads (microphone, capture support, permissions) land at once; keychain and network reads follow, each capped at 10 s, and a failed one says so instead of showing \"Checking…\" forever. Built and wired; not driven.",
+   "commit": "c6fdbe9b"
+  },
+  {
+   "id": "Fix 2",
+   "title": "Onboarding: model list fits, text lines up",
+   "what": "The Semantic Search model row no longer runs off the window (English / Multilingual, then that group's models, as in the Tauri app). Mixed-size text now sits on one baseline on Welcome, Change settings and Setup. Built; screenshots await sign-off; not driven.",
+   "commit": "e82d4847"
+  }
+ ],
+ "next": [
+  {
+   "id": "Resize",
+   "title": "Window-size behaviour",
+   "detail": "Nothing cut off in a small window, and pages use or centre in a large one, with the Tauri app as the reference."
+  },
+  {
+   "id": "Gaps",
+   "title": "Still unwired or unbuilt",
+   "detail": "38 marked shortcuts remain: capture health in the status bar, licence banner and deep-link receipt, Chat thumbnails / app icons / inline audio, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip."
+  },
+  {
+   "id": "Docs",
+   "title": "Docs pass",
+   "detail": "AGENTS.md and the capture/Ask AI notes still point at src-tauri paths; update them to app-core."
+  },
+  {
+   "id": "S17",
+   "title": "Cut-over",
+   "detail": "On your go: GPUI becomes Mnema (day.mnema), Tauri and Svelte are deleted, CI and docs updated."
+  }
+ ],
+ "rulings": [
+  "Side by side, not a rewrite in place; Tauri keeps shipping until cut-over.",
+  "Pin stable Rust (1.99.1).",
+  "Solid tinted surfaces instead of in-window blur (titlebar, popovers).",
+  "The titlebar section icons may stay the app's own drawings.",
+  "12 shell and 20 control screenshots approved after viewing.",
+  "Timeline, Chat, Settings, Insights and the updated main-window screenshots approved (2026-11-09).",
+  "Small windows, audio drawer, Quick Recall and the 16 resampled Timeline/shell screenshots approved (2026-11-09).",
+  "Onboarding screenshots approved (2026-11-09).",
+  "The 101 screenshots refreshed by the polish pass approved (2026-11-10)."
+ ],
+ "risks": [
+  "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
+  "The recording engine now runs from the shared crate; it still needs a real recording smoke test, and permission flows need your signed build.",
+  "Screens may need several fix rounds to match pixel-for-pixel; the Timeline will show how many."
+ ],
+ "shots": [
+  {
+   "title": "Onboarding — approved",
+   "note": "All 8 steps incl. permissions granted/denied, storage blocked, setup done; dark/light.",
+   "files": [
+    "onboarding-capture",
+    "onboarding-capture-blocked",
+    "onboarding-change",
+    "onboarding-finale",
+    "onboarding-permissions",
+    "onboarding-permissions-denied",
+    "onboarding-permissions-granted",
+    "onboarding-settings",
+    "onboarding-setup",
+    "onboarding-setup-done",
+    "onboarding-voice",
+    "onboarding-welcome"
+   ]
+  },
+  {
+   "title": "Small windows — approved",
+   "note": "Access request, update window, permission helper, developer window and mini mode; dark/light.",
+   "files": [
+    "access-granted",
+    "access-no-request",
+    "access-request",
+    "access-widen",
+    "debug-ai",
+    "debug-capture",
+    "debug-logs",
+    "debug-mini-mini",
+    "debug-not-recording",
+    "debug-overview-issues",
+    "debug-overview-ok",
+    "debug-pipeline",
+    "permission-helper-granted",
+    "permission-helper-waiting",
+    "update-available",
+    "update-check-failed",
+    "update-checking",
+    "update-downloading",
+    "update-install-failed",
+    "update-ready",
+    "update-uptodate"
+   ]
+  },
+  {
+   "title": "Quick Recall — approved",
+   "note": "Idle, results, Quick Look, Ask streaming and done, recent, filter popover; dark/light.",
+   "files": [
+    "quick-recall-idle",
+    "quick-recall-results",
+    "quick-recall-quicklook",
+    "quick-recall-ask-streaming",
+    "quick-recall-ask-done",
+    "quick-recall-recent",
+    "quick-recall-filter"
+   ]
+  },
+  {
+   "title": "Audio drawer — approved",
+   "note": "Peek, expanded reader, speaker repair, not-transcribed; dark/light.",
+   "files": [
+    "timeline-drawer-peek",
+    "timeline-drawer-expanded",
+    "timeline-drawer-repair",
+    "timeline-drawer-no-transcript"
+   ]
+  },
+  {
+   "title": "Timeline — approved",
+   "note": "5 states × dark/light.",
+   "files": [
+    "timeline-populated",
+    "timeline-empty",
+    "timeline-stale",
+    "timeline-matches",
+    "timeline-narrow"
+   ]
+  },
+  {
+   "title": "Chat — approved",
+   "note": "5 states × dark/light.",
+   "files": [
+    "chat-empty",
+    "chat-list",
+    "chat-mid-stream",
+    "chat-done",
+    "chat-error"
+   ]
+  },
+  {
+   "title": "Settings — approved",
+   "note": "12 sections × dark/light.",
+   "files": [
+    "settings-general",
+    "settings-general-shortcuts",
+    "settings-capture",
+    "settings-capture-video",
+    "settings-capture-privacy",
+    "settings-intelligence",
+    "settings-intelligence-askai",
+    "settings-intelligence-ocr",
+    "settings-intelligence-speakers",
+    "settings-data",
+    "settings-data-access",
+    "settings-about"
+   ]
+  },
+  {
+   "title": "Insights — approved",
+   "note": "Every tab, empty and populated, plus a subject page and an open receipt; dark/light.",
+   "files": [
+    "insights-overview",
+    "insights-overview-empty",
+    "insights-journal",
+    "insights-journal-empty",
+    "insights-receipt",
+    "insights-subjects",
+    "insights-subjects-empty",
+    "insights-subject",
+    "insights-context",
+    "insights-context-empty"
+   ]
+  },
+  {
+   "title": "Main window — approved",
+   "note": "Now shows the real Timeline instead of a placeholder.",
+   "files": [
+    "shell-populated",
+    "shell-empty",
+    "shell-recording",
+    "shell-notifications",
+    "shell-shortcuts",
+    "shell-narrow"
+   ]
+  },
+  {
+   "title": "Shared controls — approved",
+   "note": "Every control in every state.",
+   "files": [
+    "gallery-buttons",
+    "gallery-fields",
+    "gallery-choice",
+    "gallery-select",
+    "gallery-date",
+    "gallery-overlays",
+    "gallery-feedback",
+    "gallery-empty",
+    "gallery-loading",
+    "gallery-status"
+   ]
+  }
+ ],
+ "checklist": {
+  "intro": "Things only a person (or a signed build) can check. Build the dev app with `bash scripts/bundle-gpui-app.sh --dev` and open it with `open`; it runs on a copy of your dev data. Quit your real Mnema first.",
+  "items": [
+   {
+    "try": "Tray before onboarding",
+    "right": "Set the copy's onboarding-state.json aside, open the bundle, click the tray icon: Complete Setup / Settings / Quit Mnema.",
+    "tag": "dev bundle"
+   },
+   {
+    "try": "Tray after onboarding",
+    "right": "Full menu. A lone source can't be unchecked; Delete Last 1 Minute… shows a warning sheet; Exclude Current App… (Safari in front) confirms then says App Excluded; Quit is graceful.",
+    "tag": "dev bundle"
+   },
+   {
+    "try": "Settings › Storage › Browse… and Insights › Context › delete",
+    "right": "A folder picker opens and the path appears; deleting a statement shows a ‘Delete context’ sheet.",
+    "tag": "dev bundle"
+   },
+   {
+    "try": "⌘⌥R / ⌘⌥P with recording, then ⌘Q while recording",
+    "right": "Recording starts/stops; on ⌘Q the log shows ‘stopped active native capture during graceful app exit’ before exit.",
+    "tag": "signed build"
+   },
+   {
+    "try": "Shortcut conflict",
+    "right": "Bind ⌘⌥Space in another app, relaunch: a ‘Global shortcuts unavailable’ notification row appears.",
+    "tag": "dev bundle"
+   },
+   {
+    "try": "Not-recording reminder",
+    "right": "Stay stopped 30+ minutes; allow notifications; both Start and Snooze for today work.",
+    "tag": "signed build"
+   },
+   {
+    "try": "Sleep/wake while recording",
+    "right": "Log shows will-sleep, recovery on wake, screens sleep/wake; the REC clock and Timeline polling pause while screens sleep.",
+    "tag": "signed build"
+   },
+   {
+    "try": "A settings change that needs a restart",
+    "right": "The app relaunches by itself.",
+    "tag": "dev bundle"
+   },
+   {
+    "try": "Onboarding with real permissions (signed build)",
+    "right": "Delete the dev onboarding state, open the signed build: onboarding opens, not main. Screen: Allow → relaunch notice → resumes. Deny → recovery + permission helper; focusing re-checks. Mic ticks; system audio shows ‘Sound is arriving’ (never a tick). Voice 15 s enrols. Finale starts recording and shows a real frame + OCR. Closing early quits.",
+    "tag": "signed build"
+   },
+   {
+    "try": "Updater with your identity (dev bundle only)",
+    "right": "Run the ignored gate tests with MNEMA_TEST_SIGNING_IDENTITY. Build A (0.1.27) and B (0.1.28) with --dev and a local test feed; A updates to B and relaunches. A tampered archive and an ad-hoc (wrong-team) re-sign are both refused with ‘This update isn't signed by Mnema.’ and the old app stays. mnema-cli status works. Never build --release before cut-over: it is the real app on your real data.",
+    "tag": "signed build"
+   }
+  ]
+ }
 }
