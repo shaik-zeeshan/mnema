@@ -157,7 +157,7 @@ fn shoot_frames(
     cx.update(|cx| theme::set_setting(setting, cx));
     let source = Arc::new(FixtureSource::load("first-run")?);
     let mut parts = None;
-    let window = cx.open_offscreen_window(compare::viewport((1280., 800.)), |window, cx| {
+    let window = crate::pointer::open(cx, compare::viewport((1280., 800.)), |window, cx| {
         let shell = cx.new(|cx| Shell::with_timeline_source(model, source, window, cx));
         let s = shell.read(cx);
         parts = Some((s.timeline.clone(), s.licence.clone()));

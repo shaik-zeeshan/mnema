@@ -122,7 +122,7 @@ pub fn render(
     cx.update(|cx| theme::set_setting(setting, cx));
     let backend: Arc<dyn Backend> = Arc::new(FixtureBackend::load(file)?);
     let mut view = None;
-    let window = cx.open_offscreen_window(compare::viewport(onboarding::SIZE), |window, cx| {
+    let window = crate::pointer::open(cx, compare::viewport(onboarding::SIZE), |window, cx| {
         let v = cx.new(|cx| Onboarding::new(backend, |_, _| {}, cx));
         view = Some(v.clone());
         cx.new(|cx| Root::new(v, window, cx).bg(transparent_black()))

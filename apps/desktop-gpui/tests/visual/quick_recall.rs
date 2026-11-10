@@ -74,7 +74,7 @@ pub fn render(
     let backend = Arc::new(FixtureBackend::load(state)?);
     let b: Arc<dyn Backend> = backend.clone();
     let mut view = None;
-    let window = cx.open_offscreen_window(size(px(VIEWPORT.0), px(VIEWPORT.1)), |window, cx| {
+    let window = crate::pointer::open(cx, size(px(VIEWPORT.0), px(VIEWPORT.1)), |window, cx| {
         let qr = cx.new(|cx| {
             let mut qr = QuickRecall::new(b, window, cx);
             qr.native_fit = false;

@@ -21,6 +21,8 @@ mod insights;
 mod licence;
 #[path = "visual/onboarding.rs"]
 mod onboarding;
+#[path = "visual/pointer.rs"]
+mod pointer;
 #[path = "visual/quick_recall.rs"]
 mod quick_recall;
 #[path = "visual/scroll.rs"]
@@ -190,18 +192,15 @@ fn render(
     };
     let source = Arc::new(FixtureSource::load(fixture)?);
     let mut timeline = None;
-    let window = cx.open_offscreen_window(
-        compare::viewport(state.viewport),
-        |window, cx| {
-            let shell = cx.new(|cx| {
-                let mut shell = Shell::with_timeline_source(model, source, window, cx);
-                shell.overlay = overlay;
-                shell
-            });
-            timeline = Some(shell.read(cx).timeline.clone());
-            cx.new(|cx| Root::new(shell, window, cx))
-        },
-    )?;
+    let window = pointer::open(cx, compare::viewport(state.viewport), |window, cx| {
+        let shell = cx.new(|cx| {
+            let mut shell = Shell::with_timeline_source(model, source, window, cx);
+            shell.overlay = overlay;
+            shell
+        });
+        timeline = Some(shell.read(cx).timeline.clone());
+        cx.new(|cx| Root::new(shell, window, cx))
+    })?;
     let timeline = timeline.expect("timeline");
     for _ in 0..3 {
         timeline::settle(cx, &timeline);

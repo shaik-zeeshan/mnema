@@ -19,7 +19,7 @@ fn shoot(
     setting: AppearanceSetting,
 ) -> anyhow::Result<image::RgbaImage> {
     cx.update(|cx| theme::set_setting(setting, cx));
-    let window = cx.open_offscreen_window(size(px(viewport.0), px(viewport.1)), |window, cx| {
+    let window = crate::pointer::open(cx, size(px(viewport.0), px(viewport.1)), |window, cx| {
         let gallery = cx.new(|cx| Gallery::new(groups, window, cx));
         cx.new(|cx| Root::new(gallery, window, cx))
     })?;

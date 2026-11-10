@@ -65,7 +65,7 @@ pub fn render(
     }
     cx.update(|cx| theme::set_setting(setting, cx));
     let mut settings = None;
-    let window = cx.open_offscreen_window(compare::viewport(VIEWPORT), |window, cx| {
+    let window = crate::pointer::open(cx, compare::viewport(VIEWPORT), |window, cx| {
         let shell = cx.new(|cx| {
             let mut shell = Shell::new(shell_model, window, cx);
             shell.go(Surface::Settings, cx);

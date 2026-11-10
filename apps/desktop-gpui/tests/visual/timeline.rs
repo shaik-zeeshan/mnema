@@ -224,7 +224,7 @@ fn shoot_with(
     let source = Arc::new(FixtureSource::load(state.fixture)?.with_icons(icons));
     let src = source.clone();
     let mut timeline = None;
-    let window = cx.open_offscreen_window(compare::viewport(state.viewport), |window, cx| {
+    let window = crate::pointer::open(cx, compare::viewport(state.viewport), |window, cx| {
         let shell = cx.new(|cx| Shell::with_timeline_source(shell, src, window, cx));
         timeline = Some(shell.read(cx).timeline.clone());
         cx.new(|cx| Root::new(shell, window, cx))

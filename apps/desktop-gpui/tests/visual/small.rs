@@ -100,7 +100,7 @@ pub fn render(
     cx.update(|cx| theme::set_setting(setting, cx));
     let vp = viewport(surface);
     let mut access_view = None;
-    let window = cx.open_offscreen_window(compare::viewport(vp), |window, cx| {
+    let window = crate::pointer::open(cx, compare::viewport(vp), |window, cx| {
         let root =
             |view: gpui_kit::AnyView, window: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
                 cx.new(|cx| Root::new(view, window, cx).bg(transparent_black()))

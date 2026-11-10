@@ -73,7 +73,7 @@ fn case(
 ) -> anyhow::Result<(AnyWindowHandle, ScrollHandle)> {
     let handle = ScrollHandle::new();
     let h = handle.clone();
-    let window = cx.open_offscreen_window(size(px(300.), px(300.)), move |window, cx| {
+    let window = crate::pointer::open(cx, size(px(300.), px(300.)), move |window, cx| {
         let v = cx.new(|_| Area { handle: h, rows });
         cx.new(|cx| Root::new(v, window, cx))
     })?;

@@ -2,6 +2,8 @@
 //! `ui::choice` option paints its hover state, list rows (`--mx-wash` fill) and
 //! tiles (`--app-border-hover` edge) alike. The gallery's goldens pin the hover
 //! look with `Force::Hover`; this pins that a real pointer reaches it.
+//! `-- pointer`: the real system pointer over a golden window never paints
+//! hover (see `pointer.rs`), while a simulated move still does.
 
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
@@ -72,7 +74,7 @@ fn hover_case(
     list: bool,
     probe: impl Fn(Bounds<Pixels>) -> Point<Pixels>,
 ) -> anyhow::Result<([u8; 4], [u8; 4])> {
-    let window = cx.open_offscreen_window(size(px(600.), px(400.)), move |window, cx| {
+    let window = crate::pointer::open(cx, size(px(600.), px(400.)), move |window, cx| {
         let v = cx.new(|_| Pick { list });
         cx.new(|cx| Root::new(v, window, cx))
     })?;
@@ -102,7 +104,7 @@ fn settings_case(cx: &mut VisualTestAppContext) -> anyhow::Result<([u8; 4], [u8;
     use mnema_gpui::shell::{Shell, ShellModel, Surface};
     let data = settings_data()?;
     let mut settings = None;
-    let window = cx.open_offscreen_window(size(px(1280.), px(800.)), |window, cx| {
+    let window = crate::pointer::open(cx, size(px(1280.), px(800.)), |window, cx| {
         let shell = cx.new(|cx| {
             let mut shell = Shell::new(ShellModel::default(), window, cx);
             shell.go(Surface::Settings, cx);
@@ -176,12 +178,109 @@ fn settings_case(cx: &mut VisualTestAppContext) -> anyhow::Result<([u8; 4], [u8;
     Ok((before, after))
 }
 
-pub fn checks(cx: &mut VisualTestAppContext, filters: &[String]) -> anyhow::Result<Vec<String>> {
-    if !filters.is_empty() && !filters.iter().any(|f| "hover".contains(f.as_str())) {
-        return Ok(Vec::new());
+/// Opens the list pick; `raw` skips `pointer::open`'s park (what goldens did before).
+fn open_pick(cx: &mut VisualTestAppContext, raw: bool) -> anyhow::Result<AnyWindowHandle> {
+    let build = |window: &mut Window, cx: &mut gpui_kit::App| {
+        let v = cx.new(|_| Pick { list: true });
+        cx.new(|cx| Root::new(v, window, cx))
+    };
+    let s = size(px(600.), px(400.));
+    let window = if raw {
+        cx.open_offscreen_window(s, build)?
+    } else {
+        crate::pointer::open(cx, s, build)?
+    };
+    Ok(window.into())
+}
+
+fn mouse(cx: &mut VisualTestAppContext, w: AnyWindowHandle) -> anyhow::Result<Point<Pixels>> {
+    Ok(cx.update_window(w, |_, window, _| window.mouse_position())?)
+}
+
+/// Is option 0 hovered? Its row fill against option 2's (also unselected).
+fn row0_hovered(cx: &mut VisualTestAppContext, w: AnyWindowHandle) -> anyhow::Result<bool> {
+    settle(cx, w)?;
+    let fill = |b: Bounds<Pixels>| point(b.right() - px(30.), b.top() + px(6.));
+    let (b0, b2) = (bounds_of(cx, w, 0)?, bounds_of(cx, w, 2)?);
+    let shot = cx.capture_screenshot(w)?;
+    Ok(pixel(&shot, fill(b0)) != pixel(&shot, fill(b2)))
+}
+
+/// Puts the REAL pointer over option 0 of where a test window lands, opens one
+/// window raw and one through `pointer::open`, and puts the pointer straight
+/// back. The raw one must show the hover (else the check proves nothing), the
+/// golden one must not, and a simulated move must still hover it.
+fn real_pointer_case(cx: &mut VisualTestAppContext) -> anyhow::Result<Vec<String>> {
+    let home = crate::pointer::system::location();
+    let mut placed = None;
+    for _ in 0..3 {
+        // Where the window lands: its pointer is the real one, in its own points.
+        let probe = open_pick(cx, true)?;
+        settle(cx, probe)?;
+        let (seen, b) = (mouse(cx, probe)?, bounds_of(cx, probe, 0)?);
+        cx.update_window(probe, |_, window, _| window.remove_window())?;
+        let home_now = crate::pointer::system::location();
+        crate::pointer::system::warp(home_now + (b.center() - seen));
+        let opened = (open_pick(cx, true), open_pick(cx, false));
+        crate::pointer::system::warp(home_now);
+        let (raw, golden) = (opened.0?, opened.1?);
+        if b.contains(&mouse(cx, raw)?) {
+            placed = Some((raw, golden));
+            break;
+        }
+        // Someone moved the pointer in between: try again.
+        for w in [raw, golden] {
+            cx.update_window(w, |_, window, _| window.remove_window())?;
+        }
     }
+    let mut failures = Vec::new();
+    let Some((raw, golden)) = placed else {
+        let back = crate::pointer::system::location();
+        failures.push(format!(
+            "pointer: could not put the real pointer over a test window (now {back:?}, was {home:?})"
+        ));
+        return Ok(failures);
+    };
+    if !row0_hovered(cx, raw)? {
+        failures.push("pointer: a raw window under the real pointer shows no hover, so this check proves nothing".into());
+    }
+    if row0_hovered(cx, golden)? {
+        failures.push("pointer: the real pointer painted hover into a golden window".into());
+    }
+    let at = bounds_of(cx, golden, 0)?.center();
+    cx.simulate_event(
+        golden,
+        MouseMoveEvent {
+            position: at,
+            modifiers: Modifiers::default(),
+            pressed_button: None,
+        },
+    );
+    if !row0_hovered(cx, golden)? {
+        failures.push("pointer: a simulated move no longer hovers a golden window".into());
+    }
+    for w in [raw, golden] {
+        cx.update_window(w, |_, window, _| window.remove_window())?;
+    }
+    println!(
+        "  pointer: {}",
+        if failures.is_empty() { "ok" } else { "FAILED" }
+    );
+    Ok(failures)
+}
+
+pub fn checks(cx: &mut VisualTestAppContext, filters: &[String]) -> anyhow::Result<Vec<String>> {
+    let wants =
+        |name: &str| filters.is_empty() || filters.iter().any(|f| name.contains(f.as_str()));
     cx.update(|cx| theme::set_setting(AppearanceSetting::Dark, cx));
     let mut failures = Vec::new();
+    if wants("pointer") {
+        failures.extend(real_pointer_case(cx)?);
+    }
+    if !wants("hover") {
+        return Ok(failures);
+    }
+    let pointer_failures = failures.len();
     // A list row's fill, well clear of its text.
     let (before, after) = hover_case(cx, true, |b| point(b.right() - px(30.), b.top() + px(6.)))?;
     if before == after {
@@ -202,7 +301,11 @@ pub fn checks(cx: &mut VisualTestAppContext, filters: &[String]) -> anyhow::Resu
     }
     println!(
         "  hover: {}",
-        if failures.is_empty() { "ok" } else { "FAILED" }
+        if failures.len() == pointer_failures {
+            "ok"
+        } else {
+            "FAILED"
+        }
     );
     Ok(failures)
 }
