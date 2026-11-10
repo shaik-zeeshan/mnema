@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-10 21:16",
- "verdict": "Every screen is built and connected to the real backend, and all six issues from the 10 Nov hands-on test have a committed fix. Since then capture health, Chat sources, the licence banner and receipt, and centring on large windows have been added. A signed dev build with all of it was opened at 19:15 on a completely clean state. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
+ "updated": "2026-11-10 21:26",
+ "verdict": "Every screen is built and connected to the real backend. Both hands-on rounds from 10 Nov are fixed and committed: six issues from the first, five from the clean first run. Capture health, Chat sources, the licence banner and redesigned receipts, the privacy prompt and centring on large windows are in too. A signed dev build with all of it was opened at 21:26. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
    "label": "Overall",
    "value": "built, being wired",
-   "note": "all screens built; hands-on fixes committed; 31 marked shortcuts left"
+   "note": "all screens built; both hands-on rounds fixed; 31 marked shortcuts left"
   },
   {
    "label": "Backend moved",
@@ -20,12 +20,12 @@
   {
    "label": "Tests passing",
    "value": "1,623",
-   "note": "1,338 shared + 71 Tauri + 356 GPUI (351 + 5 wiring); shared and Tauri counts are from before 10 Nov"
+   "note": "1,338 shared + 71 Tauri + 364 GPUI (359 + 5 wiring); shared and Tauri counts are from before 10 Nov"
   },
   {
    "label": "Screenshots approved",
-   "value": "1 pending",
-   "note": "the control gallery's buttons page, which gains a link row"
+   "value": "all",
+   "note": "every reference screenshot is approved as of 10 Nov 21:30"
   }
  ],
  "bars": [
@@ -56,9 +56,9 @@
  ],
  "now": [
   {
-   "id": "Round 2",
-   "title": "Second hands-on round",
-   "detail": "Search, text cursor and developer logs are committed. Links and scroll bars are being re-tested, then a new signed dev build."
+   "id": "Next",
+   "title": "Next gaps",
+   "detail": "31 marked shortcuts remain. Next in line: Chat tool-row app icons and the timeline answer block, the keymap applying a rebind without a restart, and making screenshot tests ignore the real mouse pointer."
   }
  ],
  "done": [
@@ -337,13 +337,19 @@
    "title": "Search, text cursor and developer logs",
    "what": "Quick Recall search no longer fails on every query (one missing line in the shared startup); the text cursor is as tall as its text and sits on it; the developer logs show one row per line. Built; search is wired and tested on a seeded index; not driven on real data.",
    "commit": "7cb8edd2"
+  },
+  {
+   "id": "Fix 9",
+   "title": "Links that open, and scroll bars",
+   "what": "A shared link control used in Settings › About, MCP settings, Chat and release notes; Buy and Renew in Settings › License now open checkout. A shared scroll bar that auto-hides like macOS on every scrolling area. Built; not driven.",
+   "commit": "27580509"
   }
  ],
  "next": [
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "31 marked shortcuts remain: Chat tool-row app icons and timeline block, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, and the Models tab's per-model size strip."
+   "detail": "31 marked shortcuts remain: Chat tool-row app icons and timeline block, keymap rebind without restart, MCP custom connector, debug job inspector, language pickers, voice level meter, audio search hit opening the audio drawer, the Models tab's per-model size strip, and ten text fields whose height setting does nothing."
   },
   {
    "id": "Docs",
@@ -372,7 +378,8 @@
   "Centred large-window layout approved as shown, incl. the onboarding top and bottom bars following the column (2026-11-10).",
   "Licence receipts: the updates timeline for activated, the ticket with device tiles for the device limit, the notched tear line on both (2026-11-10).",
   "Sensitive-app exclusion prompt and the two licence banners approved (2026-11-10).",
-  "Final licence receipt design approved, incl. renewed, pending, working and failed (2026-11-10)."
+  "Final licence receipt design approved, incl. renewed, pending, working and failed (2026-11-10).",
+  "Scroll bars auto-hide like macOS everywhere, a deliberate difference from Tauri; the gallery's link row approved (2026-11-10)."
  ],
  "risks": [
   "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -651,14 +658,9 @@
  ],
  "waiting": [
   {
-   "id": "Round 2",
-   "title": "Two small things on the second hands-on page",
-   "detail": "Approve the control gallery's new link row, and say whether auto-hiding scroll bars are right or you want them always visible as in the Tauri app."
-  },
-  {
    "id": "Drive",
-   "title": "Hands-on test of the clean dev build",
-   "detail": "A signed dev build was opened on 10 Nov at 19:15 on wiped state: no data, settings, models, logs or permissions, so it starts in onboarding as a true first run. It has every fix from today, capture health, Chat sources, centring and the licence banner. None of it has been driven yet."
+   "title": "Hands-on test of the 21:26 dev build",
+   "detail": "It has the second-round fixes (search, text cursor, developer logs, links, scroll bars) and the new licence receipts, on the same dev data and permissions as your last run. To see a receipt you need a licence link."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -1549,7 +1551,7 @@
   }
  ],
  "receipts_verdict": "Approved on 10 Nov and merged: the updates timeline for activated, the ticket for the device limit, the notched tear line on both, carried to renewed, pending, working and failed. The three original directions are kept below for comparison.",
- "round2_verdict": "All five things from your clean first run are fixed. Search, the text cursor and the developer logs are committed; links and scroll bars are being re-tested before they are committed. None of it is in the dev build you have open yet; a new build follows. Two things for you on this page: the control gallery's buttons page changed (it gains a link row) and needs your yes, and scroll bars auto-hide everywhere where the Tauri app keeps them always visible outside Settings.",
+ "round2_verdict": "All five things from your clean first run are fixed and committed, and they are in the signed dev build opened on 10 Nov at 21:26 (your dev data and permissions were kept). You approved the gallery's link row and chose auto-hiding scroll bars. Nothing on this page is waiting on you; none of it has been driven yet.",
  "round2": [
   {
    "anchor": "r2-search",
@@ -1616,8 +1618,8 @@
    "anchor": "r2-links",
    "title": "Links were plain text and opened nothing",
    "toc": "Links",
-   "commit": "being re-tested",
-   "state": "fixed · built",
+   "commit": "27580509",
+   "state": "fixed · built · gallery screenshot approved 10 Nov",
    "awaiting": false,
    "what": "One shared link control with two looks taken from the Tauri app: the underlined green link used in Chat answers, and the small grey source link with an arrow used in About, which turns green on hover. It opens only web and email links. Now working: every third-party entry in Settings › About, the \"Create one\" token links in MCP settings, the page link in Chat's frame peek, and links inside Chat answers and release notes. It also found that the Buy and Renew buttons in Settings › License did nothing; they now open the checkout page. Not built, because the feature behind them isn't in the new app yet: the nodejs.org link in MCP settings and the ChatGPT connect link in Settings.",
    "rows": [
@@ -1657,10 +1659,10 @@
    "anchor": "r2-scroll",
    "title": "No scroll bars where content scrolls",
    "toc": "Scroll bars",
-   "commit": "being re-tested",
-   "state": "fixed · built · one choice for you",
-   "awaiting": true,
-   "what": "One shared scroll bar that floats over the content the way macOS does: it takes no space, appears only where content overflows, shows while you scroll or when the pointer reaches the right edge, then fades, and the thumb can be dragged. Applied to the developer window, Settings, Chat, Insights, the Timeline transcript, Quick Recall, onboarding, and long menus. Your choice: the Tauri app shows an always-visible 12 px bar everywhere except Settings, where it auto-hides. Here it auto-hides everywhere, which keeps every approved screenshot unchanged. The pictures show the bar while scrolling.",
+   "commit": "27580509",
+   "state": "fixed · built · auto-hide confirmed 10 Nov",
+   "awaiting": false,
+   "what": "One shared scroll bar that floats over the content the way macOS does: it takes no space, appears only where content overflows, shows while you scroll or when the pointer reaches the right edge, then fades, and the thumb can be dragged. Applied to the developer window, Settings, Chat, Insights, the Timeline transcript, Quick Recall, onboarding, and long menus. You chose auto-hide on 10 Nov. For the record, the Tauri app shows an always-visible 12 px bar everywhere except Settings, where it auto-hides. Here it auto-hides everywhere, which keeps every approved screenshot unchanged. The pictures show the bar while scrolling.",
    "rows": [
     {
      "heading": "Developer logs",
