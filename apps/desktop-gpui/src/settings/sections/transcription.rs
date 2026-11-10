@@ -20,6 +20,7 @@ use crate::ui::input::TextInput;
 use crate::ui::segmented::Segmented;
 use crate::ui::stepper::Stepper;
 use crate::ui::switch::Switch;
+use crate::ui::Button;
 
 const PROVIDERS: [AudioTranscriptionProvider; 4] = [
     AudioTranscriptionProvider::Parakeet,
@@ -114,17 +115,77 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .into_any_element(),
     ];
     if t.provider == AudioTranscriptionProvider::Deepgram {
-        // shortcut: transcription_set_deepgram_key / _test_deepgram are app-core async commands;
-        // the key field's save + check results land with the vault round-trip (S13 follow-up).
+        let key_desc = match (&s.data.deepgram_auth, s.data.deepgram_key) {
+            (Some(problem), _) => format!("Deepgram rejected the saved key: {problem}"),
+            (None, true) => {
+                "A key is saved in the encrypted vault. Paste a new one to replace it.".into()
+            }
+            (None, false) => "Paste the API key from your Deepgram account.".to_string(),
+        };
+        use crate::settings::{commands, live};
         rows.push(
             row("Deepgram API key")
-                .desc("Paste the API key from your Deepgram account.")
+                .desc(key_desc)
                 .full()
-                .control(div().w_full().child(TextInput::new(
-                    "deepgram-key",
-                    "Deepgram API key",
-                    &s.inputs.deepgram_key,
-                )))
+                .control(
+                    div()
+                        .flex()
+                        .gap(crate::theme::space::S2)
+                        .w_full()
+                        .child(div().flex_1().child(TextInput::new(
+                            "deepgram-key",
+                            "Deepgram API key",
+                            &s.inputs.deepgram_key,
+                        )))
+                        .child(
+                            Button::new("deepgram-save", "Save key")
+                                .disabled(s.ui.busy.contains("Deepgram key"))
+                                .on_click(commands::click_w(cx, |s, window, cx| {
+                                    let input = s.inputs.deepgram_key.clone();
+                                    let key = commands::take_input(&input, window, cx);
+                                    if !key.is_empty() {
+                                        s.run_command("Deepgram key", cx, move |core| {
+                                            live::deepgram_save(core, key)
+                                        });
+                                    }
+                                })),
+                        )
+                        .when(s.data.deepgram_key, |d| {
+                            d.child(Button::new("deepgram-check", "Check").ghost().on_click(
+                                crate::settings::click(cx, |s, cx| {
+                                    s.run_command("Deepgram key", cx, live::deepgram_test)
+                                }),
+                            ))
+                            .child(
+                                Button::new("deepgram-clear", "Clear").ghost().on_click(
+                                    crate::settings::click(cx, |s, cx| {
+                                        s.run_command("Deepgram key", cx, live::deepgram_clear)
+                                    }),
+                                ),
+                            )
+                        }),
+                )
+                .build(p)
+                .into_any_element(),
+        );
+    }
+    if t.provider == AudioTranscriptionProvider::AppleSpeechOnDevice {
+        rows.push(
+            row("Speech Recognition permission")
+                .desc(
+                    "Apple Speech needs macOS Speech Recognition access. Audio stays on this Mac.",
+                )
+                .control(
+                    Button::new("speech-allow", "Allow access")
+                        .disabled(s.ui.busy.contains("Speech Recognition"))
+                        .on_click(crate::settings::click(cx, |s, cx| {
+                            s.run_command(
+                                "Speech Recognition",
+                                cx,
+                                crate::settings::live::request_speech_permission,
+                            )
+                        })),
+                )
                 .build(p)
                 .into_any_element(),
         );

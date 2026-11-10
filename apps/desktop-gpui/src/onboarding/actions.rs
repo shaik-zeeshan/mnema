@@ -54,7 +54,13 @@ impl Onboarding {
                             s.screen_needs_relaunch = true;
                         }
                     }
-                    Err(e) => s.error = Some(e),
+                    Err(e) => {
+                        log::warn!(
+                            "onboarding: the {} permission request failed: {e}",
+                            m.wire()
+                        );
+                        s.error = Some(e);
+                    }
                 }
             },
         );
@@ -364,6 +370,11 @@ impl Onboarding {
         if self.dl.apply(event, &items).is_some() {
             if self.dl.in_flight.is_none() {
                 self.drive_downloads(cx);
+                // The start is refused while a model it needs is still
+                // downloading; once nothing is in flight, ask again.
+                if self.step == Step::Finale && matches!(self.finale, FinalePhase::Failed(_)) {
+                    self.commit(cx);
+                }
             }
             cx.notify();
         }
@@ -512,6 +523,9 @@ impl Onboarding {
                 Err((completed, e)) => {
                     s.completed |= completed;
                     s.finale = FinalePhase::Failed(e);
+                    // A failed commit may run again (Try again, coming back to
+                    // this step, a model that finished downloading).
+                    s.committed = false;
                 }
                 Ok(()) => {
                     s.completed = true;

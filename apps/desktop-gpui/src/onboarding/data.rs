@@ -318,11 +318,13 @@ impl Backend for CoreBackend {
     }
 
     fn start_sys_audio_probe(&self) {
-        let _ = self.0.block_on(
+        if let Err(e) = self.0.block_on(
             app_core::native_capture::microphone::bounded_clip::start_system_audio_level_probe(
                 &self.0,
             ),
-        );
+        ) {
+            log::warn!("onboarding: the system-audio level probe didn't start: {e:?}");
+        }
     }
 
     fn sys_audio_level(&self) -> Option<f32> {
@@ -347,7 +349,10 @@ impl Backend for CoreBackend {
                     .map(|a| (a.bundle_id, a.display_name))
                     .collect()
             })
-            .unwrap_or_default()
+            .unwrap_or_else(|e| {
+                log::warn!("onboarding: couldn't list apps to exclude: {e}");
+                Vec::new()
+            })
     }
 
     fn start_download(&self, item: &WorkItem) -> Result<(), String> {
@@ -446,11 +451,33 @@ impl Backend for CoreBackend {
             persist_onboarding_state, OnboardingState, OnboardingStateStore,
         };
         let core = &self.0;
-        let request = app_core::recording_settings::recording_settings_request_from_settings(
-            settings.clone(),
-        );
+        // Nothing fails silently: the Finale shows `why`, the log keeps it.
+        let fail = |completed: bool, step: &str, why: String| {
+            log::error!("onboarding: finish failed at {step}: {why}");
+            (completed, why)
+        };
+        // Privacy first, through its own domain: the full save refuses any
+        // privacy change ("must be changed with dedicated privacy commands"),
+        // and the draft's exclusions (the seeded recommendations) are one.
+        let mut settings = settings.clone();
+        let saved = app_core::native_capture::settings_update::get_recording_settings(core);
+        if settings.privacy != saved.privacy {
+            let wanted = settings.privacy.clone();
+            let applied = app_core::native_capture::settings_update::apply_recording_settings_domain_mutation_from_core(
+                core,
+                capture_types::SettingsOwnershipDomain::AppPrivacyExclusion,
+                move |s| {
+                    s.privacy = wanted;
+                    Ok(())
+                },
+            )
+            .map_err(|e| fail(false, "the privacy exclusions", e.message))?;
+            settings.privacy = applied.settings.privacy;
+        }
+        let request =
+            app_core::recording_settings::recording_settings_request_from_settings(settings);
         app_core::native_capture::settings_update::update_recording_settings(request, core)
-            .map_err(|e| (false, e.message))?;
+            .map_err(|e| fail(false, "the settings save", e.message))?;
         // Completion BEFORE the side-effecting start: a failed start must not
         // leave capture live with onboarding still incomplete.
         persist_onboarding_state(
@@ -458,11 +485,11 @@ impl Backend for CoreBackend {
             &core.state::<OnboardingStateStore>(),
             OnboardingState::completed_now(),
         )
-        .map_err(|e| (false, e))?;
+        .map_err(|e| fail(false, "marking onboarding complete", e))?;
         core.host().refresh_tray();
         if let Some(start) = start {
             app_core::native_capture::control::start_native_capture(start, core)
-                .map_err(|e| (true, e.message))?;
+                .map_err(|e| fail(true, "the capture start", e.message))?;
         }
         Ok(())
     }

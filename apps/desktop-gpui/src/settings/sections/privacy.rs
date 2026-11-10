@@ -22,13 +22,12 @@ const URL_MODES: [BrowserUrlMode; 3] = [
     BrowserUrlMode::Full,
 ];
 
-fn add_app_button(s: &Settings) -> Button {
-    // shortcut: the installed-app search (list_privacy_app_candidates) is native_capture
-    // until S3; the popover opens on an empty list then.
+fn add_app_button(s: &Settings, cx: &mut Context<Settings>) -> Button {
     Button::new("excl-add", "Add app\u{2026}")
         .sm()
         .icon(icons::PLUS)
         .disabled(s.privacy_in_flight)
+        .on_click(click(cx, |s, cx| s.open_app_picker(cx)))
 }
 
 fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
@@ -40,7 +39,7 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
             icons::SHIELD,
             "No app exclusions",
             "Every app\u{2019}s visible content is recorded. Add the ones that should never be.",
-            vec![add_app_button(s).into_any_element()],
+            vec![add_app_button(s, cx).into_any_element()],
             p,
         )
         .into_any_element();
@@ -140,7 +139,7 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
                 .gap(space::S3)
                 .px(space::S3)
                 .py(px(8.))
-                .child(add_app_button(s))
+                .child(add_app_button(s, cx))
                 .child(
                     div()
                         .text_size(text::SM)
@@ -251,7 +250,41 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .build(p)
             .into_any_element(),
     );
-    // shortcut: the Firefox / Zen Accessibility row needs get_browser_url_accessibility_status
-    // (src-tauri) until S3; it's hidden until then.
+    // Firefox / Zen: their URLs are read through Accessibility, which needs its own grant.
+    if let Some(g) = s.data.gecko.as_ref() {
+        let names: Vec<&str> = g["geckoBrowsers"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|b| b["installed"].as_bool() == Some(true))
+            .filter_map(|b| b["displayName"].as_str())
+            .collect();
+        if !names.is_empty() && d.metadata.enabled {
+            let trusted = g["trusted"].as_bool() == Some(true);
+            let r = row(format!("{} URLs", names.join(" / ")))
+                .desc("These browsers share their address only through macOS Accessibility.");
+            let r = if trusted {
+                r.control(crate::settings::row::state_word(
+                    "allowed",
+                    Some(Tone::Ok),
+                    p,
+                ))
+            } else {
+                r.control(
+                    Button::new("gecko-allow", "Allow Accessibility")
+                        .icon(icons::EXTERNAL)
+                        .icon_after()
+                        .on_click(click(cx, |s, cx| {
+                            s.run_command(
+                                "Accessibility access",
+                                cx,
+                                crate::settings::live::request_accessibility,
+                            )
+                        })),
+                )
+            };
+            rows.push(r.build(p).into_any_element());
+        }
+    }
     section("Privacy", None, Vec::new(), false, rows, p).into_any_element()
 }

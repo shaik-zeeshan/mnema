@@ -128,6 +128,15 @@ impl Render for Settings {
                     .into_any_element(),
             );
         }
+        if let Some(note) = super::commands::note(self, &p, cx) {
+            notices.push(
+                div()
+                    .max_w(px(PAGE_MAX_W))
+                    .mb(space::S5)
+                    .child(note)
+                    .into_any_element(),
+            );
+        }
         if let Some(err) = &self.data.load_error {
             let body = format!(
                 "{}. Capture, privacy and storage show their defaults until it loads.",
@@ -200,5 +209,6 @@ impl Render for Settings {
                     .child(column),
             )
             .children(sections::overlays(self, window, cx))
+            .children(super::commands::app_picker(self, &p, cx))
     }
 }

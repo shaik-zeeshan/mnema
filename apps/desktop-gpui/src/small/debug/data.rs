@@ -1,8 +1,7 @@
 //! The developer window's reads. Each poll fetches one [`Section`] off the main
 //! thread (`DebugBackend::fetch`); the answer is the commands' JSON, so the
 //! parity fixture (command → JSON, what the Svelte stub serves) and app-core
-//! feed the same view. Commands still in src-tauri answer empty, each with a
-//! `shortcut:` line naming the slice that moves it.
+//! feed the same view. The window's few buttons go through `DebugBackend::act`.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -123,9 +122,24 @@ impl DebugData {
     }
 }
 
+/// The window's buttons.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Record,
+    Stop,
+    TestAi,
+    Derive,
+}
+
 pub trait DebugBackend: Send + Sync + 'static {
     /// One section's fields (the rest default). Sync: runs on the background executor.
     fn fetch(&self, section: Section, now_ms: i64) -> DebugData;
+    /// Run a button's command; `Ok(Some(line))` is worth showing, `Err` is the
+    /// backend's own words.
+    fn act(&self, action: Action) -> Result<Option<String>, String> {
+        let _ = action;
+        Err("not available without the app core".into())
+    }
 }
 
 fn json(v: impl Serialize) -> Option<Value> {
@@ -138,7 +152,7 @@ fn list(v: impl Serialize) -> Vec<Value> {
         .unwrap_or_default()
 }
 
-/// `get_capture_health`; `None` until S4's startup manages the capture runtime here.
+/// `get_capture_health` (the capture runtime is managed at startup).
 fn capture(core: &AppCore) -> Option<Value> {
     core.try_state::<app_core::native_capture::lifecycle::NativeCaptureState>()
         .and_then(|s| {
@@ -162,10 +176,28 @@ impl DebugBackend for CoreDebug {
         };
         match section {
             Section::Health => {
-                // shortcut: get_debug_health (the 12-row rollup) is src-tauri
-                // debug_health.rs until S3 moves it; the verdict reads "Checking…".
-                d.fetched_at_ms = Some(now_ms);
                 d.capture = capture(core);
+                let states = (
+                    infra,
+                    core.try_state::<app_core::debug_status::SemanticWorkerHealthState>(),
+                    core.try_state::<RecordingSettingsState>(),
+                );
+                let (Some(infra), Some(worker), Some(settings)) = states else {
+                    d.health_error = Some("the app is still starting".into());
+                    return d;
+                };
+                match core.block_on(app_core::debug_health::get_debug_health(
+                    core, &infra, &worker, &settings,
+                )) {
+                    Ok(rows) => {
+                        d.health = list(rows);
+                        d.fetched_at_ms = Some(now_ms);
+                    }
+                    Err(e) => {
+                        log::warn!("debug: the health rollup failed: {e}");
+                        d.health_error = Some(e);
+                    }
+                }
             }
             Section::Pipeline => {
                 let Some(infra) = infra else {
@@ -221,7 +253,7 @@ impl DebugBackend for CoreDebug {
                     .block_on(app_core::ai_runtime::get_ai_runtime_status(core))
                     .ok()
                     .and_then(json);
-                // shortcut: get_ask_ai_last_turn_usage is src-tauri ask_ai until S3.
+                d.usage = app_core::ask_ai::get_ask_ai_last_turn_usage().and_then(json);
                 d.cli_history = core
                     .block_on(app_core::cli_access::list_cli_access_history(core))
                     .ok()
@@ -259,6 +291,33 @@ impl DebugBackend for CoreDebug {
             },
         }
         d
+    }
+
+    fn act(&self, action: Action) -> Result<Option<String>, String> {
+        let result = self.run(action);
+        if let Err(e) = &result {
+            log::warn!("debug: {action:?} failed: {e}");
+        }
+        result
+    }
+}
+
+impl CoreDebug {
+    fn run(&self, action: Action) -> Result<Option<String>, String> {
+        use app_core::native_capture::control;
+        let core = &self.0;
+        match action {
+            // The same door as the tray's Start / Stop: saved sources, session
+            // event, tray refresh.
+            Action::Record => control::start_native_capture_from_core("debug-window", core)
+                .map(|_| None)
+                .map_err(|e| e.message),
+            Action::Stop => control::stop_native_capture_from_core(core)
+                .map(|_| None)
+                .map_err(|e| e.message),
+            Action::TestAi => crate::settings::live::test_connection(core),
+            Action::Derive => crate::settings::live::derive_now(core),
+        }
     }
 }
 

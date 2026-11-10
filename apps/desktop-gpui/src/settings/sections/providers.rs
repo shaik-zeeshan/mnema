@@ -444,9 +444,17 @@ pub fn render(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settin
     };
     rows.push(
         row("AI runtime")
-            // shortcut: ai_runtime_test_connection is in app-core but its result panel lands with
-            // S3's ask_ai status events; the button is shown, the run is logged only.
-            .control(Button::new("ai-test", "Test connection").disabled(ai.default_model.is_none()))
+            .control(
+                Button::new("ai-test", "Test connection")
+                    .disabled(ai.default_model.is_none() || s.ui.busy.contains("Test connection"))
+                    .on_click(crate::settings::click(cx, |s, cx| {
+                        s.run_command(
+                            "Test connection",
+                            cx,
+                            crate::settings::live::test_connection,
+                        )
+                    })),
+            )
             .when(runtime_line.is_some(), |r| r.below(runtime_line.unwrap()))
             .build(p)
             .into_any_element(),

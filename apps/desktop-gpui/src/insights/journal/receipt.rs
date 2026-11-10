@@ -320,11 +320,15 @@ pub fn render(
             crate::timeline::model::clock_label(stats::local(fms, off), true),
             p,
         ));
+    // Lands on the frame the receipt is showing.
     let open = Button::new("insights-receipt-open", "Open in Timeline")
         .ghost()
         .sm()
         .icon(IconName::ArrowRight.path())
-        .icon_after();
+        .icon_after()
+        .on_click(
+            cx.listener(move |_, _, _, cx| cx.emit(crate::insights::InsightsEvent::OpenFrame(fid))),
+        );
     let cited = this
         .journal
         .as_ref()

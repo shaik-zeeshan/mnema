@@ -1,7 +1,6 @@
 //! Settings' one backend door. `load` fills [`SettingsData`] from `AppCore` on
 //! tokio; saves go through [`Backend`] on the background executor, so tests and
-//! goldens swap in `fixture::FixtureBackend`. Commands still in src-tauri answer
-//! empty here, each with a `shortcut:` line naming the slice that moves it.
+//! goldens swap in `fixture::FixtureBackend`. The live calls are in `live.rs`.
 
 use std::sync::Arc;
 
@@ -18,7 +17,7 @@ fn to_json(v: impl Serialize) -> Option<Value> {
     serde_json::to_value(v).ok()
 }
 
-pub async fn load(core: &AppCore) -> SettingsData {
+pub async fn load(core: &Arc<AppCore>) -> SettingsData {
     let mut d = SettingsData::default();
     d.settings = core
         .try_state::<RecordingSettingsState>()
@@ -97,13 +96,59 @@ pub async fn load(core: &AppCore) -> SettingsData {
         .ok()
         .and_then(to_json);
     d.notices = to_json(app_core::third_party_notices::collect_third_party_notices());
-    // shortcut: get_microphone_controller_state, get_capture_permissions, get_capture_support
-    // and get_system_audio_access_hint are native_capture (src-tauri) until S3; the mic
-    // section shows "Couldn't load microphone state" and the permission rows hide.
-    // shortcut: ask_ai_availability is src-tauri ask_ai until S3; Ask AI reads "Checking…".
+    use app_core::native_capture::permissions as perms;
+    match app_core::native_capture::microphone::controller::get_microphone_controller_state(core) {
+        Ok(mic) => d.mic = Some(mic),
+        Err(e) => log::warn!(
+            "settings: couldn't read the microphone state: {}",
+            e.message
+        ),
+    }
+    d.permissions = to_json(perms::get_capture_permissions(core).permissions);
+    d.capture_support = to_json(perms::get_capture_support());
+    d.system_audio_blocked = perms::get_system_audio_access_hint(core).should_show;
+    d.gecko = to_json(perms::get_browser_url_accessibility_status());
+    d.ask_ai = match app_core::ask_ai::ask_ai_availability(core).await {
+        Ok(a) => to_json(a),
+        Err(e) => {
+            log::warn!("settings: couldn't read Ask AI availability: {e}");
+            None
+        }
+    };
     d.update = app_core::updates::current_status(core).and_then(to_json);
-    // shortcut: get_account_owner_person_id is src-tauri voice_enrollment until S3.
-    // shortcut: list_privacy_app_candidates is native_capture until S3 (Add app… lists nothing).
+    if let Some(infra) = &infra {
+        if let Ok(Some(owner)) =
+            app_core::voice_enrollment::get_account_owner_person_id(infra).await
+        {
+            d.voice_owner_id = Some(owner);
+            let people = app_core::app_infra::list_person_profiles(infra)
+                .await
+                .ok()
+                .and_then(to_json);
+            d.voice_owner = people
+                .as_ref()
+                .and_then(|p| p.as_array())
+                .and_then(|p| p.iter().find(|p| p["id"].as_i64() == Some(owner)))
+                .and_then(|p| p["displayName"].as_str().map(str::to_string))
+                .or(Some("You".into()));
+        }
+    }
+    if let Ok(statuses) = app_core::ask_ai::mcp::oauth_flow::mcp_oauth_statuses(core).await {
+        d.mcp_oauth = to_json(statuses)
+            .and_then(|v| v.as_array().cloned())
+            .unwrap_or_default();
+    }
+    d.deepgram_key =
+        app_core::transcription_deepgram::transcription_has_deepgram_key().await == Ok(true);
+    if let Some(auth) =
+        core.try_state::<app_core::transcription_deepgram::DeepgramAuthStatusState>()
+    {
+        d.deepgram_auth =
+            app_core::transcription_deepgram::transcription_deepgram_auth_status(&auth)
+                .await
+                .ok()
+                .flatten();
+    }
     d
 }
 
@@ -113,6 +158,25 @@ pub enum Family {
     Ocr,
     Transcription,
     Speaker,
+    Semantic,
+}
+
+/// `cancel_*_model_download` for the family's one in-flight download.
+pub fn cancel_download(core: &Arc<AppCore>, family: Family) -> Result<(), String> {
+    match family {
+        Family::Ocr => app_core::ocr_models::cancel_ocr_model_download(core),
+        Family::Transcription => {
+            app_core::audio_transcription_models::cancel_audio_transcription_model_download(core)
+        }
+        Family::Speaker => {
+            app_core::speaker_analysis_models::cancel_speaker_analysis_model_download(core)
+        }
+        Family::Semantic => {
+            app_core::semantic_search_models::cancel_semantic_search_model_download(
+                &core.state::<app_core::semantic_search_models::SemanticSearchModelDownloadState>(),
+            )
+        }
+    }
 }
 
 /// `start_*_model_download`. Progress arrives as `*_download_progress` events.
@@ -142,6 +206,14 @@ pub fn start_download(
             )
             .map(|_| ())
         }
+        Family::Semantic => app_core::semantic_search_models::start_semantic_search_model_download(
+            core,
+            app_core::semantic_search_models::SemanticSearchModelDownloadRequestDto {
+                provider,
+                model_id,
+            },
+        )
+        .map(|_| ()),
         Family::Speaker => {
             app_core::speaker_analysis_models::start_speaker_analysis_model_download(
                 core,
@@ -169,9 +241,7 @@ pub trait Backend: Send + Sync + 'static {
     /// `set_privacy_filter_system_audio`): `next` is the settings after the app-core mutation.
     fn save_privacy(&self, next: &RecordingSettings) -> Result<RecordingSettings, String> {
         let _ = next;
-        // shortcut: privacy commands apply through native_capture (the capture filter)
-        // in src-tauri until S3; the mutation itself is app-core's.
-        Err("privacy commands aren't in app-core until S3".into())
+        Err("no app core".into())
     }
     /// `update_microphone_controller`.
     fn save_mic(
@@ -200,11 +270,16 @@ pub trait Backend: Send + Sync + 'static {
 pub struct CoreBackend(pub Arc<AppCore>);
 
 impl Backend for CoreBackend {
-    fn save_domain(&self, unit: Unit, _: &RecordingSettings) -> Result<RecordingSettings, String> {
-        // shortcut: update_*_settings apply through native_capture_settings.rs (capture
-        // runtime, workers, events) in src-tauri until S3 moves it; until then every
-        // recording-domain save fails honestly ("Couldn't save" + Retry).
-        Err(format!("{} isn't in app-core until S3", unit.command()))
+    fn save_domain(
+        &self,
+        unit: Unit,
+        draft: &RecordingSettings,
+    ) -> Result<RecordingSettings, String> {
+        super::live::save_domain(&self.0, unit, draft)
+    }
+
+    fn save_privacy(&self, next: &RecordingSettings) -> Result<RecordingSettings, String> {
+        super::live::save_privacy(&self.0, next)
     }
 
     fn save_keyboard(&self, bindings: &Value) -> Result<Value, String> {
@@ -223,9 +298,11 @@ impl Backend for CoreBackend {
         Ok(payload)
     }
 
-    fn save_mic(&self, _: &MicrophoneControllerState) -> Result<MicrophoneControllerState, String> {
-        // shortcut: update_microphone_controller drives the capture runtime (src-tauri) until S3.
-        Err("update_microphone_controller isn't in app-core until S3".into())
+    fn save_mic(
+        &self,
+        state: &MicrophoneControllerState,
+    ) -> Result<MicrophoneControllerState, String> {
+        super::live::save_mic(&self.0, state)
     }
 
     fn verify_provider(&self, id: &str, providers: &[AiProviderConfig]) -> Result<(), String> {

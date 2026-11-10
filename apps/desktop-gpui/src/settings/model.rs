@@ -39,6 +39,16 @@ pub struct SettingsData {
     pub semantic_models: Option<Value>,
     /// `get_account_owner_person_id` → that person's name (None = no voiceprint).
     pub voice_owner: Option<String>,
+    pub voice_owner_id: Option<i64>,
+    /// `get_system_audio_access_hint().shouldShow` (ADR 0052's inferred "possibly blocked").
+    pub system_audio_blocked: bool,
+    /// `get_browser_url_accessibility_status` (Firefox / Zen URL capture).
+    pub gecko: Option<Value>,
+    /// `mcp_oauth_statuses`: `{ id, state }` per OAuth connector.
+    pub mcp_oauth: Vec<Value>,
+    /// A Deepgram key is in the vault; the last live auth verdict, if any.
+    pub deepgram_key: bool,
+    pub deepgram_auth: Option<String>,
     pub cli_status: Option<Value>,
     pub grants: Vec<Value>,
     pub history: Vec<Value>,

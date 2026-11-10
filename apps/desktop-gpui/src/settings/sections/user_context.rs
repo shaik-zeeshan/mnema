@@ -81,9 +81,13 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             |s, cx| s.reload_all(cx),
             cx,
         ))
-        // shortcut: user_context_run_derivation_now is in app-core; its run message line
-        // lands with the user_context_changed event wiring (S3).
-        .child(Button::new("uc-derive", "Derive latest now").disabled(!engine));
+        .child(
+            Button::new("uc-derive", "Derive latest now")
+                .disabled(!engine || s.ui.busy.contains("Derive latest now"))
+                .on_click(click(cx, |s, cx| {
+                    s.run_command("Derive latest now", cx, crate::settings::live::derive_now)
+                })),
+        );
     let status = row(if paused {
         "Derivation paused"
     } else {
@@ -170,8 +174,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                     "Wipe User Context?",
                     "This permanently clears everything Mnema has derived about you \u{2014} all Activities, Conclusions, and your Dismissal corrections. Your raw recordings and settings are kept. AI features will be turned off; turning them back on starts learning from scratch.",
                     "Wipe",
-                    // shortcut: wipe_user_context is src-tauri until S3 (it stops the worker first).
-                    |_, _| log::info!("settings: wipe user context requested (lands with S3)"),
+                    |s, cx| s.run_command("Wipe User Context", cx, crate::settings::live::wipe_user_context),
                 );
             })))
             .build(p)

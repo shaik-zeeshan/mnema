@@ -79,11 +79,37 @@ fn level(mic: bool, v: u8) -> &'static str {
     }
 }
 
-fn permission_rows(s: &Settings, p: &Palette) -> Vec<AnyElement> {
+fn permission_rows(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyElement> {
     let Some(perms) = s.data.permissions.as_ref() else {
         return Vec::new();
     };
-    [("screen", "Screen Recording", "record the screen"), ("microphone", "Microphone", "record the microphone")]
+    let mut rows: Vec<AnyElement> = Vec::new();
+    // ADR 0052: system audio has no grant to read; this is the inferred
+    // "possibly blocked" after a session that heard nothing.
+    if s.data.system_audio_blocked {
+        rows.push(
+            row("System audio may be blocked")
+                .full()
+                .control(notice::notice(
+                    Tone::Warn,
+                    icons::LOCK,
+                    "System audio \u{b7} nothing heard",
+                    Some("The last recording heard no system audio. Allow Mnema under Privacy & Security \u{2192} Screen & System Audio Recording.".into()),
+                    vec![Button::new("perm-open-systemAudio", "Open System Settings")
+                        .sm()
+                        .icon(icons::EXTERNAL)
+                        .icon_after()
+                        .on_click(crate::settings::click(cx, |_, cx| {
+                            crate::small::helper::open("systemAudio", cx)
+                        }))
+                        .into_any_element()],
+                    p,
+                ))
+                .build(p)
+                .into_any_element(),
+        );
+    }
+    rows.extend([("screen", "Screen Recording", "record the screen"), ("microphone", "Microphone", "record the microphone")]
         .into_iter()
         .filter_map(|(key, label, what)| {
             let st = perms[key].as_str().unwrap_or("not_determined");
@@ -96,20 +122,30 @@ fn permission_rows(s: &Settings, p: &Palette) -> Vec<AnyElement> {
                     icons::LOCK,
                     format!("{label} \u{b7} not allowed"),
                     Some(format!("Mnema can\u{2019}t {what} until you allow it under Privacy & Security \u{2192} {label}.").into()),
-                    // shortcut: the permission helper window is S15; the button is inert until then.
+                    // The pane plus the floating helper, as onboarding's button does.
                     vec![Button::new(format!("perm-open-{key}"), "Open System Settings")
                         .sm()
                         .icon(icons::EXTERNAL)
                         .icon_after()
+                        .on_click(crate::settings::click(cx, move |_, cx| {
+                            crate::small::helper::open(key, cx)
+                        }))
                         .into_any_element()],
                     p,
                 )),
-                // shortcut: request_capture_permission is native_capture until S3.
-                _ => r.control(Button::new(format!("perm-grant-{key}"), "Grant access")),
+                _ => r.control(
+                    Button::new(format!("perm-grant-{key}"), "Grant access")
+                        .disabled(s.ui.busy.contains("Permission request"))
+                        .on_click(crate::settings::click(cx, move |s, cx| {
+                            s.run_command("Permission request", cx, move |core| {
+                                crate::settings::live::request_permission(core, key)
+                            })
+                        })),
+                ),
             };
             Some(el.build(p).into_any_element())
-        })
-        .collect()
+        }));
+    rows
 }
 
 fn sensitivity(s: &Settings, mic: bool, p: &Palette) -> AnyElement {
@@ -208,7 +244,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
             |d, v| d.capture_system_audio = v,
         ),
     ];
-    rows.extend(permission_rows(s, p));
+    rows.extend(permission_rows(s, p, cx));
     let seg = stops(&SEGMENT_STOPS, d.segment_duration_seconds);
     let seg_labels: Vec<String> = seg
         .iter()

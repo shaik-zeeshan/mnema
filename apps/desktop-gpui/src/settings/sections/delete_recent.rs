@@ -59,10 +59,10 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                         "Delete the {} from Mnema's library? This removes whole overlapping capture segments and cannot be undone.",
                         phrase(seconds)
                     );
-                    // shortcut: delete_recent_capture finalizes the live segment through
-                    // native_capture (src-tauri) until S3; the confirm runs, the delete is logged.
-                    confirm(cx, "Delete Recent Capture", &message, "Delete", |_, _| {
-                        log::info!("settings: delete recent capture requested (lands with S3)")
+                    confirm(cx, "Delete Recent Capture", &message, "Delete", move |s, cx| {
+                        s.run_command("Delete Recent Capture", cx, move |core| {
+                            crate::settings::live::delete_recent(core, seconds)
+                        })
                     });
                 })),
         );

@@ -11,6 +11,8 @@ pub mod data;
 pub mod fixture;
 mod header;
 pub mod journal;
+mod live;
+pub use live::on_event;
 pub mod model;
 mod overview;
 mod parts;
@@ -101,6 +103,8 @@ pub struct Insights {
     /// The shell's capture state: `(running, user paused)`.
     pub recording: (bool, bool),
     gens: [u64; 6],
+    /// A Re-read (forced digest) is in flight.
+    pub rereading: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -130,6 +134,7 @@ impl Insights {
         })];
         Self {
             backend,
+            rereading: false,
             tab: Tab::Overview,
             status: Status::default(),
             recording: (false, false),

@@ -67,11 +67,41 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 .text_color(p.text)
                 .child(SENTENCE),
         )
-        // shortcut: record_bounded_microphone_clip + enroll_account_owner_voice are
-        // native_capture / voice_enrollment (src-tauri) until S3; Record is shown, not run.
-        .child(div().flex().gap(space::S2).child(Button::new("voice-record", record)).when(owner.is_some(), |d| {
-            d.child(Button::new("voice-delete", "Delete voiceprint").danger())
-        }))
+        // shortcut: no live level meter or countdown here (onboarding's Voice step has
+        // them); the button reads "Recording…" for the take, then the verdict shows above.
+        .child({
+            let recording = s.ui.busy.contains("Voiceprint");
+            let owner_id = s.data.voice_owner_id;
+            div()
+                .flex()
+                .gap(space::S2)
+                .child(
+                    Button::new("voice-record", if recording { "Recording\u{2026} read the sentence aloud".to_string() } else { record })
+                        .disabled(recording)
+                        .on_click(crate::settings::click(cx, |s, cx| {
+                            s.run_command("Voiceprint", cx, |core| {
+                                crate::settings::live::enroll_voice(core, CLIP_SECONDS as u64 * 1000)
+                            })
+                        })),
+                )
+                .when_some(owner_id, |d, id| {
+                    d.child(Button::new("voice-delete", "Delete voiceprint").danger().on_click(
+                        crate::settings::click(cx, move |_, cx| {
+                            crate::settings::confirm(
+                                cx,
+                                "Delete your voiceprint?",
+                                "Mnema stops labelling your voice. Turns already labelled keep their name.",
+                                "Delete",
+                                move |s, cx| {
+                                    s.run_command("Voiceprint", cx, move |core| {
+                                        crate::settings::live::delete_person(core, id)
+                                    })
+                                },
+                            );
+                        }),
+                    ))
+                })
+        })
         .child(hint("The voiceprint never leaves this device. Recognition is imperfect and will not label every turn.", p));
     let rows = vec![
         row("Voiceprint").full().control(body).build(p).into_any_element(),

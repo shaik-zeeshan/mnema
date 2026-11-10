@@ -68,7 +68,46 @@ impl ModelRow {
         for c in self.controls {
             r = r.control(c);
         }
-        if let Some((bytes, failed)) = self.download {
+        let key = self
+            .start
+            .as_ref()
+            .map(|(_, provider, model)| format!("{provider}:{model}"));
+        let running = key.as_ref().and_then(|k| s.ui.downloads.get(k)).cloned();
+        if let (Some((done, total, status)), Some((family, _, _))) = (&running, self.start.clone())
+        {
+            let numbers = match total {
+                Some(t) => format!(
+                    "{} of {}",
+                    format_bytes(*done as f64),
+                    format_bytes(*t as f64)
+                ),
+                None => format_bytes(*done as f64),
+            };
+            let value = total.filter(|t| *t > 0).map(|t| *done as f32 / t as f32);
+            r = r
+                .control(
+                    Button::new(SharedString::from(format!("{id}-cancel")), "Cancel")
+                        .ghost()
+                        .on_click(crate::settings::click(cx, move |s, cx| {
+                            s.run_command("Cancel download", cx, move |core| {
+                                data::cancel_download(core, family).map(|_| None)
+                            })
+                        })),
+                )
+                .below(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(space::S1)
+                        .w_full()
+                        .child(crate::ui::progress::progress_meta(
+                            status.clone(),
+                            numbers,
+                            p,
+                        ))
+                        .child(crate::ui::progress::progress(value, p)),
+                );
+        } else if let Some((bytes, failed)) = self.download {
             let label = match bytes {
                 Some(b) => format!("Download ({})", format_bytes(b as f64)),
                 None => "Download".into(),
@@ -90,10 +129,13 @@ impl ModelRow {
                             });
                             cx.spawn(async move |this, cx| {
                                 let result = job.await.unwrap_or_else(|e| Err(e.to_string()));
-                                if let Err(e) = result {
-                                    log::warn!("settings: model download didn't start: {e}");
-                                }
-                                let _ = this.update(cx, |s, cx| s.reload_all(cx));
+                                let _ = this.update(cx, |s, cx| {
+                                    if let Err(e) = result {
+                                        log::warn!("settings: model download didn't start: {e}");
+                                        s.ui.note = Some((false, "Model download", e));
+                                    }
+                                    s.refresh(cx)
+                                });
                             })
                             .detach();
                         }
@@ -283,10 +325,14 @@ pub fn delete_unused_row(
                 }
             });
             cx.spawn(async move |this, cx| {
-                if let Ok(Err(e)) = job.await {
-                    log::warn!("settings: delete unused models failed: {e}");
-                }
-                let _ = this.update(cx, |s, cx| s.reload_all(cx));
+                let failed = job.await.unwrap_or_else(|e| Err(e.to_string())).err();
+                let _ = this.update(cx, |s, cx| {
+                    if let Some(e) = failed {
+                        log::warn!("settings: delete unused models failed: {e}");
+                        s.ui.note = Some((false, "Delete unused models", e));
+                    }
+                    s.refresh(cx)
+                });
             })
             .detach();
         });

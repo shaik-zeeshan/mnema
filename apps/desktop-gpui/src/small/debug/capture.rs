@@ -138,8 +138,7 @@ fn lane(
 pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<AnyElement> {
     let d = &w.data;
     let Some(health) = d.capture.as_ref() else {
-        // shortcut: get_capture_health needs the capture runtime managed in this
-        // host (S4 startup); until then the tab waits here.
+        // Only before the first poll answers (the runtime is managed at startup).
         return vec![empty(
             EmptyLayout::Compact,
             Tone::Neutral,
@@ -208,12 +207,22 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                 ))
         }))
         .child(div().flex_1())
-        // shortcut: Record / Stop go through the recording lifecycle (S3/S4 in this host).
-        .child(
+        .child({
+            use super::data::Action;
+            let action = if recording {
+                Action::Stop
+            } else {
+                Action::Record
+            };
+            let me = cx.entity().downgrade();
             Button::new("dv-run", if recording { "Stop" } else { "Record" })
                 .sm()
-                .when(recording, |b| b.icon(crate::assets::STOP_SQUARE)),
-        );
+                .when(recording, |b| b.icon(crate::assets::STOP_SQUARE))
+                .disabled(w.acting.is_some())
+                .on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |w, cx| w.act(action, cx));
+                })
+        });
     let lanes = div()
         .flex()
         .flex_col()

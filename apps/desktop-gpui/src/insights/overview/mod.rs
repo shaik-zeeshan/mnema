@@ -347,7 +347,7 @@ fn lede_col(
                     .children(
                         watermark(this, f, cx).map(|w| parts::mono_label(format!("· {w}"), p)),
                     )
-                    .child(reread()),
+                    .child(reread(this, cx)),
             );
     }
     if !f.engine_on {
@@ -366,7 +366,7 @@ fn lede_col(
                 None,
                 p,
             ))
-            .child(div().mt(space::S5).child(reread()));
+            .child(div().mt(space::S5).child(reread(this, cx)));
     }
     if reason == Some(capture_types::DigestAbsentReason::TooFew) {
         let n = f.acts.len();
@@ -388,7 +388,7 @@ fn lede_col(
             "It's written on its own once there's enough. Re-read asks for one now.",
             p,
         ))
-        .child(div().mt(space::S5).child(reread()))
+        .child(div().mt(space::S5).child(reread(this, cx)))
 }
 
 /// "summarized through 2:20 PM", only while the watermark cuts into the range.
@@ -404,13 +404,16 @@ fn watermark(this: &Insights, f: &Figures, cx: &Context<Insights>) -> Option<Str
     })
 }
 
-fn reread() -> Button {
-    // shortcut: Re-read (`regenerate_user_context_digest`) is a paid model call;
-    // it lands with the digest debounce wiring (the button shows, inert).
+fn reread(this: &Insights, cx: &Context<Insights>) -> Button {
+    let me = cx.entity().downgrade();
     Button::new("insights-reread", "Re-read")
         .ghost()
         .sm()
         .icon(IconName::RotateCcw.path())
+        .disabled(this.rereading)
+        .on_click(move |_, _, cx| {
+            let _ = me.update(cx, |i, cx| i.reread(cx));
+        })
 }
 
 fn stat_cells(this: &Insights, d: &OverviewData, f: &Figures, p: &Palette) -> Vec<AnyElement> {

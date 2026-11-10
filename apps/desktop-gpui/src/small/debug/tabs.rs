@@ -249,8 +249,9 @@ fn pipeline(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<
     let rows = model::processor_rows(&d.health, &d.lanes, d.settings.as_ref());
     let mut items = Vec::new();
     for (i, r) in rows.iter().enumerate() {
-        // shortcut: the processor drill-in (jobs table + inspector) is a follow-up;
-        // a row lands on the Pipeline tab it is already on.
+        // shortcut: no processor drill-in yet (jobs table + inspector + Retry now over
+        // list_processing_jobs_by_processor / get_processing_job / retry_processing_job_now,
+        // all in app-core); it needs its own view, a row stays on the Pipeline tab.
         items.push(row(nid("dv-proc", i as u64), r, true, |_, _| {}, cx, p));
     }
     let at = |s: Option<&str>| {
@@ -465,6 +466,14 @@ pub fn body(
         .pt(px(14.))
         .px(space::S4)
         .pb(space::S4)
+        // A button's outcome, in the backend's words, until the next one.
+        .children(w.note.as_ref().map(|(ok, line)| {
+            div()
+                .id("dv-note")
+                .text_size(crate::theme::text::BASE)
+                .text_color(if *ok { p.text_muted } else { p.danger_text })
+                .child(line.clone())
+        }))
         .children(children)
         .into_any_element()
 }

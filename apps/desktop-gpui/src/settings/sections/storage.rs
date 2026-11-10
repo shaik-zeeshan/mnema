@@ -173,10 +173,16 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .control(
                 Segmented::new("retention", "Retention duration", ["7 days", "14 days", "30 days", "Forever"], ix(&RETENTION, &d.retention_policy))
                     .md()
-                    .on_change(on(cx, |s, i: usize, cx| s.edit(|d| d.retention_policy = RETENTION[i].clone(), cx))),
+                    .on_change(on(cx, |s, i: usize, cx| s.set_retention(RETENTION[i].clone(), cx))),
             )
-            // shortcut: run_retention_cleanup_now is src-tauri (retention worker) until S3.
-            .control(Button::new("retention-run", "Run cleanup now").ghost())
+            .control(
+                Button::new("retention-run", "Run cleanup now")
+                    .ghost()
+                    .disabled(s.ui.busy.contains("Retention cleanup"))
+                    .on_click(crate::settings::click(cx, |s, cx| {
+                        s.run_command("Retention cleanup", cx, crate::settings::live::retention_run)
+                    })),
+            )
             .build(p)
             .into_any_element(),
     ];

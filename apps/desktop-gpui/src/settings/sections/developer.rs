@@ -24,10 +24,17 @@ fn log_action(s: &mut Settings, delete: bool, cx: &mut Context<Settings>) {
         }
     });
     cx.spawn(async move |this, cx| {
-        if let Ok(Err(e)) = job.await {
-            log::warn!("settings: app log action failed: {}", e.code);
-        }
-        let _ = this.update(cx, |s, cx| s.reload_all(cx));
+        let failed = match job.await {
+            Ok(Err(e)) => Some(e.message),
+            _ => None,
+        };
+        let _ = this.update(cx, |s, cx| {
+            if let Some(e) = failed {
+                log::warn!("settings: app log action failed: {e}");
+                s.ui.note = Some((false, "App log", e));
+            }
+            s.reload_all(cx)
+        });
     })
     .detach();
     let _ = s;

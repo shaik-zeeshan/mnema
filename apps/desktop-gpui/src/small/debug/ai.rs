@@ -68,12 +68,16 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                                 .child(s)
                         })),
                 )
-                // shortcut: Test connection needs the live engine probe (S3 ask_ai).
-                .child(
+                .child({
+                    let me = cx.entity().downgrade();
                     Button::new("dv-test-ai", "Test connection")
                         .sm()
-                        .icon("icons/plug.svg"),
-                )
+                        .icon("icons/plug.svg")
+                        .disabled(w.acting.is_some())
+                        .on_click(move |_, _, cx| {
+                            let _ = me.update(cx, |w, cx| w.act(super::data::Action::TestAi, cx));
+                        })
+                })
         }
         None => div().child(dot(Tone::Off, px(7.), p)).child(
             div()
@@ -352,17 +356,17 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
             ))
             .into_any_element(),
         sec(p)
-            .child(
-                h("User Context", uc_line, p)
-                    .child(div().flex_1())
-                    // shortcut: Derive latest now needs the User Context runtime (S3).
-                    .child(
-                        Button::new("dv-derive", "Derive latest now")
-                            .ghost()
-                            .sm()
-                            .icon("icons/refresh-cw.svg"),
-                    ),
-            )
+            .child(h("User Context", uc_line, p).child(div().flex_1()).child({
+                let me = cx.entity().downgrade();
+                Button::new("dv-derive", "Derive latest now")
+                    .ghost()
+                    .sm()
+                    .icon("icons/refresh-cw.svg")
+                    .disabled(w.acting.is_some())
+                    .on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |w, cx| w.act(super::data::Action::Derive, cx));
+                    })
+            }))
             .child(if runs.is_empty() {
                 compact_empty("No User Context runs yet", false, p)
             } else {

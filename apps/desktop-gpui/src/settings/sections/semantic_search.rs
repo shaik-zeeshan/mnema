@@ -13,6 +13,7 @@ use crate::theme::Palette;
 use crate::ui::chip::ChipKind;
 use crate::ui::combobox::Combobox;
 use crate::ui::switch::Switch;
+use crate::ui::Button;
 
 fn tier_label(tier: &str) -> &'static str {
     match tier {
@@ -76,8 +77,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     let d = s.d();
     let ss = &d.semantic_search;
     let status = s.data.semantic_models.as_ref();
-    // shortcut: list_semantic_search_supported_models (the custom catalog) isn't loaded
-    // into SettingsData yet; the picker lists the status's models.
+    // shortcut: the picker lists the status's models (the recommended tiers), not the
+    // custom catalog (`list_semantic_search_supported_models`); add it with a search field.
     let opts = options(status, &[]);
     let picked_id = s.ui.semantic_pick.clone().or_else(|| ss.model_id.clone());
     let picked = picked_id.as_ref().and_then(|id| {
@@ -150,10 +151,65 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                     _ => ("installed".into(), ChipKind::Neutral),
                 }),
                 desc: Some(format!("{meta}.{step}")),
-                controls: vec![picker],
-                // shortcut: start_semantic_search_model_download + select_semantic_search_model
-                // (the atomic re-index) are src-tauri until S3; Download is shown, not wired.
+                controls: {
+                    let mut c = vec![picker];
+                    let mid = m.str_at(&["modelId"]).unwrap_or_default().to_string();
+                    if available && !selected {
+                        // The atomic switch re-indexes everything: ask first.
+                        let use_id = mid.clone();
+                        c.push(
+                            Button::new("ss-use", "Use this model")
+                                .disabled(s.ui.busy.contains("Search model"))
+                                .on_click(crate::settings::click(cx, move |_, cx| {
+                                    let id = use_id.clone();
+                                    crate::settings::confirm(
+                                        cx,
+                                        "Switch search model?",
+                                        "Switching rebuilds the meaning index from scratch with the new model. Keyword search keeps working while it catches up.",
+                                        "Switch",
+                                        move |s, cx| {
+                                            s.ui.semantic_pick = None;
+                                            s.run_command("Search model", cx, move |core| {
+                                                crate::settings::live::semantic_select(core, id)
+                                            })
+                                        },
+                                    );
+                                }))
+                                .into_any_element(),
+                        );
+                    }
+                    if available && !selected {
+                        let del = mid.clone();
+                        c.push(
+                            Button::new("ss-delete", "Delete files")
+                                .ghost()
+                                .on_click(crate::settings::click(cx, move |_, cx| {
+                                    let id = del.clone();
+                                    crate::settings::confirm(
+                                        cx,
+                                        "Delete search model files?",
+                                        "The downloaded model files are removed from this Mac. You can download them again.",
+                                        "Delete",
+                                        move |s, cx| {
+                                            s.run_command("Search model", cx, move |core| {
+                                                crate::settings::live::semantic_delete(core, id)
+                                            })
+                                        },
+                                    );
+                                }))
+                                .into_any_element(),
+                        );
+                    }
+                    c
+                },
                 download: (!available).then_some((Some(bytes as u64), failed)),
+                start: m.str_at(&["modelId"]).map(|id| {
+                    (
+                        crate::settings::data::Family::Semantic,
+                        "local".to_string(),
+                        id.to_string(),
+                    )
+                }),
                 folder: status
                     .and_then(|v| v["modelsDirectory"].as_str())
                     .map(str::to_string),
@@ -166,8 +222,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .desc("Fuse meaning-based results with keyword search. Inert until a model below is installed; indexes in the background, which costs CPU and battery while it catches up.")
             .control(
                 Switch::new("ss-enabled", "Enable semantic search", ss.enabled)
-                    // shortcut: update_semantic_search_settings is its own src-tauri command until S3.
-                    .on_toggle(on(cx, |s, v: bool, cx| s.edit(|d| d.semantic_search.enabled = v, cx))),
+                    .on_toggle(on(cx, |s, v: bool, cx| s.set_semantic_enabled(v, cx))),
             )
             .build(p)
             .into_any_element(),

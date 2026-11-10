@@ -64,6 +64,38 @@ fn copy_button(
         }))
 }
 
+/// `set_app_update_channel`: preview builds ask first (they are less tested).
+fn channel_button(u: Option<&serde_json::Value>, cx: &mut Context<Settings>) -> Button {
+    let preview = u.and_then(|u| u.str_at(&["channel"])) == Some("preview");
+    let label = if preview {
+        "Use stable builds"
+    } else {
+        "Use preview builds"
+    };
+    Button::new("update-channel", label)
+        .ghost()
+        .sm()
+        .on_click(click(cx, move |s, cx| {
+            let set = move |s: &mut Settings, cx: &mut Context<Settings>| {
+                let to = if preview { "stable" } else { "preview" };
+                s.run_command("Update channel", cx, move |core| {
+                    crate::settings::live::set_update_channel(core, to)
+                })
+            };
+            if preview {
+                set(s, cx);
+            } else {
+                crate::settings::confirm(
+                    cx,
+                    "Use preview builds?",
+                    "Preview builds arrive earlier and are less tested. You can switch back to stable at any time.",
+                    "Use preview",
+                    set,
+                );
+            }
+        }))
+}
+
 pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyElement> {
     let u = s.data.update.as_ref();
     let app = u.map(|u| u.at(&["app"]).clone()).unwrap_or_default();
@@ -176,7 +208,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
                     Button::new("update-check", "Check for Updates")
                         .sm()
                         .on_click(click(cx, |_, cx| crate::small::update::check(cx))),
-                ),
+                )
+                .child(channel_button(u, cx)),
         )
         .child(
             div()

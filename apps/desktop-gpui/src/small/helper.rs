@@ -66,7 +66,7 @@ pub trait GrantCheck: Send + Sync + 'static {
     fn granted(&self, kind: PermKind) -> Result<bool, String>;
 }
 
-pub struct LiveGrant;
+pub struct LiveGrant(pub Option<Arc<app_core::AppCore>>);
 
 impl GrantCheck for LiveGrant {
     fn granted(&self, kind: PermKind) -> Result<bool, String> {
@@ -79,10 +79,16 @@ impl GrantCheck for LiveGrant {
         Ok(match kind {
             PermKind::Screen => ok(capture_screen::screen_permission_state()),
             PermKind::Microphone => ok(capture_microphone::microphone_permission_state()),
-            // shortcut: system audio has no authorization query (ADR 0052); its
-            // "assumed working" evidence row is read by native_capture (S3), so
-            // until then this helper waits until dismissed, as it usually does.
-            PermKind::SystemAudio => false,
+            // No authorization query exists (ADR 0052): the one signal is the
+            // inferred "assumed working" evidence, which a recording that heard
+            // sound writes. Until then the helper waits until dismissed.
+            PermKind::SystemAudio => self.0.as_ref().is_some_and(|core| {
+                ok(
+                    app_core::native_capture::permissions::get_capture_permissions(core)
+                        .permissions
+                        .system_audio,
+                )
+            }),
             PermKind::Accessibility => {
                 app_core::native_capture::browser_url_ax::accessibility_trusted()
             }
@@ -228,11 +234,13 @@ pub fn open(kind: &str, cx: &mut App) {
     let kind = PermKind::from_wire(kind);
     // Pane first: System Settings activates on top; the helper's panel level keeps it above.
     cx.open_url(kind.pane());
+    let core = crate::chat::core(cx);
     super::open_or_focus::<PermissionHelper>(
         super::Kind::Helper,
         cx,
         |window, cx| {
-            let view = cx.new(|cx| PermissionHelper::new(kind, Arc::new(LiveGrant), cx));
+            let view =
+                cx.new(|cx| PermissionHelper::new(kind, Arc::new(LiveGrant(core.clone())), cx));
             let handle = window.window_handle();
             cx.subscribe(&view, move |_, _: &Closed, cx| {
                 let _ = handle.update(cx, |_, window, _| window.remove_window());

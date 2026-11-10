@@ -303,10 +303,14 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .text_color(p.text_muted)
             .child("Local tools and AI agents can read your searchable Mnema text \u{2014} screen text, transcripts and timeline results, with the app and window each came from. Never media files, raw database rows or full web addresses.")
             .into_any_element(),
-        // shortcut: Install CLI (app-core `install_cli_inner`: a ~/.local/bin link, no
-        // host prompt) needs the installing / error line state; a Settings follow-up.
         row("mnema command")
-            .control(Button::new("cli-install", if installed { "Reinstall CLI" } else { "Install CLI" }))
+            .control(
+                Button::new("cli-install", if installed { "Reinstall CLI" } else { "Install CLI" })
+                    .disabled(s.ui.busy.contains("Install CLI"))
+                    .on_click(crate::settings::click(cx, |s, cx| {
+                        s.run_command("Install CLI", cx, crate::settings::live::install_cli)
+                    })),
+            )
             .below(cli_line)
             .build(p)
             .into_any_element(),

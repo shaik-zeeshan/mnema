@@ -141,9 +141,13 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         status.build(p).into_any_element(),
         row("Refresh license status")
             .desc("Re-check with the license server \u{2014} a renewal or freed-up device lands right away.")
-            // shortcut: refresh_license_now is app-core; its "Checked just now" line lands with
-            // the license_status_changed event wiring (S13 follow-up).
-            .control(Button::new("lic-refresh", "Refresh"))
+            .control(
+                Button::new("lic-refresh", "Refresh")
+                    .disabled(s.ui.busy.contains("License check"))
+                    .on_click(crate::settings::click(cx, |s, cx| {
+                        s.run_command("License check", cx, crate::settings::live::license_refresh)
+                    })),
+            )
             .build(p)
             .into_any_element(),
     ];
@@ -170,12 +174,54 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                     .gap(space::S2)
                     .w_full()
                     .child(div().flex_1().child(TextInput::new("lic-key", "License key", &s.inputs.license_key).num()))
-                    // shortcut: activate_license is app-core; wiring its result lines is an S13 follow-up.
-                    .child(Button::new("lic-activate", "Activate").disabled(true)),
+                    .child(
+                        Button::new("lic-activate", "Activate")
+                            // Nothing to activate until a key is pasted.
+                            .disabled(
+                                s.ui.busy.contains("License activation")
+                                    || s.inputs.license_key.read(cx).value().trim().is_empty(),
+                            )
+                            .on_click(crate::settings::commands::click_w(cx, |s, window, cx| {
+                                let input = s.inputs.license_key.clone();
+                                let key = crate::settings::commands::take_input(&input, window, cx);
+                                if !key.is_empty() {
+                                    s.run_command("License activation", cx, move |core| {
+                                        crate::settings::live::license_activate(core, key)
+                                    });
+                                }
+                            })),
+                    ),
             )
             .build(p)
             .into_any_element(),
     );
+    if matches!(st, Some(LicenseStatus::Licensed { .. })) {
+        rows.push(
+            row("Reset devices")
+                .desc("Frees every device slot on this license, then activates this Mac again. Use it when you replaced a computer.")
+                .control(
+                    Button::new("lic-reset", "Reset devices\u{2026}")
+                        .ghost()
+                        .on_click(crate::settings::click(cx, |_, cx| {
+                            crate::settings::confirm(
+                                cx,
+                                "Reset devices?",
+                                "Every other device on this license is signed out and has to activate again.",
+                                "Reset",
+                                |s, cx| {
+                                    s.run_command(
+                                        "Device reset",
+                                        cx,
+                                        crate::settings::live::license_reset_devices,
+                                    )
+                                },
+                            );
+                        })),
+                )
+                .build(p)
+                .into_any_element(),
+        );
+    }
     section(
         "License & Trial",
         Some("Buy once, keep it forever. Verified offline."),

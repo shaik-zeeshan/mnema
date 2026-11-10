@@ -405,8 +405,9 @@ impl QuickRecall {
                 screen: true,
                 by_meaning: meaning,
             }),
-            // shortcut: the GPUI Timeline lands on frames only (no audio drawer until S9);
-            // an audio hit lands on its aligned frame, else just opens the Timeline.
+            // shortcut: an audio hit lands on its aligned frame, not in the audio drawer:
+            // `TimelineView::selected_audio` only opens a segment of the day already
+            // loaded, so this needs a `land_audio(segment, seek)` there (wiring pass A's).
             Target::Audio { aligned, .. } => {
                 aligned.map(|frame_id| crate::timeline::model::Landing {
                     query,

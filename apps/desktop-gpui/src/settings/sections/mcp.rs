@@ -7,7 +7,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context, SharedString};
 
 use crate::settings::row::{row, section, state_word};
-use crate::settings::{click, icons, on, Settings};
+use crate::settings::{click, commands, icons, live, on, Settings};
 use crate::theme::{self, radius, space, text, Palette};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::dialog::Modal;
@@ -97,15 +97,37 @@ fn connector_row(
     };
     let oauth = server.auth_mode == McpAuthMode::OAuth && server.transport == McpTransport::Http;
     let secret = s.data.mcp_secrets.contains(&server.id);
-    // shortcut: OAuth states (mcp_oauth_statuses) and the browser connect flow are
-    // src-tauri until S3; an OAuth connector reads "not connected" until then.
+    // `mcp_oauth_statuses`: none / authorizing / authorized / reconnect.
+    let oauth_state = s
+        .data
+        .mcp_oauth
+        .iter()
+        .find(|o| o["id"].as_str() == Some(server.id.as_str()))
+        .and_then(|o| o["state"].as_str())
+        .unwrap_or("none");
     let (state, hint): (Option<(&str, Option<Tone>)>, String) = if oauth {
-        let sub = if server.enabled {
-            "Enabled, but not authorized yet \u{2014} approve in your browser to start using it."
-        } else {
-            "Not authorized yet \u{2014} turn it on and Connect to start using it."
-        };
-        (Some(("not connected", None)), sub.into())
+        match oauth_state {
+            "authorized" => (
+                Some(("connected", Some(Tone::Ok))),
+                "Authorized in your browser.".into(),
+            ),
+            "authorizing" => (
+                Some(("waiting", None)),
+                "Waiting for you to approve it in your browser.".into(),
+            ),
+            "reconnect" => (
+                Some(("needs reconnect", Some(Tone::Warn))),
+                "Its sign-in expired \u{2014} Connect again to keep using it.".into(),
+            ),
+            _ => {
+                let sub = if server.enabled {
+                    "Enabled, but not authorized yet \u{2014} approve in your browser to start using it."
+                } else {
+                    "Not authorized yet \u{2014} turn it on and Connect to start using it."
+                };
+                (Some(("not connected", None)), sub.into())
+            }
+        }
     } else if secret {
         (None, "Secret stored encrypted".into())
     } else if server.transport == McpTransport::Stdio {
@@ -124,7 +146,6 @@ fn connector_row(
         .text_size(text::BASE)
         .text_color(p.text_muted)
         .child(hint)
-        // shortcut: the tool-list modal (mcp_list_server_tools) is src-tauri until S3.
         .when(!oauth, |d| {
             d.child("\u{b7}").child(
                 div()
@@ -139,19 +160,37 @@ fn connector_row(
             r.control(state_word(w, t, p))
         })
         .when(oauth, |r| {
-            r.control(Button::new(
-                SharedString::from(format!("mcp-connect-{}", server.id)),
-                "Connect",
-            ))
-        })
-        .when(!oauth, |r| {
+            let cid = server.id.clone();
+            let connected = oauth_state == "authorized";
             r.control(
                 Button::new(
-                    SharedString::from(format!("mcp-configure-{}", server.id)),
-                    "Configure",
+                    SharedString::from(format!("mcp-connect-{}", server.id)),
+                    if connected { "Disconnect" } else { "Connect" },
                 )
-                .ghost(),
+                .on_click(click(cx, move |s, cx| {
+                    let id = cid.clone();
+                    s.run_command("MCP connector", cx, move |core| {
+                        if connected {
+                            live::mcp_oauth_disconnect(core, id)
+                        } else {
+                            live::mcp_oauth_begin(core, id)
+                        }
+                    })
+                })),
             )
+        })
+        .control({
+            let cid = server.id.clone();
+            Button::new(
+                SharedString::from(format!("mcp-configure-{}", server.id)),
+                "Configure",
+            )
+            .ghost()
+            .on_click(click(cx, move |s, cx| {
+                s.ui.mcp_open =
+                    (s.ui.mcp_open.as_deref() != Some(cid.as_str())).then(|| cid.clone());
+                cx.notify();
+            }))
         })
         .control(
             Switch::new(
@@ -172,8 +211,114 @@ fn connector_row(
             })),
         )
         .below(below)
+        .when(s.ui.mcp_open.as_deref() == Some(server.id.as_str()), |r| {
+            r.below(configure(s, server, oauth, secret, p, cx))
+        })
         .build(p)
         .when(!server.enabled, |d| d.opacity(theme::DISABLED_OPACITY))
+        .into_any_element()
+}
+
+/// Configure: the secret (stored in the vault, never in settings), the tools
+/// it offers, and Remove.
+// shortcut: no per-tool curation toggles and no custom connector form yet
+// (`McpToolCuration`, `McpConnectorCustomForm`): presets, all tools on.
+fn configure(
+    s: &Settings,
+    server: &McpServerConfig,
+    oauth: bool,
+    secret: bool,
+    _: &Palette,
+    cx: &mut Context<Settings>,
+) -> AnyElement {
+    let (save_id, clear_id, tools_id, rm_id) = (
+        server.id.clone(),
+        server.id.clone(),
+        server.id.clone(),
+        server.id.clone(),
+    );
+    let name = server.label.clone();
+    div()
+        .flex()
+        .flex_wrap()
+        .items_center()
+        .gap(space::S2)
+        .w_full()
+        .pt(space::S2)
+        .when(!oauth, |d| {
+            d.child(
+                div()
+                    .flex_1()
+                    .min_w(px(200.))
+                    .child(crate::ui::input::TextInput::new(
+                        "mcp-secret",
+                        "Connector secret",
+                        &s.inputs.mcp_secret,
+                    )),
+            )
+            .child(
+                Button::new("mcp-secret-save", "Save secret")
+                    .sm()
+                    .on_click(commands::click_w(cx, move |s, window, cx| {
+                        let input = s.inputs.mcp_secret.clone();
+                        let value = commands::take_input(&input, window, cx);
+                        let id = save_id.clone();
+                        if !value.is_empty() {
+                            s.run_command("MCP connector", cx, move |core| {
+                                live::mcp_set_secret(core, &id, &value)
+                            });
+                        }
+                    })),
+            )
+            .when(secret, |d| {
+                d.child(
+                    Button::new("mcp-secret-clear", "Clear secret")
+                        .sm()
+                        .ghost()
+                        .on_click(click(cx, move |s, cx| {
+                            let id = clear_id.clone();
+                            s.run_command("MCP connector", cx, move |core| {
+                                live::mcp_clear_secret(core, &id)
+                            })
+                        })),
+                )
+            })
+        })
+        .child(
+            Button::new("mcp-tools", "List tools")
+                .sm()
+                .ghost()
+                .disabled(s.ui.busy.contains("MCP tools"))
+                .on_click(click(cx, move |s, cx| {
+                    let id = tools_id.clone();
+                    s.run_command("MCP tools", cx, move |core| live::mcp_tools(core, id))
+                })),
+        )
+        .child(
+            Button::new("mcp-remove", "Remove")
+                .sm()
+                .ghost_danger()
+                .on_click(click(cx, move |_, cx| {
+                    let id = rm_id.clone();
+                    crate::settings::confirm(
+                        cx,
+                        "Remove connector?",
+                        &format!("{name} is removed and its stored secret is deleted."),
+                        "Remove",
+                        move |s, cx| {
+                            s.ui.mcp_open = None;
+                            let (drop_id, vault_id) = (id.clone(), id.clone());
+                            s.edit(
+                                move |d| d.ai_runtime.mcp_servers.retain(|m| m.id != drop_id),
+                                cx,
+                            );
+                            s.run_command("MCP connector", cx, move |core| {
+                                live::mcp_clear_secret(core, &vault_id).map(|_| None)
+                            });
+                        },
+                    );
+                })),
+        )
         .into_any_element()
 }
 

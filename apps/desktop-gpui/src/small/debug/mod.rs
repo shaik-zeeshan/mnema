@@ -58,6 +58,9 @@ pub struct DebugWindow {
     restore: Option<gpui_kit::Size<gpui_kit::Pixels>>,
     last: HashMap<Section, Instant>,
     in_flight: HashSet<Section>,
+    /// The last button's outcome: `(ok, line)`; and the one in flight.
+    pub note: Option<(bool, String)>,
+    pub acting: Option<data::Action>,
     _tick: Task<()>,
 }
 
@@ -93,8 +96,36 @@ impl DebugWindow {
             restore: None,
             last: HashMap::new(),
             in_flight: HashSet::new(),
+            note: None,
+            acting: None,
             _tick: tick,
         }
+    }
+
+    /// Run a button's command off the main thread, show what came back, then
+    /// re-read everything at once.
+    pub fn act(&mut self, action: data::Action, cx: &mut Context<Self>) {
+        if self.acting.is_some() {
+            return;
+        }
+        self.acting = Some(action);
+        let backend = self.backend.clone();
+        let job = cx.background_spawn(async move { backend.act(action) });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |w, cx| {
+                w.acting = None;
+                w.note = match result {
+                    Ok(line) => line.map(|l| (true, l)),
+                    Err(e) => Some((false, e)),
+                };
+                w.last.clear();
+                w.poll(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// The sections the current view reads (the health rollup in both modes).

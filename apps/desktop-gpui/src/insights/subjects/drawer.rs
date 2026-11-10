@@ -213,7 +213,9 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 .child("Open newest in Timeline")
                 .child(icon(IconName::ArrowRight.path(), px(12.)))
                 .on_click(cx.listener(move |_, _, _, cx| {
-                    // shortcut: an audio ref opens the Timeline without seeking to its segment.
+                    // shortcut: an audio ref opens the Timeline without its drawer: the drawer
+                    // opens only for a segment in the Timeline's loaded day, so it needs a
+                    // `TimelineView` landing that moves there first (timeline is wiring pass A's).
                     cx.emit(if r.subject_type == "frame" {
                         crate::insights::InsightsEvent::OpenFrame(r.subject_id)
                     } else {

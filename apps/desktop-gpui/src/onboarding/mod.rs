@@ -251,7 +251,10 @@ impl Onboarding {
                     s.ai_loaded(cx);
                     s.entered(cx);
                 }
-                Err(e) => s.error = Some(e),
+                Err(e) => {
+                    log::error!("onboarding: couldn't load its starting state: {e}");
+                    s.error = Some(e);
+                }
             },
         );
     }
@@ -430,6 +433,15 @@ impl Render for Onboarding {
             .font_family(theme::FONT_UI)
             .text_color(p.text)
             .child(parts::strip(self.step, move |w, cx| close(&(), w, cx), &p))
+            // A failed load or permission request, in the backend's own words.
+            .children(self.error.clone().map(|e| {
+                crate::ui::notice::banner(
+                    crate::ui::Tone::Danger,
+                    div().child(e).into_any_element(),
+                    vec![],
+                    &p,
+                )
+            }))
             .child(
                 div()
                     .relative()
@@ -528,6 +540,10 @@ pub fn open(cx: &mut App) {
 /// progress, the ChatGPT sign-in outcome).
 pub fn on_event(event: &app_core::CoreEvent, cx: &mut App) {
     use app_core::CoreEvent as E;
+    // `bridge::events` hands every event no shell surface claimed to this one
+    // door; Settings and Insights follow theirs from here.
+    crate::settings::on_event(event, cx);
+    crate::insights::on_event(event, cx);
     if let (E::ChatgptLoginUpdate(v), Some(Open(_, view))) = (event, cx.try_global::<Open>()) {
         let view = view.clone();
         let _ = view.update(cx, |o, cx| o.on_chatgpt_update(v, cx));

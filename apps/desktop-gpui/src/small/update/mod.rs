@@ -451,9 +451,19 @@ impl UpdateWindow {
                         .ghost()
                         .sm()
                         .icon("icons/rotate-cw.svg")
-                        // shortcut: the manual receipt refresh needs licensing's
-                        // refresh runtime in the GPUI host (S4 startup).
-                        .on_click(|_, _, _| log::debug!("update: license refresh lands with S4")),
+                        // `refresh_license_now`: the new status arrives as LicenseStatus.
+                        .on_click(|_, _, cx| {
+                            if let Some(core) = crate::chat::core(cx) {
+                                let task_core = core.clone();
+                                core.spawn(async move {
+                                    if let Err(e) =
+                                        app_core::licensing::refresh_license_now(task_core).await
+                                    {
+                                        log::warn!("update: license refresh failed: {e}");
+                                    }
+                                });
+                            }
+                        }),
                 )
             })
             .child(div().flex_1())

@@ -161,7 +161,7 @@ impl Onboarding {
                         .line_height(relative(1.45))
                         .into_any_element(),
                 ];
-                if screen_granted {
+                if screen_granted && self.completed {
                     v.push(fine("Screen Recording is granted, so this is almost certainly the stale-stream case: macOS hands the capture stream out at launch, and Mnema has not been relaunched since the grant.", &p).into_any_element());
                 }
                 v
@@ -367,6 +367,8 @@ impl Onboarding {
                     this.open_mnema(w, cx)
                 })
                 .into_any_element(),
+                button("ob-retry", "Try again", cx, |this, _, cx| this.commit(cx))
+                    .into_any_element(),
                 button("ob-relaunch", "Relaunch Mnema", cx, |this, _, cx| {
                     this.relaunch(cx)
                 })

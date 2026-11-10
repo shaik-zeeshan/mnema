@@ -6,6 +6,8 @@
 
 mod actions;
 pub mod autosave;
+mod commands;
+pub mod live;
 mod bar;
 pub mod data;
 #[cfg(feature = "fixtures")]
@@ -35,6 +37,7 @@ use crate::shell::model::StatusBarModel;
 use autosave::{Engine, Gate, SaveStatus, Unit};
 use data::Backend;
 use groups::{GroupId, SectionId};
+pub use commands::on_event;
 pub use model::SettingsData;
 
 /// Lucide paths the sections use (served by `assets::MnemaAssets`).
@@ -89,6 +92,16 @@ pub struct Ui {
     pub reach_checked: bool,
     /// Model rows whose "Model files" disclosure is open.
     pub files_open: HashSet<&'static str>,
+    /// The last one-shot command's outcome: `(ok, what, the backend's words)`.
+    pub note: Option<(bool, &'static str, String)>,
+    /// One-shot commands in flight, by name (their buttons read busy).
+    pub busy: HashSet<&'static str>,
+    /// "Add app…": the installed apps to pick from (`None` = closed).
+    pub app_picker: Option<Vec<(String, String)>>,
+    /// The connector whose Configure fields are open.
+    pub mcp_open: Option<String>,
+    /// Model downloads in flight, by `provider:model`: `(done, total, status)`.
+    pub downloads: HashMap<String, (u64, Option<u64>, String)>,
 }
 
 /// One provider row's reachability check.
@@ -111,6 +124,7 @@ pub struct Inputs {
     pub chunk: Entity<InputState>,
     pub whitelist: Entity<InputState>,
     pub provider_key: Entity<InputState>,
+    pub mcp_secret: Entity<InputState>,
     pub deepgram_key: Entity<InputState>,
     pub license_key: Entity<InputState>,
 }
@@ -254,7 +268,16 @@ impl Settings {
                     .masked(true)
                     .placeholder("Paste your provider API key")
             }),
-            deepgram_key: input(window, cx, "Paste your Deepgram API key"),
+            mcp_secret: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("Paste the connector's token or secret")
+            }),
+            deepgram_key: cx.new(|cx| {
+                InputState::new(window, cx)
+                    .masked(true)
+                    .placeholder("Paste your Deepgram API key")
+            }),
             license_key: input(window, cx, "Paste your license key"),
         };
         let sliders = Sliders {
@@ -589,20 +612,41 @@ impl Settings {
                 },
             }
         });
+        let sent = self.draft.as_ref().map(|d| domain_value(unit, d));
         cx.spawn(async move |this, cx| {
             let result = job.await;
-            let _ = this.update(cx, |this, cx| this.saved(unit, result, cx));
+            let _ = this.update(cx, |this, cx| this.saved(unit, sent, result, cx));
         })
         .detach();
         cx.notify();
     }
 
-    fn saved(&mut self, unit: Unit, result: Result<Saved, String>, cx: &mut Context<Self>) {
+    fn saved(
+        &mut self,
+        unit: Unit,
+        sent: Option<Value>,
+        result: Result<Saved, String>,
+        cx: &mut Context<Self>,
+    ) {
         self.saving.remove(&unit);
         match result {
             Ok(Saved::Settings(s)) => {
                 if self.saved.as_ref().map(|p| &p.appearance) != Some(&s.appearance) {
                     crate::theme::set_setting(s.appearance.clone(), cx);
+                }
+                // The backend may normalize what it stored (trimmed lists, a
+                // cleared model pair). With no edit since the dispatch, the draft
+                // adopts that, or it would read dirty and save again forever.
+                if let Some(d) = self.draft.as_mut() {
+                    let untouched = sent.as_ref() == Some(&domain_value(unit, d));
+                    if untouched && domain_value(unit, d) != domain_value(unit, &s) {
+                        if let Some(patch) = live::patch(unit, &s) {
+                            let _ = app_core::recording_settings::apply_domain_patch_to_settings(
+                                d, patch,
+                            );
+                            self.needs_sync = true;
+                        }
+                    }
                 }
                 self.saved = Some(s);
                 self.failed = None;
@@ -616,7 +660,7 @@ impl Settings {
                 self.failed = None;
             }
             Err(e) => {
-                log::warn!("settings: {} failed", unit.command());
+                log::warn!("settings: {} failed: {e}", unit.command());
                 self.failed = Some((unit, e));
             }
         }
