@@ -15,12 +15,13 @@ use std::time::Instant;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, img, px, relative, AnyElement, Context, Role, Window};
+use gpui_kit::{div, img, px, relative, AnyElement, Context, Div, Entity, Role, Window};
 
 use crate::insights::parts::{inset, mono_label};
 use crate::insights::stats;
 use crate::insights::Insights;
 use crate::theme::{radius, space, text, Palette, FONT_MONO};
+use crate::timeline::image_cache::FrameImages;
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::segmented::Segmented;
 use crate::ui::{clock, skeleton, Button, Tone};
@@ -101,7 +102,7 @@ impl Receipt {
     }
 
     /// Frame ids around the playhead whose preview path isn't asked for yet.
-    fn wanted(&mut self) -> Vec<i64> {
+    pub fn wanted(&mut self) -> Vec<i64> {
         let Some(Ok(frames)) = &self.frames else {
             return Vec::new();
         };
@@ -181,23 +182,8 @@ pub fn render(
     let Some(rc) = this.receipt.as_ref() else {
         return div().into_any_element();
     };
-    let foot = |s: String| {
-        div()
-            .pt(space::S3)
-            .border_t_1()
-            .border_color(p.hairline)
-            .font_family(FONT_MONO)
-            .text_size(text::XS)
-            .text_color(p.text_subtle)
-            .child(s)
-    };
-    let shell = inset(p)
-        .id("insights-receipt")
-        .mt(space::S3)
-        .p(space::S4)
-        .flex()
-        .flex_col()
-        .gap(space::S3);
+    let foot = |s: String| foot(s, p);
+    let shell = shell(p).id("insights-receipt");
     let frames = match &rc.frames {
         None => {
             return shell
@@ -236,41 +222,14 @@ pub fn render(
         Some(Ok(f)) => f,
     };
     let (fid, fms) = frames[rc.index.min(frames.len() - 1)];
-    let screen = div()
-        .relative()
-        .w_full()
-        .h(px(200.))
-        .rounded(radius::MD)
-        .overflow_hidden()
-        .bg(p.surface_subtle)
-        .child(match rc.previews.get(&fid) {
-            Some(path) => img(path.clone())
-                .image_cache(&this.images)
-                .size_full()
-                .object_fit(gpui_kit::ObjectFit::Contain)
-                .into_any_element(),
-            None => skeleton::skel(p).size_full().into_any_element(),
-        });
+    let screen = screen(rc.previews.get(&fid), &this.images, p);
     let n = frames.len();
     let head = if n > 1 {
         rc.index as f32 / (n - 1) as f32
     } else {
         0.
     };
-    let track = div()
-        .relative()
-        .h(px(18.))
-        .rounded(radius::XS)
-        .bg(p.wash)
-        .child(
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .w(px(2.))
-                .left(relative(head))
-                .bg(p.accent),
-        );
+    let track = track(head, p);
     let speed_ix = SPEEDS.iter().position(|s| *s == rc.speed).unwrap_or(2);
     let entity = cx.entity().downgrade();
     let controls = div()
@@ -360,6 +319,65 @@ pub fn render(
         )
         .child(foot(footage(n, segments(&times), cited)))
         .into_any_element()
+}
+
+/// The receipt's box (`.in-receipt`); Chat's audio receipt uses it too.
+pub fn shell(p: &Palette) -> Div {
+    inset(p)
+        .mt(space::S3)
+        .p(space::S4)
+        .flex()
+        .flex_col()
+        .gap(space::S3)
+}
+
+/// The frame on screen: its preview through `images`, a skeleton until it lands.
+pub fn screen(path: Option<&PathBuf>, images: &Entity<FrameImages>, p: &Palette) -> Div {
+    div()
+        .relative()
+        .w_full()
+        .h(px(200.))
+        .rounded(radius::MD)
+        .overflow_hidden()
+        .bg(p.surface_subtle)
+        .child(match path {
+            Some(path) => img(path.clone())
+                .image_cache(images)
+                .size_full()
+                .object_fit(gpui_kit::ObjectFit::Contain)
+                .into_any_element(),
+            None => skeleton::skel(p).size_full().into_any_element(),
+        })
+}
+
+/// The scrub track with the playhead at `head` (0..=1).
+pub fn track(head: f32, p: &Palette) -> Div {
+    div()
+        .relative()
+        .h(px(18.))
+        .rounded(radius::XS)
+        .bg(p.wash)
+        .child(
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .w(px(2.))
+                .left(relative(head.clamp(0., 1.)))
+                .bg(p.accent),
+        )
+}
+
+/// The mono footer under a hairline.
+pub fn foot(s: String, p: &Palette) -> Div {
+    div()
+        .pt(space::S3)
+        .border_t_1()
+        .border_color(p.hairline)
+        .font_family(FONT_MONO)
+        .text_size(text::XS)
+        .text_color(p.text_subtle)
+        .child(s)
 }
 
 /// `countCaptureSegments`: a gap over 90 s starts a new segment.

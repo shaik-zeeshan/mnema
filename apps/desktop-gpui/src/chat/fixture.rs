@@ -37,3 +37,65 @@ pub fn chat_fixture(state: &str) -> anyhow::Result<ChatFixture> {
         snapshot: get(&map, &["ask_ai_snapshot"])?,
     })
 }
+
+/// What a test's sources answer, and every call they got (`FrameImages` never
+/// reads these paths unless a golden points them at real files).
+#[derive(Default)]
+pub struct FixtureSources {
+    /// `get_frame_scrub_previews`: id → path, `None` = no preview.
+    pub thumbs: std::collections::HashMap<i64, Option<std::path::PathBuf>>,
+    /// `get_frame` sizes; a frame missing here is gone.
+    pub frames: std::collections::HashMap<i64, (Option<u32>, Option<u32>)>,
+    /// `get_frame` fails with this.
+    pub frame_error: Option<String>,
+    pub previews: std::collections::HashMap<i64, std::path::PathBuf>,
+    pub ocr: std::collections::HashMap<i64, Vec<crate::timeline::model::OcrBox>>,
+    /// The receipt's strip over any span.
+    pub strip: Vec<(i64, i64)>,
+    pub calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl FixtureSources {
+    pub fn calls(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+
+    fn log(&self, call: String) {
+        self.calls.lock().unwrap().push(call);
+    }
+}
+
+impl super::source_data::SourceBackend for FixtureSources {
+    fn thumbs(&self, ids: &[i64]) -> Vec<crate::quick_recall::model::Preview> {
+        self.log(format!("thumbs {ids:?}"));
+        ids.iter()
+            .filter_map(|id| {
+                let path = self.thumbs.get(id)?.clone();
+                Some(crate::quick_recall::model::Preview {
+                    frame_id: *id,
+                    missing: path.is_none().then(|| "frameNotFound".into()),
+                    path,
+                })
+            })
+            .collect()
+    }
+    fn frame(&self, id: i64) -> super::source_data::Res<Option<(Option<u32>, Option<u32>)>> {
+        self.log(format!("frame {id}"));
+        match &self.frame_error {
+            Some(e) => Err(e.clone()),
+            None => Ok(self.frames.get(&id).copied()),
+        }
+    }
+    fn preview(&self, id: i64) -> Option<std::path::PathBuf> {
+        self.log(format!("preview {id}"));
+        self.previews.get(&id).cloned()
+    }
+    fn ocr(&self, id: i64) -> super::source_data::Res<Option<Vec<crate::timeline::model::OcrBox>>> {
+        self.log(format!("ocr {id}"));
+        Ok(self.ocr.get(&id).cloned())
+    }
+    fn frames(&self, start: i64, end: i64) -> super::source_data::Res<Vec<(i64, i64)>> {
+        self.log(format!("frames {start}..{end}"));
+        Ok(self.strip.clone())
+    }
+}

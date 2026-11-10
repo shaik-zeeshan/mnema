@@ -141,10 +141,20 @@ pub fn decode_fit(bytes: &[u8], limit: (u32, u32)) -> Result<(RenderImage, bool)
 
 impl FrameImages {
     pub fn new(stage: Rc<Cell<Size<Pixels>>>, cx: &mut App) -> Entity<Self> {
+        Self::with_decoded(stage, DECODED_MAX, cx)
+    }
+
+    /// Keep `decoded_max` decoded images: a strip of small thumbnails all on
+    /// screen at once needs more than the stage's 9, or it re-decodes forever.
+    pub fn with_decoded(
+        stage: Rc<Cell<Size<Pixels>>>,
+        decoded_max: usize,
+        cx: &mut App,
+    ) -> Entity<Self> {
         let e = cx.new(|cx| Self {
             this: cx.entity().downgrade(),
             encoded: Lru::new(MAX_ENTRIES),
-            decoded: Lru::new(DECODED_MAX),
+            decoded: Lru::new(decoded_max),
             stage,
             waiting: HashSet::new(),
             tasks: HashMap::new(),

@@ -188,48 +188,6 @@ pub async fn open_captured_url(core: &AppCore, frame_id: i64) -> Result<bool, St
     app_core::app_infra::open_captured_url(frame_id, core, &infra(core)?).await
 }
 
-/// What the frame peek (FrameDetailModal) shows beyond the source's own facts.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct FramePeek {
-    /// `get_frame_preview`: the frame's image on disk.
-    pub image: Option<std::path::PathBuf>,
-    /// The newest OCR result's text.
-    pub text: Option<String>,
-}
-
-pub async fn frame_peek(core: &AppCore, frame_id: i64) -> FramePeek {
-    use app_core::app_infra::frame_preview::{get_frame_preview, GetFramePreviewRequest};
-    use app_core::app_infra::{list_processing_results, ListProcessingResultsRequest};
-    let Ok(infra) = infra(core) else {
-        return FramePeek::default();
-    };
-    let request = GetFramePreviewRequest {
-        frame_id,
-        video_scope: None,
-    };
-    let image = get_frame_preview(core, request)
-        .await
-        .ok()
-        .flatten()
-        .map(|p| p.file_path.into());
-    let request = ListProcessingResultsRequest {
-        subject_type: "frame".into(),
-        subject_id: frame_id,
-    };
-    let mut rows = list_processing_results(request, &infra)
-        .await
-        .unwrap_or_default();
-    rows.retain(|r| r.processor == "ocr" && r.result_text.is_some());
-    rows.sort_by_key(|r| std::cmp::Reverse(r.id));
-    let text = rows
-        .into_iter()
-        .next()
-        .and_then(|r| r.result_text)
-        .map(|t| t.trim().to_string())
-        .filter(|t| !t.is_empty());
-    FramePeek { image, text }
-}
-
 /// Star / unstar a model: the starred list is an AI setting, saved wholesale
 /// (`update_ai_runtime_settings { favoriteModels }`).
 pub fn toggle_favorite(core: &Arc<AppCore>, engine: (String, String)) -> Result<(), String> {

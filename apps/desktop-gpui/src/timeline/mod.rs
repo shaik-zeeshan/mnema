@@ -18,11 +18,11 @@ pub mod image_cache;
 mod jumper;
 mod match_overlay;
 pub mod model;
-mod ocr_overlay;
+pub(crate) mod ocr_overlay;
 pub mod paging;
 mod rail;
 pub mod scrub_engine;
-mod stage;
+pub(crate) mod stage;
 mod top_bar;
 
 use std::cell::Cell;

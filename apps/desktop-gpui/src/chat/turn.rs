@@ -608,8 +608,9 @@ pub fn render(
         if t.view.phase == "done" {
             let srcs = super::model::sources(&t.view.sources);
             if !srcs.is_empty() {
-                v.push(sources::row(ix, &srcs, p, cx).into_any_element());
+                v.push(sources::row(chat, ix, &srcs, p, cx).into_any_element());
             }
+            v.extend(super::clip::render(chat, ix, p, cx));
             v.push(actions(chat, t, trailing, p, cx).into_any_element());
         }
         v

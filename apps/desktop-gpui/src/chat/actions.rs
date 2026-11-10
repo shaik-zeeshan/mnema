@@ -21,28 +21,6 @@ fn title_from(question: &str) -> String {
 }
 
 impl Chat {
-    /// A frame chip: open the peek, then fill in its image and recognised text.
-    pub(super) fn peek_frame(&mut self, src: super::Source, cx: &mut Context<Self>) {
-        let frame_id = src.frame_id;
-        self.peek = Some(src);
-        self.peek_data = Default::default();
-        cx.notify();
-        let (Some(core), Some(id)) = (core(cx), frame_id) else {
-            return;
-        };
-        let task = Tokio::spawn(cx, async move { data::frame_peek(&core, id).await });
-        cx.spawn(async move |this, cx| {
-            let Ok(peek) = task.await else { return };
-            let _ = this.update(cx, |this, cx| {
-                if this.peek.as_ref().and_then(|p| p.frame_id) == Some(id) {
-                    this.peek_data = peek;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-    }
-
     /// A host chip (`openCapturedUrl`): the backend opens the page; a frame with
     /// no openable page, or a failure, says so.
     pub(super) fn open_captured_url(&mut self, frame_id: Option<i64>, cx: &mut Context<Self>) {

@@ -16,7 +16,7 @@ use super::model::{receive, Availability};
 use super::*;
 use crate::{keymap, theme};
 
-fn open(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Chat>) {
+pub(super) fn open(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Chat>) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(AppearanceSetting::Dark, WindowAppearance::Dark, cx);

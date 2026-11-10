@@ -5,6 +5,7 @@
 
 mod actions;
 pub mod blocks;
+pub mod clip;
 mod composer;
 pub mod data;
 #[cfg(feature = "fixtures")]
@@ -12,13 +13,18 @@ pub mod fixture;
 pub mod format;
 pub(crate) mod list;
 pub mod model;
+pub mod peek;
 pub mod prose;
 pub mod scope;
+pub mod source_data;
 mod sources;
 mod thread;
 mod turn;
 
-use std::collections::HashSet;
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet};
+use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -26,10 +32,13 @@ use app_core::AppCore;
 use capture_types::{Conversation, TurnSnapshot};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, App, Context, Entity, ScrollHandle, Subscription, Task, Window};
+use gpui_kit::{
+    div, App, Context, Entity, Pixels, ScrollHandle, Size, Subscription, Task, Window,
+};
 
 use crate::bridge::events::Core;
 use crate::theme::{self, size};
+use crate::timeline::image_cache::FrameImages;
 use crate::ui::clock;
 use crate::ui::model_picker::{PoolModel, ProviderFailure};
 use crate::ui::toast::Toasts;
@@ -89,8 +98,26 @@ pub struct Chat {
     pub pool_failures: Vec<ProviderFailure>,
     pub pool_loading: bool,
     pub peek: Option<Source>,
-    /// The peeked frame's image and recognised text, once loaded.
-    pub peek_data: data::FramePeek,
+    /// The peeked frame's size, image and OCR, once loaded.
+    pub peek_data: peek::PeekData,
+    /// Drops a late peek / OCR answer for a frame no longer peeked.
+    peek_gen: u64,
+    peek_focus: gpui_kit::FocusHandle,
+    /// An audio source's open receipt.
+    pub clip: Option<clip::Clip>,
+    clip_gen: u64,
+    /// What the sources read (thumbnails, the peek, the receipt's strip).
+    pub sources: Arc<dyn source_data::SourceBackend>,
+    /// The clip's segment lookup and player (the Timeline drawer's).
+    pub audio: crate::timeline::audio::Deps,
+    /// Frame id → its thumbnail (`None` = no preview any more); absent = loading.
+    pub thumbs: HashMap<i64, Option<PathBuf>>,
+    thumbs_asked: HashSet<i64>,
+    thumbs_gen: u64,
+    pub thumb_images: Entity<FrameImages>,
+    /// The peek's hero and the receipt's screen, decoded to the hero's size.
+    pub images: Entity<FrameImages>,
+    pub hero_size: Rc<Cell<Size<Pixels>>>,
     pub steps_open: HashSet<i64>,
     pub reason_open: HashSet<i64>,
     pub renaming: Option<Rename>,
@@ -146,6 +173,7 @@ impl Chat {
         let search = cx.new(|cx| InputState::new(window, cx).placeholder("Search chats"));
         let rename_input = cx.new(|cx| InputState::new(window, cx));
         let toasts = cx.new(|_| Toasts::default());
+        let hero_size: Rc<Cell<Size<Pixels>>> = Rc::default();
         let subs = vec![
             cx.subscribe_in(&composer, window, |this, _, e: &InputEvent, window, cx| {
                 if let InputEvent::PressEnter { shift: false, .. } = e {
@@ -193,6 +221,25 @@ impl Chat {
             pool_loading: false,
             peek: None,
             peek_data: Default::default(),
+            peek_gen: 0,
+            peek_focus: cx.focus_handle(),
+            clip: None,
+            clip_gen: 0,
+            sources: match core(cx) {
+                Some(core) => Arc::new(source_data::CoreSources(core)),
+                None => Arc::new(source_data::NoSources),
+            },
+            audio: crate::timeline::audio::Deps::live(cx),
+            thumbs: HashMap::new(),
+            thumbs_asked: HashSet::new(),
+            thumbs_gen: 0,
+            thumb_images: FrameImages::with_decoded(
+                Default::default(),
+                sources::THUMBS_DECODED,
+                cx,
+            ),
+            images: FrameImages::new(hero_size.clone(), cx),
+            hero_size,
             steps_open: HashSet::new(),
             reason_open: HashSet::new(),
             renaming: None,
@@ -256,6 +303,11 @@ impl Chat {
         self.pinned = None;
         self.renaming = None;
         self.peek = None;
+        self.peek_gen += 1;
+        self.close_clip(cx);
+        self.thumbs.clear();
+        self.thumbs_asked.clear();
+        self.thumbs_gen += 1;
         self.copied = None;
         self.steps_open.clear();
         self.reason_open.clear();
@@ -481,6 +533,8 @@ impl Render for Chat {
             self.composer
                 .update(cx, |s, cx| s.set_placeholder(text, window, cx));
         }
+        self.request_thumbs(cx);
+        self.tick_clip(window, cx);
         let narrow = window.viewport_size().width <= size::CHAT_LIST_BREAKPOINT;
         div()
             .id("surface-chat")
@@ -497,7 +551,7 @@ impl Render for Chat {
             .children(
                 self.peek
                     .clone()
-                    .map(|s| sources::frame_modal(self, &s, &p, cx)),
+                    .map(|s| peek::frame_modal(self, &s, &p, cx)),
             )
             .child(self.toasts.clone())
     }
@@ -506,3 +560,7 @@ impl Render for Chat {
 #[cfg(test)]
 #[path = "chat_tests.rs"]
 mod tests;
+
+#[cfg(all(test, feature = "fixtures"))]
+#[path = "sources_tests.rs"]
+mod sources_tests;

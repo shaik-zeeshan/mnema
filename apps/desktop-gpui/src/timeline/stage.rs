@@ -11,7 +11,7 @@ use gpui_kit::{
 };
 
 use super::model::{clock_label, day_label, local};
-use super::{frame_actions, match_overlay, ocr_overlay, OcrStatus, TimelineView};
+use super::{frame_actions, match_overlay, ocr_overlay, TimelineView};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::notice::{inline, notice};
@@ -307,49 +307,10 @@ fn dev_overlay(
 
 fn ocr_status(v: &TimelineView, p: &Palette) -> Option<AnyElement> {
     let here = v.ocr.visible && v.ocr.frame_id == v.paging.active_frame().map(|f| f.id);
-    let (tone, lead, msg): (Tone, AnyElement, String) = match v.ocr.status {
-        _ if !here => return None,
-        OcrStatus::Idle | OcrStatus::Success => return None,
-        OcrStatus::Running => (
-            Tone::Neutral,
-            crate::ui::progress::spinner(size::SPIN_SM).into_any_element(),
-            "Loading OCR…".into(),
-        ),
-        OcrStatus::Empty => (
-            Tone::Neutral,
-            icon(IconName::ScanText.path(), size::ICON_SM).into_any_element(),
-            "No text detected on this frame".into(),
-        ),
-        OcrStatus::Missing => (
-            Tone::Neutral,
-            icon(IconName::ScanText.path(), size::ICON_SM).into_any_element(),
-            "No OCR for this frame yet".into(),
-        ),
-        OcrStatus::Error => (
-            Tone::Danger,
-            icon(IconName::TriangleAlert.path(), size::ICON_SM).into_any_element(),
-            v.ocr.error.clone().unwrap_or_else(|| "OCR failed".into()),
-        ),
-    };
-    Some(
-        div()
-            .absolute()
-            .left(space::S3)
-            .bottom(space::S3)
-            .px(px(9.))
-            .py(px(4.))
-            .rounded(radius::SM)
-            .border_1()
-            .border_color(p.overlay_border)
-            .bg(p.overlay_bg_strong)
-            .child(inline(
-                tone,
-                Some(lead),
-                vec![SharedString::from(msg).into_any_element()],
-                p,
-            ))
-            .into_any_element(),
-    )
+    if !here {
+        return None;
+    }
+    ocr_overlay::status_note(v.ocr.status, v.ocr.error.as_deref(), p)
 }
 
 pub fn render(
