@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-10 19:55",
+ "updated": "2026-11-10 19:57",
  "verdict": "Every screen is built and connected to the real backend, and all six issues from the 10 Nov hands-on test have a committed fix. Since then capture health, Chat sources, the licence banner and receipt, and centring on large windows have been added. A signed dev build with all of it was opened at 19:15 on a completely clean state. Almost nothing is driven yet: the next step that needs you is a hands-on run of that build.",
  "metrics": [
   {
@@ -1274,7 +1274,7 @@
    "commit": "not merged · one switch selects it",
    "state": "option",
    "awaiting": true,
-   "what": "A literal receipt: a ticket with notched edges, the details in rows (who it is licensed to, updates through, activated on) and a round ACTIVATED stamp. Mostly a still image. Device limit: four device tiles, three in use and this Mac outlined in amber as the one that doesn't fit.",
+   "what": "A literal receipt: a ticket with notched edges, the details in rows (who it is licensed to, updates through, activated on) and a round ACTIVATED stamp. Mostly a still image. Device limit: four device tiles, three in use and this Mac outlined in amber as the one that doesn't fit. Weakness: the least celebratory of the three, and it does not move. The notches are painted, not real cut-outs. Shows who it is licensed to, the updates date, and the date the receipt appears.",
    "rows": [
     {
      "heading": "Activated",
@@ -1311,7 +1311,7 @@
    "commit": "not merged · one switch selects it",
    "state": "option",
    "awaiting": true,
-   "what": "Mnema's own timeline ruler, running from today to the date your updates are included through. A playhead scrubs forward along it while the date counts up and lands on the final day. Device limit: one bar per device, with this Mac as an empty dashed bar.",
+   "what": "Mnema's own timeline ruler, running from today to the date your updates are included through. A playhead scrubs forward along it while the date counts up and lands on the final day. Device limit: one bar per device, with this Mac as an empty dashed bar. Weakness: most of the playhead's travel happens in the first third of a second, and it needs a slightly wider panel. Shows today, every month between, the updates date and who it is licensed to. It would carry best to a renewal: the playhead runs from the old end date to the new one.",
    "rows": [
     {
      "heading": "Activated",
@@ -1357,7 +1357,7 @@
    "commit": "not merged · one switch selects it",
    "state": "option",
    "awaiting": true,
-   "what": "A centred seal: a check inside a ring, with tick marks that sweep round once like the Timeline's ticks. The most classic \"it worked\" of the three. Device limit: a 3 / 3 gauge with an amber marker.",
+   "what": "A centred seal: a check inside a ring, with tick marks that sweep round once like the Timeline's ticks. The most classic \"it worked\" of the three. Device limit: a 3 / 3 gauge with an amber marker. Weakness: the closest to a generic success badge, and the three-arc ring on the device-limit version doesn't obviously read as one arc per device. Shows who it is licensed to and the updates date.",
    "rows": [
     {
      "heading": "Activated",
@@ -1397,5 +1397,5 @@
    ]
   }
  ],
- "receipts_verdict": "Pick one, or mix: the activated look from one direction and the device-limit look from another. My suggestion is Direction 3 for the activated receipt (it reads as a celebration at a glance) with Direction 1's device tiles for the device limit (they show the problem most plainly). The names and dates are test data; whether a real licence carries the holder's name and the updates date is being confirmed by the agent that built these."
+ "receipts_verdict": "Pick one, or mix: the activated look from one direction and the device-limit look from another. Two opinions, since they differ. The agent that built them would pick Direction 2: it is the only one where the celebration is the thing you bought, the months of updates playing out in the app's own timeline, and it suits a renewal best. My suggestion was Direction 3 for the activated receipt (it reads as a celebration at a glance) with Direction 1's device tiles for the device limit (they show the problem most plainly). What is real: the holder's name and the updates date come from the licence. What is not: the \"3 devices\" is fixed text, because the licence server does not tell the app how many devices are in use or their names, so the device slots are generic."
 }
