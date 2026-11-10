@@ -146,7 +146,7 @@ impl RenderOnce for TextInput {
                     .disabled(self.disabled)
                     .px_0()
                     .field_text(fs)
-                    .h(size::H_MD - px(2.))
+                    .field_h(size::H_MD - px(2.))
                     .when(self.center, |el| el.text_center()),
             )
     }

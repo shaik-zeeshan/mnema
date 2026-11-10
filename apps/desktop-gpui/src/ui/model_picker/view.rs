@@ -163,7 +163,8 @@ impl RenderOnce for ModelPicker {
                         .mx(space::S2)
                         .mt(space::S2)
                         .px(px(10.))
-                        .h(size::H_SM)
+                        // `.ch-pop .mx-search`: the kit search field, 32 px.
+                        .h(size::H_MD)
                         .rounded(FIELD_RADIUS)
                         .border_1()
                         .border_color(p.border_strong)
@@ -179,7 +180,7 @@ impl RenderOnce for ModelPicker {
                                     .aria_label("Search models")
                                     .appearance(false)
                                     .px_0()
-                                    .h(px(18.))
+                                    .field_h(size::H_MD - px(2.))
                                     .field_text(text::BASE),
                             ),
                         ),

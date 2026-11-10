@@ -6,6 +6,7 @@ mod capture;
 mod capture_apps;
 mod change;
 mod finale;
+mod models;
 mod permissions;
 mod setup;
 mod voice;

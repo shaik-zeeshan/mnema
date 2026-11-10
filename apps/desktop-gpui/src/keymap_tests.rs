@@ -28,6 +28,20 @@ fn reserved_and_missing_entries_keep_defaults() {
 }
 
 #[test]
+fn timeline_defaults_are_unchanged_and_read_from_dashboard_shortcuts() {
+    let b = Bindings::default();
+    assert_eq!(b.timeline, ["J", "L", "O", "R", "C", "D"]);
+    let to: Vec<String> = b.timeline.iter().map(|k| to_gpui(k)).collect();
+    assert_eq!(to, ["j", "l", "o", "r", "c", "d"]);
+    let b = Bindings::from_settings(&json!({
+        "dashboardShortcuts": {"toggleOcr": "Shift+O", "copyFrame": "ArrowLeft", "downloadFrame": ""}
+    }));
+    assert_eq!(b.timeline[2], "Shift+O");
+    assert_eq!(b.timeline[4], "C", "ArrowLeft is reserved");
+    assert_eq!(b.timeline[5], "", "cleared");
+}
+
+#[test]
 fn help_sheet_is_built_from_state() {
     let b = Bindings::default();
     let stopped = HelpState {
@@ -71,6 +85,7 @@ mod rebind {
 
     use super::super::*;
     use crate::timeline::audio::{PlayPause, SeekBack};
+    use crate::timeline::JumpLatest;
 
     actions!(keymap_test, [Quit]);
 
@@ -99,6 +114,10 @@ mod rebind {
                 .on_action(cx.listener({
                     let f = rec("screen");
                     move |p, _: &ToggleSourceScreen, _, _| f(p)
+                }))
+                .on_action(cx.listener({
+                    let f = rec("latest");
+                    move |p, _: &JumpLatest, _, _| f(p)
                 }))
                 .on_action(cx.listener({
                     let f = rec("play");
@@ -325,5 +344,21 @@ mod rebind {
         }
         assert!(save(cx, &mut kb, |k| *k = defaults()));
         assert_eq!(snapshot(cx), (before, len));
+    }
+
+    #[gpui_kit::test]
+    fn timeline_keys_rebind_clear_and_reset_like_the_rest(cx: &mut TestAppContext) {
+        let (probe, cx) = open(cx);
+        let mut kb = defaults();
+        assert_eq!(fired(&probe, cx, "l"), ["latest"], "default L");
+        assert!(save(cx, &mut kb, |k| k["dashboardShortcuts"]
+            ["jumpLatest"] = "N".into()));
+        assert!(fired(&probe, cx, "l").is_empty(), "the old key is gone");
+        assert_eq!(fired(&probe, cx, "n"), ["latest"]);
+        assert!(save(cx, &mut kb, |k| k["dashboardShortcuts"]
+            ["jumpLatest"] = "".into()));
+        assert!(fired(&probe, cx, "n").is_empty() && fired(&probe, cx, "l").is_empty());
+        assert!(save(cx, &mut kb, |k| *k = defaults()));
+        assert_eq!(fired(&probe, cx, "l"), ["latest"]);
     }
 }

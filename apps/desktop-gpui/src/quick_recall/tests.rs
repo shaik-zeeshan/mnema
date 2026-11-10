@@ -320,3 +320,34 @@ fn arrows_move_and_space_looks(cx: &mut TestAppContext) {
     keys(cx, w, "escape");
     assert!(v.read_with(cx, |qr, _| qr.look.is_none()));
 }
+
+#[gpui_kit::test]
+fn the_panel_warms_mcp_once_and_only_with_ai_and_a_connector_on(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(AppearanceSetting::Dark, WindowAppearance::Dark, cx);
+    });
+    for (ai, connector, want) in [(true, true, 1), (false, true, 0), (true, false, 0)] {
+        let mut backend = FixtureBackend::load("idle").expect("fixture");
+        crate::chat::fixture::with_mcp(&mut backend.map["get_recording_settings"], ai, connector);
+        let backend = Arc::new(backend);
+        let b = backend.clone();
+        let view = cx.update(|cx| {
+            let (_, view) = gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+                cx.new(|cx| QuickRecall::new(b, window, cx))
+            })
+            .expect("window");
+            view
+        });
+        cx.run_until_parked();
+        // A later summon re-reads the bar but doesn't warm again (Svelte: on mount).
+        view.update(cx, |qr, cx| qr.on_activation(true, cx));
+        cx.run_until_parked();
+        let warms = backend
+            .calls()
+            .iter()
+            .filter(|c| **c == Call::WarmMcp)
+            .count();
+        assert_eq!(warms, want, "ai {ai}, connector {connector}");
+    }
+}

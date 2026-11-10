@@ -34,11 +34,12 @@ pub enum Call {
     AskStart(String),
     AskCancel(String, bool),
     SetRecent(usize),
+    WarmMcp,
 }
 
 #[derive(Default)]
 pub struct FixtureBackend {
-    map: Value,
+    pub map: Value,
     pub calls: Mutex<Vec<Call>>,
     /// Make `search_capture` fail.
     pub fail_search: Mutex<bool>,
@@ -224,6 +225,10 @@ impl Backend for FixtureBackend {
 
     fn settings(&self) -> Option<RecordingSettings> {
         self.get(&["get_recording_settings"])
+    }
+
+    fn warm_mcp(&self) {
+        self.record(Call::WarmMcp);
     }
 
     fn ask_start(&self, id: &str, _: &str, _: &str) -> Res<()> {

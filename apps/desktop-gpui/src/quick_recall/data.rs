@@ -69,6 +69,8 @@ pub trait Backend: Send + Sync + 'static {
     fn availability(&self) -> Availability {
         Availability::default()
     }
+    /// `mcp_warm_connectors`.
+    fn warm_mcp(&self) {}
     fn settings(&self) -> Option<RecordingSettings> {
         None
     }
@@ -309,6 +311,10 @@ impl Backend for CoreBackend {
                 reason: Some(e),
             },
         }
+    }
+
+    fn warm_mcp(&self) {
+        crate::chat::data::warm_mcp(&self.0)
     }
 
     fn settings(&self) -> Option<RecordingSettings> {

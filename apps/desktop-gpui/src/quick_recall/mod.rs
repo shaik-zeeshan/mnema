@@ -240,6 +240,16 @@ impl QuickRecall {
         };
         qr.load_ambient(cx);
         qr.ensure_apps(cx);
+        // Svelte's `onMount`: the panel is built once per session, so this warms once.
+        qr.fetch(
+            cx,
+            |b| {
+                if b.settings().is_some_and(|s| crate::chat::data::mcp_warm_wanted(&s)) {
+                    b.warm_mcp();
+                }
+            },
+            |_, _, _| {},
+        );
         qr
     }
 

@@ -189,7 +189,7 @@ pub fn render(
                         .aria_label("Search chats")
                         .appearance(false)
                         .px_0()
-                        .h(px(18.))
+                        .field_h(size::H_MD - px(2.))
                         .field_text(text::MD)
                         .into_any_element(),
                     p,
@@ -322,7 +322,7 @@ fn row(
                     .aria_label("Rename chat")
                     .appearance(false)
                     .px_0()
-                    .h(px(20.))
+                    .field_h(px(20.))
                     .field_text(text::MD),
             )
             .into_any_element()

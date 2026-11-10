@@ -85,7 +85,7 @@ pub fn render(s: &Settings, window: &mut Window, cx: &mut Context<Settings>) -> 
                     .appearance(false)
                     .px_0()
                     .field_text(text::BASE)
-                    .h(size::H_MD - px(2.)),
+                    .field_h(size::H_MD - px(2.)),
             ),
         )
         .child(kbd("/", &p));

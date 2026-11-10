@@ -100,7 +100,7 @@ fn header(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
                     .aria_label("Rename chat")
                     .appearance(false)
                     .px_0()
-                    .h(px(28.))
+                    .field_h(px(28.))
                     .field_text(text::LG),
             )
             .into_any_element()

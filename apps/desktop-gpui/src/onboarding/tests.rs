@@ -611,3 +611,45 @@ fn the_step_column_centres_on_a_wide_window_and_holds_at_the_default(cx: &mut Te
     assert_eq!(width, 780.);
     assert!((left - right).abs() <= 1., "centred: {left} vs {right}");
 }
+
+#[gpui_kit::test]
+fn the_models_budget_moves_with_each_pick_and_feature(cx: &mut TestAppContext) {
+    let (view, vcx, _, _) = open(cx, "granted");
+    view.update(vcx, |o, cx| {
+        let (t, s, b) = o.models_budget();
+        // The footer total and the old work-list total agree on the fixture.
+        assert_eq!(b.bytes() as f64, o.download_bytes());
+        let t = t.expect("a transcription build");
+        assert_eq!(b.transcription, super::budget::pick_bytes(Some(&t), true));
+        assert!(s.is_some() == o.features.semantic_search);
+        o.set_semantic_family(true, cx);
+        let (_, s2, b2) = o.models_budget();
+        assert_eq!(s2.map(|m| m.detail), Some("100+ languages"));
+        assert_eq!(b2.bytes() as f64, o.download_bytes());
+        // Semantic Search off: no pick, nothing to fetch for it, strip reads off.
+        o.toggle(Feature::SemanticSearch, cx);
+        let (_, s3, b3) = o.models_budget();
+        assert!(s3.is_none() && b3.semantic == 0);
+    });
+}
+
+#[gpui_kit::test]
+fn download_anyway_holds_only_until_a_figure_changes(cx: &mut TestAppContext) {
+    let (view, vcx, _, _) = open(cx, "granted");
+    view.update(vcx, |o, cx| {
+        o.probe = None;
+        assert!(o.budget_verdict().is_none(), "unmeasured never acts");
+        o.probe = Some(Probe {
+            path: "/tmp".into(),
+            exists: true,
+            writable: true,
+            free: Some(620e6),
+        });
+        assert!(o.budget_notice().is_some());
+        o.dismiss_budget(cx);
+        assert!(o.budget_notice().is_none() && o.budget_verdict().is_some());
+        // A new pick is a new figure: the shortfall asks again.
+        o.set_semantic_family(true, cx);
+        assert!(o.budget_notice().is_some());
+    });
+}

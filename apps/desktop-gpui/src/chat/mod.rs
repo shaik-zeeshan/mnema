@@ -293,6 +293,18 @@ impl Chat {
         .detach();
     }
 
+    /// Chat opened (Svelte's `onMount`): warm the MCP connectors so a turn
+    /// finds their tools ready. Fire-and-forget, off the main thread.
+    pub fn warm_mcp(&self, cx: &mut Context<Self>) {
+        let sources = self.sources.clone();
+        cx.background_spawn(async move {
+            if sources.settings().is_some_and(|s| data::mcp_warm_wanted(&s)) {
+                sources.warm_mcp();
+            }
+        })
+        .detach();
+    }
+
     pub fn available(&self) -> Option<bool> {
         self.data.availability.as_ref().map(|a| a.available)
     }

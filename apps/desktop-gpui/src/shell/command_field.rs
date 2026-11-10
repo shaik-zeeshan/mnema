@@ -222,7 +222,7 @@ impl Render for CommandField {
                             .appearance(false)
                             .px_0()
                             .field_text(text::MD)
-                            .h(px(26.)),
+                            .field_h(px(26.)),
                     ),
             )
             .children(hint)

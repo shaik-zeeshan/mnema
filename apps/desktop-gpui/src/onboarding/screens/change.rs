@@ -6,7 +6,7 @@
 
 use capture_types::AudioTranscriptionProvider;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, Context, Hsla, Pixels, Window};
+use gpui_kit::{div, px, relative, AnyElement, Context, Hsla, Window};
 
 use super::{button, on_ix, primary};
 use crate::onboarding::flow::{Feature, LockFix, ModelFacts, Subsystem};
@@ -34,41 +34,13 @@ const SHARE_TRANSCRIPT: f64 = 4.5;
 const TRANSCRIPT_VECTOR_MB: f64 = 2.;
 const ACTIVE_HOURS: f64 = 8.;
 
-/// The big download total beside its fine print (`.ob-total b`, 22 px).
-const TOTAL: Pixels = px(22.);
-
-/// `(model id, display name, approx bytes, installed, multilingual)`.
-type SemanticModel = (String, String, u64, bool, bool);
-
-/// The catalog's own `multilingual` flag (`data::semantic_from_status`).
-fn is_multilingual(m: &SemanticModel) -> bool {
-    m.4
-}
-
-/// Indices into `semantic` of one language group, in catalog order.
-fn family_builds(semantic: &[SemanticModel], multilingual: bool) -> Vec<usize> {
-    (0..semantic.len())
-        .filter(|&i| is_multilingual(&semantic[i]) == multilingual)
-        .collect()
-}
-
-/// `model-budget.ts` `SHORT_LABELS`: pill labels; others drop the "(…)" tag.
-fn short_label(m: &SemanticModel) -> &str {
-    match m.0.as_str() {
-        "nomic-embed-text-v1.5" => "Nomic",
-        "stella_en_400M_v5" => "Stella",
-        "multilingual-e5-small" => "E5 Small",
-        "bge-m3" => "BGE-M3",
-        "snowflake-arctic-embed-l-v2.0" => "Snowflake",
-        "gte-modernbert-base" => "GTE",
-        "granite-embedding-english-r2" => "Granite R2",
-        "granite-embedding-small-english-r2" => "Granite Small",
-        _ => m.1.split(" (").next().unwrap_or(&m.1),
-    }
-}
-
 /// A kicker with its note on one baseline (`.ob-pane__head`).
-fn kicker_note(label: &str, note: gpui_kit::Div, p: &Palette, cx: &gpui_kit::App) -> AnyElement {
+pub(super) fn kicker_note(
+    label: &str,
+    note: gpui_kit::Div,
+    p: &Palette,
+    cx: &gpui_kit::App,
+) -> AnyElement {
     baseline::row(
         vec![
             (
@@ -86,7 +58,7 @@ fn kicker_note(label: &str, note: gpui_kit::Div, p: &Palette, cx: &gpui_kit::App
     .into_any_element()
 }
 
-fn provider_id(p: AudioTranscriptionProvider) -> &'static str {
+pub(super) fn provider_id(p: AudioTranscriptionProvider) -> &'static str {
     app_core::audio_transcription_models::provider_id_for_settings(p)
 }
 
@@ -145,7 +117,7 @@ impl Onboarding {
     }
 
     /// Re-read one subsystem's selected-model facts after a pick.
-    fn refresh_facts(&mut self) {
+    pub(super) fn refresh_facts(&mut self) {
         let id = provider_id(self.draft.transcription.provider).to_string();
         let t = self
             .engines
@@ -196,35 +168,6 @@ impl Onboarding {
                 .find(|m| m.0.as_deref() == Some("base"))
                 .or(e.models.first())
                 .and_then(|m| m.0.clone());
-            self.refresh_facts();
-            cx.notify();
-        }
-    }
-
-    pub fn set_transcription_model(&mut self, ix: usize, cx: &mut Context<Self>) {
-        let id = provider_id(self.draft.transcription.provider);
-        if let Some(m) = self
-            .engines
-            .iter()
-            .find(|e| e.provider == id)
-            .and_then(|e| e.models.get(ix))
-        {
-            self.draft.transcription.model_id = m.0.clone();
-            self.refresh_facts();
-            cx.notify();
-        }
-    }
-
-    /// Picks the first build in the English or Multilingual group.
-    pub fn set_semantic_family(&mut self, multilingual: bool, cx: &mut Context<Self>) {
-        if let Some(&ix) = family_builds(&self.semantic, multilingual).first() {
-            self.set_semantic_model(ix, cx);
-        }
-    }
-
-    pub fn set_semantic_model(&mut self, ix: usize, cx: &mut Context<Self>) {
-        if let Some(m) = self.semantic.get(ix) {
-            self.draft.semantic_search.model_id = Some(m.0.clone());
             self.refresh_facts();
             cx.notify();
         }
@@ -529,127 +472,6 @@ impl Onboarding {
         ]
     }
 
-    fn models_pane(&self, cx: &mut Context<Self>, p: &Palette) -> Vec<AnyElement> {
-        let id = provider_id(self.draft.transcription.provider);
-        let engine = self.engines.iter().find(|e| e.provider == id);
-        let t_models: Vec<String> =
-            engine.map_or(vec![], |e| e.models.iter().map(|m| m.1.clone()).collect());
-        let t_sel = engine
-            .and_then(|e| {
-                e.models
-                    .iter()
-                    .position(|m| m.0 == self.draft.transcription.model_id)
-            })
-            .unwrap_or(0);
-        let s_sel = self
-            .semantic
-            .iter()
-            .position(|m| Some(&m.0) == self.draft.semantic_search.model_id.as_ref())
-            .unwrap_or(0);
-        let work = self.work_list();
-        let total = if work.is_empty() {
-            "nothing".to_string()
-        } else {
-            format!(
-                "{}{}",
-                if work.iter().any(|w| w.approx()) {
-                    "about "
-                } else {
-                    ""
-                },
-                format_bytes(crate::onboarding::flow::work_bytes(&work) as f64)
-            )
-        };
-        let mut v = vec![kicker_note(
-            "Transcription",
-            fine(
-                format!(
-                    "Engine: {} \u{2014} chosen on Engines. This screen picks its build.",
-                    engine.map_or("Whisper", |e| e.name.as_str())
-                ),
-                p,
-            ),
-            p,
-            cx,
-        )];
-        if t_models.len() > 1 {
-            // `.ob-picker__ctl` is a flex row: the control hugs its options.
-            v.push(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(space::S3)
-                    .child(
-                        Segmented::new("ob-t-model", "Transcription build", t_models, t_sel)
-                            .on_change(on_ix(cx, |this, ix, cx| {
-                                this.set_transcription_model(ix, cx)
-                            })),
-                    )
-                    .into_any_element(),
-            );
-        }
-        v.push(kicker("Semantic Search", p).into_any_element());
-        if !self.semantic.is_empty() {
-            // `ModelPickers.svelte`: a language group, then that group's builds
-            // under short labels. One segment per catalog model ran off the window.
-            let multi = self.semantic.get(s_sel).is_some_and(is_multilingual);
-            let builds = family_builds(&self.semantic, multi);
-            let at = builds.iter().position(|&i| i == s_sel).unwrap_or(0);
-            let labels: Vec<&str> = builds
-                .iter()
-                .map(|&i| short_label(&self.semantic[i]))
-                .collect();
-            v.push(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(space::S3)
-                    .child(
-                        Segmented::new(
-                            "ob-s-family",
-                            "Semantic Search languages",
-                            ["English", "Multilingual"],
-                            multi as usize,
-                        )
-                        .on_change(on_ix(cx, |this, ix, cx| {
-                            this.set_semantic_family(ix == 1, cx)
-                        })),
-                    )
-                    .when(builds.len() > 1, |row| {
-                        row.child(
-                            Segmented::new("ob-s-model", "Semantic Search model", labels, at)
-                                .on_change(on_ix(cx, move |this, ix, cx| {
-                                    if let Some(&i) = builds.get(ix) {
-                                        this.set_semantic_model(i, cx)
-                                    }
-                                })),
-                        )
-                    })
-                    .into_any_element(),
-            );
-        }
-        v.push(
-            baseline::row(
-                vec![
-                    (
-                        Line::new(FONT_MONO, TOTAL, leading::ONE),
-                        parts::mono(total, TOTAL, p.text_strong).into_any_element(),
-                    ),
-                    (
-                        Line::new(FONT_UI, text::BASE, parts::FINE_LH),
-                        fine("to download before any of this works", p).into_any_element(),
-                    ),
-                ],
-                cx,
-            )
-            .gap(space::S3)
-            .into_any_element(),
-        );
-        v
-    }
-
     pub(in crate::onboarding) fn change(
         &mut self,
         window: &mut Window,
@@ -678,7 +500,7 @@ impl Onboarding {
         col.extend(match at {
             0 => self.features_pane(cx, &p),
             1 => self.engines_pane(cx, &p),
-            2 => self.models_pane(cx, &p),
+            2 => self.models_pane(window, cx, &p),
             _ => self.ai_pane(window, cx, &p),
         });
         let back_btn = if at == 0 {

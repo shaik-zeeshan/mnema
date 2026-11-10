@@ -41,7 +41,7 @@ fn group(g: &HelpGroup, p: &Palette) -> impl IntoElement {
 
 pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoElement {
     let extra = (shell.surface == super::Surface::Timeline)
-        .then(|| shell.timeline.read(cx).help_group())
+        .then(|| shell.timeline.read(cx).help_group(&shell.bindings))
         .flatten();
     let groups = keymap::help_groups(
         &shell.bindings,

@@ -9,6 +9,7 @@
 //! storage verdict, downloads and the voice take are pure modules.
 
 pub mod ai;
+pub mod budget;
 pub mod data;
 pub mod downloads;
 #[cfg(feature = "fixtures")]
@@ -105,6 +106,8 @@ pub struct Onboarding {
     pub models: Vec<(Subsystem, ModelFacts)>,
     pub engines: Vec<Engine>,
     pub semantic: Vec<(String, String, u64, bool, bool)>,
+    /// Models' "Download anyway": the figures it was dismissed at (a new figure re-asks).
+    pub budget_dismissed: Option<(u64, Option<f64>, f64, f64)>,
     pub recommended: Vec<(String, String)>,
     seeded_apps: bool,
     // Permissions
@@ -178,6 +181,7 @@ impl Onboarding {
             models: Vec::new(),
             engines: Vec::new(),
             semantic: Vec::new(),
+            budget_dismissed: None,
             recommended: Vec::new(),
             seeded_apps: false,
             passed: Vec::new(),

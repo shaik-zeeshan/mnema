@@ -326,3 +326,28 @@ fn disabled_buttons_swallow_clicks_and_busy_ones_too(cx: &mut TestAppContext) {
         "only the live one fired"
     );
 }
+
+#[gpui_kit::test]
+fn segmented_hugs_its_options_in_a_column_unless_filled(cx: &mut TestAppContext) {
+    let (window, _) = open(cx, |_, _, _| {
+        div()
+            .flex()
+            .flex_col()
+            .w(px(600.))
+            .child(Segmented::new("hug", "Range", ["Day", "Week"], 0))
+            .child(Segmented::new("full", "Range", ["Day", "Week"], 0).fill())
+            .into_any_element()
+    });
+    let w =
+        |cx: &mut TestAppContext, id: &'static str| f32::from(bounds(cx, window, id).size.width);
+    let opts = f32::from(bounds(cx, window, nid("hug-opt", 0)).size.width)
+        + f32::from(bounds(cx, window, nid("hug-opt", 1)).size.width);
+    assert!(
+        (w(cx, "hug") - (opts + 4.)).abs() < 0.5,
+        "hugs: options + 2 px inset each side"
+    );
+    assert!(
+        (w(cx, "full") - 600.).abs() < 0.5,
+        ".fill() spans the column"
+    );
+}

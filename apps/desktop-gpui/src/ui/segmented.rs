@@ -276,6 +276,7 @@ impl RenderOnce for Segmented {
                 })
         });
 
+        let hug = widths.iter().fold(INSET * 2., |a, w| a + *w);
         div()
             .id(self.id.clone())
             .test_support()
@@ -284,7 +285,8 @@ impl RenderOnce for Segmented {
             .relative()
             .flex()
             .when(self.fill, |el| el.w_full())
-            .when(!self.fill, |el| el.flex_none())
+            // `width: fit-content`: hug the options even in a stretching column.
+            .when(!self.fill, |el| el.flex_none().w(hug))
             .h(h)
             .p(INSET)
             .bg(p.wash)

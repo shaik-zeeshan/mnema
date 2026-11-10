@@ -249,6 +249,9 @@ impl Shell {
         if surface == Surface::Settings {
             self.settings.update(cx, |s, cx| s.reload_all(cx));
         }
+        if surface == Surface::Chat {
+            self.chat.update(cx, |c, cx| c.warm_mcp(cx));
+        }
         cx.notify();
     }
 

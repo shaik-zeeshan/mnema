@@ -166,7 +166,7 @@ impl RenderOnce for Combobox {
                                         .aria_label(self.aria.clone())
                                         .appearance(false)
                                         .px_0()
-                                        .h(px(18.))
+                                        .field_h(px(17.))
                                         .field_text(text::MD),
                                 ),
                             ),

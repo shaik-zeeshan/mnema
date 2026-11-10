@@ -435,3 +435,33 @@ fn the_beat_rereads_insights_every_minute_and_today_every_five(cx: &mut TestAppC
     advance(capture::TODAY_BEAT, cx);
     assert_eq!(reads(cx), (2, 5));
 }
+
+#[gpui_kit::test]
+fn opening_chat_warms_mcp_each_time_and_only_with_ai_and_a_connector_on(cx: &mut TestAppContext) {
+    use crate::chat::fixture::{with_mcp, FixtureSources};
+    let (_window, shell) = open(cx);
+    for (ai, connector, want) in [(true, true, 2), (false, true, 0), (true, false, 0)] {
+        shell.update(cx, |sh, cx| sh.go(Surface::Timeline, cx));
+        let mut map = crate::shell::fixture::load("chat", "list").unwrap();
+        with_mcp(&mut map["get_recording_settings"], ai, connector);
+        let src = std::sync::Arc::new(FixtureSources {
+            settings: serde_json::from_value(map["get_recording_settings"].clone()).ok(),
+            ..Default::default()
+        });
+        let s = src.clone();
+        shell.update(cx, |sh, cx| sh.chat.update(cx, |c, _| c.sources = s));
+        let warms = |cx: &mut TestAppContext| {
+            cx.run_until_parked();
+            src.calls().iter().filter(|c| *c == "warm_mcp").count()
+        };
+        shell.update(cx, |sh, cx| sh.go(Surface::Chat, cx));
+        assert_eq!(warms(cx), want.min(1), "opening Chat warms once");
+        shell.update(cx, |sh, cx| sh.go(Surface::Chat, cx));
+        assert_eq!(warms(cx), want.min(1), "already on Chat: no second warm");
+        shell.update(cx, |sh, cx| {
+            sh.go(Surface::Timeline, cx);
+            sh.go(Surface::Chat, cx);
+        });
+        assert_eq!(warms(cx), want, "ai {ai}, connector {connector}");
+    }
+}

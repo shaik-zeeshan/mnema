@@ -57,6 +57,8 @@ pub struct Bindings {
     pub open_debug: String,
     pub sources: [String; 3],
     pub toggle_shortcuts_help: String,
+    /// `dashboardShortcuts`: jump picker, latest, OCR, refresh, copy, download.
+    pub timeline: [String; 6],
     /// `audioDrawerShortcuts`: play/pause, −5 s, +5 s, −30 s, +30 s.
     pub audio_drawer: [String; 5],
 }
@@ -73,6 +75,7 @@ impl Default for Bindings {
             open_debug: "CommandOrControl+D".into(),
             sources: ["1".into(), "2".into(), "3".into()],
             toggle_shortcuts_help: "/".into(),
+            timeline: ["J", "L", "O", "R", "C", "D"].map(String::from),
             audio_drawer: [
                 "Space".into(),
                 "ArrowLeft".into(),
@@ -138,6 +141,17 @@ impl Bindings {
             "appShortcuts",
             "toggleShortcutsHelp",
         );
+        let timeline = [
+            "openJumpPicker",
+            "jumpLatest",
+            "toggleOcr",
+            "refreshTimeline",
+            "copyFrame",
+            "downloadFrame",
+        ];
+        for (slot, key) in b.timeline.iter_mut().zip(timeline) {
+            pick(slot, "dashboardShortcuts", key);
+        }
         // The drawer's own scope: the frame arrows aren't reserved there, Esc / Tab are.
         let drawer = settings.get("audioDrawerShortcuts");
         let keys = [
@@ -303,6 +317,20 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
             cx,
         ),
     ];
+    let timeline = {
+        use crate::timeline::{
+            CopyFrame, DownloadFrame, JumpLatest, OpenJumper, Refresh, ToggleOcr,
+        };
+        let [jump, latest, ocr, refresh, copy, download] = &bindings.timeline;
+        [
+            user_binding(jump, OpenJumper, APP_CONTEXT, cx),
+            user_binding(latest, JumpLatest, APP_CONTEXT, cx),
+            user_binding(ocr, ToggleOcr, APP_CONTEXT, cx),
+            user_binding(refresh, Refresh, APP_CONTEXT, cx),
+            user_binding(copy, CopyFrame, APP_CONTEXT, cx),
+            user_binding(download, DownloadFrame, APP_CONTEXT, cx),
+        ]
+    };
     let drawer = {
         use crate::timeline::audio::{
             self, PlayPause, SeekBack, SeekBackFast, SeekForward, SeekForwardFast,
@@ -340,6 +368,7 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
         .collect();
     let ours = crate::timeline::key_bindings()
         .into_iter()
+        .chain(timeline.into_iter().flatten())
         .chain(drawer.into_iter().flatten())
         .chain(fixed)
         .chain(user.into_iter().flatten())

@@ -45,6 +45,12 @@ pub trait SourceBackend: Send + Sync + 'static {
     }
     /// `ai_runtime_chatgpt_cancel_login`.
     fn chatgpt_cancel(&self, _provider: &str) {}
+    /// The saved settings (the MCP warm-up gate reads them).
+    fn settings(&self) -> Option<capture_types::RecordingSettings> {
+        None
+    }
+    /// `mcp_warm_connectors`.
+    fn warm_mcp(&self) {}
 }
 
 /// No `AppCore` (a bare view).
@@ -101,5 +107,14 @@ impl SourceBackend for CoreSources {
     fn chatgpt_cancel(&self, provider: &str) {
         use crate::onboarding::data::Backend as _;
         crate::onboarding::data::CoreBackend(self.0.clone()).chatgpt_cancel(provider)
+    }
+
+    fn settings(&self) -> Option<capture_types::RecordingSettings> {
+        use crate::quick_recall::data::Backend as _;
+        crate::quick_recall::data::CoreBackend(self.0.clone()).settings()
+    }
+
+    fn warm_mcp(&self) {
+        super::data::warm_mcp(&self.0)
     }
 }

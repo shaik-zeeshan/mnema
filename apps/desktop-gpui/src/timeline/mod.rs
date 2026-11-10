@@ -209,13 +209,17 @@ impl TimelineView {
     }
 
     /// The help sheet's Timeline group (only while frames are loaded).
-    pub fn help_group(&self) -> Option<HelpGroup> {
+    pub fn help_group(&self, b: &crate::keymap::Bindings) -> Option<HelpGroup> {
         if self.paging.frames.is_empty() {
             return None;
         }
         let row = |label: &str, keys: &str| HelpRow {
             label: label.into(),
             keys: keys.into(),
+        };
+        let user = |label: &str, ix: usize| HelpRow {
+            label: label.into(),
+            keys: crate::keymap::display(&b.timeline[ix]),
         };
         Some(HelpGroup {
             title: "Timeline",
@@ -224,12 +228,12 @@ impl TimelineView {
                 row("Newer frame", "→"),
                 row("10 frames older", "⇧←"),
                 row("10 frames newer", "⇧→"),
-                row("Open jump picker", "J"),
-                row("Jump to latest", "L"),
-                row("Toggle OCR panel", "O"),
-                row("Refresh timeline", "R"),
-                row("Copy active frame image", "C"),
-                row("Download active frame image", "D"),
+                user("Open jump picker", 0),
+                user("Jump to latest", 1),
+                user("Toggle OCR panel", 2),
+                user("Refresh timeline", 3),
+                user("Copy active frame image", 4),
+                user("Download active frame image", 5),
                 row("Play audio at this moment", "P"),
             ],
         })
@@ -391,7 +395,9 @@ pub fn register_actions(
 
 /// The Timeline's bindings: unmodified keys, suppressed in inputs and buttons.
 /// `keymap::bind` installs them.
-pub fn key_bindings() -> [gpui_kit::KeyBinding; 11] {
+/// The fixed Timeline keys; the six rebindable ones (`dashboardShortcuts`)
+/// are bound from the user's settings in `keymap::bind`.
+pub fn key_bindings() -> [gpui_kit::KeyBinding; 5] {
     use gpui_kit::KeyBinding;
     let ctx = Some(crate::keymap::APP_CONTEXT);
     [
@@ -399,12 +405,6 @@ pub fn key_bindings() -> [gpui_kit::KeyBinding; 11] {
         KeyBinding::new("right", NewerFrame, ctx),
         KeyBinding::new("shift-left", OlderFrameFast, ctx),
         KeyBinding::new("shift-right", NewerFrameFast, ctx),
-        KeyBinding::new("j", OpenJumper, ctx),
-        KeyBinding::new("l", JumpLatest, ctx),
-        KeyBinding::new("o", ToggleOcr, ctx),
-        KeyBinding::new("r", Refresh, ctx),
-        KeyBinding::new("c", CopyFrame, ctx),
-        KeyBinding::new("d", DownloadFrame, ctx),
         KeyBinding::new("p", PlayMoment, ctx),
     ]
 }

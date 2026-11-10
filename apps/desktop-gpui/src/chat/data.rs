@@ -11,6 +11,27 @@ use serde::Deserialize;
 use super::model::{Availability, ChatData, Engine, History};
 use crate::ui::model_picker::{PoolModel, ProviderFailure};
 
+/// Ask AI's doors warm MCP connectors only when a turn could use them: AI on
+/// and at least one connector enabled (app-core's `warm` would find none else).
+pub fn mcp_warm_wanted(s: &RecordingSettings) -> bool {
+    s.ai_runtime.enabled
+        && s.ai_runtime
+            .mcp_servers
+            .iter()
+            .any(|c| c.enabled && !c.id.trim().is_empty())
+}
+
+/// `mcp_warm_connectors`: returns at once; each connect runs on app-core's
+/// runtime and logs its own failure. Call it off the main thread.
+pub fn warm_mcp(core: &AppCore) {
+    if core
+        .block_on(app_core::ask_ai::mcp::manager::mcp_warm_connectors(core))
+        .is_err()
+    {
+        log::warn!("Ask AI: MCP connector warm-up didn't start");
+    }
+}
+
 /// `refreshHistory`'s cap, for the list and for a search.
 const HISTORY_LIMIT: i64 = 60;
 

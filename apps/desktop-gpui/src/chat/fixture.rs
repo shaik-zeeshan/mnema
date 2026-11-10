@@ -57,6 +57,8 @@ pub struct FixtureSources {
     pub icons: std::collections::HashMap<String, std::path::PathBuf>,
     /// `ai_runtime_chatgpt_begin_login`: (code, url); `None` fails it.
     pub login: Option<(String, String)>,
+    /// What `settings()` answers (the MCP warm-up gate).
+    pub settings: Option<RecordingSettings>,
     pub calls: std::sync::Mutex<Vec<String>>,
 }
 
@@ -118,4 +120,20 @@ impl super::source_data::SourceBackend for FixtureSources {
     fn chatgpt_cancel(&self, provider: &str) {
         self.log(format!("chatgpt_cancel {provider}"));
     }
+    fn settings(&self) -> Option<RecordingSettings> {
+        self.settings.clone()
+    }
+    fn warm_mcp(&self) {
+        self.log("warm_mcp".into());
+    }
+}
+
+/// Tests: the AI switch and one MCP connector (enabled or not) on a settings map.
+#[cfg(test)]
+pub fn with_mcp(settings: &mut serde_json::Value, ai: bool, connector: bool) {
+    let rt = &mut settings["aiRuntime"];
+    rt["enabled"] = ai.into();
+    rt["mcpServers"] = serde_json::json!([{
+        "id": "github", "label": "GitHub", "enabled": connector, "transport": "http"
+    }]);
 }

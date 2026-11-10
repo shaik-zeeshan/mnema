@@ -58,7 +58,7 @@ pub fn controls(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Vec
                     .appearance(false)
                     .px_0()
                     .field_text(text::BASE)
-                    .h(size::H_MD - px(2.)),
+                    .field_h(size::H_MD - px(2.)),
             ),
         );
     let axis = if this.axis == Axis::Conviction { 0 } else { 1 };
