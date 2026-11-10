@@ -23,6 +23,11 @@ anyhow = "1"
 app-core = { path = "../../crates/app-core", default-features = false }
 app-infra = { path = "../../crates/app-infra" }
 async-channel = "2"
+# The on-device engines the Tauri app compiles in (src-tauri/Cargo.toml). app-core
+# depends on these crates without them (so `cargo test -p app-core` stays light);
+# Cargo unifies the features into app-core's copy when this binary builds.
+# Without `local-whisper` the default transcription provider requeues forever.
+audio-transcription = { path = "../../crates/audio-transcription", features = ["local-whisper", "parakeet-onnx"] }
 block2 = "0.6"
 capture-microphone = { path = "../../crates/capture-microphone" }
 capture-screen = { path = "../../crates/capture-screen" }
@@ -35,6 +40,7 @@ log = "0.4"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSAccessibility", "NSAlert", "NSButton", "NSControl", "NSResponder", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", features = ["NSNotification", "NSOperation", "NSString", "NSTimeZone", "NSURL", "block2"] }
+ocr = { path = "../../crates/ocr", features = ["paddle-rs", "tesseract-embedded"] }
 raw-window-handle = "0.6"
 regex = "1"
 serde = { version = "1", features = ["derive"] }
