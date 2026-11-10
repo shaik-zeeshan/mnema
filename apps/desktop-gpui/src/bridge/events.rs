@@ -154,8 +154,8 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
             native::tray::refresh(cx);
         }
         HostMsg::Event(CoreEvent::KeyboardBindingsSettingsChanged(payload)) => {
-            // The new app shortcuts bind now (the shell's labels follow in the reload).
-            crate::keymap::bind(&crate::keymap::Bindings::from_settings(&payload), cx);
+            // The new app shortcuts replace the old ones now (the shell's labels follow in the reload).
+            crate::keymap::rebind(&payload, cx);
             if let (Some(core), Ok(settings)) = (
                 cx.try_global::<Core>().map(|c| c.0.clone()),
                 serde_json::from_value(payload),

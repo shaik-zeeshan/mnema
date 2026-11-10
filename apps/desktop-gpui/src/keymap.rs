@@ -10,7 +10,10 @@
 
 use std::rc::Rc;
 
-use gpui_kit::{actions, Action, App, KeyBinding, KeyBindingContextPredicate};
+use gpui_kit::{
+    actions, Action, App, Global, KeyBinding, KeyBindingContextPredicate, KeyBindingMetaIndex,
+    Keystroke, OperatingSystem,
+};
 use serde_json::Value;
 
 actions!(
@@ -85,7 +88,13 @@ impl Bindings {
     /// From `get_keyboard_bindings_settings` JSON; a missing or reserved entry keeps its default.
     // Reads the wire JSON: the settings event carries it, and so does the parity fixture.
     pub fn from_settings(settings: &Value) -> Self {
-        let mut b = Self::default();
+        Self::default().with_settings(settings)
+    }
+
+    /// `settings` over `self`: a missing, reserved or unparseable entry keeps its
+    /// current key; an empty one clears it.
+    pub fn with_settings(mut self, settings: &Value) -> Self {
+        let b = &mut self;
         let pick = |slot: &mut String, group: &str, key: &str| {
             let value = settings
                 .get(group)
@@ -98,7 +107,7 @@ impl Bindings {
                 })
                 .and_then(|g| g.get(key))
                 .and_then(Value::as_str);
-            if let Some(v) = value.filter(|v| !is_reserved(v)) {
+            if let Some(v) = value.filter(|v| !is_reserved(v) && parses(v)) {
                 *slot = v.to_string();
             }
         };
@@ -142,12 +151,18 @@ impl Bindings {
             let value = drawer.and_then(|g| g.get(key)).and_then(Value::as_str);
             let reserved =
                 |v: &str| ["escape", "tab", "shift+tab"].contains(&v.to_ascii_lowercase().as_str());
-            if let Some(v) = value.filter(|v| !reserved(v)) {
+            if let Some(v) = value.filter(|v| !reserved(v) && parses(v)) {
                 *slot = v.to_string();
             }
         }
-        b
+        self
     }
+}
+
+/// Empty (a cleared binding) or a keystroke GPUI can bind.
+fn parses(binding: &str) -> bool {
+    binding.trim().is_empty()
+        || Keystroke::parse_with_os(&to_gpui(binding), OperatingSystem::Mac).is_ok()
 }
 
 /// `RESERVED_SHORTCUT_BINDINGS`.
@@ -225,8 +240,11 @@ pub fn display(binding: &str) -> String {
 }
 
 /// A binding from the user's settings: parsed at runtime, so a bad string is
-/// logged and skipped rather than a panic.
+/// logged and skipped rather than a panic. A cleared one binds nothing.
 fn user_binding<A: Action>(keys: &str, action: A, context: &str, cx: &App) -> Option<KeyBinding> {
+    if keys.trim().is_empty() {
+        return None;
+    }
     let predicate = KeyBindingContextPredicate::parse(context).ok().map(Rc::new);
     match KeyBinding::load(&to_gpui(keys), Box::new(action), predicate, false, None, cx) {
         Ok(binding) => Some(binding),
@@ -237,9 +255,28 @@ fn user_binding<A: Action>(keys: &str, action: A, context: &str, cx: &App) -> Op
     }
 }
 
-/// Install the app's bindings (gpui-kit's own component bindings stay).
-// shortcut: a settings change appends (the new keys win; a replaced key stays
-// bound until restart), upgrade when GPUI can unbind one binding.
+/// Tags every binding [`bind`] installs, so the next call can take them all out
+/// again. Meta only ranks against `NoAction` bindings, and there any meta acts
+/// like an untagged binding, so the tag changes no precedence.
+const OURS: KeyBindingMetaIndex = KeyBindingMetaIndex(0x4d4e_4d41);
+
+/// What [`bind`] last installed, so [`rebind`] can keep a slot the new settings refuse.
+struct Bound(Bindings);
+
+impl Global for Bound {}
+
+/// A keyboard settings change: rebind from `settings` over what is bound now.
+pub fn rebind(settings: &Value, cx: &mut App) {
+    let current = cx
+        .try_global::<Bound>()
+        .map(|b| b.0.clone())
+        .unwrap_or_default();
+    bind(&current.with_settings(settings), cx);
+}
+
+/// Install the app's bindings, replacing the set a previous call installed, so a
+/// rebound or cleared key stops firing at once. Everything else in the keymap
+/// (gpui-kit's component bindings, ⌘Q) is kept, in its order.
 pub fn bind(bindings: &Bindings, cx: &mut App) {
     let shell = Some(SHELL_CONTEXT);
     let field = Some(IN_COMMAND_FIELD);
@@ -266,40 +303,50 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
             cx,
         ),
     ];
-    crate::timeline::bind_keys(cx);
-    {
+    let drawer = {
         use crate::timeline::audio::{
             self, PlayPause, SeekBack, SeekBackFast, SeekForward, SeekForwardFast,
         };
         let [play, back, fwd, back_fast, fwd_fast] = &bindings.audio_drawer;
-        let drawer = [
+        [
             user_binding(play, PlayPause, audio::CONTEXT, cx),
             user_binding(back, SeekBack, audio::CONTEXT, cx),
             user_binding(fwd, SeekForward, audio::CONTEXT, cx),
             user_binding(back_fast, SeekBackFast, audio::CONTEXT, cx),
             user_binding(fwd_fast, SeekForwardFast, audio::CONTEXT, cx),
-        ];
-        cx.bind_keys(drawer.into_iter().flatten());
-        cx.bind_keys([KeyBinding::new(
-            "escape",
-            audio::Escape,
-            Some("AudioDrawer"),
-        )]);
-    }
-    cx.bind_keys(
-        [
-            KeyBinding::new("cmd-k", FocusRecall, shell),
-            KeyBinding::new("cmd-j", FocusAsk, shell),
-            KeyBinding::new("cmd-1", GoTimeline, shell),
-            KeyBinding::new("cmd-2", GoInsights, shell),
-            KeyBinding::new("escape", CloseOverlay, shell),
-            KeyBinding::new("shift-/", ToggleShortcutsHelp, Some(APP_CONTEXT)),
-            KeyBinding::new("tab", FlipMode, field),
-            KeyBinding::new("escape", Dismiss, field),
+            Some(KeyBinding::new(
+                "escape",
+                audio::Escape,
+                Some("AudioDrawer"),
+            )),
         ]
+    };
+    let fixed = [
+        KeyBinding::new("cmd-k", FocusRecall, shell),
+        KeyBinding::new("cmd-j", FocusAsk, shell),
+        KeyBinding::new("cmd-1", GoTimeline, shell),
+        KeyBinding::new("cmd-2", GoInsights, shell),
+        KeyBinding::new("escape", CloseOverlay, shell),
+        KeyBinding::new("shift-/", ToggleShortcutsHelp, Some(APP_CONTEXT)),
+        KeyBinding::new("tab", FlipMode, field),
+        KeyBinding::new("escape", Dismiss, field),
+    ];
+    let kept: Vec<KeyBinding> = cx
+        .key_bindings()
+        .borrow()
+        .bindings()
+        .filter(|b| b.meta() != Some(OURS))
+        .cloned()
+        .collect();
+    let ours = crate::timeline::key_bindings()
         .into_iter()
-        .chain(user.into_iter().flatten()),
-    );
+        .chain(drawer.into_iter().flatten())
+        .chain(fixed)
+        .chain(user.into_iter().flatten())
+        .map(|b| b.with_meta(OURS));
+    cx.clear_key_bindings();
+    cx.bind_keys(kept.into_iter().chain(ours));
+    cx.set_global(Bound(bindings.clone()));
 }
 
 /// One row of the shortcuts sheet.

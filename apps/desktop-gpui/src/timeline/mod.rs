@@ -365,10 +365,11 @@ pub fn register_actions(
 }
 
 /// The Timeline's bindings: unmodified keys, suppressed in inputs and buttons.
-pub fn bind_keys(cx: &mut gpui_kit::App) {
+/// `keymap::bind` installs them.
+pub fn key_bindings() -> [gpui_kit::KeyBinding; 11] {
     use gpui_kit::KeyBinding;
     let ctx = Some(crate::keymap::APP_CONTEXT);
-    cx.bind_keys([
+    [
         KeyBinding::new("left", OlderFrame, ctx),
         KeyBinding::new("right", NewerFrame, ctx),
         KeyBinding::new("shift-left", OlderFrameFast, ctx),
@@ -380,7 +381,7 @@ pub fn bind_keys(cx: &mut gpui_kit::App) {
         KeyBinding::new("c", CopyFrame, ctx),
         KeyBinding::new("d", DownloadFrame, ctx),
         KeyBinding::new("p", PlayMoment, ctx),
-    ]);
+    ]
 }
 
 impl Render for TimelineView {
