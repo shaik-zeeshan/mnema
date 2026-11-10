@@ -60,6 +60,7 @@ pub struct Choice {
     options: Vec<ChoiceOption>,
     selected: usize,
     list: bool,
+    dense: bool,
     force: Option<(usize, Force)>,
     on_change: Option<OnChange>,
 }
@@ -77,12 +78,18 @@ impl Choice {
             options,
             selected,
             list: false,
+            dense: false,
             force: None,
             on_change: None,
         }
     }
     pub fn list(mut self) -> Self {
         self.list = true;
+        self
+    }
+    /// List rows at 9 px padding with small descriptions (`.ac-scope`).
+    pub fn dense(mut self) -> Self {
+        self.dense = true;
         self
     }
     pub fn force(mut self, ix: usize, f: Force) -> Self {
@@ -121,6 +128,7 @@ impl RenderOnce for Choice {
         let p = theme::tokens(cx);
         let base = self.id.to_string();
         let list = self.list;
+        let dense = self.dense;
         let all = Rc::new(self.options.clone());
         let opts = self.options.iter().enumerate().map(|(ix, o)| {
             let forced = self
@@ -174,7 +182,7 @@ impl RenderOnce for Choice {
                 });
             let desc = o.description.clone().map(|d| {
                 div()
-                    .text_size(text::BASE)
+                    .text_size(if dense { text::SM } else { text::BASE })
                     .line_height(gpui_kit::relative(1.45))
                     .text_color(p.text_muted)
                     .child(d)
@@ -207,7 +215,7 @@ impl RenderOnce for Choice {
                     .gap(space::S3)
                     .pl(px(14.))
                     .pr(px(44.))
-                    .py(px(11.))
+                    .py(px(if dense { 9. } else { 11. }))
                     .when(ix > 0, |el| el.border_t_1().border_color(p.hairline))
                     .when(on, |el| el.bg(p.wash_strong))
                     .when(!on && hover, |el| el.bg(p.wash))

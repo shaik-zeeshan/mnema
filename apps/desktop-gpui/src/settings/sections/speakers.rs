@@ -123,7 +123,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             r
         }
     };
-    rows.push(model.build("spk-model", p, cx));
+    rows.push(model.build("spk-model", s, p, cx));
     section(
         "Speakers",
         Some("Anonymous separation first; naming saved people only when you opt in."),

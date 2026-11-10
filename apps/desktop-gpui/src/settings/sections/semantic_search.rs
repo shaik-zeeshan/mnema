@@ -171,7 +171,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             )
             .build(p)
             .into_any_element(),
-        model.build("ss-model-row", p, cx),
+        model.build("ss-model-row", s, p, cx),
     ];
     section(
         "Semantic Search",

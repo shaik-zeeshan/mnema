@@ -207,9 +207,11 @@ fn tool_row(
                 .flex_none()
                 .items_center()
                 .justify_center()
-                .size(px(28.))
+                .size(px(32.))
                 .rounded(radius::MD)
-                .bg(p.surface_subtle)
+                .border_1()
+                .border_color(if blocked { p.danger_border } else { p.hairline })
+                .bg(if blocked { p.danger_bg } else { p.wash })
                 .text_color(if blocked { p.danger_text } else { p.text_muted })
                 .child(icon(
                     if blocked { icons::OFF } else { icons::TERMINAL },

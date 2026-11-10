@@ -15,6 +15,7 @@ use gpui_kit::{
 use super::scope::Scope;
 use super::{format, Chat};
 use crate::theme::{self, radius, size, space, text, Palette};
+use crate::ui::date_input::DateInput;
 use crate::ui::model_picker::{ModelPicker, Spec, Trigger};
 use crate::ui::notice::notice;
 use crate::ui::switch::Switch;
@@ -86,7 +87,7 @@ fn picker(chat: &Chat, docked: bool, cx: &mut Context<Chat>) -> ModelPicker {
 }
 
 /// `.ch-ctx`: Scope · Include · Goes to.
-fn scope_panel(chat: &Chat, docked: bool, p: &Palette, cx: &mut Context<Chat>) -> Div {
+fn scope_panel(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
     let today = crate::ui::clock::now(cx).date();
     let e = &chat.data.engine;
     let provider = chat
@@ -194,7 +195,7 @@ fn scope_panel(chat: &Chat, docked: bool, p: &Palette, cx: &mut Context<Chat>) -
         .child(row(
             "Scope",
             px(16.),
-            scope_button(chat.scope, today, docked, p, cx).into_any_element(),
+            scope_button(chat.scope, today, cx).into_any_element(),
         ))
         .child(row(
             "Include",
@@ -283,83 +284,19 @@ fn scope_panel(chat: &Chat, docked: bool, p: &Palette, cx: &mut Context<Chat>) -
         ))
 }
 
-/// The scope trigger (the DateInput range button): a calendar glyph and the label.
-/// shortcut: picks from the range presets, not the full range calendar
-/// (S6's DateInput has no range mode yet; S8/S12 add it).
-fn scope_button(
-    scope: Scope,
-    today: time::Date,
-    _docked: bool,
-    p: &Palette,
-    cx: &mut Context<Chat>,
-) -> impl IntoElement {
-    let label = match (scope.start, scope.end) {
-        (Some(_), Some(_)) => {
-            let l = scope.label(today);
-            let mut c = l.chars();
-            c.next()
-                .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
-                .unwrap_or(l)
-        }
-        _ => "All time".into(),
-    };
-    let presets = super::scope::presets(today);
-    let next = {
-        // Cycle: all time → each preset → all time (one click per step).
-        let at = presets
-            .iter()
-            .position(|(_, a, b)| Some(*a) == scope.start && Some(*b) == scope.end);
-        match at {
-            None => Some(presets[0]),
-            Some(i) if i + 1 < presets.len() => Some(presets[i + 1]),
-            _ => None,
-        }
-    };
-    div()
-        .id("chat-scope-range")
-        .test_support()
-        .role(gpui_kit::Role::Button)
-        .aria_label("Scope")
-        .flex()
-        .items_center()
-        .gap(px(8.))
-        .h(size::H_MD)
-        .px(space::S3)
-        .w(px(200.))
-        .rounded(radius::MD)
-        .border_1()
-        .border_color(p.border_strong)
-        .bg(p.surface_raised)
-        .cursor_pointer()
-        .text_size(text::MD)
-        .text_color(p.text_strong)
-        .child(
-            div()
-                .text_color(p.text_subtle)
-                .child(icon("icons/calendar.svg", px(14.))),
-        )
-        .child(div().flex_1().child(SharedString::from(label)))
-        .child(
-            svg()
-                .path(IconName::ChevronDown.path())
-                .size(px(14.))
-                .text_color(p.text_subtle),
-        )
-        .on_click(cx.listener(move |this, _, _, cx| {
-            let about = this.scope.about_you;
-            this.scope = match next {
-                Some((_, a, b)) => Scope {
-                    start: Some(a),
-                    end: Some(b),
-                    about_you: about,
-                },
-                None => Scope {
-                    about_you: about,
-                    ..Scope::default()
-                },
-            };
+/// The scope trigger: the DateInput in range mode (All time + presets).
+/// shortcut: docked under a thread the calendar still opens downward (no `up`
+/// placement in DateInput); upgrade when the docked composer needs it.
+fn scope_button(scope: Scope, today: time::Date, cx: &mut Context<Chat>) -> impl IntoElement {
+    let span = scope.start.zip(scope.end);
+    let this = cx.entity().downgrade();
+    DateInput::new("chat-scope-range", today, today).span(span, move |next, _, cx| {
+        let _ = this.update(cx, |c, cx| {
+            c.scope.start = next.map(|(a, _)| a);
+            c.scope.end = next.map(|(_, b)| b);
             cx.notify();
-        }))
+        });
+    })
 }
 
 pub fn render(
@@ -558,6 +495,6 @@ pub fn render(
                 ))
                 .child(div().ml_auto().child(send)),
         )
-        .when(ctx_open, |d| d.child(scope_panel(chat, docked, p, cx)))
+        .when(ctx_open, |d| d.child(scope_panel(chat, p, cx)))
         .into_any_element()
 }

@@ -5,7 +5,7 @@
 use capture_types::RecordingSettings;
 use gpui_kit::{AppContext as _, Context, Window};
 
-use super::Settings;
+use super::{Reach, Settings};
 
 impl Settings {
     /// `block_cli_access_client` / `unblock_cli_access_client`, by normalized label.
@@ -27,6 +27,53 @@ impl Settings {
             let _ = this.update(cx, |s, cx| s.reload_all(cx));
         })
         .detach();
+    }
+
+    /// `verify_ai_provider` for one row, against the draft list (an unsaved base
+    /// URL counts). The row reads "Testing…" until the verdict lands.
+    pub fn test_provider(&mut self, id: String, cx: &mut Context<Self>) {
+        let providers = self.d().ai_runtime.providers;
+        self.ui.reach.insert(id.clone(), Reach::Checking);
+        cx.notify();
+        let backend = self.backend.clone();
+        let probe = id.clone();
+        let job = cx.background_spawn(async move { backend.verify_provider(&probe, &providers) });
+        cx.spawn(async move |this, cx| {
+            let verdict = match job.await {
+                Ok(()) => Reach::Reachable,
+                Err(e) => Reach::Failed(e),
+            };
+            let _ = this.update(cx, |s, cx| {
+                if s.ui.reach.get(&id) == Some(&Reach::Checking) {
+                    s.ui.reach.insert(id, verdict);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Every row's reachability once per session (this entity lives as long as
+    /// the shell), the first time Settings loads with AI on (Tauri: the first
+    /// open of Providers). ChatGPT's listing is static, so it proves nothing;
+    /// its row speaks from the runtime status.
+    pub fn test_providers_once(&mut self, cx: &mut Context<Self>) {
+        let Some(d) = self.draft.clone().filter(|d| d.ai_runtime.enabled) else {
+            return;
+        };
+        if std::mem::replace(&mut self.ui.reach_checked, true) {
+            return;
+        }
+        let ids: Vec<String> = d
+            .ai_runtime
+            .providers
+            .iter()
+            .filter(|p| p.kind != capture_types::AiProviderKind::Chatgpt)
+            .map(|p| p.id.clone())
+            .collect();
+        for id in ids {
+            self.test_provider(id, cx);
+        }
     }
 
     /// List every provider's models for a picker (Chat's door).

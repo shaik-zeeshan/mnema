@@ -9,7 +9,7 @@ use gpui_kit::{div, px, AnyElement, ClickEvent, Context, SharedString, Window};
 use crate::chat::format::{kind_label, provider_instance_label, provider_label_by_id, url_host};
 use crate::settings::model::Json;
 use crate::settings::row::{line, row, section, state_word};
-use crate::settings::{click, icons, on, Settings};
+use crate::settings::{click, icons, on, Reach, Settings};
 use crate::theme::{space, Palette};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
@@ -39,8 +39,14 @@ pub(crate) fn local_default(kind: AiProviderKind) -> &'static str {
     }
 }
 
-/// `providerRowState`: the state word and its tone.
-fn row_state(pv: &AiProviderConfig, key_saved: bool, reason: &str) -> (&'static str, Option<Tone>) {
+/// `providerRowState`: the state word and its tone. `reach` is the row's own
+/// live verify verdict (`None` while unchecked or checking).
+fn row_state(
+    pv: &AiProviderConfig,
+    key_saved: bool,
+    reason: &str,
+    reach: Option<&Reach>,
+) -> (&'static str, Option<Tone>) {
     let id = pv.id.to_lowercase();
     let reason = reason.to_lowercase();
     if reason == format!("needs_reconnect:{id}") {
@@ -59,10 +65,35 @@ fn row_state(pv: &AiProviderConfig, key_saved: bool, reason: &str) -> (&'static 
             ("not connected", None)
         };
     }
-    match (cloud(pv.kind), key_saved) {
-        (true, false) => ("no key", None),
-        (true, true) => ("key saved", Some(Tone::Ok)),
+    match (cloud(pv.kind), key_saved, reach) {
+        (true, false, _) => ("no key", None),
+        (_, _, Some(Reach::Failed(_))) => ("not reachable", Some(Tone::Warn)),
+        (_, _, Some(Reach::Reachable)) => ("reachable", Some(Tone::Ok)),
+        (true, true, _) => ("key saved", Some(Tone::Ok)),
         _ => ("on this Mac", None),
+    }
+}
+
+/// The failed verify's line under the row (`reachabilityFailureText`).
+fn reach_line(pv: &AiProviderConfig, why: &str, p: &Palette) -> gpui_kit::Div {
+    let rejected = why.eq_ignore_ascii_case("authentication failed");
+    let text = if !cloud(pv.kind) && why.eq_ignore_ascii_case("unreachable") {
+        format!(
+            "The local endpoint could not be reached. Start {}, then test again.",
+            kind_label(pv.kind)
+        )
+    } else {
+        let short = match why.to_lowercase().as_str() {
+            "authentication failed" => "rejected this key".to_string(),
+            "unreachable" => "couldn\u{2019}t reach it".to_string(),
+            r => r.to_string(),
+        };
+        format!("Not reachable \u{2014} {short}.")
+    };
+    if rejected {
+        line(Tone::Danger, icons::ALERT, text, p)
+    } else {
+        line(Tone::Warn, icons::CLOUD_OFF, text, p)
     }
 }
 
@@ -131,8 +162,16 @@ fn provider_row(
     } else {
         Some(format!("{host} \u{b7} no key, nothing leaves this Mac"))
     };
-    let (word, tone) = row_state(pv, key_saved, reason);
+    let reach = s.ui.reach.get(&pv.id);
+    let checking = reach == Some(&Reach::Checking);
+    let verdict = reach.filter(|_| !checking);
+    let (word, tone) = row_state(pv, key_saved, reason, verdict);
+    let failed_line = match verdict {
+        Some(Reach::Failed(why)) if word == "not reachable" => Some(reach_line(pv, why, p)),
+        _ => None,
+    };
     let id = pv.id.clone();
+    let test_id = pv.id.clone();
     let ctl = div()
         .flex()
         .items_center()
@@ -141,13 +180,19 @@ fn provider_row(
         .when(
             pv.kind != AiProviderKind::Chatgpt && (key_saved || !is_cloud),
             |d| {
-                // shortcut: verify_ai_provider's live re-test result line lands with S3's ask_ai events.
                 d.child(
                     Button::new(
                         SharedString::from(format!("pv-test-{}", pv.id)),
-                        "Test again",
+                        if checking {
+                            "Testing\u{2026}"
+                        } else {
+                            "Test again"
+                        },
                     )
-                    .ghost(),
+                    .ghost()
+                    .busy(checking)
+                    .spinner(checking)
+                    .on_click(click(cx, move |s, cx| s.test_provider(test_id.clone(), cx))),
                 )
             },
         )
@@ -209,6 +254,10 @@ fn provider_row(
         r.full().aside(ctl).control(fields)
     } else {
         r.control(ctl)
+    };
+    let r = match failed_line {
+        Some(l) => r.below(l),
+        None => r,
     };
     r.build(p).into_any_element()
 }

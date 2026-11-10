@@ -131,6 +131,11 @@ impl Shell {
             s.status = status;
             cx.notify();
         });
+        let recording = (self.model.status.running, self.model.status.user_paused);
+        self.insights.update(cx, |i, cx| {
+            i.recording = recording;
+            cx.notify();
+        });
         self.timeline.update(cx, |t, cx| {
             t.capture = hint;
             t.developer = developer;
@@ -233,6 +238,28 @@ impl Shell {
                 self.go(Surface::Chat, cx);
             }
             crate::insights::InsightsEvent::OpenTimeline => self.go(Surface::Timeline, cx),
+            crate::insights::InsightsEvent::OpenFrame(frame_id) => {
+                let id = *frame_id;
+                self.go(Surface::Timeline, cx);
+                self.timeline.update(cx, |t, cx| t.jump_to(id, cx));
+            }
+            crate::insights::InsightsEvent::StartRecording => {
+                let Some(core) = crate::chat::core(cx) else {
+                    return;
+                };
+                let paused = self.model.status.running && self.model.status.user_paused;
+                // Capture start/resume opens streams: never on the main thread.
+                std::thread::spawn(move || {
+                    let r = if paused {
+                        crate::native::toggle_pause(&core)
+                    } else {
+                        crate::native::toggle_recording(&core, "insights")
+                    };
+                    if let Err((title, e)) = r {
+                        log::error!("insights: {title}: [{}] {}", e.code, e.message);
+                    }
+                });
+            }
         }
     }
 

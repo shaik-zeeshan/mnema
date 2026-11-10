@@ -4,8 +4,6 @@
 use capture_types::AskAiScope;
 use time::{Date, Duration, OffsetDateTime, Time, UtcOffset};
 
-use crate::ui::calendar::{monday, month_of};
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Scope {
     /// Inclusive local days; both None = all time.
@@ -25,39 +23,7 @@ impl Default for Scope {
     }
 }
 
-/// The DateInput range presets (`presets(today)`), label + inclusive days.
-pub fn presets(today: Date) -> Vec<(&'static str, Date, Date)> {
-    let m0 = monday(today);
-    let d = Duration::days;
-    let (ms, me) = month_of(today, 0);
-    let (ls, le) = month_of(today, -1);
-    vec![
-        ("Today", today, today),
-        ("Yesterday", today - d(1), today - d(1)),
-        ("This week", m0, m0 + d(6)),
-        ("Last week", m0 - d(7), m0 - d(1)),
-        ("Last 7 days", today - d(6), today),
-        ("Last 30 days", today - d(29), today),
-        ("This month", ms, me),
-        ("Last month", ls, le),
-    ]
-}
-
-const MONTHS: [&str; 12] = [
-    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-];
-
-/// "Oct 3" / "Oct 3 – 9" / "Sep 28 – Oct 4" (`spanLabel`).
-pub fn span_label(a: Date, b: Date) -> String {
-    let md = |d: Date| format!("{} {}", MONTHS[d.month() as usize - 1], d.day());
-    if a == b {
-        md(a)
-    } else if a.month() == b.month() {
-        format!("{} – {}", md(a), b.day())
-    } else {
-        format!("{} – {}", md(a), md(b))
-    }
-}
+pub use crate::ui::calendar::{presets, span_label};
 
 impl Scope {
     /// "all time", a preset's name lower-cased, else the span.

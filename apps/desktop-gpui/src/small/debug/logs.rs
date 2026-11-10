@@ -9,9 +9,8 @@ use super::data::LOG_TAIL_LINES;
 use super::readouts::{filter_entries, group_log_lines, Level, LOG_FEATURES};
 use super::DebugWindow;
 use crate::settings::model::Json;
-use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::theme::{self, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
-use crate::ui::input::TextInput;
 use crate::ui::segmented::Segmented;
 use crate::ui::switch::Switch;
 use crate::ui::{mix, nid, Button, Tone};
@@ -84,7 +83,21 @@ pub fn tab(
                         }),
                 ),
         )
-        .child(TextInput::new("dv-filter", "Filter lines", &w.needle))
+        .child(
+            // `.dv-logbar .mx-search`: the search field at the small height.
+            crate::chat::list::search_box(
+                gpui_kit::component::input::Input::new(&w.needle)
+                    .aria_label("Filter lines")
+                    .appearance(false)
+                    .px_0()
+                    .h(px(18.))
+                    .text_size(text::BASE)
+                    .into_any_element(),
+                p,
+            )
+            .h(size::H_SM)
+            .pl(px(8.)),
+        )
         .child(div().flex().gap(px(2.)).overflow_hidden().children(
             LOG_FEATURES.iter().enumerate().map(|(i, (label, _))| {
                 Button::new(nid("dv-feat", i as u64), *label)

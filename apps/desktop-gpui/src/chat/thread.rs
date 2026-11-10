@@ -210,6 +210,18 @@ fn greeting(chat: &Chat, p: &Palette, window: &mut Window, cx: &mut Context<Chat
     };
     // `clamp(32px, 9vh, 96px)` top padding.
     let top = (window.viewport_size().height * 0.09).clamp(px(32.), px(96.));
+    let hello = format!("{} ", format::greeting(hour));
+    const ASK: &str = "What do you want to remember?";
+    // shortcut: balances against the column's max width (or the window, if
+    // narrower), not the laid-out width; a sidebar-squeezed column wraps naturally.
+    let avail = size::CHAT_THREAD_MAX_W.min(window.viewport_size().width) - space::S6 * 2.;
+    let title_w = crate::ui::balanced_width(
+        &[(&hello, theme::W_SEMIBOLD), (ASK, theme::W_MEDIUM)],
+        theme::FONT_UI,
+        text::DISPLAY,
+        avail,
+        window,
+    );
     div()
         .w_full()
         .max_w(size::CHAT_THREAD_MAX_W)
@@ -224,13 +236,14 @@ fn greeting(chat: &Chat, p: &Palette, window: &mut Window, cx: &mut Context<Chat
                 .child(
                     div()
                         .my(space::S3)
+                        .max_w(title_w)
                         .font_weight(theme::W_SEMIBOLD)
                         .text_size(text::DISPLAY)
                         .line_height(relative(1.04))
                         .text_color(p.text_strong)
                         .child(super::inline_runs(&[
-                            (&format!("{} ", format::greeting(hour)), None),
-                            ("What do you want to remember?", Some((theme::W_MEDIUM, p.text_muted))),
+                            (&hello, None),
+                            (ASK, Some((theme::W_MEDIUM, p.text_muted))),
                         ])),
                 )
                 .child(

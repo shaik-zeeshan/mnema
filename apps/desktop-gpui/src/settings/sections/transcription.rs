@@ -7,7 +7,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context};
 
 use super::ix;
-use super::model_row::{delete_unused_row, status_row, ModelRow};
+use super::model_row::{delete_unused_row, model_files, status_row, ModelRow};
 use crate::settings::data::Family;
 use crate::settings::model::{provider_models, selected_model};
 use crate::settings::row::{row, section, Src};
@@ -186,6 +186,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             status: (m.available && t.provider != AudioTranscriptionProvider::Deepgram)
                 .then_some("available"),
             chip: (!m.available).then(|| ("unavailable".into(), ChipKind::Warn)),
+            files: model_files(m),
             ..Default::default()
         },
         Some(m) => {
@@ -225,7 +226,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         }
     };
     model.controls.extend(select);
-    rows.push(model.build("tx-model-row", p, cx));
+    rows.push(model.build("tx-model-row", s, p, cx));
     // shortcut: the language combobox (TRANSCRIPTION_LANGUAGE_OPTIONS) shows the stored code only.
     rows.push(
         row("Language")

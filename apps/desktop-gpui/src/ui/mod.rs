@@ -316,3 +316,85 @@ pub fn text_width(
         .shape_line(s.to_string().into(), font_size, &[run], None);
     px(f32::from(line.width).ceil())
 }
+
+/// Greedy line count for words of `widths` joined by `space` at width `w`.
+fn wrap_lines(widths: &[f32], space: f32, w: f32) -> usize {
+    let mut lines = 1;
+    let mut line = 0f32;
+    for &x in widths {
+        if line > 0. && line + space + x > w {
+            lines += 1;
+            line = x;
+        } else {
+            line += if line > 0. { space + x } else { x };
+        }
+    }
+    lines
+}
+
+/// CSS `text-wrap: balance`: the narrowest width that keeps the line count
+/// `avail` gives, so the lines come out about even.
+fn balance(widths: &[f32], space: f32, avail: f32) -> f32 {
+    let n = wrap_lines(widths, space, avail);
+    let total = widths.iter().sum::<f32>() + space * widths.len().saturating_sub(1) as f32;
+    if n <= 1 {
+        return total.min(avail);
+    }
+    let widest = widths.iter().copied().fold(0., f32::max);
+    let (mut lo, mut hi) = (widest, avail);
+    for _ in 0..20 {
+        let mid = (lo + hi) / 2.;
+        if wrap_lines(widths, space, mid) <= n {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    hi
+}
+
+/// A max width for a headline of `runs` (text, weight) that wraps it balanced
+/// within `avail` (GPUI has no `text-wrap: balance`).
+pub fn balanced_width(
+    runs: &[(&str, gpui_kit::FontWeight)],
+    family: &'static str,
+    font_size: Pixels,
+    avail: Pixels,
+    window: &Window,
+) -> Pixels {
+    let mut widths = Vec::new();
+    for (s, weight) in runs {
+        for word in s.split_whitespace() {
+            widths.push(f32::from(text_width(
+                word, family, *weight, font_size, window,
+            )));
+        }
+    }
+    let weight = runs.first().map(|r| r.1).unwrap_or_default();
+    let space = f32::from(text_width("a a", family, weight, font_size, window))
+        - f32::from(text_width("aa", family, weight, font_size, window));
+    // Slack of one space: the wrapper's own measure of a line can run a little
+    // past the sum of its words, and the line must not tip into a third.
+    px((balance(&widths, space, f32::from(avail)) + space)
+        .ceil()
+        .min(f32::from(avail)))
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::{balance, wrap_lines};
+
+    #[test]
+    fn balance_evens_two_lines() {
+        let w = [10., 10., 10., 10.];
+        assert_eq!(wrap_lines(&w, 1., 35.), 2); // 3 + 1 greedily
+        let b = balance(&w, 1., 35.);
+        assert!((21. ..21.1).contains(&b), "{b}"); // 2 + 2
+        assert_eq!(wrap_lines(&w, 1., b), 2);
+    }
+
+    #[test]
+    fn balance_leaves_one_line_alone() {
+        assert_eq!(balance(&[10., 10.], 1., 100.), 21.);
+    }
+}

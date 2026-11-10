@@ -105,6 +105,7 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                     div()
                         .font_weight(theme::W_MEDIUM)
                         .text_size(text::SM)
+                        .line_height(relative(1.))
                         .text_color(p.text_subtle)
                         .child(label),
                 )
@@ -124,6 +125,7 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                         .child(
                             div()
                                 .text_size(text::SM)
+                                .line_height(relative(1.))
                                 .text_color(p.text_subtle)
                                 .child(unit),
                         ),

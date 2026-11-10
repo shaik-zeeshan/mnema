@@ -30,9 +30,9 @@ pub fn strip(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Any
             small_icon(
                 "dv-pause",
                 if w.live {
-                    "icons/pause.svg"
+                    crate::assets::FILL_LUCIDE_PAUSE
                 } else {
-                    "icons/play.svg"
+                    crate::assets::FILL_LUCIDE_PLAY
                 },
                 pause_label,
             )

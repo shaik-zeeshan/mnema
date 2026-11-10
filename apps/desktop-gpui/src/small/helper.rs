@@ -176,10 +176,19 @@ impl Render for PermissionHelper {
             .border_color(p.overlay_border)
             .font_family(theme::FONT_UI)
             .child(
-                img(self.icon.clone())
+                // `.mx-helper__icon`: the 40 px tile's inset white hairline (its
+                // drop shadow is left out: GPUI would paint it under the
+                // icon's transparent margin too).
+                div()
                     .flex_none()
                     .size(px(40.))
-                    .rounded(px(9.)),
+                    .rounded(px(9.))
+                    .overflow_hidden()
+                    .shadow(vec![crate::ui::inset(
+                        crate::ui::alpha(gpui_kit::white(), 0.1),
+                        px(1.),
+                    )])
+                    .child(img(self.icon.clone()).size_full()),
             )
             .child(
                 div()

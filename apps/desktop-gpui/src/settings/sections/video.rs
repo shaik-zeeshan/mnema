@@ -8,14 +8,14 @@ use capture_types::{
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context, Window};
 
-use crate::settings::row::{hint, line, row, section};
+use crate::settings::row::{hint, row, section};
 use crate::settings::{icons, on, Settings};
-use crate::theme::{space, text, Palette};
+use crate::theme::{radius, space, text, Palette};
+use crate::ui::icon;
 use crate::ui::input::TextInput;
 use crate::ui::segmented::Segmented;
 use crate::ui::select::Select;
 use crate::ui::stepper::Stepper;
-use crate::ui::Tone;
 
 /// `CAPTURE_INTERVAL_LADDER_S`.
 const LADDER: [f64; 11] = [0.1, 0.5, 1., 2., 3., 5., 10., 15., 30., 45., 60.];
@@ -147,19 +147,50 @@ pub fn render(
     let support = s.data.capture_support.as_ref();
     let pending = support.is_none();
     let supported = support.is_some_and(|v| v["nativeCaptureSupported"].as_bool() == Some(true));
+    // `.resolution-*-notice`: a full-width tinted box, small text.
+    let notice = |bg, bd, fg, ic: &'static str, msg: &'static str| {
+        div()
+            .flex()
+            .items_start()
+            .gap(px(8.))
+            .w_full()
+            .px(px(12.))
+            .py(px(9.))
+            .rounded(radius::XS)
+            .border_1()
+            .border_color(bd)
+            .bg(bg)
+            .text_color(fg)
+            .child(div().flex_none().mt(px(1.)).child(icon(ic, px(11.))))
+            .child(
+                div()
+                    .flex_1()
+                    .text_size(text::XS)
+                    .line_height(gpui_kit::relative(1.55))
+                    .child(msg),
+            )
+    };
     let support_line = match (pending, supported) {
-        (true, _) => line(
-            Tone::Neutral,
+        (true, _) => notice(
+            p.neutral_bg,
+            p.neutral_border,
+            p.neutral_text,
             icons::LOADER,
             "Checking capture support\u{2026} Scaled and custom resolutions are disabled until support is confirmed.",
-            p,
         ),
-        (false, true) => line(Tone::Ok, icons::CHECK, "Native capture supports scaled and custom output resolutions.", p),
-        (false, false) => line(
-            Tone::Neutral,
+        (false, true) => notice(
+            p.accent_bg,
+            p.accent_border,
+            p.accent_strong,
+            icons::CHECK,
+            "Native capture supports scaled and custom output resolutions.",
+        ),
+        (false, false) => notice(
+            p.neutral_bg,
+            p.neutral_border,
+            p.neutral_text,
             icons::INFO,
             "Native screen capture is unsupported on this system. Resolution settings are saved, but only apply when native screen capture is available.",
-            p,
         ),
     };
     let r_ix = res_ix(&d.screen_resolution);

@@ -2,6 +2,7 @@
 //! Speakers / Semantic Search: the status word or Download (size) on the
 //! right, a chip for failed/missing, error / warning lines and "Stored in".
 
+use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context, SharedString};
 
@@ -9,7 +10,7 @@ use crate::settings::data::{self, Family};
 use crate::settings::model::{format_bytes, ModelView};
 use crate::settings::row::{line, row, state_word};
 use crate::settings::{icons, Settings};
-use crate::theme::{text, Palette, FONT_MONO};
+use crate::theme::{space, text, Palette, FONT_MONO};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::{Button, Tone};
 
@@ -27,10 +28,36 @@ pub struct ModelRow {
     /// What Download starts.
     pub start: Option<(Family, String, String)>,
     pub folder: Option<String>,
+    /// The "Model files" disclosure: `(term, value)` rows.
+    pub files: Vec<(&'static str, String)>,
+}
+
+/// `ModelDownloadRow`'s `info`: install path, licence, source, missing files.
+pub fn model_files(m: &ModelView) -> Vec<(&'static str, String)> {
+    let mut out = Vec::new();
+    if let Some(v) = &m.install_path {
+        out.push(("Install path", v.clone()));
+    }
+    if let Some(v) = &m.license {
+        out.push(("Licence", v.clone()));
+    }
+    if let Some(v) = &m.source {
+        out.push(("Source", v.clone()));
+    }
+    if !m.missing.is_empty() {
+        out.push(("Missing", m.missing.join("\n")));
+    }
+    out
 }
 
 impl ModelRow {
-    pub fn build(self, id: &'static str, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
+    pub fn build(
+        self,
+        id: &'static str,
+        s: &Settings,
+        p: &Palette,
+        cx: &mut Context<Settings>,
+    ) -> AnyElement {
         let mut r = row(self.label).desc_opt(self.desc);
         if let Some((text_, kind)) = self.chip {
             r = r.extra(chip(text_, kind, p));
@@ -116,8 +143,78 @@ impl ModelRow {
                     ),
             );
         }
+        if !self.files.is_empty() {
+            let open = s.ui.files_open.contains(id);
+            r = r.below(files(id, open, self.files, p, cx));
+        }
         r.build(p).into_any_element()
     }
+}
+
+/// `<details class="mdr-info"><summary>Model files</summary><dl>…`.
+fn files(
+    id: &'static str,
+    open: bool,
+    rows: Vec<(&'static str, String)>,
+    p: &Palette,
+    cx: &mut Context<Settings>,
+) -> gpui_kit::Div {
+    let hover = p.text;
+    div()
+        .flex()
+        .flex_col()
+        .w_full()
+        .gap(space::S2)
+        .text_size(text::SM)
+        .child(
+            div()
+                .id(SharedString::from(format!("{id}-files")))
+                .role(gpui_kit::Role::Button)
+                .aria_expanded(open)
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .cursor_pointer()
+                .text_color(p.text_subtle)
+                .hover(move |s| s.text_color(hover))
+                .child(crate::ui::icon(
+                    if open {
+                        IconName::ChevronDown.path()
+                    } else {
+                        IconName::ChevronRight.path()
+                    },
+                    px(12.),
+                ))
+                .child("Model files")
+                .on_click(crate::settings::click(cx, move |s, cx| {
+                    if !s.ui.files_open.remove(id) {
+                        s.ui.files_open.insert(id);
+                    }
+                    cx.notify();
+                })),
+        )
+        .when(open, |d| {
+            d.children(rows.into_iter().map(|(term, value)| {
+                div()
+                    .flex()
+                    .gap(space::S3)
+                    .child(
+                        div()
+                            .w(px(84.))
+                            .flex_none()
+                            .text_color(p.text_subtle)
+                            .child(term),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .text_color(p.text_muted)
+                            .when(term != "Licence", |d| d.font_family(FONT_MONO))
+                            .children(value.split('\n').map(|l| div().child(l.to_string()))),
+                    )
+            }))
+        })
 }
 
 /// The OCR / transcription / speaker rows' common description + chip rules.
@@ -142,6 +239,7 @@ pub fn status_row(
         error: m.failure.clone(),
         download: (!m.available && m.download_bytes.is_some())
             .then_some((m.download_bytes, failed)),
+        files: model_files(m),
         ..Default::default()
     }
 }

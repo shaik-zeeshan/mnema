@@ -285,6 +285,70 @@ pub fn checked_clock(at_ms: Option<i64>, now: time::OffsetDateTime) -> Option<St
     })
 }
 
+/// One block of GitHub's generated release notes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NoteBlock {
+    Heading(String),
+    /// A bullet run (`- ` / `* `), one entry per item.
+    List(Vec<String>),
+    /// A meta paragraph (`**Full Changelog**: url`): words, then an optional link.
+    Para(String, Option<String>),
+}
+
+/// The release notes as GitHub writes them (headings, bullets, a closing
+/// paragraph), so the window can set `.up-notes` type exactly. `None` for
+/// anything richer (code, tables, quotes, images): that falls back to markdown.
+pub fn note_blocks(md: &str) -> Option<Vec<NoteBlock>> {
+    let mut out: Vec<NoteBlock> = Vec::new();
+    for line in md.lines().map(str::trim) {
+        if line.is_empty() {
+            continue;
+        }
+        if line.starts_with("```")
+            || line.starts_with('|')
+            || line.starts_with('>')
+            || line.contains("![")
+        {
+            return None;
+        }
+        if let Some(h) = line.strip_prefix('#') {
+            out.push(NoteBlock::Heading(inline(h.trim_start_matches('#').trim())));
+        } else if let Some(item) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+            match out.last_mut() {
+                Some(NoteBlock::List(items)) => items.push(inline(item)),
+                _ => out.push(NoteBlock::List(vec![inline(item)])),
+            }
+        } else {
+            let text = inline(line);
+            out.push(match text.find("https://") {
+                Some(i) => NoteBlock::Para(text[..i].to_string(), Some(text[i..].to_string())),
+                None => NoteBlock::Para(text, None),
+            });
+        }
+    }
+    Some(out)
+}
+
+/// Plain text of one line: `**bold**` and `` `code` `` marks dropped, `[t](u)` → `t`.
+fn inline(s: &str) -> String {
+    let s = s.replace("**", "").replace('`', "");
+    let mut out = String::new();
+    let mut rest = s.as_str();
+    while let Some(i) = rest.find('[') {
+        let Some(j) = rest[i..].find("](").map(|j| i + j) else {
+            break;
+        };
+        let Some(k) = rest[j..].find(')').map(|k| j + k) else {
+            break;
+        };
+        out.push_str(&rest[..i]);
+        out.push_str(&rest[i + 1..j]);
+        rest = &rest[k + 1..];
+    }
+    out.push_str(rest);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -335,5 +399,22 @@ mod tests {
         assert_eq!(progress_text(Some(&dl)), "21.0 MB of 42.0 MB");
         assert_eq!(progress_percent(Some(&dl)), Some(50.));
         assert_eq!(release_date("2026-11-03T10:00:00Z"), "Nov 3, 2026");
+    }
+
+    #[test]
+    fn github_notes_parse_into_blocks() {
+        let md = "## What's Changed\n- One by [@a](https://x)\n* `Two`\n\n**Full Changelog**: https://github.com/o/r/compare/a...b";
+        assert_eq!(
+            note_blocks(md),
+            Some(vec![
+                NoteBlock::Heading("What's Changed".into()),
+                NoteBlock::List(vec!["One by @a".into(), "Two".into()]),
+                NoteBlock::Para(
+                    "Full Changelog: ".into(),
+                    Some("https://github.com/o/r/compare/a...b".into())
+                ),
+            ])
+        );
+        assert_eq!(note_blocks("```\ncode\n```"), None);
     }
 }

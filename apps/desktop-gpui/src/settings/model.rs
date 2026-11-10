@@ -81,6 +81,9 @@ pub struct ModelView {
     pub failure: Option<String>,
     pub runtime_message: Option<String>,
     pub install_path: Option<String>,
+    pub license: Option<String>,
+    pub source: Option<String>,
+    pub missing: Vec<String>,
 }
 
 impl ModelView {
@@ -97,6 +100,13 @@ impl ModelView {
             failure: v.str_at(&["failureMessage"]).map(Into::into),
             runtime_message: v.str_at(&["runtimeMessage"]).map(Into::into),
             install_path: v.str_at(&["installPath"]).map(Into::into),
+            license: v.str_at(&["licenseLabel"]).map(Into::into),
+            source: v.str_at(&["sourceUrl"]).map(Into::into),
+            missing: v.at(&["missingFiles"]).as_array().map_or(Vec::new(), |a| {
+                a.iter()
+                    .filter_map(|f| f.as_str().map(str::to_string))
+                    .collect()
+            }),
         }
     }
 }

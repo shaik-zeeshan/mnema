@@ -65,7 +65,7 @@ impl AccessRequest {
             .flex()
             .flex_col()
             .gap(px(6.))
-            .child(kicker(k, p))
+            .child(kicker(k, p).line_height(relative(1.)))
             .child(h2(title, p))
             .child(body_sm(lede, p))
             .into_any_element()
@@ -201,6 +201,7 @@ impl AccessRequest {
         let this = cx.entity().downgrade();
         let choice = Choice::new("ac-scope", "What it can read", options, selected)
             .list()
+            .dense()
             .on_change(move |ix, _, cx| {
                 let _ = this.update(cx, |v, cx| v.select(Scope::ALL[ix], cx));
             });

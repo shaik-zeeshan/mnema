@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use app_core::recording_settings::{current_recording_settings, RecordingSettingsState};
 use app_core::{AppCore, AppInfraState};
-use capture_types::{MicrophoneControllerState, RecordingSettings};
+use capture_types::{AiProviderConfig, MicrophoneControllerState, RecordingSettings};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -178,6 +178,12 @@ pub trait Backend: Send + Sync + 'static {
         &self,
         state: &MicrophoneControllerState,
     ) -> Result<MicrophoneControllerState, String>;
+    /// `verify_ai_provider`: list one provider's models live, against the
+    /// draft list (an unsaved base URL counts). `Err` = the short reason.
+    fn verify_provider(&self, id: &str, providers: &[AiProviderConfig]) -> Result<(), String> {
+        let _ = (id, providers);
+        Err("no app core".into())
+    }
     /// `ai_runtime_set_provider_key` into the vault, by instance id; answers the
     /// stored key's last 4 (`ai_runtime_provider_key_ending`). Never logs the key.
     fn save_key(&self, provider: &str, key: &str) -> Result<Option<String>, String> {
@@ -220,6 +226,14 @@ impl Backend for CoreBackend {
     fn save_mic(&self, _: &MicrophoneControllerState) -> Result<MicrophoneControllerState, String> {
         // shortcut: update_microphone_controller drives the capture runtime (src-tauri) until S3.
         Err("update_microphone_controller isn't in app-core until S3".into())
+    }
+
+    fn verify_provider(&self, id: &str, providers: &[AiProviderConfig]) -> Result<(), String> {
+        let req = serde_json::from_value(json!({ "provider": id, "providers": providers }))
+            .map_err(|e| e.to_string())?;
+        self.0
+            .block_on(app_core::ai_runtime::verify_ai_provider(&self.0, req))
+            .map(|_| ())
     }
 
     fn save_key(&self, provider: &str, key: &str) -> Result<Option<String>, String> {

@@ -49,6 +49,10 @@ pub enum InsightsEvent {
     Ask(String),
     /// "Open Timeline" from an empty Journal.
     OpenTimeline,
+    /// Overview's idle "Start recording" / "Resume recording".
+    StartRecording,
+    /// The evidence drawer's "Open newest in Timeline": land on this frame.
+    OpenFrame(i64),
 }
 
 /// Overview's three detail modals.
@@ -82,6 +86,8 @@ pub struct Insights {
     pub subject: Option<String>,
     pub detail: Option<SubjectData>,
     pub open_conclusion: Option<i64>,
+    /// The evidence drawer's page, for the conclusion it was turned on.
+    pub evidence_page: (i64, usize),
     pub undo: DelayedDismiss,
     undo_toast: Option<u64>,
     undo_timer: Option<Task<()>>,
@@ -92,6 +98,8 @@ pub struct Insights {
     pub composer_error: Option<String>,
     pub toasts: Entity<Toasts>,
     pub scroll: ScrollHandle,
+    /// The shell's capture state: `(running, user paused)`.
+    pub recording: (bool, bool),
     gens: [u64; 6],
     _subscriptions: Vec<Subscription>,
 }
@@ -111,9 +119,9 @@ impl Insights {
         let today = clock::now(cx).date();
         let filter = cx.new(|cx| InputState::new(window, cx).placeholder("Filter subjects"));
         let composer = cx.new(|cx| {
-            TextareaState::new(window, cx).auto_grow(2, 6).placeholder(
-                "e.g. “I'm a designer — Figma time is real work even when it looks like browsing.”",
-            )
+            // The placeholder is drawn by `context::composer` (the kit's is one
+            // unwrapped line in the global muted colour).
+            TextareaState::new(window, cx).auto_grow(2, 6)
         });
         let subs = vec![cx.subscribe(&filter, |_, _, e: &InputEvent, cx| {
             if matches!(e, InputEvent::Change) {
@@ -124,6 +132,7 @@ impl Insights {
             backend,
             tab: Tab::Overview,
             status: Status::default(),
+            recording: (false, false),
             period: (today, Unit::Week),
             overview: None,
             modal: None,
@@ -139,6 +148,7 @@ impl Insights {
             subject: None,
             detail: None,
             open_conclusion: None,
+            evidence_page: (0, 0),
             undo: DelayedDismiss::default(),
             undo_toast: None,
             undo_timer: None,

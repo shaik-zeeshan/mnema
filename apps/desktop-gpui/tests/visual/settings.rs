@@ -9,7 +9,7 @@ use std::path::Path;
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
 use gpui_kit::{px, size, AppContext, VisualTestAppContext};
-use mnema_gpui::settings::fixture::{settings_data, STATES};
+use mnema_gpui::settings::fixture::{settings_data, FixtureBackend, STATES};
 use mnema_gpui::shell::{Shell, ShellModel, Surface};
 use mnema_gpui::theme;
 
@@ -38,7 +38,10 @@ pub fn render(
             shell
         });
         let s = shell.read(cx).settings.clone();
-        s.update(cx, |s, cx| s.set_data(data, cx));
+        s.update(cx, |s, cx| {
+            s.set_backend(std::sync::Arc::new(FixtureBackend::default()));
+            s.set_data(data, cx)
+        });
         settings = Some(s);
         cx.new(|cx| Root::new(shell, window, cx))
     })?;

@@ -114,6 +114,49 @@ pub fn relative_label(period: Option<Unit>, a: Date, today: Date) -> String {
     }
 }
 
+/// The range presets (`presets(today)`), label + inclusive days.
+pub fn presets(today: Date) -> Vec<(&'static str, Date, Date)> {
+    let m0 = monday(today);
+    let d = Duration::days;
+    let (ms, me) = month_of(today, 0);
+    let (ls, le) = month_of(today, -1);
+    vec![
+        ("Today", today, today),
+        ("Yesterday", today - d(1), today - d(1)),
+        ("This week", m0, m0 + d(6)),
+        ("Last week", m0 - d(7), m0 - d(1)),
+        ("Last 7 days", today - d(6), today),
+        ("Last 30 days", today - d(29), today),
+        ("This month", ms, me),
+        ("Last month", ls, le),
+    ]
+}
+
+/// "Oct 3" / "Oct 3 – 9" / "Sep 28 – Oct 4" (`spanLabel`).
+pub fn span_label(a: Date, b: Date) -> String {
+    if a == b {
+        md(a)
+    } else if a.month() == b.month() {
+        format!("{} – {}", md(a), b.day())
+    } else {
+        format!("{} – {}", md(a), md(b))
+    }
+}
+
+/// The range capsule's small line: a preset's name, else `N days`.
+pub fn span_relative(a: Date, b: Date, today: Date) -> String {
+    match presets(today)
+        .into_iter()
+        .find(|(_, s, e)| *s == a && *e == b)
+    {
+        Some((name, ..)) => name.into(),
+        None => match (b - a).whole_days() + 1 {
+            1 => "1 day".into(),
+            n => format!("{n} days"),
+        },
+    }
+}
+
 /// The month grid's days: Monday of the 1st's week through Sunday of the last's.
 pub fn month_cells(view: Date) -> Vec<Date> {
     let (first, last) = month_of(view, 0);

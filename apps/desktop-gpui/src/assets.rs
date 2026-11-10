@@ -65,6 +65,36 @@ pub const INSIGHTS_GLYPH: &str = "icons/mnema-insights.svg";
 pub const STOP_SQUARE: &str = "icons/mnema-stop-square.svg";
 const STOP_SQUARE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2" fill="currentColor"/></svg>"#;
 
+/// Solid transport glyphs: the status bar's own (`StatusBar.svelte`) and the
+/// developer strip's Lucide pause/play drawn solid (`.dv-pause svg g { fill }`).
+pub const FILL_PLAY: &str = "icons/mnema-fill-play.svg";
+pub const FILL_PAUSE: &str = "icons/mnema-fill-pause.svg";
+pub const FILL_STOP: &str = "icons/mnema-fill-stop.svg";
+pub const FILL_LUCIDE_PAUSE: &str = "icons/mnema-fill-lucide-pause.svg";
+pub const FILL_LUCIDE_PLAY: &str = "icons/mnema-fill-lucide-play.svg";
+const FILLED: [(&str, &str); 5] = [
+    (
+        FILL_PLAY,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L8.5 4.6A1 1 0 0 0 7 5.5z"/></svg>"#,
+    ),
+    (
+        FILL_PAUSE,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>"#,
+    ),
+    (
+        FILL_STOP,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>"#,
+    ),
+    (
+        FILL_LUCIDE_PAUSE,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><rect x="14" y="3" width="5" height="18" rx="1"/><rect x="5" y="3" width="5" height="18" rx="1"/></svg>"#,
+    ),
+    (
+        FILL_LUCIDE_PLAY,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M5 5a2 2 0 0 1 3.008-1.728l11.997 6.998a2 2 0 0 1 .003 3.458l-12 7A2 2 0 0 1 5 19z"/></svg>"#,
+    ),
+];
+
 // Exact paths from `lib/shell/Titlebar.svelte` (not in Lucide).
 const TIMELINE_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M3 12h18"/><path d="M7 8v8"/><path d="M12 5v14"/><path d="M17 9v6"/></svg>"#;
 const INSIGHTS_SVG: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round"><path d="M4 20V10"/><path d="M10 20V4"/><path d="M16 20v-7"/><path d="M22 20H2"/></svg>"#;
@@ -101,6 +131,9 @@ impl AssetSource for MnemaAssets {
             SPIN_ARC_LG => return Ok(Some(Cow::Owned(spin_arc(2., 20.).into_bytes()))),
             _ => {}
         }
+        if let Some((_, svg)) = FILLED.iter().find(|(p, _)| *p == path) {
+            return Ok(Some(Cow::Borrowed(svg.as_bytes())));
+        }
         let bytes = match ExtraIcons.load(path)? {
             Some(bytes) => Some(bytes),
             None => Assets.load(path)?,
@@ -127,6 +160,7 @@ impl AssetSource for MnemaAssets {
                 SPIN_ARC_LG,
             ]
             .into_iter()
+            .chain(FILLED.iter().map(|(p, _)| *p))
             .filter(|p| p.starts_with(path))
             .map(SharedString::from),
         );

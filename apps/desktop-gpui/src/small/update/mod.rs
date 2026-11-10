@@ -159,13 +159,25 @@ impl UpdateWindow {
                     }
                     _ => None,
                 };
+                // `.up-ver__words`: sans words around the mono version (`<b>`).
                 ver.font_family(theme::FONT_UI)
                     .line_height(relative(1.3))
-                    .child(crate::chat::inline_runs(&[
-                        ("You have ", None),
-                        (c, Some((theme::W_MEDIUM, p.text_strong))),
-                        (tail.as_deref().unwrap_or(""), None),
-                    ]))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_wrap()
+                            .items_baseline()
+                            .gap(px(4.))
+                            .child("You have")
+                            .child(
+                                div()
+                                    .font_family(FONT_MONO)
+                                    .font_weight(theme::W_MEDIUM)
+                                    .text_color(p.text_strong)
+                                    .child(c.to_string()),
+                            )
+                            .children(tail.map(|t| t.trim_start().to_string())),
+                    )
             }
             _ => ver,
         };
@@ -183,7 +195,7 @@ impl UpdateWindow {
                     .flex_col()
                     .gap(px(6.))
                     .min_w_0()
-                    .child(kicker(&k_line, p))
+                    .child(kicker(&k_line, p).line_height(relative(1.)))
                     .child(h2(model::heading(s), p))
                     .child(ver),
             )
@@ -311,10 +323,12 @@ impl UpdateWindow {
                     .text_size(text::BASE)
                     .line_height(relative(1.5))
                     .text_color(p.text_muted)
-                    .child(
-                        TextView::markdown("up-notes-md", n)
-                            .style(notes_style(p, theme::mode(cx) == theme::Mode::Dark)),
-                    ),
+                    .child(match model::note_blocks(&n) {
+                        Some(blocks) => notes_view(blocks, cx, p).into_any_element(),
+                        None => TextView::markdown("up-notes-md", n)
+                            .style(notes_style(p, theme::mode(cx) == theme::Mode::Dark))
+                            .into_any_element(),
+                    }),
             );
         }
         div()
@@ -470,6 +484,95 @@ impl UpdateWindow {
 }
 
 /// `.up-notes`: muted body, strong 13 px headings, links in body ink.
+/// `.up-notes` for GitHub's notes: a 13 px heading, 12/1.5 bullets 5 px apart
+/// (faint markers), and the closing meta line at 11 px subtle with its link.
+fn notes_view(
+    blocks: Vec<model::NoteBlock>,
+    cx: &mut Context<UpdateWindow>,
+    p: &Palette,
+) -> gpui_kit::Div {
+    use model::NoteBlock;
+    let mut first = true;
+    div()
+        .flex()
+        .flex_col()
+        .children(blocks.into_iter().map(|b| {
+            let top = !std::mem::take(&mut first);
+            match b {
+                NoteBlock::Heading(h) => div()
+                    .when(top, |d| d.mt(px(4.)))
+                    .mb(px(6.))
+                    .font_weight(theme::W_SEMIBOLD)
+                    .text_size(text::MD)
+                    .line_height(relative(1.3))
+                    .text_color(p.text_strong)
+                    .child(h)
+                    .into_any_element(),
+                NoteBlock::List(items) => {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(5.))
+                        .mb(space::S2)
+                        .children(items.into_iter().map(|t| {
+                            div()
+                                .flex()
+                                .text_size(text::BASE)
+                                .line_height(relative(1.5))
+                                .text_color(p.text_muted)
+                                .child(
+                                    // `li::marker`: a faint round bullet.
+                                    div()
+                                        .w(px(18.))
+                                        .flex_none()
+                                        .pl(px(6.))
+                                        .pt(px(7.))
+                                        .child(div().size(px(4.)).rounded_full().bg(p.text_faint)),
+                                )
+                                .child(div().flex_1().min_w_0().child(t))
+                        }))
+                        .into_any_element()
+                }
+                NoteBlock::Para(words, link) => {
+                    // One text run so the link wraps inline after the words, as in CSS.
+                    let url = link.unwrap_or_default();
+                    let open = url.clone();
+                    let mut highlights = Vec::new();
+                    if !url.is_empty() {
+                        highlights.push((
+                            words.len()..words.len() + url.len(),
+                            gpui_kit::HighlightStyle {
+                                color: Some(p.text),
+                                underline: Some(gpui_kit::UnderlineStyle {
+                                    thickness: px(1.),
+                                    color: Some(p.border_hover),
+                                    wavy: false,
+                                }),
+                                ..Default::default()
+                            },
+                        ));
+                    }
+                    div()
+                        .id("up-notes-link")
+                        .when(top, |d| d.mt(space::S2))
+                        .text_size(text::SM)
+                        .line_height(relative(1.4))
+                        .text_color(p.text_subtle)
+                        .child(
+                            gpui_kit::StyledText::new(format!("{words}{url}"))
+                                .with_highlights(highlights),
+                        )
+                        .when(!open.is_empty(), |d| {
+                            d.role(gpui_kit::Role::Link)
+                                .cursor_pointer()
+                                .on_click(cx.listener(move |_, _, _, cx| cx.open_url(&open)))
+                        })
+                        .into_any_element()
+                }
+            }
+        }))
+}
+
 fn notes_style(p: &Palette, dark: bool) -> TextViewStyle {
     let strong = p.text_strong;
     TextViewStyle::default()

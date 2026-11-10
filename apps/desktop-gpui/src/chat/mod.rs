@@ -10,7 +10,7 @@ pub mod data;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 pub mod format;
-mod list;
+pub(crate) mod list;
 pub mod model;
 pub mod prose;
 pub mod scope;

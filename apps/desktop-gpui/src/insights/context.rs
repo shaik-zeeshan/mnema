@@ -22,6 +22,8 @@ use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::{clock, icon, kicker, nid, Button, Tone};
 
 const MAX_CHARS: usize = 280;
+const PLACEHOLDER: &str =
+    "e.g. \u{201c}I'm a designer \u{2014} Figma time is real work even when it looks like browsing.\u{201d}";
 const WORDS: [&str; 10] = [
     "Nothing",
     "One thing",
@@ -221,13 +223,28 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
                 .line_height(relative(1.5))
                 .text_color(p.text_strong)
                 .child(
-                    Textarea::new(&this.composer)
-                        .aria_label("Add context")
-                        .appearance(false)
-                        .px_0()
-                        .py_0()
-                        .text_size(text::LG),
+                    // The kit's multi-line editor insets its text 10 × 8 px; pull it
+                    // back so the text (and the drawn placeholder) sit on the kicker's edge.
+                    div().mx(px(-10.)).my(px(-8.)).child(
+                        Textarea::new(&this.composer)
+                            .aria_label("Add context")
+                            .appearance(false)
+                            .px_0()
+                            .py_0()
+                            .text_size(text::LG),
+                    ),
                 )
+                .when(len == 0, |d| {
+                    d.child(
+                        div()
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .right(px(72.))
+                            .text_color(p.text_faint)
+                            .child(PLACEHOLDER),
+                    )
+                })
                 .child(
                     div()
                         .flex()
@@ -343,19 +360,24 @@ fn standing(
             .id(nid("insights-stmt", id as u64))
             .flex()
             .items_start()
+            .group("insights-stmt")
             .gap(space::S4)
-            .py(space::S3)
+            .py(px(14.))
+            .px(space::S3)
             .border_t_1()
             .border_color(p.hairline)
-            .when(!r.in_prompt, |d| d.opacity(0.6))
+            .hover(|s| s.bg(p.wash))
+            .when(!r.in_prompt, |d| d.opacity(0.38))
             .child(
                 div()
-                    .w(px(104.))
+                    .w(px(120.))
                     .flex_none()
                     .flex()
                     .items_center()
-                    .gap(px(6.))
-                    .text_size(text::SM)
+                    .gap(px(7.))
+                    .text_size(text::BASE)
+                    .font_weight(theme::W_MEDIUM)
+                    .line_height(relative(1.7))
                     .text_color(p.text_subtle)
                     .children(s.topic.as_deref().map(|t| {
                         div()
@@ -372,38 +394,44 @@ fn standing(
                     .min_w_0()
                     .flex()
                     .flex_col()
-                    .gap(px(4.))
+                    .gap(px(6.))
                     .child(
                         div()
-                            .text_size(text::MD)
+                            .text_size(text::LG)
                             .line_height(relative(1.45))
                             .text_color(p.text_strong)
                             .child(s.text.clone()),
                     )
                     .child(
-                        mono_label(
-                            format!(
+                        div()
+                            .text_size(text::SM)
+                            .line_height(relative(1.))
+                            .text_color(p.text_subtle)
+                            .child(format!(
                                 "{when} · {}",
                                 if r.in_prompt {
                                     "never fades"
                                 } else {
                                     "not sent"
                                 }
-                            ),
-                            p,
-                        )
-                        .text_size(text::XS),
+                            )),
                     ),
             )
             .child(
-                Button::icon_only(
-                    nid("insights-stmt-delete", id as u64),
-                    IconName::Trash.path(),
-                    "Delete",
-                )
-                .ghost()
-                .sm()
-                .on_click(cx.listener(move |this, _, _, cx| this.delete_statement(id, cx))),
+                // Acts show on row hover (`.in-stmt:hover .in-stmt__acts`).
+                div()
+                    .opacity(0.)
+                    .group_hover("insights-stmt", |s| s.opacity(1.))
+                    .child(
+                        Button::icon_only(
+                            nid("insights-stmt-delete", id as u64),
+                            IconName::Trash.path(),
+                            "Delete",
+                        )
+                        .ghost()
+                        .sm()
+                        .on_click(cx.listener(move |this, _, _, cx| this.delete_statement(id, cx))),
+                    ),
             )
     }))
 }

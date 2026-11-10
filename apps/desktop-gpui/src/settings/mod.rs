@@ -62,7 +62,7 @@ pub mod icons {
     pub const MIC: &str = "icons/mic.svg";
     pub const PLUG: &str = "icons/plug.svg";
     pub const SPARKLES: &str = "icons/sparkles.svg";
-    pub const TERMINAL: &str = "icons/terminal.svg";
+    pub const TERMINAL: &str = "icons/square-terminal.svg";
     pub const SPEECH: &str = "icons/speech.svg";
     pub const LOADER: &str = "icons/loader-circle.svg";
 }
@@ -83,6 +83,21 @@ pub struct Ui {
     /// The shortcut row listening for keys.
     pub kb_listening: Option<&'static str>,
     pub semantic_pick: Option<String>,
+    /// Each provider's live `verify_ai_provider` verdict (absent = never checked).
+    pub reach: HashMap<String, Reach>,
+    /// The session's one automatic reachability pass has run.
+    pub reach_checked: bool,
+    /// Model rows whose "Model files" disclosure is open.
+    pub files_open: HashSet<&'static str>,
+}
+
+/// One provider row's reachability check.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Reach {
+    Checking,
+    Reachable,
+    /// `classify_listing_failure`'s short reason.
+    Failed(String),
 }
 
 /// Text fields and steppers (their raw strings parse into the drafts).
@@ -339,7 +354,10 @@ impl Settings {
             privacy_error: None,
             video_invalid: false,
             reload: reload::Reloads::default(),
-            ui: Ui::default(),
+            ui: Ui {
+                delete_window: 1, // 5 min, as Tauri
+                ..Ui::default()
+            },
             inputs,
             sliders,
             status: StatusBarModel::default(),
@@ -347,6 +365,11 @@ impl Settings {
             timer: None,
             _subscriptions: subs,
         }
+    }
+
+    /// Swap the backend (goldens and parity serve the fixture's answers).
+    pub fn set_backend(&mut self, backend: Arc<dyn Backend>) {
+        self.backend = backend;
     }
 
     /// Adopt freshly loaded answers; drafts reset to what's saved.
@@ -359,6 +382,7 @@ impl Settings {
         self.mic_draft = data.mic.clone();
         self.data = data;
         self.needs_sync = true;
+        self.test_providers_once(cx);
         cx.notify();
     }
 

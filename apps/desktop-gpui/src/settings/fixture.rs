@@ -143,6 +143,19 @@ impl Backend for FixtureBackend {
     ) -> Result<MicrophoneControllerState, String> {
         self.record(Call::Mic).map(|_| state.clone())
     }
+    /// Every provider answers live (the parity mock's `verify_ai_provider`), unless `fail`.
+    fn verify_provider(
+        &self,
+        _: &str,
+        _: &[capture_types::AiProviderConfig],
+    ) -> Result<(), String> {
+        if self.fail {
+            Err("unreachable".into())
+        } else {
+            Ok(())
+        }
+    }
+
     fn save_key(&self, provider: &str, _key: &str) -> Result<Option<String>, String> {
         self.record(Call::SaveKey(provider.into()))
             .map(|_| Some("9f2a".into()))

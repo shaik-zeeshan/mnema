@@ -355,9 +355,12 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
         out.push(
             sec(p)
                 .child(h("System audio connection", None, p))
-                .children(rows.into_iter().enumerate().map(|(i, (l, v, n))| {
-                    spec_row(i == 0, l, div().child(v), n.map(Into::into), px(110.), p)
-                }))
+                // One block, like the `<dl>`: the section gap sits above it, not between rows.
+                .child(
+                    div().children(rows.into_iter().enumerate().map(|(i, (l, v, n))| {
+                        spec_row(i == 0, l, div().child(v), n.map(Into::into), px(110.), p)
+                    })),
+                )
                 .into_any_element(),
         );
     }

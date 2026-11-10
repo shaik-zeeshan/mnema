@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context};
 
 use super::ix;
-use super::model_row::{delete_unused_row, status_row, ModelRow};
+use super::model_row::{delete_unused_row, model_files, status_row, ModelRow};
 use crate::settings::data::Family;
 use crate::settings::model::{format_bytes, selected_model};
 use crate::settings::row::{row, section};
@@ -214,6 +214,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             status: m.available.then_some("available"),
             chip: (!m.available).then(|| ("unavailable".into(), ChipKind::Warn)),
             warning: m.runtime_message.clone(),
+            files: model_files(m),
             ..Default::default()
         },
         Some(m) => {
@@ -253,7 +254,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             r
         }
     };
-    rows.push(model.build("ocr-model", p, cx));
+    rows.push(model.build("ocr-model", s, p, cx));
     if m.is_some() {
         rows.push(delete_unused_row(
             "ocr-delete-unused",

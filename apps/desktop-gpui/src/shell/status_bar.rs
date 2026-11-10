@@ -127,9 +127,9 @@ fn record_controls(shell: &Shell, p: &Palette) -> Vec<gpui_kit::AnyElement> {
             "Pause recording"
         };
         let glyph = if m.user_paused {
-            IconName::Play
+            crate::assets::FILL_PLAY
         } else {
-            IconName::Pause
+            crate::assets::FILL_PAUSE
         };
         // shortcut: pause / stop call native_capture, not in app-core until S3.
         return vec![
@@ -137,13 +137,13 @@ fn record_controls(shell: &Shell, p: &Palette) -> Vec<gpui_kit::AnyElement> {
                 icon_button("status-pause", pause_label, size::H_MINI, false, p),
                 pause_label,
             )
-            .child(icon(glyph.path(), size::ICON_XS))
+            .child(icon(glyph, size::ICON_XS))
             .into_any_element(),
             with_tip(
                 icon_button("status-stop", "Stop recording", size::H_MINI, false, p),
                 "Stop recording",
             )
-            .child(icon(IconName::Square.path(), size::ICON_XS))
+            .child(icon(crate::assets::FILL_STOP, size::ICON_XS))
             .into_any_element(),
         ];
     }

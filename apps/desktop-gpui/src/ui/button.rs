@@ -284,16 +284,6 @@ impl RenderOnce for Button {
             None => focus_handle(self.id.clone(), window, cx),
         };
         let ring = focus_visible(&handle, self.force, window);
-        let (bg, bd, fg) = match self.force {
-            Force::Hover if live => s.hover,
-            Force::Press if live => (s.press, s.hover.1, s.hover.2),
-            _ => (s.bg, s.bd, s.fg),
-        };
-        let kbd_fg = if self.variant == Variant::Primary {
-            super::alpha(p.accent_contrast, 0.7)
-        } else {
-            p.text_subtle
-        };
         let opacity = if self.disabled || self.soft_disabled {
             theme::DISABLED_OPACITY
         } else if self.busy {
@@ -301,10 +291,40 @@ impl RenderOnce for Button {
         } else {
             1.
         };
+        // CSS fades the whole button as one layer; GPUI's `.opacity()` fades the
+        // fill and the label separately, so the label would show the faded fill
+        // through it. Fade the fill/border by alpha and pre-composite the ink over
+        // the surface the button usually sits on (raised), which is what CSS paints.
+        // A fill-less button (ghost) has nothing under its ink: alpha is exact there.
+        let (bg, bd, fg) = match self.force {
+            Force::Hover if live => s.hover,
+            Force::Press if live => (s.press, s.hover.1, s.hover.2),
+            _ => (s.bg, s.bd, s.fg),
+        };
+        let under = p.surface_raised;
+        let ink = |c: Hsla| {
+            if opacity >= 1. {
+                c
+            } else if bg.a == 0. {
+                super::alpha(c, opacity)
+            } else {
+                mix(c, under, opacity)
+            }
+        };
+        let (bg, bd, fg) = (
+            super::alpha(bg, opacity),
+            super::alpha(bd, opacity),
+            ink(fg),
+        );
+        let kbd_fg = ink(if self.variant == Variant::Primary {
+            super::alpha(p.accent_contrast, 0.7)
+        } else {
+            p.text_subtle
+        });
         let icon_el = self.icon.clone().map(|path| {
             div()
                 .flex_none()
-                .when(self.accent_icon, |d| d.text_color(p.accent))
+                .when(self.accent_icon, |d| d.text_color(ink(p.accent)))
                 .child(icon(path, icon_px))
         });
         let (before, after) = if self.icon_after {
@@ -344,7 +364,6 @@ impl RenderOnce for Button {
             .font_weight(theme::W_MEDIUM)
             .line_height(gpui_kit::relative(1.))
             .whitespace_nowrap()
-            .opacity(opacity)
             .when(self.force == Force::Press && live, |el| el.top(px(1.)))
             .when(live, |el| {
                 el.cursor_pointer()
@@ -368,7 +387,9 @@ impl RenderOnce for Button {
                         .child(k),
                 )
             })
-            .when(ring, |el| el.child(outline(s.ring, r)))
+            .when(ring, |el| {
+                el.child(outline(super::alpha(s.ring, opacity), r))
+            })
             .when(ring && tip.is_some(), |el| {
                 el.child(tooltip::focus_tip(tip.clone().unwrap_or_default(), &p))
             })

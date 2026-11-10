@@ -272,6 +272,23 @@ fn lede_col(
         .and_then(|r| r.reason);
     let digest_err = d.digest.as_ref().and_then(|r| r.as_ref().err());
     let off = clock::now(cx).offset();
+    let (running, paused) = this.recording;
+    if f.nothing && f.acts.is_empty() && latest && (!running || paused) {
+        // 2a: the current range is empty and Mnema isn't recording (or is paused).
+        let (body, label) = if paused {
+            ("Recording is paused, so there's nothing to read or chart yet. Resume and the first summary lands after about 10 minutes of work.", "Resume recording")
+        } else {
+            ("Mnema isn't recording yet, so there's nothing to read or chart. Start recording and the first summary lands after about 10 minutes of work; the read follows once there are two activities.", "Start recording")
+        };
+        return lede(&plain, p)
+            .child(display(format!("Nothing captured {scope}."), None, p))
+            .child(prose(body, p))
+            .child(div().mt(space::S5).flex().child(
+                Button::new("ov-start-recording", label).primary().on_click(
+                    cx.listener(|_, _, _, cx| cx.emit(super::InsightsEvent::StartRecording)),
+                ),
+            ));
+    }
     if f.nothing && f.acts.is_empty() {
         let body = if latest {
             format!("Mnema wasn't recording {scope} yet, so there's nothing to read. Step to another {unit}, or start recording.")
