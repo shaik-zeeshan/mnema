@@ -254,6 +254,8 @@ fn item(
         .py(px(7.))
         .rounded(radius::SM)
         .text_size(text::MD)
+        // `font: 400 var(--text-md)/1.2`: 30 px rows.
+        .line_height(gpui_kit::relative(1.2))
         .text_color(p.text)
         .when(!enabled, |d| d.opacity(crate::theme::DISABLED_OPACITY))
         .when(enabled, |d| {
@@ -442,7 +444,6 @@ pub fn render(
             .child(
                 Button::icon_only("frame-actions", IconName::Ellipsis.path(), "Frame actions")
                     .focus_handle(&v.menu_trigger)
-                    .pressed(v.menu_open)
                     .tip("Frame actions (C copy, D download)")
                     .on_click(cx.listener(|this, e: &gpui_kit::ClickEvent, _, cx| {
                         this.menu_open = !this.menu_open;

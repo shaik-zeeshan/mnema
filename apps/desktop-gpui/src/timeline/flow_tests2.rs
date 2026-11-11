@@ -4,7 +4,6 @@
 
 use std::time::Duration;
 
-use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext as _, TestAppContext};
 use serde_json::json;
 

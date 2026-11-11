@@ -11,23 +11,20 @@ use gpui_kit::TestSupportExt as _;
 use gpui_kit::{canvas, div, img, px, Context, ObjectFit, SharedString, Window};
 
 use super::{Chat, Source};
-use crate::theme::{radius, space, text, Palette};
+use crate::theme::{radius, text, Palette};
 use crate::timeline::ocr_overlay::{self, next_hover, outcome};
 use crate::timeline::stage::image_rect;
 use crate::timeline::{Ocr, OcrStatus};
 use crate::ui::dialog::Modal;
 use crate::ui::empty::{empty, EmptyLayout};
-use crate::ui::link::Link;
-use crate::ui::{Button, Tone};
+use crate::ui::{with_tip, Tone};
 
-/// The hero's least height (`.frame-hero`); it grows with the window, as the
-/// Svelte panel fills `min(100vh - 100px)`.
+/// The panel's least height on a tiny window.
 pub const HERO_H: f32 = 280.;
 /// `.frame-modal__panel { width: min(1060px, 100%) }` inside the 24 px backdrop pad.
 const PANEL_W: f32 = 1060.;
-/// The panel's chrome around the hero (head, meta line, actions, pads) plus
-/// the 100 px the panel leaves of the window height.
-const CHROME_H: f32 = 332.;
+/// `max-height: calc(100vh - 100px)`.
+const PANEL_GAP_H: f32 = 100.;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum FrameLoad {
@@ -198,10 +195,6 @@ impl Chat {
     }
 }
 
-fn when(s: &Source, cx: &Context<Chat>) -> String {
-    super::sources::when(&s.started_at, crate::ui::clock::now(cx))
-}
-
 pub fn frame_modal(
     chat: &Chat,
     s: &Source,
@@ -210,18 +203,23 @@ pub fn frame_modal(
     cx: &mut Context<Chat>,
 ) -> impl IntoElement {
     let close = cx.entity().downgrade();
-    let hero_h = (f32::from(viewport.height) - CHROME_H).max(HERO_H);
+    // `.frame-modal__panel`: min(1060, window − 2·24) wide; the fixture's frames
+    // are large, so the panel sits at its max height, window − 100.
+    let panel_h = (f32::from(viewport.height) - PANEL_GAP_H).max(HERO_H);
     let panel_w = PANEL_W.min(f32::from(viewport.width) - 48.);
     let frame_id = s.frame_id;
     let d = &chat.peek_data;
     let hero = div()
         .id("chat-frame-image")
         .relative()
-        .w_full()
-        .h(px(hero_h))
-        .rounded(radius::MD)
+        .flex_1()
+        .min_w_0()
+        .h_full()
+        .border_1()
+        .border_color(p.border)
+        .rounded(px(9.))
         .overflow_hidden()
-        .bg(p.surface_subtle)
+        .bg(p.bg)
         .child({
             let cell = chat.hero_size.clone();
             canvas(
@@ -309,17 +307,12 @@ pub fn frame_modal(
         )
     });
     let ready = matches!(d.frame, FrameLoad::Ready { .. });
-    let ocr_label = match (d.ocr.status, d.ocr.boxes.len()) {
-        (OcrStatus::Success, n) => format!("show ocr · {}", ocr_count(n)),
-        _ => "show ocr".to_string(),
-    };
     let copy_label = match d.copy {
         CopyState::Idle => "copy image",
         CopyState::Copying => "copying…",
         CopyState::Copied => "copied",
         CopyState::Failed => "copy failed",
     };
-    // `frame-meta`: app · window · time · size, one line.
     let dims = match d.frame {
         FrameLoad::Ready {
             w: Some(w),
@@ -327,41 +320,306 @@ pub fn frame_modal(
         } => Some(format!("{w}×{h}")),
         _ => None,
     };
-    let rest: Vec<String> = [s.window_title.clone(), Some(when(s, cx)), dims]
-        .into_iter()
-        .flatten()
-        .collect();
-    // `.frame-meta__app`: a 16 px avatar (the app's icon, else its first letter).
-    let app = s.app_name.clone().map(|name| {
-        let fallback = name
-            .trim()
-            .chars()
-            .next()
-            .or_else(|| d.bundle.as_deref().and_then(|b| b.trim().chars().next()))
-            .unwrap_or('?')
-            .to_uppercase()
-            .to_string();
-        let avatar = div()
-            .flex()
-            .flex_none()
-            .items_center()
-            .justify_center()
-            .size(px(16.))
-            .rounded(px(4.))
-            .overflow_hidden()
-            .bg(p.surface_hover)
-            .child(match &d.icon {
-                Some(path) => {
-                    crate::ui::app_icon::app_icon(crate::ui::app_icon::Src::File(path.clone()), 16.)
-                        .into_any_element()
-                }
-                None => div()
-                    .text_size(px(9.))
-                    .font_weight(crate::theme::W_SEMIBOLD)
-                    .text_color(p.text_muted)
-                    .child(fallback)
-                    .into_any_element(),
-            });
+    let offset = crate::ui::clock::now(cx).offset();
+    let time = compact_time(&s.started_at, offset);
+    let title = s
+        .window_title
+        .clone()
+        .unwrap_or_else(|| "Captured frame".into());
+    let head = header(&title, p, {
+        let close = close.clone();
+        move |_, cx| {
+            let _ = close.update(cx, |c, cx| c.close_peek(cx));
+        }
+    });
+    let sep = || div().flex_none().text_color(p.text_subtle).child("·");
+    // `.frame-meta`: app (avatar + name) · window · time (accent, mono) · size.
+    let meta = div()
+        .id("chat-frame-meta")
+        .flex()
+        .items_center()
+        .gap(px(8.))
+        .min_w_0()
+        .pt(px(12.))
+        .px(px(18.))
+        .pb(px(4.))
+        .overflow_hidden()
+        .whitespace_nowrap()
+        .text_size(text::SM)
+        .text_color(p.text_muted)
+        .children(app_chip(s, d, p))
+        .when(s.app_name.is_some() && s.window_title.is_some(), |m| {
+            m.child(sep())
+        })
+        .children(
+            s.window_title
+                .clone()
+                .map(|t| div().min_w_0().truncate().child(SharedString::from(t))),
+        )
+        .when(!time.is_empty(), |m| {
+            m.child(sep()).child(
+                div()
+                    .flex_none()
+                    .font_family(crate::theme::FONT_MONO)
+                    .text_color(p.accent)
+                    .child(SharedString::from(time)),
+            )
+        })
+        .children(dims.map(|d| {
+            div().flex().flex_none().gap(px(8.)).child(sep()).child(
+                div()
+                    .text_size(text::XS)
+                    .text_color(p.text_subtle)
+                    .child(SharedString::from(d)),
+            )
+        }));
+    let ocr_on = d.ocr.visible;
+    let count = (d.ocr.status == OcrStatus::Success).then(|| ocr_count(d.ocr.boxes.len()));
+    let actions = div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .pt(px(8.))
+        .px(px(14.))
+        .pb(px(14.))
+        .child(
+            act(
+                "chat-frame-copy",
+                false,
+                d.image.is_none() || d.copy == CopyState::Copying,
+                p,
+            )
+            .child(copy_label)
+            .on_click(cx.listener(|this, _, _, cx| this.copy_peek_image(cx)))
+            .test_support(),
+        )
+        // `openFrameUrl`: the guarded URL is scheme-less host/path, always
+        // http(s); re-add https.
+        .children(s.url.clone().map(|u| {
+            let href = if u.starts_with("http://") || u.starts_with("https://") {
+                u.clone()
+            } else {
+                format!("https://{u}")
+            };
+            with_tip(
+                act("chat-frame-url", false, false, p)
+                    .max_w(px(260.))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(u.clone())),
+                    )
+                    .on_click(move |_, _, cx| cx.open_url(&href)),
+                SharedString::from(u),
+            )
+            .test_support()
+        }))
+        .child(
+            act("chat-frame-ocr", ocr_on, !ready, p)
+                .aria_toggled(if ocr_on {
+                    gpui_kit::accesskit::Toggled::True
+                } else {
+                    gpui_kit::accesskit::Toggled::False
+                })
+                .child("show ocr")
+                .children(count.map(|n| {
+                    div()
+                        .text_color(if ocr_on { p.accent } else { p.text_subtle })
+                        .child(format!("· {n}"))
+                }))
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_peek_ocr(cx)))
+                .test_support(),
+        )
+        .child(div().flex_1())
+        .child({
+            let hover = p.text_muted;
+            div()
+                .id("chat-frame-open")
+                .role(gpui_kit::Role::Link)
+                .px(px(4.))
+                .py(px(5.))
+                .rounded(radius::XS)
+                .cursor_pointer()
+                .text_size(text::XS)
+                .text_color(p.text_subtle)
+                .hover(move |st| st.text_color(hover).underline())
+                .child("show this frame in the timeline →")
+                // `openInTimeline`: close the peek, then
+                // `open_capture_result_in_main_window { kind: "frame" }`.
+                .on_click(cx.listener(move |this, _, _, cx| {
+                    let Some(id) = frame_id else { return };
+                    this.close_peek(cx);
+                    cx.defer(move |cx| crate::window::open_frame(id, cx));
+                }))
+                .test_support()
+        });
+    Modal::new("chat-frame-modal", title)
+        .chromeless(px(18.))
+        // `.frame-modal { background: var(--app-overlay-bg) }`; the CSS blur(10px)
+        // has no GPUI equivalent (no in-window blur), the 78% wash is kept.
+        .scrim(p.overlay_bg)
+        .whole_window()
+        .max_w(px(panel_w))
+        .child(
+            div()
+                .id("chat-frame-body")
+                .track_focus(&chat.peek_focus)
+                .flex()
+                .flex_col()
+                .h(px(panel_h))
+                .bg(p.surface)
+                .border_1()
+                .border_color(p.border_strong)
+                .rounded(px(18.))
+                .overflow_hidden()
+                .text_size(text::MD)
+                .text_color(p.text)
+                .child(head)
+                .child(div().flex().flex_1().min_h_0().mx(px(16.)).child(hero))
+                .child(meta)
+                .child(actions),
+        )
+        .on_close(move |_, cx| {
+            let _ = close.update(cx, |c, cx| c.close_peek(cx));
+        })
+}
+
+/// `formatTimestampCompact`: `Oct 29, 10:14 AM` in local time.
+pub fn compact_time(iso: &str, offset: time::UtcOffset) -> String {
+    use crate::timeline::model::{clock_label, local};
+    let Ok(d) = time::OffsetDateTime::parse(iso, &time::format_description::well_known::Rfc3339)
+    else {
+        return iso.to_string();
+    };
+    let t = local((d.unix_timestamp_nanos() / 1_000_000) as i64, offset);
+    let month = t.month().to_string();
+    format!("{} {}, {}", &month[..3], t.day(), clock_label(t, false))
+}
+
+/// `.frame-modal__header`: the accent "FRAME" eyebrow inline before a 13 px
+/// title, and the 24 px close.
+fn header(
+    title: &str,
+    p: &Palette,
+    on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
+) -> impl IntoElement {
+    let (hover_bg, hover_bd, hover_fg) = (p.surface_hover, p.border, p.text_strong);
+    // No letter-spacing in GPUI: `.14em` tracking at 10 px is a 1.4 px gap per glyph.
+    let eyebrow = div()
+        .flex()
+        .flex_none()
+        .gap(px(1.4))
+        .text_size(text::XS)
+        .text_color(p.accent)
+        .children("FRAME".chars().map(|c| div().child(c.to_string())));
+    div()
+        .flex()
+        .items_center()
+        .gap(px(10.))
+        .pt(px(14.))
+        .px(px(16.))
+        .pb(px(10.))
+        .child(eyebrow)
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .text_size(text::MD)
+                .font_weight(crate::theme::W_SEMIBOLD)
+                .text_color(p.text_strong)
+                .child(SharedString::from(title.to_string())),
+        )
+        .child(
+            div()
+                .id("chat-frame-close")
+                .role(gpui_kit::Role::Button)
+                .aria_label("Close frame")
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(24.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(gpui_kit::transparent_black())
+                .text_color(p.text_subtle)
+                .cursor_pointer()
+                .hover(move |st| st.bg(hover_bg).border_color(hover_bd).text_color(hover_fg))
+                .child(crate::ui::icon(IconName::X.path(), px(12.)))
+                .on_click(move |_, window, cx| on_close(window, cx))
+                .test_support(),
+        )
+}
+
+/// `.frame-act`: a small bordered button (11 px, muted); `on` = the OCR
+/// toggle's pressed accent look; `off` = disabled at 0.55.
+fn act(id: &'static str, on: bool, off: bool, p: &Palette) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let (hbg, hbd, hfg) = (p.surface_hover, p.border_strong, p.text_strong);
+    let el = div()
+        .id(id)
+        .role(gpui_kit::Role::Button)
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(6.))
+        .px(px(10.))
+        .py(px(5.))
+        .rounded(px(6.))
+        .border_1()
+        .text_size(text::SM)
+        .line_height(gpui_kit::relative(1.2));
+    let el = if on {
+        el.bg(p.accent_bg)
+            .border_color(p.accent_border)
+            .text_color(p.accent)
+    } else {
+        el.border_color(p.border).text_color(p.text_muted)
+    };
+    if off {
+        el.opacity(0.55)
+    } else {
+        el.cursor_pointer().when(!on, |e| {
+            e.hover(move |st| st.bg(hbg).border_color(hbd).text_color(hfg))
+        })
+    }
+}
+
+/// `.frame-meta__app`: a 16 px avatar (the app's icon, else its first letter)
+/// and the app name, strong.
+fn app_chip(s: &Source, d: &PeekData, p: &Palette) -> Option<impl IntoElement> {
+    let name = s.app_name.clone()?;
+    let fallback = name
+        .trim()
+        .chars()
+        .next()
+        .or_else(|| d.bundle.as_deref().and_then(|b| b.trim().chars().next()))
+        .unwrap_or('?')
+        .to_uppercase()
+        .to_string();
+    let avatar = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(16.))
+        .rounded(px(4.))
+        .overflow_hidden()
+        .bg(p.surface_hover)
+        .child(match &d.icon {
+            Some(path) => {
+                crate::ui::app_icon::app_icon(crate::ui::app_icon::Src::File(path.clone()), 16.)
+                    .into_any_element()
+            }
+            None => div()
+                .text_size(px(9.))
+                .font_weight(crate::theme::W_SEMIBOLD)
+                .text_color(p.text_muted)
+                .child(fallback)
+                .into_any_element(),
+        });
+    Some(
         div()
             .id("chat-frame-app")
             .flex()
@@ -371,98 +629,8 @@ pub fn frame_modal(
             .text_color(p.text_strong)
             .child(avatar)
             .child(SharedString::from(name))
-            .test_support()
-    });
-    let has_app = app.is_some();
-    Modal::new(
-        "chat-frame-modal",
-        s.window_title
-            .clone()
-            .unwrap_or_else(|| "Captured frame".into()),
+            .test_support(),
     )
-    .eyebrow("frame")
-    .max_w(px(panel_w))
-    .child(
-        div()
-            .id("chat-frame-body")
-            .track_focus(&chat.peek_focus)
-            .flex()
-            .flex_col()
-            .gap(space::S3)
-            .p(space::S5)
-            .text_size(text::MD)
-            .text_color(p.text)
-            .child(hero)
-            .child(
-                div()
-                    .id("chat-frame-meta")
-                    .flex()
-                    .items_center()
-                    .gap(px(8.))
-                    .min_w_0()
-                    .overflow_hidden()
-                    .whitespace_nowrap()
-                    .text_size(text::SM)
-                    .text_color(p.text_muted)
-                    .children(app)
-                    .when(has_app && !rest.is_empty(), |d| d.child("·"))
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .child(SharedString::from(rest.join(" · "))),
-                    ),
-            )
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space::S2)
-                    .child(
-                        Button::new("chat-frame-copy", copy_label)
-                            .sm()
-                            .ghost()
-                            .icon(IconName::Copy.path())
-                            .disabled(d.image.is_none() || d.copy == CopyState::Copying)
-                            .on_click(cx.listener(|this, _, _, cx| this.copy_peek_image(cx))),
-                    )
-                    // `openFrameUrl`: the guarded URL is scheme-less host/path, always
-                    // http(s); re-add https.
-                    .children(s.url.clone().map(|u| {
-                        let href = if u.starts_with("http://") || u.starts_with("https://") {
-                            u.clone()
-                        } else {
-                            format!("https://{u}")
-                        };
-                        Link::new("chat-frame-url", u, href).quiet()
-                    }))
-                    .child(
-                        Button::new("chat-frame-ocr", ocr_label)
-                            .sm()
-                            .ghost()
-                            .icon(IconName::ScanText.path())
-                            .pressed(d.ocr.visible)
-                            .disabled(!ready)
-                            .on_click(cx.listener(|this, _, _, cx| this.toggle_peek_ocr(cx))),
-                    )
-                    .child(div().flex_1())
-                    .child(
-                        Button::new("chat-frame-open", "show this frame in the timeline →")
-                            .sm()
-                            .ghost()
-                            // `openInTimeline`: close the peek, then
-                            // `open_capture_result_in_main_window { kind: "frame" }`.
-                            .on_click(cx.listener(move |this, _, _, cx| {
-                                let Some(id) = frame_id else { return };
-                                this.close_peek(cx);
-                                cx.defer(move |cx| crate::window::open_frame(id, cx));
-                            })),
-                    ),
-            ),
-    )
-    .on_close(move |_, cx| {
-        let _ = close.update(cx, |c, cx| c.close_peek(cx));
-    })
 }
 
 /// `ocrCountLabel`: the overlay draws at most `MAX_BOXES`.

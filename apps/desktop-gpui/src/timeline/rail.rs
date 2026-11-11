@@ -60,6 +60,21 @@ fn caret(down: bool, x: f32, y: f32, color: gpui_kit::Hsla, window: &mut Window)
     }
 }
 
+/// The CSS mask fades 5% at each end to the page behind (`bg`).
+fn edge_fade(b: Bounds<gpui_kit::Pixels>, bg: gpui_kit::Hsla, window: &mut Window) {
+    let edge = f32::from(b.size.width) * 0.05;
+    for (x, from, to) in [(b.left(), 0., 1.), (b.right() - px(edge), 1., 0.)] {
+        window.paint_quad(fill(
+            Bounds::new(point(x, b.top()), size(px(edge), b.size.height)),
+            linear_gradient(
+                90.,
+                linear_color_stop(alpha(bg, 1. - from), 0.),
+                linear_color_stop(alpha(bg, 1. - to), 1.),
+            ),
+        ));
+    }
+}
+
 /// The readout bubble: app tile + name (fly-in keyed on the app), time, date.
 fn readout(
     v: &TimelineView,
@@ -243,12 +258,25 @@ pub fn render(
     if frames.is_empty() {
         return wrap
             .child(
-                div()
+                // `.timeline-rail--placeholder`: the same rail, its 1 px border and
+                // the edge mask in one canvas (a div's border paints over children).
+                {
+                    let (bg, surface, border, r) = (p.bg, p.surface, p.border, radius::MD);
+                    canvas(
+                        |_, _, _| {},
+                        move |b, _, window, _| {
+                            window.paint_quad(
+                                fill(b, surface)
+                                    .corner_radii(r)
+                                    .border_widths(px(1.))
+                                    .border_color(border),
+                            );
+                            edge_fade(b, bg, window);
+                        },
+                    )
+                    .w_full()
                     .h(px(RAIL_H))
-                    .rounded(radius::MD)
-                    .border_1()
-                    .border_color(p.border)
-                    .bg(p.surface),
+                },
             )
             .child(bands::audio_lane(v, w, p, cx));
     }
@@ -342,18 +370,7 @@ pub fn render(
                 );
             }
             tick(x, mid, tw, th, accent, window);
-            // The CSS mask fades 5% at each end to the page behind.
-            let edge = f32::from(b.size.width) * 0.05;
-            for (x, from, to) in [(b.left(), 0., 1.), (b.right() - px(edge), 1., 0.)] {
-                window.paint_quad(fill(
-                    Bounds::new(point(x, b.top()), size(px(edge), b.size.height)),
-                    linear_gradient(
-                        90.,
-                        linear_color_stop(alpha(bg, 1. - from), 0.),
-                        linear_color_stop(alpha(bg, 1. - to), 1.),
-                    ),
-                ));
-            }
+            edge_fade(b, bg, window);
             caret(true, c, f32::from(b.top()) - 1., subtle, window);
             caret(false, c, f32::from(b.top()) + 30., subtle, window);
         },

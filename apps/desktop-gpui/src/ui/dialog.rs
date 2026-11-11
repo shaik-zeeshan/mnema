@@ -29,6 +29,11 @@ pub struct Modal {
     max_w: Pixels,
     bare: bool,
     unpainted: bool,
+    /// No head, no corner ×, no fill: the body is the whole panel (its own head).
+    chromeless: bool,
+    radius: Pixels,
+    scrim: Option<gpui_kit::Hsla>,
+    whole_window: bool,
 }
 
 impl Modal {
@@ -43,6 +48,10 @@ impl Modal {
             max_w: size::MODAL_MAX_W,
             bare: false,
             unpainted: false,
+            chromeless: false,
+            radius: radius::XL,
+            scrim: None,
+            whole_window: false,
         }
     }
     /// A narrower panel (default `size::MODAL_MAX_W`).
@@ -73,6 +82,25 @@ impl Modal {
         self.unpainted = true;
         self
     }
+    /// The body draws everything, head and close included (`FrameDetailModal`'s
+    /// own header row); the panel keeps the rise, the shadow and `radius`.
+    pub fn chromeless(mut self, radius: Pixels) -> Self {
+        self.chromeless = true;
+        self.unpainted = true;
+        self.radius = radius;
+        self
+    }
+    /// A scrim other than the shared 62% `bg` (a surface's own overlay token).
+    pub fn scrim(mut self, c: gpui_kit::Hsla) -> Self {
+        self.scrim = Some(c);
+        self
+    }
+    /// Scrim the whole window, titlebar and status bar included (a CSS
+    /// `position: fixed; inset: 0` modal), from a surface laid out between them.
+    pub fn whole_window(mut self) -> Self {
+        self.whole_window = true;
+        self
+    }
     pub fn child(mut self, el: impl IntoElement) -> Self {
         self.body.push(el.into_any_element());
         self
@@ -93,7 +121,9 @@ impl RenderOnce for Modal {
             .ghost()
             .sm()
             .when_some(close, |b, f| b.on_click(move |_, window, cx| f(window, cx)));
-        let (head, corner) = if self.bare {
+        let (head, corner) = if self.chromeless {
+            (None, None)
+        } else if self.bare {
             let corner = div()
                 .absolute()
                 .top(space::S3)
@@ -152,7 +182,7 @@ impl RenderOnce for Modal {
                     .border_1()
                     .border_color(p.border_strong)
             })
-            .rounded(radius::XL)
+            .rounded(self.radius)
             .shadow(popover_shadow(&p))
             .overflow_hidden()
             .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
@@ -174,11 +204,14 @@ impl RenderOnce for Modal {
                 .aria_label(self.title)
                 .absolute()
                 .inset_0()
+                .when(self.whole_window, |el| {
+                    el.top(-size::TITLEBAR).bottom(-size::STATUS_BAR)
+                })
                 .flex()
                 .items_center()
                 .justify_center()
                 .p(space::S6)
-                .bg(alpha(p.bg, 0.62))
+                .bg(self.scrim.unwrap_or(alpha(p.bg, 0.62)))
                 .occlude()
                 .font_family(theme::FONT_UI)
                 .text_size(text::MD)

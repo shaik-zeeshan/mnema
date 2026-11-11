@@ -128,10 +128,12 @@ pub fn render_peek(
     cx.update_window(window.into(), |_, window, cx| {
         chat.update(cx, |c, cx| c.peek_frame(source, window, cx))
     })?;
-    for _ in 0..20 {
+    // Past the modal's 420 ms rise and scrim fade (animations read real time).
+    for _ in 0..25 {
         cx.run_until_parked();
+        cx.advance_clock(std::time::Duration::from_millis(50));
         cx.update_window(window.into(), |_, window, _| window.refresh())?;
-        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::thread::sleep(std::time::Duration::from_millis(30));
     }
     cx.run_until_parked();
     let shot = cx.capture_screenshot(window.into())?;
