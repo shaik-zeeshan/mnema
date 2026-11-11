@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 12:52",
- "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click are often thinner than the Tauri app's: a provider's Manage panel opened to nothing, and Add a connector looked different. A screen-by-screen check of every control and flow against the Tauri app is now running, two parts at a time. Fixed and committed the same day: the menu drawn under the page and seven related faults (approved), copy buttons, the missing-model error, and the developer window from the status popover. Everything is in local commits; nothing is pushed. Nothing is waiting on you right now; pictures from the sweep will come for approval as each part lands.",
+ "updated": "2026-11-11 14:14",
+ "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. What needs you: sixteen screenshots to approve on the Settings › Intelligence check page, with one decision about brand logos.",
  "metrics": [
   {
    "label": "Overall",
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,020",
-   "note": "1,353 shared backend + 141 activity-source + 517 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
+   "value": "2,057",
+   "note": "1,353 shared backend + 141 activity-source + 554 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "all approved",
-   "note": "the five menu and list screens approved on 11 Nov; baselines recorded in 69da0b5c; more will come from the sweep"
+   "value": "16 pending",
+   "note": "Settings › Intelligence: twelve new screens and four changed connector windows"
   }
  ],
  "bars": [
@@ -56,19 +56,19 @@
  ],
  "now": [
   {
-   "id": "Sweep 1",
-   "title": "Settings › Intelligence: providers, Ask AI, User Context",
-   "detail": "Checking every control and flow against the Tauri app and building what is missing, starting with the empty Manage panel. With an agent now."
+   "id": "Sweep 3",
+   "title": "The date control: week rows, month grid, ranges",
+   "detail": "Your report of the square range block in the Insights calendar. With an agent now."
   },
   {
-   "id": "Sweep 2",
-   "title": "Settings › Intelligence: connectors and local models",
-   "detail": "Same check, starting with the Add a connector window's look. With an agent now."
+   "id": "Sweep 4",
+   "title": "Settings › General, Capture, Data, About",
+   "detail": "The same control-by-control check. Starting now."
   },
   {
    "id": "Queued",
-   "title": "Five more parts of the app, and the Insights calendar",
-   "detail": "Settings' other groups, Timeline, Chat and Quick Recall, Insights, then the main window chrome, onboarding and small windows. Two at a time."
+   "title": "Four more parts",
+   "detail": "Timeline and audio drawer; Chat and Quick Recall; Insights; then the main window chrome, onboarding and small windows."
   }
  ],
  "done": [
@@ -467,6 +467,18 @@
    "title": "Menus and lists are drawn above the page",
    "what": "The Add provider menu was painted under the rows below it. Fixed along with seven related faults found by checking every menu and list: reopening on click, Escape leaving Settings, lists running off the window, clicks falling through toasts. Built; screenshots approved on 11 Nov; in the 12:28 dev build.",
    "commit": "44031552"
+  },
+  {
+   "id": "Sweep 1",
+   "title": "Settings › Intelligence: providers, Ask AI, User Context match the Tauri app",
+   "what": "A provider's Manage panel opens to its real contents for every kind, including the ChatGPT sign-in; about 25 more gaps closed, two of which could lose a saved or typed key. Built, with 15 click-through tests; screenshots await your approval; not tried in the real app.",
+   "commit": "537cdd38"
+  },
+  {
+   "id": "Sweep 2",
+   "title": "Settings › Intelligence: connectors and local models match the Tauri app",
+   "what": "Add a connector looks like the Tauri app's and picking a service opens its Connect step; model sections explain read errors, show downloads properly and confirm destructive actions. Built, with 23 click-through tests; screenshots await your approval; not tried in the real app.",
+   "commit": "99359f69"
   }
  ],
  "next": [
@@ -781,6 +793,11 @@
   }
  ],
  "waiting": [
+  {
+   "id": "Approve",
+   "title": "Sixteen Settings › Intelligence screenshots",
+   "detail": "Twelve new screens that only appear after a click, and four changed connector windows. One decision rides on them: brand logos in the connector picker. On the Settings › Intelligence check page, first section."
+  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -2073,7 +2090,7 @@
    "commit": "—",
    "state": "in progress",
    "awaiting": false,
-   "what": "You found that Manage on a provider opens to nothing for Ollama and ChatGPT, and that Add a connector does not look like the Tauri app's. Both are confirmed: the new app's Manage panel only draws an API-key field for key-based cloud providers, where the Tauri app also has a label, the address, the ChatGPT sign-in block and Remove provider. The cause is general: screens were built to match screenshots, so what only appears after a click was often left out. Every part of the app is now being checked the same way: list every control, message and click-through flow in the Tauri app's code, find each in the new app, build what is missing with the Tauri wording and behaviour, and add a test that clicks through it. Order, two agents at a time: 1. Settings › Intelligence: providers, Ask AI, User Context (running). 2. Settings › Intelligence: connectors, transcription, speakers, text reading, search models (running). 3. Settings › General, Capture, Data, About. 4. Timeline, audio drawer, frame detail. 5. Chat and Quick Recall. 6. Insights. 7. Main window chrome, onboarding and the small windows. Also queued from you: in the Insights calendar a selected week or month is drawn as a square-cornered block; the Tauri app draws a week as one rounded row with its week number and has a separate month grid, and the new app has neither yet.",
+   "what": "You found that Manage on a provider opens to nothing for Ollama and ChatGPT, and that Add a connector does not look like the Tauri app's. Both are confirmed: the new app's Manage panel only draws an API-key field for key-based cloud providers, where the Tauri app also has a label, the address, the ChatGPT sign-in block and Remove provider. The cause is general: screens were built to match screenshots, so what only appears after a click was often left out. Every part of the app is now being checked the same way: list every control, message and click-through flow in the Tauri app's code, find each in the new app, build what is missing with the Tauri wording and behaviour, and add a test that clicks through it. Order, two agents at a time: 1. Settings › Intelligence: providers, Ask AI, User Context (done). 2. Settings › Intelligence: connectors, transcription, speakers, text reading, search models (done; both are on the Settings › Intelligence check page). 3. Settings › General, Capture, Data, About. 4. Timeline, audio drawer, frame detail. 5. Chat and Quick Recall. 6. Insights. 7. Main window chrome, onboarding and the small windows. Also queued from you: in the Insights calendar a selected week or month is drawn as a square-cornered block; the Tauri app draws a week as one rounded row with its week number and has a separate month grid, and the new app has neither yet.",
    "rows": []
   },
   {
@@ -2299,5 +2316,273 @@
    "rows": []
   }
  ],
- "round4_verdict": "What you found using the real dev build on 11 Nov: the menu drawn under the page and seven related faults, the copy buttons, the missing-model error and two more mix-ups of the same kind, and the developer window from the status popover are fixed, committed and approved. Still open from the same day: the empty Manage panel, the Add a connector look and the Insights calendar's square range, which started a check of every screen and flow against the Tauri app. Nothing has been pushed."
+ "round4_verdict": "What you found using the real dev build on 11 Nov: the menu drawn under the page and seven related faults, the copy buttons, the missing-model error and two more mix-ups of the same kind, and the developer window from the status popover are fixed, committed and approved. Still open from the same day: the empty Manage panel, the Add a connector look and the Insights calendar's square range, which started a check of every screen and flow against the Tauri app. Nothing has been pushed.",
+ "round5": [
+  {
+   "anchor": "r7-approve",
+   "title": "Settings › Intelligence: screenshots to approve",
+   "toc": "To approve",
+   "commit": "537cdd38, 99359f69",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "Sixteen screens need your yes, all rendered from test data. Twelve are new: they show things that only appear after a click and were missing or wrong before. Four changed: the connector windows got the Tauri app's small header line, and Add a connector was rebuilt to match. One decision rides on these pictures: the connector picker uses the GitHub, Linear, Stripe and Notion brand marks, as the Tauri app does, which departs from the Lucide-icons-only rule. Recommended: keep them.",
+   "rows": [
+    {
+     "heading": "Providers › Manage on Ollama (your report: it opened to nothing)",
+     "shots": [
+      {
+       "file": "r6-settings-provider-manage-local-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-provider-manage-local-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Providers › Manage on a key-based provider, with an unsaved key",
+     "shots": [
+      {
+       "file": "r6-settings-provider-manage-key-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-provider-manage-key-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Providers › a ChatGPT row before sign-in",
+     "shots": [
+      {
+       "file": "r6-settings-provider-chatgpt-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-provider-chatgpt-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Providers › ChatGPT sign-in, the code step",
+     "shots": [
+      {
+       "file": "r6-settings-provider-chatgpt-code-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-provider-chatgpt-code-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Connectors › Add a connector (your report: it did not look like the Tauri app's)",
+     "shots": [
+      {
+       "file": "r6-settings-add-connector-open-before.jpg",
+       "caption": "Before"
+      },
+      {
+       "file": "r6-settings-add-connector-open-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r6-settings-add-connector-open-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Connectors › the Connect step after picking a service (new)",
+     "shots": [
+      {
+       "file": "r6-settings-mcp-preset-connect-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-mcp-preset-connect-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Connectors › custom connector form (changed)",
+     "shots": [
+      {
+       "file": "r6-settings-mcp-custom-form-before.jpg",
+       "caption": "Before"
+      },
+      {
+       "file": "r6-settings-mcp-custom-form-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r6-settings-mcp-custom-form-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Connectors › a connector's tools (changed)",
+     "shots": [
+      {
+       "file": "r6-settings-mcp-tool-list-before.jpg",
+       "caption": "Before"
+      },
+      {
+       "file": "r6-settings-mcp-tool-list-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r6-settings-mcp-tool-list-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Connectors › sign-in window (changed)",
+     "shots": [
+      {
+       "file": "r6-settings-mcp-oauth-idle-before.jpg",
+       "caption": "Before"
+      },
+      {
+       "file": "r6-settings-mcp-oauth-idle-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r6-settings-mcp-oauth-idle-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Connectors › a row while authorizing",
+     "shots": [
+      {
+       "file": "r6-settings-mcp-authorizing-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-mcp-authorizing-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Models › status could not be read",
+     "shots": [
+      {
+       "file": "r6-settings-models-unreadable-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-models-unreadable-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Models › checking installed models",
+     "shots": [
+      {
+       "file": "r6-settings-models-checking-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-models-checking-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Transcription › a download in progress",
+     "shots": [
+      {
+       "file": "r6-settings-transcription-downloading-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-transcription-downloading-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Speakers › an installed model with Delete",
+     "shots": [
+      {
+       "file": "r6-settings-speakers-installed-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-speakers-installed-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Semantic Search › re-indexing after a model switch",
+     "shots": [
+      {
+       "file": "r6-settings-semantic-reindexing-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-semantic-reindexing-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "Semantic Search › the system-language hint",
+     "shots": [
+      {
+       "file": "r6-settings-semantic-language-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r6-settings-semantic-language-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r7-providers",
+   "title": "Providers, Ask AI and User Context",
+   "toc": "Providers",
+   "commit": "537cdd38",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "Your report: Manage on Ollama or ChatGPT opened to nothing. The panel only drew an API-key line, and only for key-based cloud providers. It now opens to what the Tauri app shows for each kind: a label and Remove provider for all; the address for OpenAI-compatible and local providers; the key field with Save, Clear and the unsaved-key hint; and the full ChatGPT sign-in with its code, copy, Start over, Cancel, Reconnect and Disconnect. Checking every control and flow against the Tauri code found about 25 more gaps. The ones that could lose data: Clear deleted a saved key without asking, and a failed save threw the typed key away. Others: one key box and one error line were shared by every row; removing a cloud provider did not ask or delete its key; Settings never heard that a ChatGPT sign-in had finished; the stars in the model pickers did nothing; Test connection reported in the wrong place with a raw id; several notices, tones and busy states were missing in Ask AI and User Context. Fifteen new tests click and type through these flows. Not tried in the real app: the ChatGPT sign-in against OpenAI, and saving or clearing a real key. Small look differences left: Save key is not bold inside the unsaved-key sentence, and clicking the sign-in code copies it but only the copy icon says Copied.",
+   "rows": []
+  },
+  {
+   "anchor": "r7-connectors",
+   "title": "Connectors",
+   "toc": "Connectors",
+   "commit": "99359f69",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "Your report: Add a connector did not look like the Tauri app's. The look was the smaller half. In the new app, picking GitHub, Linear, Stripe or Filesystem added the connector at once, switched off, with no token and no check that it works. It now opens the Connect step the Tauri app has: one token field with the service's own label, a link to create one, the collapsible Advanced fields, and Add connector stays off until a token is pasted; a failed add says why and undoes itself. The picker has the Tauri header, a search field, the two group headings, logo tiles and the added badge. Configure on a connector opens the edit window instead of a loose field under the row. The custom form saves as you type when editing, a just-added row flashes, and authorizing has its spinner. Not tried in the real app: a real token, a real sign-in, a local server.",
+   "rows": []
+  },
+  {
+   "anchor": "r7-models",
+   "title": "Text reading, Transcription, Speakers and Semantic Search",
+   "toc": "Local models",
+   "commit": "99359f69",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "When reading a model's status failed, the new app said \"No model status is available\" and threw the reason away; all four sections now say why, as the Tauri app does, and say they are checking while loading. Downloads have the Tauri layout while running (size, percentage, Cancel download) and a failed download explains itself on its own row. Speakers has the full preset list with sizes, asks before switching model while saved people are recognised, and an installed model can be deleted. Semantic Search keeps the row active with a re-indexing bar and the \"Cleared N vectors\" line after a model switch, and a refused enable flips the switch back with the reason. Text reading has its two \"bundle missing\" warnings. Apple Speech only shows its permission row when permission is actually missing, and the Deepgram wording matches. Two things kept on purpose: the Cancel button during a voice take (the Tauri app has none; it releases the microphone early, and you accepted it earlier), and the speaker preset list stays enabled while its question is open. Still missing: the \"Deleted N unused models\" line after cleaning up models; it goes into the next Settings pass.",
+   "rows": []
+  }
+ ],
+ "round5_verdict": "Settings › Intelligence has been checked control by control and flow by flow against the Tauri app, and what was missing or wrong is built and committed locally: the provider Manage panel and about 25 more gaps in Providers, Ask AI and User Context; the connector picker and its missing Connect step; and the model sections' errors, downloads and confirmations. Sixteen screens need your approval, with one decision about brand logos. Nothing here has been tried in the real app yet. Nothing has been pushed."
 }

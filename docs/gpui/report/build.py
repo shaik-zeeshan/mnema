@@ -134,7 +134,7 @@ def shots_page(g, d, drafts):
 def fixes_page(d, drafts, key="fixes", title="Today’s fixes: before and after",
                lede="Pictures of each fix from your hands-on test. None of the changed screenshots replace the approved "
                     "ones until you approve them, so this is the only place they show."):
-    p = [top("Mnema · GPUI desktop app · " + ("11 Nov 2026" if key == "round4" else "10 Nov 2026"), title, lede,
+    p = [top("Mnema · GPUI desktop app · " + ("11 Nov 2026" if key in ("round4", "round5") else "10 Nov 2026"), title, lede,
              f'Updated {E(d["updated"])} · {link(drafts, "index", "back to the progress report")}'),
          '<div class="pp-verdict"><span class="pp-chip" data-tone="strong">Your call</span>'
          f'<p>{E(d[key + "_verdict"])}</p></div>']
@@ -188,7 +188,8 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = ([(link(drafts, "round4", "11 Nov hands-on round: fixes"), "11 Nov · menus drawn under the page, copy buttons, missing models, the developer window from the status popover",
+    rows = ([(link(drafts, "round5", "Settings › Intelligence, checked against the Tauri app"), "11 Nov · the provider Manage panel, connectors, model sections",
+              page_chip(d, "round5"))] if d.get("round5") else []) + ([(link(drafts, "round4", "11 Nov hands-on round: fixes"), "11 Nov · menus drawn under the page, copy buttons, missing models, the developer window from the status popover",
               page_chip(d, "round4"))] if d.get("round4") else []) + ([(link(drafts, "round3", "Real-app test and behaviour audit"), "10 Nov night · what works when actually used, what is broken, what the old app does that the new one doesn't",
               page_chip(d, "round3"))] if d.get("round3") else []) + ([(link(drafts, "round2", "Second hands-on round: fixes"), "10 Nov evening · search, text cursor, developer logs, links, scroll bars",
               page_chip(d, "round2"))] if d.get("round2") else []) + ([(link(drafts, "receipts", "Licence receipts: the final design"), "your pick on every licence receipt, with the three original directions below",
@@ -262,6 +263,11 @@ def main():
          fixes_page(d, drafts, "approve", "Earlier approvals",
                     "Screenshots you approved on 10 Nov before they became references. Nothing here is waiting."),
          "Mnema GPUI — earlier approvals")
+    if d.get("round5"):
+        emit("round5", "round5.html", "Settings › Intelligence check",
+             fixes_page(d, drafts, "round5", "Settings › Intelligence, checked against the Tauri app",
+                        "Every control and click-through flow in Settings › Intelligence was listed from the Tauri app's code and matched to the new app. What was missing or wrong is built. The pictures are rendered from test data."),
+             "Mnema GPUI — Settings › Intelligence check")
     if d.get("round4"):
         emit("round4", "round4.html", "11 Nov hands-on round",
              fixes_page(d, drafts, "round4", "11 Nov hands-on round: fixes",
