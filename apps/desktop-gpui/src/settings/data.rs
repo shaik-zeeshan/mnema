@@ -54,7 +54,10 @@ pub fn load_local(core: &Arc<AppCore>) -> SettingsData {
         core,
         Some(true),
     ));
-    d.storage_location = app_core::app_infra::get_storage_location(core).ok();
+    match app_core::app_infra::get_storage_location(core) {
+        Ok(l) => d.storage_location = Some(l),
+        Err(e) => d.storage_location_error = Some(e),
+    }
     // A failed read keeps its reason for the section's "Couldn't load …" row.
     let mut status = |family: Family, read: Result<Value, String>| match read {
         Ok(v) => Some(v),
@@ -120,6 +123,23 @@ pub async fn load_slow(core: &Arc<AppCore>, mut d: SettingsData) -> SettingsData
             app_core::licensing::get_license_status(core, infra),
         )
         .await;
+        // Debug builds answer a fixed dev licence (app-core's bypass, same test):
+        // there is no real key to count devices for, and the count reads the
+        // stored key from the keychain, so it never runs there.
+        let dev_licence =
+            cfg!(debug_assertions) && std::env::var_os("MNEMA_LICENSE_ENFORCE").is_none();
+        if !dev_licence
+            && matches!(
+                d.license,
+                Some(capture_types::LicenseStatus::Licensed { .. })
+            )
+        {
+            let devices = app_core::licensing::reset::get_license_devices();
+            d.license_devices = slow("the license devices", devices)
+                .await
+                .flatten()
+                .map(|v| (v.used, v.cap));
+        }
         d.user_context = slow(
             "the user context status",
             app_core::user_context::commands::get_user_context_status(core, infra),
@@ -127,12 +147,28 @@ pub async fn load_slow(core: &Arc<AppCore>, mut d: SettingsData) -> SettingsData
         .await
         .and_then(to_json);
     }
-    d.ai_status = slow(
-        "the AI runtime status",
+    // A failed read keeps its reason for the AI runtime row.
+    match tokio::time::timeout(
+        SLOW_READ_TIMEOUT,
         app_core::ai_runtime::get_ai_runtime_status(core),
     )
     .await
-    .and_then(to_json);
+    {
+        Ok(Ok(v)) => d.ai_status = to_json(v),
+        Ok(Err(e)) => {
+            log::warn!("settings: couldn't read the AI runtime status: {e}");
+            // `humanizeError`: the first letter up.
+            let e = e.to_string();
+            let mut c = e.chars();
+            d.ai_status_error = c
+                .next()
+                .map(|f| f.to_uppercase().chain(c).collect::<String>());
+        }
+        Err(_) => {
+            log::warn!("settings: the AI runtime status timed out after {SLOW_READ_TIMEOUT:?}");
+            d.ai_status_error = Some("Timed out reading the AI runtime status.".into());
+        }
+    }
     if let Some(s) = d.settings.clone() {
         for p in &s.ai_runtime.providers {
             let req = || serde_json::from_value(json!({ "provider": p.id })).ok();
@@ -453,6 +489,20 @@ impl Backend for CoreBackend {
     fn recheck_access(&self) -> Option<SettingsData> {
         let mut d = SettingsData::default();
         load_access(&self.0, &mut d);
+        // A tool approved in the CLI Access Request window meanwhile: the list
+        // has no change event, so focus re-reads it (`complete` = it was read).
+        let core = &self.0;
+        let grants = core.block_on(app_core::cli_access::list_cli_access_grants(core));
+        let history = core.block_on(app_core::cli_access::list_cli_access_history(core));
+        if let (Ok(g), Ok(h)) = (grants, history) {
+            d.grants = to_json(g)
+                .and_then(|v| v["grants"].as_array().cloned())
+                .unwrap_or_default();
+            d.history = to_json(h)
+                .and_then(|v| v["events"].as_array().cloned())
+                .unwrap_or_default();
+            d.complete = true;
+        }
         Some(d)
     }
     fn save_domain(

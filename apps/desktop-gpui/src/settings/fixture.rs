@@ -57,7 +57,7 @@ pub fn open_provider_state(
 }
 
 /// Model-section golden states: `(state, ?tab=, what to set up)`.
-pub const MODEL_STATES: [(&str, &str, &str); 7] = [
+pub const MODEL_STATES: [(&str, &str, &str); 15] = [
     ("models-unreadable", "ocr", "unreadable"),
     ("models-checking", "speakers", "checking"),
     ("speakers-installed", "speakers", "installed"),
@@ -65,6 +65,14 @@ pub const MODEL_STATES: [(&str, &str, &str); 7] = [
     ("semantic-reindexing", "semantic-search", "reindexing"),
     ("semantic-language", "semantic-search", "language"),
     ("mcp-authorizing", "intelligence", "authorizing"),
+    ("ai-status-error", "intelligence", "ai-status-error"),
+    ("ocr-unused-deleted", "ocr", "unused-deleted"),
+    ("shortcuts-conflict", "shortcuts", "shortcut-conflict"),
+    ("capture-sysaudio-hint", "capture", "sysaudio-hint"),
+    ("video-custom-errors", "video", "video-errors"),
+    ("storage-after", "storage", "storage-after"),
+    ("license-overcap", "license", "license-overcap"),
+    ("privacy-add-app", "privacy", "add-app"),
 ];
 
 /// Set one [`MODEL_STATES`] state up on the loaded page.
@@ -121,6 +129,65 @@ pub fn open_model_state(
                 cx,
             );
             s.data.mcp_oauth = vec![serde_json::json!({ "id": "github", "state": "authorizing" })];
+        }
+        "ai-status-error" => {
+            s.data.ai_status = None;
+            s.data.ai_status_error = Some("Ai runtime status: settings file is unreadable".into());
+        }
+        "unused-deleted" => {
+            s.ui.unused_notes
+                .insert(Family::Ocr, (true, "Deleted 2 unused OCR models.".into()));
+        }
+        "shortcut-conflict" => s.edit_keyboard(
+            |k| k["appShortcuts"]["openSettings"] = Value::String("CommandOrControl+D".into()),
+            cx,
+        ),
+        "sysaudio-hint" => {
+            s.data.system_audio_blocked = true;
+            s.edit(|d| d.capture_system_audio = true, cx);
+        }
+        "video-errors" => s.edit(
+            |d| {
+                d.capture_screen = true;
+                d.screen_resolution = capture_types::ScreenResolution::Custom {
+                    width: 1920,
+                    height: 1080,
+                };
+                d.video_bitrate.mode = capture_types::VideoBitrateMode::Custom;
+            },
+            cx,
+        ),
+        "storage-after" => {
+            s.ui.picked_location = Some("/Volumes/Archive/mnema".into());
+            s.ui.cleanup = Some(Ok((12, 18_402, 9)));
+            s.ui.delete_receipt = Some((
+                crate::ui::Tone::Warn,
+                super::sections::delete_receipt(300, 2).1,
+            ));
+        }
+        "add-app" => {
+            s.ui.app_picker = Some(vec![
+                (
+                    "com.agilebits.onepassword7".into(),
+                    "1Password 7".into(),
+                    true,
+                ),
+                ("com.bitwarden.desktop".into(), "Bitwarden".into(), false),
+                ("com.apple.Passwords".into(), "Passwords".into(), false),
+                ("org.mozilla.firefox".into(), "Firefox".into(), true),
+            ]);
+        }
+        "license-overcap" => {
+            s.data.license = Some(capture_types::LicenseStatus::Licensed {
+                update_through_ms: 1_794_560_520_000,
+                in_window: true,
+                email: "ana@example.com".into(),
+                name: "Ana".into(),
+                activation: capture_types::Activation::RefusedOverCap {
+                    reset_url: "https://mnema.day/help/devices".into(),
+                    buy_url: "https://mnema.day/buy".into(),
+                },
+            });
         }
         _ => {}
     }

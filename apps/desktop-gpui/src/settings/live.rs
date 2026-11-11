@@ -212,16 +212,12 @@ pub fn wipe_user_context(core: &Arc<AppCore>) -> Outcome {
     Ok(None)
 }
 
-fn plural(n: i64, one: &str) -> String {
-    format!("{n} {one}{}", if n == 1 { "" } else { "s" })
-}
-
 /// `preview_retention_cleanup` for a policy not saved yet: what it would delete,
-/// as `(segments, frames, audio segments)`.
+/// as `(segments, frames, audio segments, cutoff)`.
 pub fn retention_preview(
     core: &Arc<AppCore>,
     policy: capture_types::RetentionPolicy,
-) -> Result<(i64, i64, i64), String> {
+) -> Result<(i64, i64, i64, Option<String>), String> {
     let infra = infra(core)?;
     let request = app_core::app_infra::PreviewRetentionCleanupRequest {
         policy: Some(policy),
@@ -233,39 +229,36 @@ pub fn retention_preview(
         &core.state::<RecordingSettingsState>(),
     ))?;
     Ok((
-        s.eligible_capture_segments.max(s.deleted_capture_segments),
+        s.eligible_capture_segments,
         s.deleted_frames,
         s.deleted_audio_segments,
+        s.cutoff_ended_before,
     ))
 }
 
-pub fn retention_run(core: &Arc<AppCore>) -> Outcome {
+/// `run_retention_cleanup_now`: `(segments, frames, audio segments)` deleted.
+pub fn retention_run(core: &Arc<AppCore>) -> Result<(i64, i64, i64), String> {
     let infra = infra(core)?;
     let s = core.block_on(app_core::app_infra::run_retention_cleanup_now(
         core,
         &infra,
         &core.state::<RecordingSettingsState>(),
     ))?;
-    Ok(Some(format!(
-        "Cleanup deleted {}, {} and {}.",
-        plural(s.deleted_capture_segments, "capture segment"),
-        plural(s.deleted_frames, "frame"),
-        plural(s.deleted_audio_segments, "audio segment")
-    )))
+    Ok((
+        s.deleted_capture_segments,
+        s.deleted_frames,
+        s.deleted_audio_segments,
+    ))
 }
 
 /// Finalizes the live segment, deletes every overlapping one, resumes capture.
-pub fn delete_recent(core: &Arc<AppCore>, window_seconds: u64) -> Outcome {
+/// Answers how many files couldn't be removed from disk yet.
+pub fn delete_recent(core: &Arc<AppCore>, window_seconds: u64) -> Result<i64, String> {
     let s = core.block_on(app_core::app_infra::delete_recent_capture_from_core(
         core,
         window_seconds as i64,
     ))?;
-    Ok(Some(format!(
-        "Deleted {}, {} and {}.",
-        plural(s.deleted_capture_segments, "capture segment"),
-        plural(s.deleted_frames, "frame"),
-        plural(s.deleted_audio_segments, "audio segment")
-    )))
+    Ok(s.file_delete_errors)
 }
 
 pub fn semantic_download(core: &Arc<AppCore>, model_id: String) -> Outcome {
@@ -329,11 +322,12 @@ pub fn license_activate(core: &Arc<AppCore>, key: String) -> Outcome {
     Ok(Some("License activated on this device.".into()))
 }
 
-pub fn license_reset_devices(core: &Arc<AppCore>) -> Outcome {
-    let outcome = core.block_on(app_core::licensing::reset::reset_license_devices(
+pub fn license_reset_devices(
+    core: &Arc<AppCore>,
+) -> Result<capture_types::ResetDevicesOutcome, String> {
+    core.block_on(app_core::licensing::reset::reset_license_devices(
         core.clone(),
-    ))?;
-    Ok(Some(format!("Device reset: {outcome:?}.")))
+    ))
 }
 
 fn deepgram(
@@ -383,15 +377,6 @@ pub fn open_privacy_pane(core: &Arc<AppCore>, kind: &str) -> Outcome {
     Ok(None)
 }
 
-/// The Accessibility prompt Firefox / Zen URL capture needs, then its pane.
-pub fn request_accessibility(core: &Arc<AppCore>) -> Outcome {
-    let status = app_core::native_capture::permissions::request_browser_url_accessibility();
-    if to_json(status)["trusted"].as_bool() != Some(true) {
-        app_core::native_capture::permissions::open_browser_url_accessibility_settings(core)?;
-    }
-    Ok(None)
-}
-
 /// Raise the Speech Recognition prompt (Apple Speech); a past denial can only
 /// be changed in System Settings, so the pane opens when it isn't usable after.
 pub fn request_speech_permission(core: &Arc<AppCore>) -> Outcome {
@@ -436,13 +421,6 @@ pub fn mcp_clear_secret(core: &Arc<AppCore>, id: &str) -> Outcome {
     let request = req(json!({ "id": id }))?;
     core.block_on(app_core::ai_runtime::mcp_clear_server_secret(request))?;
     Ok(Some("Connector secret removed.".into()))
-}
-
-pub fn set_update_channel(core: &Arc<AppCore>, channel: &str) -> Outcome {
-    let channel = req(json!(channel))?;
-    core.block_on(app_core::updates::set_app_update_channel(core, channel))
-        .ok_or("the updater isn't available in this build")?;
-    Ok(None)
 }
 
 pub fn delete_person(core: &Arc<AppCore>, person_id: i64) -> Outcome {

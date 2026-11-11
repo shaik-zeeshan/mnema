@@ -10,7 +10,7 @@ use crate::settings::{icons, Settings};
 use crate::theme::{space, Palette};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::input::TextInput;
-use crate::ui::{Button, Tone};
+use crate::ui::{notice, Button, Tone};
 
 const MONTHS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -55,7 +55,11 @@ fn badge(st: &LicenseStatus) -> Option<(&'static str, ChipKind)> {
 
 /// `statusHintFor` (without the device count, which needs `get_license_devices`).
 /// An empty value never leaves a dangling "through ." / "to .".
-fn hint(st: &LicenseStatus, offset: time::UtcOffset) -> Option<String> {
+fn hint(
+    st: &LicenseStatus,
+    devices: Option<(u64, u64)>,
+    offset: time::UtcOffset,
+) -> Option<String> {
     match st {
         LicenseStatus::TrialNotStarted { trial_days } => Some(format!("Free trial \u{2014} starts when you first record ({}).", days(*trial_days))),
         LicenseStatus::Trial { days_left, trial_end_ms } => Some(format!(
@@ -79,6 +83,9 @@ fn hint(st: &LicenseStatus, offset: time::UtcOffset) -> Option<String> {
                             || "updates included".into(),
                             |d| format!("updates included through {d}"),
                         ));
+                    }
+                    if let Some((used, cap)) = devices {
+                        parts.push(format!("{used} of {cap} devices activated"));
                     }
                     Some(format!("{}.", parts.join(" \u{b7} ")))
                 }
@@ -115,26 +122,219 @@ fn inline(st: &LicenseStatus, cx: &gpui_kit::App) -> Option<(Tone, &'static str,
     }
 }
 
+const REFRESH: &str = "License check";
+const ACTIVATE: &str = "License activation";
+const RESET: &str = "Device reset";
+
+/// `safeExternalUrl`: server-given links open only when they are https.
+fn open_https(url: &str, cx: &mut gpui_kit::App) {
+    if url.starts_with("https://") {
+        crate::ui::link::open(url, cx);
+    } else {
+        log::warn!("settings: refused to open a non-https license link");
+    }
+}
+
+impl Settings {
+    /// Activate (or Enter in the key field): the key stays on a failure.
+    pub fn activate_license(&mut self, cx: &mut Context<Self>) {
+        let key = self.inputs.license_key.read(cx).value().trim().to_string();
+        if key.is_empty() || self.ui.busy.contains(ACTIVATE) {
+            return;
+        }
+        self.ui.lic_activate = None;
+        self.run_command_with(
+            ACTIVATE,
+            cx,
+            move |core| crate::settings::live::license_activate(core, key),
+            |s, outcome| {
+                s.ui.lic_activate = Some(outcome.as_ref().map(|_| ()).map_err(Clone::clone));
+                s.ui.clear_license_key = outcome.is_ok();
+                true
+            },
+        );
+    }
+
+    /// Refresh: "Checked just now" or "Failed to reach the server." for 4 s.
+    fn refresh_license(&mut self, cx: &mut Context<Self>) {
+        self.ui.lic_refresh = None;
+        self.run_command_with(
+            REFRESH,
+            cx,
+            crate::settings::live::license_refresh,
+            |s, outcome| {
+                s.ui.lic_refresh = Some(outcome.is_ok());
+                s.ui.lic_refresh_gen += 1;
+                true
+            },
+        );
+        cx.spawn(async move |this, cx| {
+            let tick = std::time::Duration::from_millis(100);
+            // Wait for the check to land, then keep its line for 4 s.
+            let gen = loop {
+                match this.update(cx, |s, _| {
+                    (!s.ui.busy.contains(REFRESH)).then_some(s.ui.lic_refresh_gen)
+                }) {
+                    Ok(Some(gen)) => break gen,
+                    Ok(None) => cx.background_executor().timer(tick).await,
+                    Err(_) => return,
+                }
+            };
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(4000))
+                .await;
+            let _ = this.update(cx, |s, cx| {
+                if s.ui.lic_refresh_gen == gen {
+                    s.ui.lic_refresh = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// "Free up my devices…": asks, then resets the license's device list.
+    fn free_up_devices(&mut self, cx: &mut Context<Self>) {
+        crate::settings::confirm(
+            cx,
+            "Free up my devices",
+            "Free up your devices? This clears the license's device list so this Mac can activate. You can do this once every 30 days.",
+            "OK",
+            |s, cx| {
+                let Some(core) = crate::chat::core(cx) else {
+                    return;
+                };
+                if !s.ui.busy.insert(RESET) {
+                    return;
+                }
+                s.ui.lic_reset = None;
+                let job = cx.background_spawn(async move {
+                    crate::settings::live::license_reset_devices(&core)
+                });
+                cx.spawn(async move |this, cx| {
+                    let result = job.await;
+                    let _ = this.update(cx, |s, cx| {
+                        s.ui.busy.remove(RESET);
+                        let offset = offset(cx);
+                        s.ui.lic_reset = Some(match result {
+                            Ok(capture_types::ResetDevicesOutcome::Reset) => (
+                                Tone::Neutral,
+                                "Devices freed \u{2014} finishing activation on this Mac\u{2026}".into(),
+                            ),
+                            Ok(capture_types::ResetDevicesOutcome::RateLimited { retry_at_ms }) => (
+                                Tone::Neutral,
+                                match retry_at_ms.and_then(|ms| date(ms, offset)) {
+                                    Some(d) => format!("Your devices were already reset recently \u{2014} you can reset again on {d}."),
+                                    None => "Your devices were already reset recently \u{2014} you can reset again later.".into(),
+                                },
+                            ),
+                            Err(e) => (Tone::Danger, e),
+                        });
+                        s.refresh(cx);
+                        cx.notify();
+                    });
+                })
+                .detach();
+                cx.notify();
+            },
+        );
+    }
+}
+
+/// The over-cap notice: free the slots here, buy another, or read the help.
+fn over_cap(
+    s: &Settings,
+    reset_url: String,
+    buy_url: String,
+    p: &Palette,
+    cx: &mut Context<Settings>,
+) -> AnyElement {
+    let resetting = s.ui.busy.contains(RESET);
+    div()
+        .flex()
+        .flex_col()
+        .gap(space::S2)
+        .w_full()
+        .child(notice::notice(
+            Tone::Warn,
+            icons::LOCK,
+            "Already active on its 3 devices",
+            Some(
+                "Free them up to move it here (once every 30 days), or buy another license.".into(),
+            ),
+            vec![
+                Button::new(
+                    "lic-free-up",
+                    if resetting {
+                        "Freeing up\u{2026}"
+                    } else {
+                        "Free up my devices\u{2026}"
+                    },
+                )
+                .sm()
+                .busy(resetting)
+                .disabled(resetting)
+                .on_click(crate::settings::click(cx, |s, cx| s.free_up_devices(cx)))
+                .into_any_element(),
+                Button::new("lic-buy-another", "Buy another")
+                    .ghost()
+                    .sm()
+                    .icon(icons::EXTERNAL)
+                    .icon_after()
+                    .on_click(move |_, _, cx| open_https(&buy_url, cx))
+                    .into_any_element(),
+                Button::new("lic-help", "Help")
+                    .ghost()
+                    .sm()
+                    .icon(icons::EXTERNAL)
+                    .icon_after()
+                    .on_click(move |_, _, cx| open_https(&reset_url, cx))
+                    .into_any_element(),
+            ],
+            p,
+        ))
+        .children(s.ui.lic_reset.clone().map(|(tone, words)| {
+            let ic = if tone == Tone::Danger {
+                icons::ALERT
+            } else {
+                icons::INFO
+            };
+            line(tone, ic, words, p)
+        }))
+        .into_any_element()
+}
+
 pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
     let st = s.data.license.as_ref();
-    let mut status = row("Status").desc_opt(st.and_then(|st| hint(st, offset(cx))));
+    let mut status =
+        row("Status").desc_opt(st.and_then(|st| hint(st, s.data.license_devices, offset(cx))));
     if let Some((label, kind)) = st.and_then(badge) {
         status = status.extra(chip(label, kind, p));
     }
-    status = match st {
-        None if s.data.complete => status.below(line(
+    let over = match st {
+        Some(LicenseStatus::Licensed {
+            activation: Activation::RefusedOverCap { reset_url, buy_url },
+            ..
+        }) => Some((reset_url.clone(), buy_url.clone())),
+        _ => None,
+    };
+    status = match (st, over) {
+        (_, Some((reset_url, buy_url))) => status
+            .full()
+            .control(over_cap(s, reset_url, buy_url, p, cx)),
+        (None, _) if s.data.complete => status.below(line(
             Tone::Warn,
             icons::ALERT,
             "Couldn\u{2019}t read the license status.",
             p,
         )),
-        None => status.below(line(
+        (None, _) => status.below(line(
             Tone::Neutral,
             icons::LOADER,
             "Checking license status\u{2026}",
             p,
         )),
-        Some(st) => match inline(st, cx) {
+        (Some(st), None) => match inline(st, cx) {
             Some((tone, ic, text_)) => status.below(line(tone, ic, text_, p)),
             None => status,
         },
@@ -153,17 +353,29 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             ..
         })
     );
+    let refreshing = s.ui.busy.contains(REFRESH);
+    let refresh_line = match s.ui.lic_refresh {
+        Some(true) => Some(line(Tone::Ok, icons::CHECK, "Checked just now", p)),
+        Some(false) => Some(line(
+            Tone::Danger,
+            icons::CLOUD_OFF,
+            "Failed to reach the server.",
+            p,
+        )),
+        None => None,
+    };
     let mut rows = vec![
         status.build(p).into_any_element(),
         row("Refresh license status")
             .desc("Re-check with the license server \u{2014} a renewal or freed-up device lands right away.")
             .control(
-                Button::new("lic-refresh", "Refresh")
-                    .disabled(s.ui.busy.contains("License check"))
-                    .on_click(crate::settings::click(cx, |s, cx| {
-                        s.run_command("License check", cx, crate::settings::live::license_refresh)
-                    })),
+                Button::new("lic-refresh", if refreshing { "Checking\u{2026}" } else { "Refresh" })
+                    .busy(refreshing)
+                    .disabled(refreshing)
+                    .when(s.ui.lic_refresh == Some(false) && !refreshing, |b| b.icon(icons::RELOAD))
+                    .on_click(crate::settings::click(cx, |s, cx| s.refresh_license(cx))),
             )
+            .below_opt(refresh_line)
             .build(p)
             .into_any_element(),
     ];
@@ -195,6 +407,17 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 .into_any_element(),
         );
     }
+    let activating = s.ui.busy.contains(ACTIVATE);
+    let activate_line = match &s.ui.lic_activate {
+        Some(Err(e)) => Some(line(Tone::Danger, icons::ALERT, e.clone(), p)),
+        Some(Ok(())) => Some(line(
+            Tone::Ok,
+            icons::CHECK,
+            "License activated \u{2014} recording unlocked on this device.",
+            p,
+        )),
+        None => None,
+    };
     rows.push(
         row("Activate license")
             .desc("Paste the license key from your purchase email to unlock recording on this device.")
@@ -202,57 +425,35 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .control(
                 div()
                     .flex()
+                    .flex_col()
                     .gap(space::S2)
                     .w_full()
-                    .child(div().flex_1().child(TextInput::new("lic-key", "License key", &s.inputs.license_key).num()))
                     .child(
-                        Button::new("lic-activate", "Activate")
-                            // Nothing to activate until a key is pasted.
-                            .disabled(
-                                s.ui.busy.contains("License activation")
-                                    || s.inputs.license_key.read(cx).value().trim().is_empty(),
-                            )
-                            .on_click(crate::settings::commands::click_w(cx, |s, window, cx| {
-                                let input = s.inputs.license_key.clone();
-                                let key = crate::settings::commands::take_input(&input, window, cx);
-                                if !key.is_empty() {
-                                    s.run_command("License activation", cx, move |core| {
-                                        crate::settings::live::license_activate(core, key)
-                                    });
-                                }
-                            })),
-                    ),
+                        div()
+                            .flex()
+                            .gap(space::S2)
+                            .w_full()
+                            .child(div().flex_1().child(
+                                TextInput::new("lic-key", "License key", &s.inputs.license_key)
+                                    .invalid(matches!(s.ui.lic_activate, Some(Err(_))))
+                                    .disabled(activating),
+                            ))
+                            .child(
+                                Button::new("lic-activate", if activating { "Activating\u{2026}" } else { "Activate" })
+                                    .busy(activating)
+                                    // Nothing to activate until a key is pasted.
+                                    .disabled(
+                                        activating
+                                            || s.inputs.license_key.read(cx).value().trim().is_empty(),
+                                    )
+                                    .on_click(crate::settings::click(cx, |s, cx| s.activate_license(cx))),
+                            ),
+                    )
+                    .children(activate_line),
             )
             .build(p)
             .into_any_element(),
     );
-    if matches!(st, Some(LicenseStatus::Licensed { .. })) {
-        rows.push(
-            row("Reset devices")
-                .desc("Frees every device slot on this license, then activates this Mac again. Use it when you replaced a computer.")
-                .control(
-                    Button::new("lic-reset", "Reset devices\u{2026}")
-                        .ghost()
-                        .on_click(crate::settings::click(cx, |_, cx| {
-                            crate::settings::confirm(
-                                cx,
-                                "Reset devices?",
-                                "Every other device on this license is signed out and has to activate again.",
-                                "Reset",
-                                |s, cx| {
-                                    s.run_command(
-                                        "Device reset",
-                                        cx,
-                                        crate::settings::live::license_reset_devices,
-                                    )
-                                },
-                            );
-                        })),
-                )
-                .build(p)
-                .into_any_element(),
-        );
-    }
     section(
         "License & Trial",
         Some("Buy once, keep it forever. Verified offline."),
@@ -270,6 +471,18 @@ mod tests {
 
     const UTC: time::UtcOffset = time::UtcOffset::UTC;
 
+    fn hint_of(st: &LicenseStatus, offset: time::UtcOffset) -> Option<String> {
+        hint(st, None, offset)
+    }
+
+    #[test]
+    fn the_device_count_joins_an_activated_hint() {
+        assert_eq!(
+            hint(&licensed("Dev", "", i64::MAX), Some((2, 3)), UTC).as_deref(),
+            Some("Licensed to Dev \u{b7} updates included \u{b7} 2 of 3 devices activated.")
+        );
+    }
+
     fn licensed(name: &str, email: &str, through: i64) -> LicenseStatus {
         LicenseStatus::Licensed {
             update_through_ms: through,
@@ -285,38 +498,38 @@ mod tests {
         // Real app: a dev key with no update expiry (i64::MAX) read
         // "Licensed to Dev · updates included through ." (capture 13).
         assert_eq!(
-            hint(&licensed("Dev", "", i64::MAX), UTC).as_deref(),
+            hint_of(&licensed("Dev", "", i64::MAX), UTC).as_deref(),
             Some("Licensed to Dev \u{b7} updates included.")
         );
         assert_eq!(
-            hint(&licensed("Dev", "", 1_794_560_520_000), UTC).as_deref(),
+            hint_of(&licensed("Dev", "", 1_794_560_520_000), UTC).as_deref(),
             Some("Licensed to Dev \u{b7} updates included through Nov 13, 2026.")
         );
         // No name: the email (Svelte's `name || email`); neither: plain "Licensed".
         assert_eq!(
-            hint(&licensed("", "a@b.c", i64::MAX), UTC).as_deref(),
+            hint_of(&licensed("", "a@b.c", i64::MAX), UTC).as_deref(),
             Some("Licensed to a@b.c \u{b7} updates included.")
         );
         assert_eq!(
-            hint(&licensed(" ", "", i64::MAX), UTC).as_deref(),
+            hint_of(&licensed(" ", "", i64::MAX), UTC).as_deref(),
             Some("Licensed \u{b7} updates included.")
         );
         let trial = LicenseStatus::Trial {
             days_left: 1,
             trial_end_ms: i64::MAX,
         };
-        assert!(hint(&trial, UTC)
+        assert!(hint_of(&trial, UTC)
             .unwrap()
             .starts_with("1 day left. After that"));
         let trial = LicenseStatus::Trial {
             days_left: 9,
             trial_end_ms: 1_794_560_520_000,
         };
-        assert!(hint(&trial, UTC)
+        assert!(hint_of(&trial, UTC)
             .unwrap()
             .starts_with("9 days left \u{b7} ends Nov 13, 2026."));
         for st in [licensed("", "", i64::MAX), trial] {
-            let h = hint(&st, UTC).unwrap();
+            let h = hint_of(&st, UTC).unwrap();
             assert!(
                 !h.contains(" .") && !h.contains("to .") && !h.contains("through ."),
                 "{h}"

@@ -10,9 +10,9 @@ use gpui_kit::{div, px, AnyElement, Context, Window};
 
 use crate::settings::row::{hint, row, section};
 use crate::settings::{icons, on, Settings};
-use crate::theme::{radius, space, text, Palette};
+use crate::theme::{self, radius, space, text, Palette};
 use crate::ui::icon;
-use crate::ui::input::TextInput;
+use crate::ui::input::{field_warning, TextInput};
 use crate::ui::segmented::Segmented;
 use crate::ui::select::Select;
 use crate::ui::stepper::Stepper;
@@ -112,6 +112,96 @@ fn at_rate(d: &RecordingSettings) -> String {
     }
 }
 
+/// `parseCustomDimension`: digits only.
+fn dim(raw: &str) -> Option<u32> {
+    (!raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| raw.parse().ok())
+        .flatten()
+}
+
+/// `customResolutionErrors` over the two raw fields.
+pub fn resolution_errors(w: &str, h: &str) -> Vec<&'static str> {
+    let mut e = Vec::new();
+    let (pw, ph) = (dim(w), dim(h));
+    if !w.is_empty() && pw.is_none() {
+        e.push("Width must be an integer.");
+    }
+    if !h.is_empty() && ph.is_none() {
+        e.push("Height must be an integer.");
+    }
+    if pw.is_some_and(|v| !(16..=8192).contains(&v)) {
+        e.push("Width must be between 16 and 8192.");
+    }
+    if ph.is_some_and(|v| !(16..=8192).contains(&v)) {
+        e.push("Height must be between 16 and 8192.");
+    }
+    if w.is_empty() || h.is_empty() {
+        e.push("Both width and height are required for custom mode.");
+    }
+    e
+}
+
+/// `customBitrateErrors` over the raw Mbps field.
+pub fn bitrate_errors(raw: &str) -> Vec<&'static str> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return vec!["Custom bitrate is required (1\u{2013}40 Mbps, whole number)."];
+    }
+    if !raw.bytes().all(|b| b.is_ascii_digit()) {
+        return vec!["Bitrate must be a whole number of Mbps (e.g. 12)."];
+    }
+    match raw.parse::<u64>() {
+        Ok(0) | Err(_) => vec!["Bitrate must be a positive whole number."],
+        Ok(v) if v > 40 => vec!["Bitrate must not exceed 40 Mbps."],
+        Ok(_) => Vec::new(),
+    }
+}
+
+/// Both lists for the draft's modes (empty when the mode isn't Custom).
+fn errors(s: &Settings, cx: &gpui_kit::App) -> (Vec<&'static str>, Vec<&'static str>) {
+    let d = s.d();
+    let raw = |e: &gpui_kit::Entity<gpui_kit::component::input::InputState>| {
+        e.read(cx).value().to_string()
+    };
+    let res = match d.screen_resolution {
+        ScreenResolution::Custom { .. } => {
+            resolution_errors(&raw(&s.inputs.res_w), &raw(&s.inputs.res_h))
+        }
+        _ => Vec::new(),
+    };
+    let rate = match d.video_bitrate.mode {
+        VideoBitrateMode::Custom => bitrate_errors(&raw(&s.inputs.mbps)),
+        _ => Vec::new(),
+    };
+    (res, rate)
+}
+
+/// `customResolutionBlocked || customBitrateBlocked`: the Video unit waits.
+pub fn video_invalid(s: &Settings, cx: &gpui_kit::App) -> bool {
+    let (a, b) = errors(s, cx);
+    !a.is_empty() || !b.is_empty()
+}
+
+/// Capture support (`get_capture_support`): `(pending, unsupported, only original)`.
+fn support(s: &Settings) -> (bool, bool, bool) {
+    let Some(v) = s.data.capture_support.as_ref() else {
+        return (true, false, false);
+    };
+    let native = v["nativeCaptureSupported"].as_bool() == Some(true);
+    let sck = v["supportedSources"]["systemAudio"].as_bool() == Some(true);
+    (false, !native, native && !sck)
+}
+
+/// The coercion effect: on a Mac that only captures at Original, a screen
+/// draft on another resolution goes back to Original.
+pub fn coerce_resolution(s: &mut Settings, cx: &mut Context<Settings>) {
+    let d = s.d();
+    let (_, _, only_original) = support(s);
+    if d.capture_screen && only_original && res_ix(&d.screen_resolution) != 0 {
+        s.edit(|d| set_res(d, 0), cx);
+    }
+}
+
 pub fn render(
     s: &Settings,
     p: &Palette,
@@ -143,10 +233,7 @@ pub fn render(
             })),
         );
 
-    // Capture support: pending until `get_capture_support` answers.
-    let support = s.data.capture_support.as_ref();
-    let pending = support.is_none();
-    let supported = support.is_some_and(|v| v["nativeCaptureSupported"].as_bool() == Some(true));
+    let (pending, unsupported, only_original) = support(s);
     // `.resolution-*-notice`: a full-width tinted box, small text.
     let notice = |bg, bd, fg, ic: &'static str, msg: &'static str| {
         div()
@@ -170,29 +257,42 @@ pub fn render(
                     .child(msg),
             )
     };
-    let support_line = match (pending, supported) {
-        (true, _) => notice(
-            p.neutral_bg,
-            p.neutral_border,
-            p.neutral_text,
-            icons::LOADER,
-            "Checking capture support\u{2026} Scaled and custom resolutions are disabled until support is confirmed.",
-        ),
-        (false, true) => notice(
-            p.accent_bg,
-            p.accent_border,
-            p.accent_strong,
-            icons::CHECK,
-            "Native capture supports scaled and custom output resolutions.",
-        ),
-        (false, false) => notice(
+    let support_line = if unsupported {
+        notice(
             p.neutral_bg,
             p.neutral_border,
             p.neutral_text,
             icons::INFO,
             "Native screen capture is unsupported on this system. Resolution settings are saved, but only apply when native screen capture is available.",
-        ),
+        )
+    } else if only_original {
+        notice(
+            p.neutral_bg,
+            p.neutral_border,
+            p.neutral_text,
+            icons::INFO,
+            "Scaled and custom resolutions require macOS 15 or later (ScreenCaptureKit). Only Original resolution is available on this system.",
+        )
+    } else if pending {
+        notice(
+            p.neutral_bg,
+            p.neutral_border,
+            p.neutral_text,
+            icons::LOADER,
+            "Checking capture support\u{2026} Scaled and custom resolutions are disabled until support is confirmed.",
+        )
+    } else {
+        notice(
+            p.accent_bg,
+            p.accent_border,
+            p.accent_strong,
+            icons::CHECK,
+            "Native capture supports scaled and custom output resolutions.",
+        )
     };
+    // `nonOriginalResolutionDisabled`: only while the screen is captured.
+    let non_original_off = d.capture_screen && (pending || unsupported || only_original);
+    let (res_errors, rate_errors) = errors(s, cx);
     let r_ix = res_ix(&d.screen_resolution);
     let mode_hint = match r_ix {
         0 => "Output files will match the captured display's native pixel dimensions.",
@@ -202,26 +302,36 @@ pub fn render(
     let custom = (r_ix == 4).then(|| {
         div()
             .flex()
+            .flex_wrap()
             .items_end()
             .gap(space::S2)
+            .w_full()
             .child(field(
                 "Width (px)",
                 TextInput::new("res-width", "Width (px)", &s.inputs.res_w)
                     .num()
-                    .invalid(s.video_invalid)
-                    .w(px(120.)),
+                    .invalid(!res_errors.is_empty()),
                 p,
             ))
-            .child(div().pb(px(8.)).text_color(p.text_subtle).child("\u{d7}"))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .h(px(34.))
+                    .text_size(text::BASE)
+                    .font_weight(theme::W_SEMIBOLD)
+                    .text_color(p.text_faint)
+                    .child("\u{d7}"),
+            )
             .child(field(
                 "Height (px)",
                 TextInput::new("res-height", "Height (px)", &s.inputs.res_h)
                     .num()
-                    .invalid(s.video_invalid)
-                    .w(px(120.)),
+                    .invalid(!res_errors.is_empty()),
                 p,
             ))
     });
+    let res_warnings = res_errors.iter().map(|e| field_warning(*e, p));
     let resolution = row("Screen Resolution").full().control(
         div()
             .flex()
@@ -233,11 +343,20 @@ pub fn render(
                 div().flex().child(
                     Segmented::new("resolution", "Screen resolution", RES, r_ix)
                         .md()
-                        .disabled(pending)
-                        .on_change(on(cx, |s, i: usize, cx| s.edit(|d| set_res(d, i), cx))),
+                        .disabled_options(if non_original_off {
+                            vec![1, 2, 3, 4]
+                        } else {
+                            Vec::new()
+                        })
+                        .on_change(on(cx, |s, i: usize, cx| {
+                            s.edit(|d| set_res(d, i), cx);
+                            s.video_invalid = video_invalid(s, cx);
+                            s.tick(cx);
+                        })),
                 ),
             )
             .children(custom)
+            .children(res_warnings)
             .child(hint(mode_hint, p))
             .when(r_ix == 2, |c| {
                 c.child(hint("Code and small text may be hard to read at 720p.", p))
@@ -257,7 +376,7 @@ pub fn render(
         _ => "Medium \u{2014} ~8 Mbps. Recommended default. Balanced quality and file size for most screen recordings.",
     };
     let bitrate_hint = if b_ix == 3 {
-        b.custom_mbps.map(|m| {
+        b.custom_mbps.filter(|_| rate_errors.is_empty()).map(|m| {
             let q = match m {
                 0..=2 => {
                     "Low quality \u{2014} may show compression artefacts on fast-moving content."
@@ -314,7 +433,9 @@ pub fn render(
                                         }
                                     },
                                     cx,
-                                )
+                                );
+                                s.video_invalid = video_invalid(s, cx);
+                                s.tick(cx);
                             })),
                         ),
                     )
@@ -322,10 +443,12 @@ pub fn render(
                         r.child(
                             Stepper::new("bitrate-mbps", "Bitrate (Mbps)", &s.inputs.mbps)
                                 .range(Some(1), Some(40))
-                                .unit("Mbps"),
+                                .unit("Mbps")
+                                .invalid(!rate_errors.is_empty()),
                         )
                     }),
             )
+            .children(rate_errors.iter().map(|e| field_warning(*e, p)))
             .children(bitrate_hint.map(|h| hint(h, p))),
     );
     let _ = text::BASE;
@@ -344,16 +467,23 @@ pub fn render(
     ]
 }
 
+/// `.custom-res-field`: grows from 120 px; a small uppercase label (GPUI has
+/// no letter-spacing, so the 0.12em tracking is the one thing missing).
 fn field(label: &'static str, input: TextInput, p: &Palette) -> gpui_kit::Div {
     div()
         .flex()
         .flex_col()
-        .gap(px(4.))
+        .gap(px(6.))
+        .flex_grow(1.)
+        .flex_shrink(1.)
+        .flex_basis(px(120.))
+        .min_w_0()
         .child(
             div()
-                .text_size(text::SM)
-                .text_color(p.text_subtle)
-                .child(label),
+                .text_size(text::XS)
+                .font_weight(theme::W_SEMIBOLD)
+                .text_color(p.text_muted)
+                .child(label.to_uppercase()),
         )
         .child(input)
 }

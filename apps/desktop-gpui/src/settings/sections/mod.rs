@@ -3,9 +3,11 @@
 //! `super::click`. `render` picks the active group's sections, in rail order.
 
 mod access;
+mod app_picker;
 mod appearance;
 mod ask_ai;
 mod delete_recent;
+pub(crate) use delete_recent::receipt as delete_receipt;
 mod developer;
 mod languages;
 #[cfg(test)]
@@ -15,18 +17,21 @@ pub(crate) mod mcp;
 mod microphone;
 mod model_row;
 pub(crate) use model_row::failure_prefix as model_row_failure;
+#[cfg(test)]
+mod models_tests;
 mod ocr;
 #[cfg(test)]
 mod pickers_tests;
-#[cfg(test)]
-mod models_tests;
 mod privacy;
 mod provider_actions;
 pub(crate) mod provider_row;
 #[cfg(test)]
 mod provider_tests;
 pub(crate) mod providers;
+#[cfg(test)]
+mod rest_tests;
 mod semantic_search;
+pub(crate) mod shortcut_issues;
 mod shortcuts;
 mod sources;
 mod speakers;
@@ -36,6 +41,7 @@ pub(crate) mod transcription;
 mod updates;
 pub(crate) mod user_context;
 mod video;
+pub(crate) use video::{coerce_resolution, video_invalid};
 mod voice;
 mod voice_take;
 
@@ -129,6 +135,10 @@ pub fn capture_key(s: &mut Settings, k: &gpui_kit::Keystroke, cx: &mut Context<S
     shortcuts::capture(s, k, cx)
 }
 
+pub fn cancel_shortcut_capture(s: &mut Settings, cx: &mut Context<Settings>) {
+    shortcuts::cancel_capture(s, cx)
+}
+
 /// Index of `value` in `options` (0 when absent).
 pub fn ix<T: PartialEq>(options: &[T], value: &T) -> usize {
     options.iter().position(|o| o == value).unwrap_or(0)
@@ -140,6 +150,13 @@ impl Settings {
     /// modal's own key handler, so this is the one place Settings hears it
     /// (Svelte's Esc also stands down while a menu or dialog is up).
     pub fn close_top(&mut self, cx: &mut Context<Self>) -> bool {
+        // Esc in a filtered search clears it before it means "Back to app".
+        if !self.inputs.search.read(cx).value().is_empty() {
+            // Cleared in `render`, which has the window `set_value` needs.
+            self.ui.clear_search = true;
+            cx.notify();
+            return true;
+        }
         if std::mem::take(&mut self.ui.add_provider_open) {
             cx.notify();
             return true;

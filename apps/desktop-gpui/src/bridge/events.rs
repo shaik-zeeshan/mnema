@@ -178,6 +178,8 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 let timeline = shell.read(cx).timeline.clone();
                 timeline.update(cx, |t, cx| t.on_core_event(&event, cx));
             }
+            // Settings re-measures storage after a deletion.
+            crate::settings::on_event(&event, cx);
         }
         HostMsg::Event(event @ CoreEvent::LicenseDeepLinkDone(_)) => {
             if let Some(shell) = shell.upgrade() {

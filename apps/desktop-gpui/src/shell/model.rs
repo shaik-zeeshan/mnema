@@ -133,6 +133,8 @@ impl Lane {
 pub struct StatusBarModel {
     pub running: bool,
     pub loading_start: bool,
+    /// A stop is in flight (`captureControls.loadingStop`).
+    pub loading_stop: bool,
     pub user_paused: bool,
     pub inactivity_paused: bool,
     pub low_disk: bool,

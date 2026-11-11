@@ -147,6 +147,28 @@ const PROVIDER_SETS: [string, string[], string[], string][] = [
   ["provider-chatgpt-code", pvAddChatgpt, [], "state=chatgpt-signin"],
 ];
 
+/** Flow states outside Intelligence + its leftovers: `[state, ?tab=, Tauri clicks, keys, mockup query]`
+ *  (mirrors the matching `settings::fixture::MODEL_STATES`). Each has its own
+ *  `fixtures/settings/<state>.json` where it needs more than the default answers. */
+const rowBtn = (label: string, button: string) =>
+  `.setting-row:has(.setting-row__label:text-is("${label}")) button:has-text("${button}")`;
+const REST_SETS: [string, string, string[], string[], string][] = [
+  ["shortcuts-conflict", "shortcuts", ['button[aria-label="Set shortcut for Open settings"]'], ["Meta+d"], "state=shortcut-conflict"],
+  ["capture-sysaudio-hint", "capture", [], [], "state=sysaudio-blocked"],
+  [
+    "video-custom-errors",
+    "video",
+    ['[aria-label="Screen resolution"] [role="radio"]:has-text("Custom")', '[aria-label="Bitrate"]', '[role="option"]:has-text("Custom")'],
+    [],
+    "state=bitrate-invalid",
+  ],
+  ["storage-after", "storage", ['button:has-text("Browse")', 'button:has-text("Run cleanup now")', 'button:has-text("Delete last 5 min")'], [], "state=storage-restart"],
+  ["license-overcap", "license", [], [], ""],
+  ["privacy-add-app", "privacy", ['button:has-text("Add app")'], [], ""],
+  ["ai-status-error", "intelligence", [], [], ""],
+  ["ocr-unused-deleted", "ocr", [rowBtn("Delete unused models", "Delete unused")], [], ""],
+];
+
 export const SURFACES: Record<string, Surface> = {
   // Shared controls (S6): the GPUI gallery bin vs the kit gallery's left (current-theme) panes.
   gallery: {
@@ -277,17 +299,25 @@ export const SURFACES: Record<string, Surface> = {
     stateRoute: Object.fromEntries([
       ...SETTINGS_SETS.map(([state, tab]) => [state, `/settings?tab=${tab}`]),
       ...PROVIDER_SETS.map(([state]) => [state, "/settings?tab=intelligence"]),
+      ...REST_SETS.map(([state, tab]) => [state, `/settings?tab=${tab}`]),
     ]),
     stateHash: Object.fromEntries([
       ...SETTINGS_SETS.map(([state, , anchor]) => [state, anchor]),
       ...PROVIDER_SETS.map(([state]) => [state, "s-providers"]),
     ]),
-    stateClick: Object.fromEntries(PROVIDER_SETS.map(([state, clicks]) => [state, clicks])),
-    stateKeys: Object.fromEntries(PROVIDER_SETS.filter(([, , keys]) => keys.length).map(([state, , keys]) => [state, keys])),
+    stateClick: Object.fromEntries([
+      ...PROVIDER_SETS.map(([state, clicks]) => [state, clicks]),
+      ...REST_SETS.filter(([, , clicks]) => clicks.length).map(([state, , clicks]) => [state, clicks]),
+    ]),
+    stateKeys: Object.fromEntries([
+      ...PROVIDER_SETS.filter(([, , keys]) => keys.length).map(([state, , keys]) => [state, keys]),
+      ...REST_SETS.filter(([, , , keys]) => keys.length).map(([state, , , keys]) => [state, keys]),
+    ]),
     states: {
       default: "",
       ...Object.fromEntries(SETTINGS_SETS.map(([state]) => [state, ""])),
       ...Object.fromEntries(PROVIDER_SETS.map(([state, , , query]) => [state, query])),
+      ...Object.fromEntries(REST_SETS.map(([state, , , , query]) => [state, query])),
       ...q(
         "state",
         `save-failed validation shortcuts-loading shortcut-listening shortcut-conflict capture-loading

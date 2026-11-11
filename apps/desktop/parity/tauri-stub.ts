@@ -57,10 +57,21 @@ function stub({ label, map }: StubOptions) {
   const w = window as unknown as Record<string, unknown>;
   w.__parityCalls = calls;
   w.__TAURI_INTERNALS__ = {
-    invoke: async (cmd: string) => {
+    invoke: async (cmd: string, args?: Record<string, unknown>) => {
       const mocked = Object.prototype.hasOwnProperty.call(map, cmd);
       calls.push({ cmd, mocked });
       const value = mocked ? map[cmd] : fallback(cmd);
+      // `{ "__accept": true }` on `plugin:dialog|message` answers with the dialog's own OK
+      // label, so every `ask()` on the page reads as confirmed whatever its button says.
+      if (value && typeof value === "object" && "__accept" in value) {
+        const b = args?.buttons;
+        if (b === "YesNo" || b === "YesNoCancel") return "Yes";
+        if (b && typeof b === "object") {
+          const first = Object.values(b as Record<string, unknown>)[0];
+          return Array.isArray(first) ? first[0] : first;
+        }
+        return "Ok";
+      }
       // `{ "__reject": "<reason>" }` makes the command fail with that reason.
       if (value && typeof value === "object" && "__reject" in value) throw (value as { __reject: string }).__reject;
       return structuredClone(value);

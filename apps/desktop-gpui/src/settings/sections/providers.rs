@@ -435,8 +435,11 @@ fn runtime_row(
                     .into_any_element(),
             );
         }
-    } else if !s.data.complete {
+    } else if !s.data.complete && s.data.ai_status_error.is_none() {
         lines.push(spin_line("Checking providers\u{2026}", p));
+    }
+    if let Some(e) = &s.data.ai_status_error {
+        lines.push(line(Tone::Danger, icons::ALERT, e.clone(), p).into_any_element());
     }
     let mut r = row("AI runtime").control(
         Button::new(

@@ -255,6 +255,8 @@ pub(super) struct ConfirmHost {
     pub(super) asked: Mutex<Vec<String>>,
     /// Each dialog's cancel label, in order.
     pub(super) cancels: Mutex<Vec<String>>,
+    /// Each dialog's OK label, in order.
+    pub(super) oks: Mutex<Vec<String>>,
 }
 
 impl Host for ConfirmHost {
@@ -263,6 +265,7 @@ impl Host for ConfirmHost {
     fn confirm(&self, d: ConfirmDialog) -> tokio::sync::oneshot::Receiver<bool> {
         self.asked.lock().unwrap().push(d.title.unwrap_or_default());
         self.cancels.lock().unwrap().push(d.cancel_label);
+        self.oks.lock().unwrap().push(d.ok_label);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = tx.send(self.answer);
         rx
@@ -284,10 +287,18 @@ pub(super) fn confirm_core(
     answer: bool,
 ) -> (Arc<ConfirmHost>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
+    std::env::set_var("MNEMA_TRIPWIRE_NO_KEYCHAIN", "1");
+    // Never the real keychain for licence tokens either: `MNEMA_TRIPWIRE_NO_KEYCHAIN`
+    // doesn't cover them; this file store does (debug builds only).
+    std::env::set_var(
+        "MNEMA_LICENSE_TOKEN_DIR",
+        std::env::temp_dir().join(format!("mnema-gpui-licence-{}", std::process::id())),
+    );
     let host = Arc::new(ConfirmHost {
         answer,
         asked: Mutex::default(),
         cancels: Mutex::default(),
+        oks: Mutex::default(),
     });
     let paths = Paths {
         data: dir.path().join("data"),

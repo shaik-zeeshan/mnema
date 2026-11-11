@@ -178,6 +178,12 @@ const THEMES: [(&str, AppearanceSetting); 2] = [
 /// types, so GPUI and Tauri show the same numbers.
 fn shell_model(id: FixtureId) -> anyhow::Result<ShellModel> {
     let dir = tempfile::tempdir()?;
+    // Never the real keychain for licence tokens either: `MNEMA_TRIPWIRE_NO_KEYCHAIN`
+    // doesn't cover them; this file store does (debug builds only).
+    std::env::set_var(
+        "MNEMA_LICENSE_TOKEN_DIR",
+        std::env::temp_dir().join(format!("mnema-gpui-licence-{}", std::process::id())),
+    );
     let paths = fixtures::seed(dir.path(), id)?;
     let (host, _rx) = GpuiHost::new();
     let core = Arc::new(AppCore::new(Arc::new(host), paths)?);

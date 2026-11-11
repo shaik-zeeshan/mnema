@@ -7,36 +7,65 @@ use gpui_kit::{div, px, AnyElement, Context};
 use crate::settings::model::Json;
 use crate::settings::row::{row, section};
 use crate::settings::{click, on, Settings};
-use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::theme::{space, text, Palette, FONT_MONO};
 use crate::ui::switch::Switch;
 use crate::ui::Button;
 
+const OPENING: &str = "Open app log";
+const DELETING: &str = "Delete app log";
+
+/// Open (or reveal the folder) / delete the general app log; its new status
+/// replaces the old one, a failure stays on the row until dismissed.
 fn log_action(s: &mut Settings, delete: bool, cx: &mut Context<Settings>) {
     let Some(core) = crate::chat::core(cx) else {
         return;
     };
+    let what = if delete { DELETING } else { OPENING };
+    if !s.ui.busy.insert(what) {
+        return;
+    }
+    s.ui.log_error = None;
+    s.ui.log_deleted = false;
     let job = crate::bridge::tokio::Tokio::spawn(cx, async move {
         if delete {
-            app_core::general_app_log::delete(&core).map(|_| ())
+            app_core::general_app_log::delete(&core)
         } else {
-            app_core::general_app_log::open(&core).map(|_| ())
+            app_core::general_app_log::open(&core)
         }
+        .map_err(|e| e.message)
+        .and_then(|status| serde_json::to_value(status).map_err(|e| e.to_string()))
     });
     cx.spawn(async move |this, cx| {
-        let failed = match job.await {
-            Ok(Err(e)) => Some(e.message),
-            _ => None,
-        };
+        let result = job.await.unwrap_or_else(|e| Err(e.to_string()));
         let _ = this.update(cx, |s, cx| {
-            if let Some(e) = failed {
-                log::warn!("settings: app log action failed: {e}");
-                s.ui.note = Some((false, "App log", e));
+            s.ui.busy.remove(what);
+            match result {
+                Ok(status) => {
+                    s.data.log_status = Some(status);
+                    if delete {
+                        s.ui.log_deleted = true;
+                        cx.spawn(async move |this, cx| {
+                            cx.background_executor()
+                                .timer(std::time::Duration::from_millis(2200))
+                                .await;
+                            let _ = this.update(cx, |s, cx| {
+                                s.ui.log_deleted = false;
+                                cx.notify();
+                            });
+                        })
+                        .detach();
+                    }
+                }
+                Err(e) => {
+                    log::warn!("settings: app log action failed: {e}");
+                    s.ui.log_error = Some(e);
+                }
             }
-            s.reload_all(cx)
+            cx.notify();
         });
     })
     .detach();
-    let _ = s;
+    cx.notify();
 }
 
 pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
@@ -52,6 +81,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         },
     ));
     let log = s.data.log_status.clone();
+    let opening = s.ui.busy.contains(OPENING);
+    let deleting = s.ui.busy.contains(DELETING);
     let exists = log.as_ref().is_some_and(|l| l.bool_at(&["exists"]));
     let log_body = match &log {
         None => div()
@@ -96,25 +127,55 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 .child(
                     div()
                         .flex()
+                        .items_center()
                         .gap(space::S2)
                         .child(
                             Button::new(
                                 "log-open",
-                                if exists {
+                                if opening {
+                                    "Opening\u{2026}"
+                                } else if exists {
                                     "Open Log File"
                                 } else {
                                     "Open Containing Folder"
                                 },
                             )
                             .sm()
+                            .busy(opening)
+                            .disabled(opening)
                             .on_click(click(cx, |s, cx| log_action(s, false, cx))),
                         )
                         .when(exists, |d| {
                             d.child(
-                                Button::new("log-delete", "Delete Log File")
-                                    .danger()
-                                    .sm()
-                                    .on_click(click(cx, |s, cx| log_action(s, true, cx))),
+                                Button::new(
+                                    "log-delete",
+                                    if deleting {
+                                        "Deleting\u{2026}"
+                                    } else {
+                                        "Delete Log File"
+                                    },
+                                )
+                                .danger()
+                                .sm()
+                                .busy(deleting)
+                                .disabled(deleting)
+                                .on_click(click(cx, |_, cx| {
+                                    crate::settings::confirm(
+                                        cx,
+                                        "Delete general application log",
+                                        "Delete the general application log file?",
+                                        "Delete",
+                                        |s, cx| log_action(s, true, cx),
+                                    )
+                                })),
+                            )
+                        })
+                        .when(s.ui.log_deleted, |d| {
+                            d.child(
+                                div()
+                                    .text_size(text::SM)
+                                    .text_color(p.accent)
+                                    .child("\u{2713} Deleted"),
                             )
                         }),
                 )
@@ -135,18 +196,42 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 Button::new("dev-window", "Open")
                     .sm()
                     .kbd(keys)
-                    .soft_disabled(!dev)
+                    .disabled(!dev)
                     // The developer window is S15; the action is the shell's ⌘D.
                     .on_click(cx.listener(|_, _, _, cx| cx.emit(crate::settings::SettingsEvent::OpenDebug))),
             )
+            // `.dev-win.is-off`: only the copy dims; the button is disabled.
+            .dim_copy(!dev)
             .build(p)
-            .when(!dev, |d| d.opacity(theme::DISABLED_OPACITY))
             .into_any_element(),
         row("General application log")
             .desc("Captures high-level runtime events and errors.")
             .full()
             .no_divider()
-            .control(log_body)
+            .control(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(10.))
+                    .w_full()
+                    .child(log_body)
+                    .children(s.ui.log_error.clone().map(|e| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(space::S2)
+                            .child(crate::settings::row::line(crate::ui::Tone::Danger, crate::settings::icons::ALERT, e, p))
+                            .child(
+                                Button::icon_only("log-error-dismiss", crate::settings::icons::X, "Dismiss error")
+                                    .ghost()
+                                    .sm()
+                                    .on_click(click(cx, |s, cx| {
+                                        s.ui.log_error = None;
+                                        cx.notify();
+                                    })),
+                            )
+                    })),
+            )
             .build(p)
             .into_any_element(),
     ];

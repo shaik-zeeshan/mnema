@@ -3,14 +3,17 @@
 //! and Restore defaults. Bindings save through their own autosave unit.
 
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, AnyElement, Context, Keystroke, SharedString};
 use serde_json::Value;
 
-use crate::settings::row::{row, section};
-use crate::settings::{click, on, reload, Settings};
+use std::collections::HashMap;
+
+use crate::settings::row::{line, row, section};
+use crate::settings::{click, icons, on, reload, Settings};
 use crate::theme::{self, space, text, Palette};
 use crate::ui::switch::Switch;
-use crate::ui::{kbd, progress, Button};
+use crate::ui::{kbd, notice, progress, Button, Tone};
 
 /// One editable action: id, label, description, category, (group key, binding key).
 pub struct Action {
@@ -286,6 +289,7 @@ pub fn from_keystroke(k: &Keystroke) -> Option<String> {
 }
 
 /// The listening row's keydown: Esc cancels, ⌫ clears, anything else binds.
+/// A Control chord or a key shortcuts can't use stays listening and says why.
 pub fn capture(s: &mut Settings, k: &Keystroke, cx: &mut Context<Settings>) -> bool {
     let Some(id) = s.ui.kb_listening else {
         return false;
@@ -298,24 +302,80 @@ pub fn capture(s: &mut Settings, k: &Keystroke, cx: &mut Context<Settings>) -> b
         return false;
     };
     let path = action.path;
-    match k.key.as_str() {
-        "escape" => {}
-        "backspace" | "delete" => {
-            s.edit_keyboard(|kb| *slot(kb, path) = Value::String(String::new()), cx)
+    let refuse = |s: &mut Settings, why: &str, cx: &mut Context<Settings>| {
+        s.ui.kb_capture_error = Some((id, why.to_string()));
+        cx.notify();
+        true
+    };
+    let picked = match k.key.as_str() {
+        "escape" => None,
+        "backspace" | "delete" => Some(String::new()),
+        "shift" | "control" | "alt" | "platform" | "function" | "" => return true,
+        key => {
+            if k.modifiers.control {
+                return refuse(
+                    s,
+                    "Control shortcuts are not supported on macOS. Use Command or Option.",
+                    cx,
+                );
+            }
+            let named = from_keystroke(k).unwrap_or_default();
+            let last = named.rsplit('+').next().unwrap_or(key);
+            if super::shortcut_issues::normalize_key(last).is_none() {
+                return refuse(s, "That key is not supported for shortcuts.", cx);
+            }
+            Some(named)
         }
-        _ => match from_keystroke(k) {
-            Some(b) => s.edit_keyboard(|kb| *slot(kb, path) = Value::String(b), cx),
-            None => return true,
-        },
-    }
+    };
+    // Listening ends first: while a row listens the shortcuts never save.
     s.ui.kb_listening = None;
+    s.ui.kb_capture_error = None;
+    match picked {
+        Some(b) => s.edit_keyboard(|kb| *slot(kb, path) = Value::String(b), cx),
+        None => s.tick(cx),
+    }
     cx.notify();
     true
+}
+
+/// A press anywhere but a chord button ends listening (Svelte's pointerdown).
+pub fn cancel_capture(s: &mut Settings, cx: &mut Context<Settings>) {
+    if s.ui.kb_listening.take().is_some() {
+        s.ui.kb_capture_error = None;
+        s.tick(cx);
+        cx.notify();
+    }
+}
+
+/// The row's issue: a refused key while listening, else its draft's conflict.
+fn issue_for(s: &Settings, id: &str, issues: &HashMap<&'static str, String>) -> Option<String> {
+    match &s.ui.kb_capture_error {
+        Some((e, why)) if *e == id => Some(why.clone()),
+        _ => issues.get(id).cloned(),
+    }
+}
+
+/// "Jump to conflict": centre the first conflicting row in the column.
+fn jump_to_conflict(s: &mut Settings, cx: &mut Context<Settings>) {
+    let Some(b) = s.ui.kb_conflict_row.get() else {
+        return;
+    };
+    let view = s.scroll.bounds();
+    let offset = s.scroll.offset();
+    let content_top = b.top() - view.top() - offset.y;
+    let y = (content_top - (view.size.height - b.size.height) / 2.)
+        .max(px(0.))
+        .min(s.scroll.max_offset().y);
+    s.scroll.set_offset(gpui_kit::point(offset.x, -y));
+    s.spy_suppressed = false;
+    cx.notify();
 }
 
 fn chord(
     s: &Settings,
     action: &'static Action,
+    issue: bool,
+    saving: bool,
     p: &Palette,
     cx: &mut Context<Settings>,
 ) -> AnyElement {
@@ -347,6 +407,7 @@ fn chord(
     };
     div()
         .id(SharedString::from(format!("kb-{id}")))
+        .test_support()
         .role(gpui_kit::Role::Button)
         .aria_label(SharedString::from(if listening {
             format!("Listening for {} shortcut", action.label)
@@ -354,27 +415,44 @@ fn chord(
             format!("Set shortcut for {}", action.label)
         }))
         .flex()
+        .flex_none()
         .items_center()
         .h(theme::size::H_MD)
         .px(space::S3)
         .rounded(theme::radius::SM)
         .border_1()
-        .border_color(p.border_strong)
+        .border_color(if issue {
+            p.danger_border
+        } else {
+            p.border_strong
+        })
         .bg(p.surface)
         .text_size(text::MD)
         .font_weight(theme::W_MEDIUM)
         .text_color(p.text)
-        .cursor_pointer()
-        .hover(|st| st.bg(p.surface_hover))
         .child(inner)
-        .on_click(click(cx, move |s, cx| {
-            s.ui.kb_listening = if s.ui.kb_listening == Some(id) {
-                None
-            } else {
-                Some(id)
-            };
-            cx.notify();
-        }))
+        // Its own press must not reach the page's "press elsewhere cancels".
+        .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
+            cx.stop_propagation()
+        })
+        .when(listening, |d| d.track_focus(&s.kb_focus))
+        .when(saving, |d| d.opacity(theme::DISABLED_OPACITY))
+        .when(!saving, |d| {
+            d.cursor_pointer()
+                .hover(|st| st.bg(p.surface_hover))
+                .on_click(cx.listener(move |s, _: &gpui_kit::ClickEvent, window, cx| {
+                    s.ui.kb_capture_error = None;
+                    s.ui.kb_listening = if s.ui.kb_listening == Some(id) {
+                        None
+                    } else {
+                        // `event.currentTarget.focus()`: the keys come here.
+                        s.kb_focus.focus(window, cx);
+                        Some(id)
+                    };
+                    s.tick(cx);
+                    cx.notify();
+                }))
+        })
         .into_any_element()
 }
 
@@ -394,14 +472,38 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         cx,
     )];
     let kb = s.kb_draft.clone().unwrap_or_default();
-    let mut rows = vec![row("Global shortcuts")
+    let issues = super::shortcut_issues::issues(&kb);
+    let first = super::shortcut_issues::first(&issues);
+    let mut rows: Vec<AnyElement> = Vec::new();
+    if !issues.is_empty() {
+        rows.push(
+            div()
+                .my(space::S3)
+                .child(notice::notice(
+                    Tone::Danger,
+                    icons::ALERT,
+                    "Shortcuts not saved",
+                    Some(
+                        "Resolve shortcut conflicts or invalid shortcuts before changes are saved."
+                            .into(),
+                    ),
+                    vec![Button::new("kb-jump", "Jump to conflict")
+                        .sm()
+                        .on_click(click(cx, jump_to_conflict))
+                        .into_any_element()],
+                    p,
+                ))
+                .into_any_element(),
+        );
+    }
+    rows.push(row("Global shortcuts")
         .desc("Work from any app while Mnema is in the background. Background shortcuts need Command/Control or Option.")
         .control(
             Switch::new("kb-global", "Global shortcuts", kb["globalShortcuts"]["enabled"].as_bool().unwrap_or(false))
                 .on_toggle(on(cx, |s, v: bool, cx| s.edit_keyboard(|kb| kb["globalShortcuts"]["enabled"] = Value::Bool(v), cx))),
         )
         .build(p)
-        .into_any_element()];
+        .into_any_element());
     for (title, actions) in CATEGORIES.iter() {
         rows.push(
             div()
@@ -416,13 +518,33 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 .into_any_element(),
         );
         for action in actions.iter() {
-            rows.push(
-                row(action.label)
-                    .desc(action.desc)
-                    .control(chord(s, action, p, cx))
-                    .build(p)
-                    .into_any_element(),
-            );
+            let issue = issue_for(s, action.id, &issues);
+            let r = row(action.label).desc(action.desc);
+            let el = match issue {
+                // The issue line sits under the copy, so the chord moves aside.
+                Some(why) => r
+                    .full()
+                    .aside(chord(s, action, true, saving, p, cx))
+                    .control(line(Tone::Danger, icons::ALERT, why, p))
+                    .build(p),
+                None => r.control(chord(s, action, false, saving, p, cx)).build(p),
+            };
+            if first == Some(action.id) {
+                let cell = s.ui.kb_conflict_row.clone();
+                rows.push(
+                    div()
+                        .relative()
+                        .child(el)
+                        .child(
+                            gpui_kit::canvas(move |b, _, _| cell.set(Some(b)), |_, _, _, _| {})
+                                .absolute()
+                                .size_full(),
+                        )
+                        .into_any_element(),
+                );
+            } else {
+                rows.push(el.into_any_element());
+            }
         }
     }
     rows.push(

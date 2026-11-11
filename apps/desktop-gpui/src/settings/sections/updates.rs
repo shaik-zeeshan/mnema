@@ -47,8 +47,16 @@ fn message(u: Option<&Value>) -> String {
             "Version {} is ready to download and install. Recording stops automatically for the install.",
             u.str_at(&["update", "version"]).unwrap_or("newer")
         ),
+        Some("availableOutOfWindow") => match u.str_at(&["update", "version"]) {
+            Some(v) => format!("Version {v} is past your update window. Renew to receive new builds \u{2014} your current version keeps working forever."),
+            None => "You're on a build newer than your update window. Get the newest build your license covers, or renew to receive new builds. Your recordings are untouched.".into(),
+        },
         Some("downloading") => "Downloading the update package.".into(),
-        _ => String::new(),
+        Some("installing") => "Installing the update. Keep Mnema open until this finishes.".into(),
+        Some("restartRequired") => "Restart Mnema when you are ready to finish updating.".into(),
+        Some("incompatible") => "No compatible update is available for this Mac.".into(),
+        Some("failed") => "The last update operation failed. You can retry.".into(),
+        _ => "Update status is unavailable.".into(),
     }
 }
 
@@ -64,36 +72,34 @@ fn copy_button(
         .revert(std::time::Duration::from_millis(2000))
 }
 
-/// `set_app_update_channel`: preview builds ask first (they are less tested).
-fn channel_button(u: Option<&serde_json::Value>, cx: &mut Context<Settings>) -> Button {
-    let preview = u.and_then(|u| u.str_at(&["channel"])) == Some("preview");
-    let label = if preview {
-        "Use stable builds"
-    } else {
-        "Use preview builds"
-    };
-    Button::new("update-channel", label)
-        .ghost()
-        .sm()
-        .on_click(click(cx, move |s, cx| {
-            let set = move |s: &mut Settings, cx: &mut Context<Settings>| {
-                let to = if preview { "stable" } else { "preview" };
-                s.run_command("Update channel", cx, move |core| {
-                    crate::settings::live::set_update_channel(core, to)
-                })
-            };
-            if preview {
-                set(s, cx);
-            } else {
-                crate::settings::confirm(
-                    cx,
-                    "Use preview builds?",
-                    "Preview builds arrive earlier and are less tested. You can switch back to stable at any time.",
-                    "Use preview",
-                    set,
-                );
-            }
-        }))
+const RESTART: &str = "Update restart";
+
+impl Settings {
+    /// "Restart to Update" (`restart_after_app_update`); a failure stays here.
+    fn restart_after_update(&mut self, cx: &mut Context<Self>) {
+        let Some(core) = crate::chat::core(cx) else {
+            return;
+        };
+        if !self.ui.busy.insert(RESTART) {
+            return;
+        }
+        self.ui.update_error = None;
+        let job = cx.background_spawn(async move {
+            app_core::updates::restart_after_app_update(&core).map_err(|e| e.message)
+        });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |s, cx| {
+                s.ui.busy.remove(RESTART);
+                if let Err(e) = result {
+                    s.ui.update_error = Some(e);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
 }
 
 pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyElement> {
@@ -193,6 +199,67 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
         .map_or("Not checked yet".to_string(), |ms| {
             short_datetime(ms as i64, now)
         });
+    let state = u.and_then(|u| u.str_at(&["state"]));
+    // The updater publishes `checking` / `downloading` / `installing` itself.
+    let checking = state == Some("checking");
+    let installing = matches!(state, Some("downloading" | "installing"));
+    let check_off = checking || installing || state == Some("restartRequired");
+    let failed = matches!(state, Some("failed" | "incompatible"));
+    let release = u
+        .and_then(|u| u.str_at(&["update", "date"]))
+        .map(crate::small::update::model::release_date);
+    let notes = u
+        .and_then(|u| u.str_at(&["update", "notes"]))
+        .filter(|n| !n.trim().is_empty())
+        .map(str::to_string);
+    let progress = u.filter(|u| !u.at(&["progress"]).is_null()).map(|_| {
+        let pct = crate::small::update::model::progress_percent(u).unwrap_or(8.);
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(6.))
+            .child(
+                div()
+                    .h(px(4.))
+                    .w_full()
+                    .rounded(radius::PILL)
+                    .bg(p.wash_strong)
+                    .child(
+                        div()
+                            .h_full()
+                            .w(gpui_kit::relative(pct / 100.))
+                            .rounded(radius::PILL)
+                            .bg(p.accent),
+                    ),
+            )
+            .child(hint(crate::small::update::model::progress_text(u), p))
+    });
+    let action = if state == Some("restartRequired") {
+        let restarting = s.ui.busy.contains(RESTART);
+        Button::new(
+            "update-restart",
+            if restarting {
+                "Restarting"
+            } else {
+                "Restart to Update"
+            },
+        )
+        .busy(restarting)
+        .disabled(restarting)
+        .on_click(click(cx, |s, cx| s.restart_after_update(cx)))
+    } else {
+        Button::new(
+            "update-install",
+            if installing {
+                "Installing"
+            } else {
+                "Install Update"
+            },
+        )
+        .busy(installing)
+        .disabled(!crate::small::update::model::can_install(u, checking))
+        .on_click(click(cx, |_, cx| crate::small::update::install(false, cx)))
+    };
     let headline = u
         .and_then(|u| u.str_at(&["update", "version"]))
         .map(|v| format!("Version {v}"))
@@ -210,49 +277,110 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
                 .gap(space::S2)
                 .child(chip(state_label(u), ChipKind::Neutral, p))
                 .child(
-                    Button::new("update-check", "Check for Updates")
-                        .sm()
-                        .on_click(click(cx, |_, cx| crate::small::update::check(cx))),
-                )
-                .child(channel_button(u, cx)),
+                    Button::new(
+                        "update-check",
+                        if checking {
+                            "Checking"
+                        } else {
+                            "Check for Updates"
+                        },
+                    )
+                    .sm()
+                    .busy(checking)
+                    .disabled(check_off)
+                    .on_click(click(cx, |_, cx| crate::small::update::check(cx))),
+                ),
         )
         .child(
             div()
                 .flex()
-                .flex_col()
-                .gap(px(4.))
+                .items_start()
+                .gap(space::S3)
                 .p(space::S3)
                 .rounded(radius::MD)
                 .border_1()
-                .border_color(p.border)
-                .bg(p.surface_subtle)
+                .border_color(if failed { p.danger_border } else { p.border })
+                .bg(if failed {
+                    p.danger_bg_soft
+                } else {
+                    p.surface_subtle
+                })
                 .child(
                     div()
-                        .text_size(text::MD)
-                        .font_weight(theme::W_SEMIBOLD)
-                        .text_color(p.text_strong)
-                        .child(headline),
+                        .flex()
+                        .flex_1()
+                        .min_w_0()
+                        .flex_col()
+                        .gap(px(4.))
+                        .child(
+                            div()
+                                .text_size(text::MD)
+                                .font_weight(theme::W_SEMIBOLD)
+                                .text_color(p.text_strong)
+                                .child(headline),
+                        )
+                        .child(
+                            div()
+                                .text_size(text::BASE)
+                                .text_color(p.text_muted)
+                                .child(message(u)),
+                        )
+                        .child(
+                            div()
+                                .text_size(text::SM)
+                                .text_color(p.text_subtle)
+                                .child(format!("Last checked: {checked}")),
+                        ),
                 )
-                .child(
+                .children(release.map(|r| {
                     div()
-                        .text_size(text::BASE)
-                        .text_color(p.text_muted)
-                        .child(message(u)),
-                )
+                        .flex_none()
+                        .text_size(text::SM)
+                        .text_color(p.text_subtle)
+                        .child(r)
+                })),
+        )
+        .children(progress)
+        .children(notes.map(|n| {
+            div()
+                .flex()
+                .flex_col()
+                .gap(px(4.))
                 .child(
                     div()
                         .text_size(text::SM)
+                        .font_weight(theme::W_SEMIBOLD)
                         .text_color(p.text_subtle)
-                        .child(format!("Last checked: {checked}")),
-                ),
-        )
-        .child(
-            div().child(
-                Button::new("update-install", "Install Update")
-                    .disabled(u.and_then(|u| u.str_at(&["state"])) != Some("available"))
-                    .on_click(click(cx, |_, cx| crate::small::update::install(false, cx))),
-            ),
-        );
+                        .child("Release notes"),
+                )
+                .child(div().text_size(text::BASE).text_color(p.text).child(n))
+        }))
+        .child(div().child(action))
+        .children(s.ui.update_error.clone().map(|e| {
+            div()
+                .flex()
+                .items_center()
+                .gap(space::S2)
+                .child(crate::settings::row::line(
+                    crate::ui::Tone::Danger,
+                    crate::settings::icons::ALERT,
+                    e,
+                    p,
+                ))
+                .child(
+                    Button::icon_only(
+                        "update-error-dismiss",
+                        crate::settings::icons::X,
+                        "Dismiss error",
+                    )
+                    .ghost()
+                    .sm()
+                    .on_click(click(cx, |s, cx| {
+                        s.ui.update_error = None;
+                        cx.notify();
+                    })),
+                )
+        }));
     let updates = section(
         "Updates",
         Some("Mnema checks for updates at startup after onboarding."),
@@ -351,6 +479,16 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
                         "Copy the full third-party notices to the clipboard",
                         plain,
                     )))
+                    .when(entries.is_empty(), |d| {
+                        d.child(hint(
+                            if s.data.notices.is_none() {
+                                "Loading notices\u{2026}"
+                            } else {
+                                "No third-party notices to show."
+                            },
+                            p,
+                        ))
+                    })
                     .children(groups),
             )
             .build(p)

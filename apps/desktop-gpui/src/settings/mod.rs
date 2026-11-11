@@ -6,19 +6,19 @@
 
 mod actions;
 pub mod autosave;
-mod commands;
-pub mod live;
 mod bar;
+mod commands;
 pub mod data;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 pub mod groups;
+pub mod live;
 pub mod model;
+pub mod privacy_prompt;
 mod rail;
-mod saving;
 pub mod reload;
 pub mod row;
-pub mod privacy_prompt;
+mod saving;
 pub(crate) mod sections;
 #[cfg(test)]
 mod tests;
@@ -36,9 +36,9 @@ use serde_json::Value;
 
 use crate::shell::model::StatusBarModel;
 use autosave::{Engine, Unit};
+pub use commands::on_event;
 use data::Backend;
 use groups::{GroupId, SectionId};
-pub use commands::on_event;
 pub use model::SettingsData;
 pub use saving::domain_value;
 pub use view::SettingsEvent;
@@ -91,6 +91,9 @@ pub struct Ui {
     /// A model row's own outcome line, by family: `(ok, words)` ("Deleted …",
     /// "Speaker model action failed: …"); the next action replaces it.
     pub model_notes: HashMap<data::Family, (bool, String)>,
+    /// "Delete unused models": in flight, and the line it left, by family.
+    pub unused_busy: HashSet<data::Family>,
+    pub unused_notes: HashMap<data::Family, (bool, String)>,
     /// Semantic Search after a confirmed switch: the re-index line it keeps.
     pub reindex: Option<String>,
     /// Which Deepgram placeholder the key field shows (`Some(key saved)`).
@@ -98,6 +101,10 @@ pub struct Ui {
     pub delete_window: usize,
     /// The shortcut row listening for keys.
     pub kb_listening: Option<&'static str>,
+    /// A key the listening row refused: `(action id, why)`.
+    pub kb_capture_error: Option<(&'static str, String)>,
+    /// Where the first conflicting shortcut row was last painted ("Jump to conflict").
+    pub kb_conflict_row: std::rc::Rc<std::cell::Cell<Option<gpui_kit::Bounds<gpui_kit::Pixels>>>>,
     pub semantic_pick: Option<String>,
     /// Each provider's live `verify_ai_provider` verdict (absent = never checked).
     pub reach: HashMap<String, Reach>,
@@ -110,12 +117,56 @@ pub struct Ui {
     /// One-shot commands in flight, by name (their buttons read busy).
     pub busy: HashSet<&'static str>,
     /// "Add app…": the installed apps to pick from (`None` = closed).
-    pub app_picker: Option<Vec<(String, String)>>,
+    /// `(bundle id, name, running)` per installed app.
+    pub app_picker: Option<Vec<(String, String, bool)>>,
     /// The MCP modals: Add / Edit / Connect steps, tool curation, Node probe.
     pub(crate) mcp: sections::mcp::McpUi,
     /// Model downloads in flight, by `provider:model`: `(done, total, status)`.
     pub downloads: HashMap<String, (u64, Option<u64>, String)>,
     pub prompt: privacy_prompt::PromptUi,
+    /// Esc asked to empty the search field (done at the next render).
+    pub clear_search: bool,
+    /// The permission row whose request is in flight, and the last refusal.
+    pub perm_busy: Option<&'static str>,
+    pub perm_error: Option<(&'static str, String)>,
+    /// The "No system sound yet" hint was dismissed (recorded, then hidden).
+    pub sysaudio_dismissed: bool,
+    pub sysaudio_error: Option<String>,
+    /// The Firefox / Zen Accessibility request's last failure.
+    pub gecko_error: Option<String>,
+    /// Storage: a folder picked this session (it applies after a restart).
+    pub picked_location: Option<String>,
+    pub restarting: bool,
+    /// The latest retention cleanup: `(segments, frames, audio)` or why it failed.
+    pub cleanup: Option<Result<(i64, i64, i64), String>>,
+    /// A confirmed shorter retention runs the cleanup once its save lands.
+    pub cleanup_after_save: bool,
+    /// CLI Access: rows whose block / unblock is in flight, the last failure,
+    /// and the CLI install's failure.
+    pub grant_saving: HashSet<String>,
+    pub grant_error: Option<String>,
+    pub cli_error: Option<String>,
+    /// Licence: Refresh's transient line (`true` = checked), its generation,
+    /// Activate's outcome, and "Free up my devices"' line.
+    pub lic_refresh: Option<bool>,
+    pub lic_refresh_gen: u64,
+    pub lic_activate: Option<Result<(), String>>,
+    pub lic_reset: Option<(crate::ui::Tone, String)>,
+    /// A successful activation empties the key field (at the next render).
+    pub clear_license_key: bool,
+    /// "Add app…" reopens with an empty search (at the next render).
+    pub clear_app_search: bool,
+    /// The "Add app…" list's highlighted row (↑/↓, Enter picks it).
+    pub app_highlight: usize,
+    /// Where "Add app…" was last painted (its dropdown hangs off it).
+    pub app_anchor: Option<crate::ui::popover::Anchor>,
+    /// Developer › log: the last open / delete failure; "✓ Deleted" for 2.2 s.
+    pub log_error: Option<String>,
+    pub log_deleted: bool,
+    /// About › Updates: Restart to Update's failure.
+    pub update_error: Option<String>,
+    /// Delete Recent Capture's receipt under its row: `(tone, words)`.
+    pub delete_receipt: Option<(crate::ui::Tone, String)>,
 }
 
 /// One provider row's reachability check.
@@ -139,6 +190,8 @@ pub struct Inputs {
     pub whitelist: Entity<InputState>,
     pub deepgram_key: Entity<InputState>,
     pub license_key: Entity<InputState>,
+    /// "Add app…": the installed-app search.
+    pub app_search: Entity<InputState>,
 }
 
 pub struct Sliders {
@@ -174,6 +227,9 @@ pub struct Settings {
     pub engine: Engine,
     pub saving: HashSet<Unit>,
     pub failed: Option<(Unit, String)>,
+    /// Recording-domain failures in a row, and the pending automatic retry.
+    fail_count: u32,
+    retry_task: Option<Task<()>>,
     /// A privacy command holds the recording settings: no unit may save.
     pub privacy_in_flight: bool,
     pub privacy_error: Option<String>,
@@ -185,6 +241,12 @@ pub struct Settings {
     pub sliders: Sliders,
     /// The footer's recording state (the shell's status model).
     pub status: StatusBarModel,
+    /// The listening shortcut chord takes focus, so its keys reach `capture_key`.
+    pub kb_focus: gpui_kit::FocusHandle,
+    /// The shell shows Settings (false once it navigates away).
+    shown: bool,
+    /// CLI Access's 30 s re-read while the Data group is on screen.
+    access_poll: Option<Task<()>>,
     backend: Arc<dyn Backend>,
     timer: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -235,21 +297,68 @@ impl Settings {
                     .placeholder("Paste your Deepgram API key")
             }),
             license_key: input(window, cx, "Paste your license key"),
+            app_search: input(window, cx, "Search installed apps"),
         };
         let sliders = Sliders {
             mic: slider(window, cx, 0., 100.),
             sys: slider(window, cx, 0., 100.),
             speaker_timeout: slider(window, cx, 1., 60.),
         };
-        let mut subs =
-            vec![
-                cx.subscribe_in(&inputs.search, window, |this, _, e: &InputEvent, _, cx| {
-                    if matches!(e, InputEvent::Change) {
+        let mut subs = vec![cx.subscribe_in(
+            &inputs.search,
+            window,
+            |this, state, e: &InputEvent, _, cx| {
+                match e {
+                    InputEvent::Change => {
                         this.spy_suppressed = false;
                         cx.notify();
                     }
-                }),
-            ];
+                    // Enter jumps to the first match; the query stays to refine.
+                    InputEvent::PressEnter { .. } => {
+                        let query = state.read(cx).value().trim().to_string();
+                        let first = groups::filter(&query)
+                            .into_iter()
+                            .find_map(|(_, sections)| sections.first().copied());
+                        if let (false, Some(section)) = (query.is_empty(), first) {
+                            this.navigate(section, cx);
+                        }
+                    }
+                    _ => {}
+                }
+            },
+        )];
+        subs.push(cx.subscribe_in(
+            &inputs.app_search,
+            window,
+            |this, state, e: &InputEvent, _, cx| match e {
+                InputEvent::Change => {
+                    this.ui.app_highlight = 0;
+                    cx.notify()
+                }
+                // Enter picks the highlighted match.
+                InputEvent::PressEnter { .. } => {
+                    let query = state.read(cx).value().to_string();
+                    if let Some((bundle, name)) = commands::highlighted_app(this, &query) {
+                        commands::exclude_app(this, bundle, name, cx);
+                    }
+                }
+                _ => {}
+            },
+        ));
+        subs.push(cx.subscribe_in(
+            &inputs.license_key,
+            window,
+            |this, _, e: &InputEvent, _, cx| match e {
+                // Editing the key clears both the error and the confirmation.
+                InputEvent::Change => {
+                    if this.ui.lic_activate.take().is_some() {
+                        cx.notify();
+                    }
+                }
+                InputEvent::PressEnter { .. } => this.activate_license(cx),
+                _ => {}
+            },
+        ));
         let numeric: [(
             &Entity<InputState>,
             fn(&mut RecordingSettings, &str) -> bool,
@@ -279,9 +388,13 @@ impl Settings {
                 cx.subscribe_in(state, window, move |this, state, e: &InputEvent, _, cx| {
                     if matches!(e, InputEvent::Change) {
                         let raw = state.read(cx).value().to_string();
-                        let mut ok = true;
-                        this.edit(|d| ok = apply(d, &raw), cx);
-                        this.video_invalid = !ok;
+                        this.edit(
+                            |d| {
+                                apply(d, &raw);
+                            },
+                            cx,
+                        );
+                        this.video_invalid = sections::video_invalid(this, cx);
                         this.tick(cx);
                     }
                 }),
@@ -329,17 +442,23 @@ impl Settings {
             engine: Engine::default(),
             saving: HashSet::new(),
             failed: None,
+            fail_count: 0,
+            retry_task: None,
             privacy_in_flight: false,
             privacy_error: None,
             video_invalid: false,
             reload: reload::Reloads::default(),
             ui: Ui {
                 delete_window: 1, // 5 min, as Tauri
+                app_anchor: Some(crate::ui::popover::Anchor::owned(cx)),
                 ..Ui::default()
             },
             inputs,
             sliders,
             status: StatusBarModel::default(),
+            kb_focus: cx.focus_handle(),
+            shown: true,
+            access_poll: None,
             backend,
             timer: None,
             _subscriptions: subs,
@@ -379,6 +498,28 @@ impl Settings {
     /// Push the drafts into the text fields and sliders that mirror them (run
     /// from `render`, which has the window `InputState::set_value` needs).
     pub(crate) fn sync_controls(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        sections::coerce_resolution(self, cx);
+        // The custom size / bitrate fields hold the Video save (also after a reload).
+        let invalid = sections::video_invalid(self, cx);
+        if invalid != self.video_invalid {
+            self.video_invalid = invalid;
+            self.tick(cx);
+        }
+        if std::mem::take(&mut self.ui.clear_app_search) {
+            self.inputs
+                .app_search
+                .update(cx, |i, cx| i.set_value("", window, cx));
+        }
+        if std::mem::take(&mut self.ui.clear_license_key) {
+            self.inputs
+                .license_key
+                .update(cx, |i, cx| i.set_value("", window, cx));
+        }
+        if std::mem::take(&mut self.ui.clear_search) {
+            self.inputs
+                .search
+                .update(cx, |i, cx| i.set_value("", window, cx));
+        }
         if !std::mem::take(&mut self.needs_sync) {
             return;
         }

@@ -22,14 +22,6 @@ const URL_MODES: [BrowserUrlMode; 3] = [
     BrowserUrlMode::Full,
 ];
 
-fn add_app_button(s: &Settings, cx: &mut Context<Settings>) -> Button {
-    Button::new("excl-add", "Add app\u{2026}")
-        .sm()
-        .icon(icons::PLUS)
-        .disabled(s.privacy_in_flight)
-        .on_click(click(cx, |s, cx| s.open_app_picker(cx)))
-}
-
 fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
     let apps = s.d().privacy.excluded_apps;
     if apps.is_empty() {
@@ -39,7 +31,7 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
             icons::SHIELD,
             "No app exclusions",
             "Every app\u{2019}s visible content is recorded. Add the ones that should never be.",
-            vec![add_app_button(s, cx).into_any_element()],
+            vec![super::app_picker::add_app(s, p, cx)],
             p,
         )
         .into_any_element();
@@ -139,7 +131,7 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
                 .gap(space::S3)
                 .px(space::S3)
                 .py(px(8.))
-                .child(add_app_button(s, cx))
+                .child(super::app_picker::add_app(s, p, cx))
                 .child(
                     div()
                         .text_size(text::SM)
@@ -238,7 +230,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                                 cx,
                                 "Enable full URL metadata",
                                 "Full URL metadata stores query strings and fragments. Continue?",
-                                "Continue",
+                                "Enable",
                                 |s, cx| {
                                     s.edit(
                                         |d| d.metadata.browser_url_mode = BrowserUrlMode::Full,
@@ -256,40 +248,144 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .into_any_element(),
     );
     // Firefox / Zen: their URLs are read through Accessibility, which needs its own grant.
-    if let Some(g) = s.data.gecko.as_ref() {
-        let names: Vec<&str> = g["geckoBrowsers"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|b| b["installed"].as_bool() == Some(true))
-            .filter_map(|b| b["displayName"].as_str())
-            .collect();
-        if !names.is_empty() && d.metadata.enabled {
-            let trusted = g["trusted"].as_bool() == Some(true);
-            let r = row(format!("{} URLs", names.join(" / ")))
-                .desc("These browsers share their address only through macOS Accessibility.");
-            let r = if trusted {
-                r.control(crate::settings::row::state_word(
-                    "allowed",
-                    Some(Tone::Ok),
-                    p,
-                ))
-            } else {
-                r.control(
-                    Button::new("gecko-allow", "Allow Accessibility")
-                        .icon(icons::EXTERNAL)
-                        .icon_after()
-                        .on_click(click(cx, |s, cx| {
-                            s.run_command(
-                                "Accessibility access",
-                                cx,
-                                crate::settings::live::request_accessibility,
-                            )
-                        })),
-                )
-            };
-            rows.push(r.build(p).into_any_element());
-        }
+    if let Some(r) = gecko_row(s, &d, p, cx) {
+        rows.push(r);
     }
     section("Privacy", None, Vec::new(), false, rows, p).into_any_element()
+}
+
+/// `Browser URL access (Firefox / Zen)`: shown while URLs are stored and one of
+/// those browsers is installed; Accessibility granted, or a notice to grant it.
+fn gecko_row(
+    s: &Settings,
+    d: &capture_types::RecordingSettings,
+    p: &Palette,
+    cx: &mut Context<Settings>,
+) -> Option<AnyElement> {
+    let g = s.data.gecko.as_ref()?;
+    let names: Vec<&str> = g["geckoBrowsers"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|b| b["installed"].as_bool() == Some(true))
+        .filter_map(|b| b["displayName"].as_str())
+        .collect();
+    if names.is_empty() || !d.metadata.enabled || d.metadata.browser_url_mode == BrowserUrlMode::Off
+    {
+        return None;
+    }
+    let names = names.join(" / ");
+    let body = if g["trusted"].as_bool() == Some(true) {
+        line(
+            Tone::Ok,
+            icons::CHECK,
+            format!("{names} \u{b7} Accessibility granted"),
+            p,
+        )
+        .into_any_element()
+    } else {
+        let requesting = s.ui.busy.contains(GECKO_REQUEST);
+        let rechecking = s.ui.busy.contains(GECKO_RECHECK);
+        crate::ui::notice::notice(
+            Tone::Warn,
+            icons::LOCK,
+            format!("{names} \u{b7} Accessibility not granted"),
+            Some(format!("Allow Mnema under Privacy & Security \u{2192} Accessibility to capture {names}\u{2019}s page address.").into()),
+            vec![
+                Button::new("gecko-grant", if requesting { "Requesting\u{2026}" } else { "Grant access" })
+                    .sm()
+                    .busy(requesting)
+                    .disabled(requesting)
+                    .on_click(click(cx, |s, cx| s.gecko_command(GECKO_REQUEST, cx)))
+                    .into_any_element(),
+                Button::new("gecko-open", "Open System Settings")
+                    .sm()
+                    .icon(icons::EXTERNAL)
+                    .icon_after()
+                    .on_click(click(cx, |s, cx| s.gecko_command(GECKO_OPEN, cx)))
+                    .into_any_element(),
+                Button::new("gecko-recheck", if rechecking { "Checking\u{2026}" } else { "Recheck" })
+                    .ghost()
+                    .sm()
+                    .busy(rechecking)
+                    .disabled(rechecking)
+                    .on_click(click(cx, |s, cx| s.gecko_recheck(cx)))
+                    .into_any_element(),
+            ],
+            p,
+        )
+        .into_any_element()
+    };
+    Some(
+        row("Browser URL access (Firefox / Zen)")
+            .desc("Firefox and Zen expose no scriptable URL, so reading their page address needs the macOS Accessibility permission.")
+            .full()
+            .control(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(space::S2)
+                    .w_full()
+                    .child(body)
+                    .children(s.ui.gecko_error.clone().map(|e| {
+                        line(Tone::Warn, icons::INFO, format!("Browser URL access request failed: {e}"), p)
+                    })),
+            )
+            .build(p)
+            .into_any_element(),
+    )
+}
+
+const GECKO_REQUEST: &str = "Accessibility request";
+const GECKO_OPEN: &str = "Accessibility settings";
+const GECKO_RECHECK: &str = "Accessibility recheck";
+
+impl Settings {
+    /// `request_browser_url_accessibility` / `open_browser_url_accessibility_settings`:
+    /// a failure says so under the notice; the re-read picks up a grant.
+    fn gecko_command(&mut self, what: &'static str, cx: &mut Context<Self>) {
+        self.ui.gecko_error = None;
+        self.run_command_with(
+            what,
+            cx,
+            move |core| {
+                use app_core::native_capture::permissions as perms;
+                if what == GECKO_REQUEST {
+                    perms::request_browser_url_accessibility();
+                    Ok(None)
+                } else {
+                    perms::open_browser_url_accessibility_settings(core).map(|_| None)
+                }
+            },
+            |s, outcome| {
+                if let Err(e) = outcome {
+                    s.ui.gecko_error = Some(e.clone());
+                }
+                true
+            },
+        );
+    }
+
+    /// Recheck: re-read the Accessibility grant (and the other permissions).
+    fn gecko_recheck(&mut self, cx: &mut Context<Self>) {
+        if !self.ui.busy.insert(GECKO_RECHECK) {
+            return;
+        }
+        self.ui.gecko_error = None;
+        let backend = self.backend.clone();
+        let task = cx.background_spawn(async move { backend.recheck_access() });
+        cx.spawn(async move |this, cx| {
+            let fresh = task.await;
+            let _ = this.update(cx, |s, cx| {
+                s.ui.busy.remove(GECKO_RECHECK);
+                if let Some(d) = fresh {
+                    s.data.gecko = d.gecko;
+                    s.data.permissions = d.permissions;
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
 }

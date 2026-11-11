@@ -134,6 +134,12 @@ impl Row {
         self
     }
     /// Inline content after the label (a chip).
+    pub fn below_opt(self, el: Option<impl IntoElement>) -> Self {
+        match el {
+            Some(el) => self.below(el),
+            None => self,
+        }
+    }
     pub fn extra(mut self, el: impl IntoElement) -> Self {
         self.extra.push(el.into_any_element());
         self

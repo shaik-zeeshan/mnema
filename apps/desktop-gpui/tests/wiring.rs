@@ -70,6 +70,12 @@ fn rig() -> Rig {
     let guard = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
     let dir = tempfile::tempdir().unwrap();
     std::env::set_var("MNEMA_TRIPWIRE_NO_KEYCHAIN", "1");
+    // Never the real keychain for licence tokens either: `MNEMA_TRIPWIRE_NO_KEYCHAIN`
+    // doesn't cover them; this file store does (debug builds only).
+    std::env::set_var(
+        "MNEMA_LICENSE_TOKEN_DIR",
+        std::env::temp_dir().join(format!("mnema-gpui-licence-{}", std::process::id())),
+    );
     if std::env::var_os("MNEMA_DEV_MASTER_KEY_FILE").is_none() {
         let keys = std::env::temp_dir().join(format!("mnema-gpui-wiring-{}", std::process::id()));
         std::fs::create_dir_all(&keys).unwrap();

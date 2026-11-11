@@ -49,6 +49,12 @@ fn live() -> Live {
     let dir = tempfile::tempdir().expect("temp dir");
     // Never the real keychain: a vault read panics, and the master key is a scratch file.
     std::env::set_var("MNEMA_TRIPWIRE_NO_KEYCHAIN", "1");
+    // Never the real keychain for licence tokens either: `MNEMA_TRIPWIRE_NO_KEYCHAIN`
+    // doesn't cover them; this file store does (debug builds only).
+    std::env::set_var(
+        "MNEMA_LICENSE_TOKEN_DIR",
+        std::env::temp_dir().join(format!("mnema-gpui-licence-{}", std::process::id())),
+    );
     std::env::set_var("MNEMA_DEV_MASTER_KEY_FILE", dir.path().join("master.key"));
     let paths = fixtures::seed(dir.path(), FixtureId::Populated).expect("seed");
     // Two belts so app-infra can only ever open the seed: the default capture

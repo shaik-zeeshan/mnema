@@ -362,10 +362,18 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         );
     }
     if m.is_some() {
+        // `selected…DownloadRunning` holds Delete unused.
+        let running = m.as_ref().is_some_and(|m| {
+            m.model_id
+                .as_ref()
+                .is_some_and(|id| s.ui.downloads.contains_key(&format!("{}:{id}", m.provider)))
+        });
         rows.push(delete_unused_row(
+            s,
             "tx-delete-unused",
             Family::Transcription,
             "Removes app-managed transcription model files except the selected one.",
+            running,
             p,
             cx,
         ));

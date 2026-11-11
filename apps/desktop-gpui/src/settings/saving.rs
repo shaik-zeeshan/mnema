@@ -59,6 +59,12 @@ pub(super) fn domain_blocked(unit: Unit, s: &RecordingSettings, video_invalid: b
     }
 }
 
+/// `min(30 s, 500 ms × 2^(n-1))` for the n-th failure in a row.
+pub(super) fn retry_delay(failures: u32) -> std::time::Duration {
+    let ms = 500u64.saturating_mul(1 << failures.saturating_sub(1).min(16));
+    std::time::Duration::from_millis(ms.min(30_000))
+}
+
 enum Saved {
     Settings(RecordingSettings),
     Keyboard(Value),
@@ -67,11 +73,16 @@ enum Saved {
 
 impl Settings {
     pub fn gate(&self, unit: Unit) -> Gate {
-        let saving = self.saving.contains(&unit);
+        // A failed recording domain waits for its backoff retry (or Retry /
+        // Dismiss), not the next debounce: Svelte's `recSaveBackoffUntil` gate.
+        let backing_off = !matches!(unit, Unit::Keyboard | Unit::Microphone)
+            && self.failed.as_ref().is_some_and(|(u, _)| *u == unit);
+        let saving = self.saving.contains(&unit) || backing_off;
         match unit {
+            // `keyboardShortcutSaveBlocked`: an issue, or a row still listening.
             Unit::Keyboard => Gate {
                 dirty: self.kb_saved.is_some() && self.kb_draft != self.kb_saved,
-                blocked: false,
+                blocked: self.ui.kb_listening.is_some() || !self.shortcut_issues().is_empty(),
                 saving,
             },
             Unit::Microphone => Gate {
@@ -181,8 +192,14 @@ impl Settings {
                         }
                     }
                 }
+                let retention_landed = unit == Unit::Storage
+                    && self.saved.as_ref().map(|p| &p.retention_policy)
+                        != Some(&s.retention_policy);
                 self.saved = Some(s);
                 self.failed = None;
+                if retention_landed && std::mem::take(&mut self.ui.cleanup_after_save) {
+                    self.run_retention_cleanup(cx);
+                }
             }
             Ok(Saved::Keyboard(k)) => {
                 self.kb_saved = Some(k);
@@ -195,7 +212,12 @@ impl Settings {
             Err(e) => {
                 log::warn!("settings: {} failed: {e}", unit.command());
                 self.failed = Some((unit, e));
+                self.arm_retry(unit, cx);
             }
+        }
+        if self.failed.is_none() {
+            self.fail_count = 0;
+            self.retry_task = None;
         }
         // An edit made while it saved schedules a follow-up save.
         if self.failed.is_none() {
@@ -204,29 +226,68 @@ impl Settings {
         cx.notify();
     }
 
+    /// `noteSaveFailure`: a failed recording domain retries on its own after
+    /// a capped exponential backoff (500 ms doubling to 30 s), once per failure.
+    fn arm_retry(&mut self, unit: Unit, cx: &mut Context<Self>) {
+        if matches!(unit, Unit::Keyboard | Unit::Microphone) {
+            return;
+        }
+        self.fail_count += 1;
+        let delay = retry_delay(self.fail_count);
+        self.retry_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(delay).await;
+            let _ = this.update(cx, |s, cx| {
+                if s.failed.as_ref().is_some_and(|(u, _)| *u == unit) {
+                    s.failed = None;
+                    s.save(unit, cx);
+                }
+            });
+        }));
+    }
+
     /// The bar's Retry: re-run the failed unit now.
     pub fn retry(&mut self, cx: &mut Context<Self>) {
         if let Some((unit, _)) = self.failed.take() {
+            self.fail_count = 0;
+            self.retry_task = None;
             self.save(unit, cx);
         }
     }
 
-    /// The notice's Dismiss: put the last saved value back.
+    /// The notice's Dismiss. A recording domain puts its last saved value back
+    /// (which also ends the retrying); shortcuts and the microphone only clear
+    /// the message and try again on the next change.
     pub fn dismiss_failure(&mut self, cx: &mut Context<Self>) {
-        if self.failed.take().is_some() {
-            self.draft = self.saved.clone();
-            self.kb_draft = self.kb_saved.clone();
-            self.mic_draft = self.mic_saved.clone();
-            self.tick(cx);
-            cx.notify();
+        let Some((unit, _)) = self.failed.take() else {
+            return;
+        };
+        self.fail_count = 0;
+        self.retry_task = None;
+        if let (Some(d), Some(saved)) = (self.draft.as_mut(), self.saved.as_ref()) {
+            if let Some(patch) = live::patch(unit, saved) {
+                let _ = app_core::recording_settings::apply_domain_patch_to_settings(d, patch);
+                self.needs_sync = true;
+            }
         }
+        self.tick(cx);
+        cx.notify();
+    }
+
+    /// The draft shortcuts' conflicts (`shortcutIssues`).
+    pub fn shortcut_issues(&self) -> HashMap<&'static str, String> {
+        self.kb_draft
+            .as_ref()
+            .map(super::sections::shortcut_issues::issues)
+            .unwrap_or_default()
     }
 
     pub fn save_status(&self) -> SaveStatus {
-        let blocked = Unit::ALL.iter().any(|u| {
-            let g = self.gate(*u);
-            g.dirty && g.blocked
-        });
+        // A shortcut issue blocks on its own; an in-progress key capture does not.
+        let blocked = !self.shortcut_issues().is_empty()
+            || Unit::ALL.iter().any(|u| {
+                let g = self.gate(*u);
+                *u != Unit::Keyboard && g.dirty && g.blocked
+            });
         autosave::save_status(self.failed.is_some(), blocked, !self.saving.is_empty())
     }
 }

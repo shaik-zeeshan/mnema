@@ -95,6 +95,7 @@ impl Render for Settings {
         theme::request_fade_frames(window, cx);
         self.ensure_provider_inputs(window, cx);
         self.sync_controls(window, cx);
+        self.sync_access_poll(cx);
         sections::transcription::sync_key_placeholder(self, window, cx);
         if let Some(section) = self.pending_scroll {
             scroll_to(self, section);
@@ -137,10 +138,38 @@ impl Render for Settings {
                     .child(g.description),
             );
         let mut notices: Vec<AnyElement> = Vec::new();
-        if let Some((_, msg)) = &self.failed {
-            let body = format!(
-                "{}. Retry, or dismiss to put the last saved value back.",
-                msg.trim_end_matches('.')
+        if let Some((unit, msg)) = &self.failed {
+            use super::autosave::Unit;
+            // Recording domains retry on their own and offer Retry; shortcuts
+            // and the microphone re-attempt on the next change: Dismiss only.
+            let (title, body, retry) = match unit {
+                Unit::Keyboard => ("Couldn\u{2019}t save shortcuts", msg.clone(), false),
+                Unit::Microphone => ("Microphone settings hit an error", msg.clone(), false),
+                _ => (
+                    "Couldn\u{2019}t save recording settings",
+                    format!(
+                        "{}. Retrying on its own \u{2014} or dismiss to put the last saved value back.",
+                        msg.trim_end_matches('.')
+                    ),
+                    true,
+                ),
+            };
+            let mut acts = Vec::new();
+            if retry {
+                acts.push(
+                    Button::new("settings-notice-retry", "Retry")
+                        .sm()
+                        .icon(icons::RETRY)
+                        .on_click(super::click(cx, |s, cx| s.retry(cx)))
+                        .into_any_element(),
+                );
+            }
+            acts.push(
+                Button::new("settings-notice-dismiss", "Dismiss")
+                    .ghost()
+                    .sm()
+                    .on_click(super::click(cx, |s, cx| s.dismiss_failure(cx)))
+                    .into_any_element(),
             );
             notices.push(
                 div()
@@ -149,20 +178,9 @@ impl Render for Settings {
                     .child(notice::notice(
                         Tone::Danger,
                         icons::ALERT,
-                        "Couldn\u{2019}t save recording settings",
+                        title,
                         Some(body.into()),
-                        vec![
-                            Button::new("settings-notice-retry", "Retry")
-                                .sm()
-                                .icon(icons::RETRY)
-                                .on_click(super::click(cx, |s, cx| s.retry(cx)))
-                                .into_any_element(),
-                            Button::new("settings-notice-dismiss", "Dismiss")
-                                .ghost()
-                                .sm()
-                                .on_click(super::click(cx, |s, cx| s.dismiss_failure(cx)))
-                                .into_any_element(),
-                        ],
+                        acts,
                         &p,
                     ))
                     .into_any_element(),
@@ -191,7 +209,21 @@ impl Render for Settings {
                         icons::ALERT,
                         "Couldn\u{2019}t load recording settings",
                         Some(body.into()),
-                        Vec::new(),
+                        vec![
+                            Button::new("settings-load-retry", "Retry")
+                                .sm()
+                                .icon(icons::RETRY)
+                                .on_click(super::click(cx, |s, cx| s.reload_all(cx)))
+                                .into_any_element(),
+                            Button::new("settings-load-dismiss", "Dismiss")
+                                .ghost()
+                                .sm()
+                                .on_click(super::click(cx, |s, cx| {
+                                    s.data.load_error = None;
+                                    cx.notify();
+                                }))
+                                .into_any_element(),
+                        ],
                         &p,
                     ))
                     .into_any_element(),
@@ -237,6 +269,11 @@ impl Render for Settings {
                     cx.stop_propagation();
                 }
             }))
+            // A press anywhere but a chord ends a shortcut capture.
+            .on_mouse_down(
+                gpui_kit::MouseButton::Left,
+                cx.listener(|this, _, _, cx| sections::cancel_shortcut_capture(this, cx)),
+            )
             .flex()
             .size_full()
             .bg(p.bg)
@@ -255,6 +292,5 @@ impl Render for Settings {
                     .child(column),
             )
             .children(sections::overlays(self, window, cx))
-            .children(super::commands::app_picker(self, &p, cx))
     }
 }

@@ -66,6 +66,7 @@ pub fn lapse(last_used: i64, now: i64) -> (String, f32, bool) {
 }
 
 fn tool_row(
+    s: &Settings,
     g: &Value,
     last_cmd: Option<String>,
     p: &Palette,
@@ -79,6 +80,7 @@ fn tool_row(
         .unwrap_or_default()
         .to_string();
     let blocked = g.bool_at(&["blocked"]);
+    let saving = s.ui.grant_saving.contains(&key);
     let last = g.num_at(&["lastUsedAtUnixMs"]).unwrap_or(0.) as i64;
     let never = last == 0;
     let name = div()
@@ -139,7 +141,7 @@ fn tool_row(
             .items_center()
             .gap(space::S3)
             .child(div().text_size(text::SM).font_weight(theme::W_SEMIBOLD).text_color(p.text_muted).child("Never lapses"))
-            .child(Button::new(SharedString::from(format!("unblock-{key}")), if never { "Unblock" } else { "Unblock\u{2026}" }).sm().on_click(click(
+            .child(Button::new(SharedString::from(format!("unblock-{key}")), if saving { "Unblocking\u{2026}" } else if never { "Unblock" } else { "Unblock\u{2026}" }).sm().busy(saving).disabled(saving).on_click(click(
                 cx,
                 move |s, cx| {
                     let key = key2.clone();
@@ -184,12 +186,17 @@ fn tool_row(
                     .child(bar),
             )
             .child(
-                Button::new(SharedString::from(format!("block-{key}")), "Block")
-                    .ghost()
-                    .danger()
-                    .sm()
-                    .tip("Revoke and refuse its future requests")
-                    .on_click(click(cx, move |s, cx| s.set_blocked(key.clone(), true, cx))),
+                Button::new(
+                    SharedString::from(format!("block-{key}")),
+                    if saving { "Blocking\u{2026}" } else { "Block" },
+                )
+                .ghost()
+                .danger()
+                .sm()
+                .busy(saving)
+                .disabled(saving)
+                .tip("Revoke and refuse its future requests")
+                .on_click(click(cx, move |s, cx| s.set_blocked(key.clone(), true, cx))),
             )
             .into_any_element()
     };
@@ -269,7 +276,24 @@ fn list_section(title: &str, hint: &str, rows: Vec<AnyElement>, p: &Palette) -> 
 
 pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
     let cli = s.data.cli_status.as_ref();
+    let installing = s.ui.busy.contains("Install CLI");
+    let path_of = |c: &Value, k: &str| c.str_at(&[k]).unwrap_or_default().to_string();
     let cli_line = match cli {
+        _ if installing => div()
+            .text_size(text::BASE)
+            .text_color(p.text_muted)
+            .child(format!(
+                "Linking {}\u{2026}",
+                cli.map_or("mnema".into(), |c| path_of(c, "installPath"))
+            ))
+            .into_any_element(),
+        _ if s.ui.cli_error.is_some() => line(
+            Tone::Danger,
+            icons::ALERT,
+            s.ui.cli_error.clone().unwrap_or_default(),
+            p,
+        )
+        .into_any_element(),
         None => div()
             .text_size(text::BASE)
             .text_color(p.text_muted)
@@ -285,6 +309,17 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             format!(
                 "Not installed at {} \u{2014} install it before tools can ask for access.",
                 c.str_at(&["installPath"]).unwrap_or_default()
+            ),
+            p,
+        )
+        .into_any_element(),
+        Some(c) if c.at(&["installDirInPath"]).as_bool() == Some(false) => line(
+            Tone::Warn,
+            icons::ALERT,
+            format!(
+                "Installed at {}, but {} isn\u{2019}t on PATH for this session.",
+                path_of(c, "installPath"),
+                path_of(c, "installDir")
             ),
             p,
         )
@@ -309,11 +344,28 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .into_any_element(),
         row("mnema command")
             .control(
-                Button::new("cli-install", if installed { "Reinstall CLI" } else { "Install CLI" })
-                    .disabled(s.ui.busy.contains("Install CLI"))
-                    .on_click(crate::settings::click(cx, |s, cx| {
-                        s.run_command("Install CLI", cx, crate::settings::live::install_cli)
-                    })),
+                Button::new(
+                    "cli-install",
+                    if installing {
+                        "Installing\u{2026}"
+                    } else if installed {
+                        "Reinstall CLI"
+                    } else {
+                        "Install CLI"
+                    },
+                )
+                .when(s.ui.cli_error.is_some() && !installing, |b| b.icon(icons::RELOAD))
+                .busy(installing)
+                .disabled(installing)
+                .on_click(crate::settings::click(cx, |s, cx| {
+                    s.ui.cli_error = None;
+                    s.run_command_with("Install CLI", cx, crate::settings::live::install_cli, |s, outcome| {
+                        if let Err(e) = outcome {
+                            s.ui.cli_error = Some(e.clone());
+                        }
+                        true
+                    })
+                })),
             )
             .below(cli_line)
             .build(p)
@@ -321,6 +373,15 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     ];
     let (blocked, active): (Vec<&Value>, Vec<&Value>) =
         s.data.grants.iter().partition(|g| g.bool_at(&["blocked"]));
+    // Rows on screen are from the last good read: a failed write says so.
+    if let Some(e) = s.ui.grant_error.clone() {
+        rows.push(
+            div()
+                .pt(space::S4)
+                .child(line(Tone::Danger, icons::ALERT, e, p))
+                .into_any_element(),
+        );
+    }
     if active.is_empty() && blocked.is_empty() {
         rows.push(list_section(
             "Tools with access",
@@ -354,7 +415,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     if !active.is_empty() {
         let list = active
             .iter()
-            .map(|g| tool_row(g, last_cmd(g), p, cx))
+            .map(|g| tool_row(s, g, last_cmd(g), p, cx))
             .collect();
         rows.push(list_section(
             &format!("Tools with access {}", active.len()),
@@ -364,7 +425,10 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         ));
     }
     if !blocked.is_empty() {
-        let list = blocked.iter().map(|g| tool_row(g, None, p, cx)).collect();
+        let list = blocked
+            .iter()
+            .map(|g| tool_row(s, g, None, p, cx))
+            .collect();
         rows.push(list_section(
             &format!("Blocked {}", blocked.len()),
             "Refused before any window opens. Never lapses.",

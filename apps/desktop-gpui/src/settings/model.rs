@@ -22,9 +22,15 @@ pub struct SettingsData {
     /// `get_capture_support`.
     pub capture_support: Option<Value>,
     pub license: Option<LicenseStatus>,
+    /// `get_license_devices` while licensed: `(used, cap)`; `None` offline.
+    pub license_devices: Option<(u64, u64)>,
     pub storage_usage: Option<Value>,
     pub storage_location: Option<String>,
+    /// Why `get_storage_location` failed.
+    pub storage_location_error: Option<String>,
     pub ai_status: Option<Value>,
+    /// Why `get_ai_runtime_status` couldn't be read (said in red in the AI rows).
+    pub ai_status_error: Option<String>,
     /// `ask_ai_availability`.
     pub ask_ai: Option<Value>,
     /// Provider instance ids with a key in the vault, and each key's last four.

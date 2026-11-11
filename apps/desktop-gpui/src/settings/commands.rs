@@ -7,13 +7,12 @@ use std::sync::Arc;
 use app_core::AppCore;
 use capture_types::RecordingSettings;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, AnyElement, Context, SharedString, Window};
+use gpui_kit::{AnyElement, Context, Window};
 
 use super::autosave::Unit;
 use super::live::{self, Outcome};
 use super::{icons, Settings, SettingsData};
-use crate::theme::{self, radius, space, text, Palette};
-use crate::ui::dialog::Modal;
+use crate::theme::Palette;
 use crate::ui::{notice, Button, Tone};
 
 impl Settings {
@@ -203,6 +202,10 @@ impl Settings {
                 s.data.permissions = d.permissions;
                 s.data.system_audio_blocked = d.system_audio_blocked;
                 s.data.gecko = d.gecko;
+                if d.complete {
+                    s.data.grants = d.grants;
+                    s.data.history = d.history;
+                }
                 cx.notify();
             });
         })
@@ -223,6 +226,8 @@ impl Settings {
             return;
         }
         self.ui.app_picker = Some(Vec::new());
+        self.ui.app_highlight = 0;
+        self.ui.clear_app_search = true;
         self.list_apps(cx);
     }
 
@@ -240,7 +245,7 @@ impl Settings {
                     Ok(Ok(apps)) if s.ui.app_picker.is_some() => {
                         s.ui.app_picker = Some(
                             apps.into_iter()
-                                .map(|a| (a.bundle_id, a.display_name))
+                                .map(|a| (a.bundle_id, a.display_name, a.running))
                                 .collect(),
                         )
                     }
@@ -297,9 +302,9 @@ pub fn note(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Option<Any
     )
 }
 
-/// The "Add app…" picker: every installed app not excluded yet; a pick adds it.
-pub fn app_picker(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Option<AnyElement> {
-    let apps = s.ui.app_picker.as_ref()?;
+/// Apps still offered: installed, not excluded yet, matching the search
+/// (`filteredPrivacyAppCandidates`: the first 12).
+pub fn candidates<'a>(s: &'a Settings, query: &str) -> Vec<&'a (String, String, bool)> {
     let have: Vec<String> = s
         .d()
         .privacy
@@ -307,84 +312,36 @@ pub fn app_picker(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Opti
         .iter()
         .map(|a| a.bundle_id.clone())
         .collect();
-    let rows = apps
+    let q = query.trim().to_lowercase();
+    s.ui.app_picker
         .iter()
-        .filter(|(bundle, _)| !have.contains(bundle))
-        .map(|(bundle, name)| {
-            let (bundle, name) = (bundle.clone(), name.clone());
-            div()
-                .id(SharedString::from(format!("excl-pick-{bundle}")))
-                .role(gpui_kit::Role::Button)
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(space::S3)
-                .px(space::S3)
-                .py(px(7.))
-                .rounded(radius::SM)
-                .cursor_pointer()
-                .hover(|st| st.bg(p.wash_strong))
-                .child(
-                    div()
-                        .text_size(text::MD)
-                        .text_color(p.text)
-                        .child(name.clone()),
-                )
-                .child(
-                    div()
-                        .font_family(theme::FONT_MONO)
-                        .text_size(text::SM)
-                        .text_color(p.text_subtle)
-                        .child(bundle.clone()),
-                )
-                .on_click(super::click(cx, move |s, cx| {
-                    s.ui.app_picker = None;
-                    let (bundle, name) = (bundle.clone(), name.clone());
-                    s.privacy_command(
-                        move |d| {
-                            app_core::privacy_redaction_sources::upsert_privacy_excluded_app(
-                                d, &bundle, &name, true,
-                            )
-                        },
-                        cx,
-                    );
-                }))
+        .flatten()
+        .filter(|(bundle, _, _)| !have.contains(bundle))
+        .filter(|(bundle, name, _)| {
+            q.is_empty() || name.to_lowercase().contains(&q) || bundle.to_lowercase().contains(&q)
         })
-        .collect::<Vec<_>>();
-    let this = cx.entity().downgrade();
-    let body = if apps.is_empty() {
-        div()
-            .text_color(p.text_muted)
-            .child("Listing installed apps\u{2026}")
-            .into_any_element()
-    } else {
-        crate::ui::scroll::area(
-            div()
-                .id("excl-pick-list")
-                .flex()
-                .flex_col()
-                .max_h(px(360.))
-                .overflow_y_scroll()
-                .children(rows),
-        )
-        .into_any_element()
-    };
-    Some(
-        Modal::new("excl-picker", "Never record an app")
-            .lead(
-                div()
-                    .text_color(p.text_muted)
-                    .child("Pick an app. Its windows and, if filtering is on, its audio stay out of recordings."),
+        .take(12)
+        .collect()
+}
+
+/// Enter picks the highlighted match (`onComboboxKeydown`).
+pub fn highlighted_app(s: &Settings, query: &str) -> Option<(String, String)> {
+    candidates(s, query)
+        .get(s.ui.app_highlight)
+        .map(|(b, n, _)| (b.clone(), n.clone()))
+}
+
+/// Pick an app: the picker closes and the exclusion is added.
+pub fn exclude_app(s: &mut Settings, bundle: String, name: String, cx: &mut Context<Settings>) {
+    s.ui.app_picker = None;
+    s.privacy_command(
+        move |d| {
+            app_core::privacy_redaction_sources::upsert_privacy_excluded_app(
+                d, &bundle, &name, true,
             )
-            .child(body)
-            .on_close(move |_, cx| {
-                let _ = this.update(cx, |s, cx| {
-                    s.ui.app_picker = None;
-                    cx.notify();
-                });
-            })
-            .into_any_element(),
-    )
+        },
+        cx,
+    );
 }
 
 /// Reads a text field once and clears it (keys and secrets never linger).
@@ -444,16 +401,21 @@ impl Settings {
         cx.spawn(async move |this, cx| {
             let preview = work.await;
             let _ = this.update(cx, |s, cx| match preview {
-                Ok((segments, frames, audio)) => {
+                Ok((segments, frames, audio, cutoff)) => {
                     let message = format!(
-                        "Retention will delete {segments} capture segment(s), {frames} frame row(s) and {audio} audio segment row(s) that are older than the new window. This cannot be undone."
+                        "Retention will delete {frames} frame row(s), {audio} audio segment row(s), and {segments} capture segment(s) before {}. Continue?",
+                        cutoff.as_deref().unwrap_or("the cutoff")
                     );
                     super::confirm(
                         cx,
                         "Confirm retention cleanup",
                         &message,
                         "Continue",
-                        move |s, cx| s.edit(|d| d.retention_policy = policy, cx),
+                        move |s, cx| {
+                            // The tightened window's cleanup runs once the save lands.
+                            s.ui.cleanup_after_save = true;
+                            s.edit(|d| d.retention_policy = policy, cx)
+                        },
                     );
                 }
                 Err(e) => {
@@ -484,6 +446,13 @@ impl Settings {
             }
             E::ChatgptLoginUpdate(v) => {
                 self.on_chatgpt_update(v, cx);
+                return;
+            }
+            // Retention and Delete Recent Capture change what is on disk.
+            E::TimelineDataChanged(p)
+                if matches!(p.reason.as_str(), "retention" | "delete_recent_capture") =>
+            {
+                self.refresh(cx);
                 return;
             }
             E::UserContextChanged

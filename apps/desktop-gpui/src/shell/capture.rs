@@ -61,6 +61,7 @@ impl Shell {
             self.model.status.start_error = None;
             self.model.status.loading_start = true;
         }
+        self.model.status.loading_stop = command == Command::Stop;
         cx.notify();
         let (tx, rx) = async_channel::bounded::<CaptureResult>(1);
         let worker = core.clone();
@@ -87,6 +88,7 @@ impl Shell {
             let _ = this.update(cx, |this, cx| {
                 this.capture_busy = false;
                 this.model.status.loading_start = false;
+                this.model.status.loading_stop = false;
                 if let Ok(Err((title, e))) = &result {
                     if command == Command::Start {
                         this.start_error = Some(e.message.clone());

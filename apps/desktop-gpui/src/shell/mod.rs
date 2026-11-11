@@ -174,6 +174,7 @@ impl Shell {
             model.status.start_error = self.start_error.clone();
         }
         model.status.loading_start |= self.model.status.loading_start && self.capture_busy;
+        model.status.loading_stop |= self.model.status.loading_stop && self.capture_busy;
         // The 2 s feed isn't part of a reload, and a failed read keeps the last
         // good value (status-live.svelte.ts): keep the readings until the next poll.
         if model.status.health.is_none() {
@@ -245,10 +246,17 @@ impl Shell {
         if matches!(surface, Surface::Timeline | Surface::Insights) {
             self.last_main = surface;
         }
+        let leaving_settings = self.surface == Surface::Settings;
         self.surface = surface;
         self.overlay = None;
+        if leaving_settings {
+            self.settings.update(cx, |s, _| s.set_shown(false));
+        }
         if surface == Surface::Settings {
-            self.settings.update(cx, |s, cx| s.reload_all(cx));
+            self.settings.update(cx, |s, cx| {
+                s.set_shown(true);
+                s.reload_all(cx)
+            });
         }
         if surface == Surface::Chat {
             self.chat.update(cx, |c, cx| c.warm_mcp(cx));

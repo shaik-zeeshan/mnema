@@ -416,60 +416,148 @@ pub fn status_row(
     }
 }
 
-/// "Delete unused models" (OCR / transcription): asks first, then runs on tokio
-/// and re-reads the model status.
+/// The line after "Delete unused models" (`deleteUnused…ModelsMessage`).
+pub fn unused_message(word: &str, r: &serde_json::Value) -> String {
+    let n = |k: &str| r[k].as_array().map_or(0, Vec::len);
+    let plural = |n: usize| if n == 1 { "" } else { "s" };
+    let retargeted = r["retargetedProcessingJobs"].as_u64().unwrap_or(0);
+    let jobs = if retargeted > 0 {
+        format!(
+            " Retargeted {retargeted} queued/failed {word} job{}.",
+            if retargeted == 1 { "" } else { "s" }
+        )
+    } else {
+        String::new()
+    };
+    let deleted = n("deleted");
+    let skipped = n("skippedActiveDownloads") + n("skippedProcessingJobs");
+    match (deleted, skipped) {
+        (0, 0) => format!("No unused {word} models found."),
+        (0, s) => format!(
+            "No unused {word} models deleted. {s} running model{} skipped.{jobs}",
+            plural(s)
+        ),
+        (d, _) => format!("Deleted {d} unused {word} model{}.{jobs}", plural(d)),
+    }
+}
+
+/// "Delete unused models" (OCR / transcription): asks first, then runs on tokio,
+/// says what it did on its own row and re-reads the model status.
 pub fn delete_unused_row(
+    s: &Settings,
     id: &'static str,
     family: Family,
     desc: &'static str,
+    download_running: bool,
     p: &Palette,
     cx: &mut Context<Settings>,
 ) -> AnyElement {
-    let (title, message) = match family {
-        Family::Ocr => ("Delete unused OCR models", "Delete unused OCR model files?"),
+    let (title, message, word) = match family {
+        Family::Ocr => (
+            "Delete unused OCR models",
+            "Delete unused OCR model files?",
+            "OCR",
+        ),
         _ => (
             "Delete unused transcription models",
             "Delete unused transcription model files?",
+            "transcription",
         ),
     };
+    let busy = s.ui.unused_busy.contains(&family);
     let on_click = crate::settings::click(cx, move |_, cx| {
-        crate::settings::confirm(cx, title, message, "Delete", move |_, cx| {
+        crate::settings::confirm(cx, title, message, "Delete", move |s, cx| {
             let Some(core) = crate::chat::core(cx) else {
                 return;
             };
+            s.ui.unused_notes.remove(&family);
+            s.ui.unused_busy.insert(family);
+            cx.notify();
             let job = crate::bridge::tokio::Tokio::spawn(cx, async move {
                 let infra = core
                     .try_state::<app_core::AppInfraState>()
                     .ok_or_else(|| "app infrastructure isn't ready".to_string())?;
-                match family {
+                let r = match family {
                     Family::Ocr => app_core::ocr_models::delete_unused_ocr_models(&core, &infra)
                         .await
-                        .map(|_| ()),
+                        .map(|r| serde_json::to_value(r).unwrap_or_default()),
                     _ => {
                         app_core::audio_transcription_models::delete_unused_audio_transcription_models(
                             &core, &infra,
                         )
                         .await
-                        .map(|_| ())
+                        .map(|r| serde_json::to_value(r).unwrap_or_default())
                     }
-                }
+                }?;
+                Ok::<_, String>(r)
             });
             cx.spawn(async move |this, cx| {
-                let failed = job.await.unwrap_or_else(|e| Err(e.to_string())).err();
+                let result = job.await.unwrap_or_else(|e| Err(e.to_string()));
                 let _ = this.update(cx, |s, cx| {
-                    if let Some(e) = failed {
-                        log::warn!("settings: delete unused models failed: {e}");
-                        s.ui.note = Some((false, "Delete unused models", e));
-                    }
+                    s.ui.unused_busy.remove(&family);
+                    let note = match result {
+                        Ok(r) => (true, unused_message(word, &r)),
+                        Err(e) => {
+                            log::warn!("settings: delete unused models failed: {e}");
+                            (false, format!("Delete failed: {e}"))
+                        }
+                    };
+                    s.ui.unused_notes.insert(family, note);
                     s.refresh(cx)
                 });
             })
             .detach();
         });
     });
-    row("Delete unused models")
-        .desc(desc)
-        .control(Button::new(id, "Delete unused").ghost().on_click(on_click))
-        .build(p)
-        .into_any_element()
+    let button = Button::new(
+        id,
+        if busy {
+            "Deleting\u{2026}"
+        } else {
+            "Delete unused"
+        },
+    )
+    .ghost()
+    .busy(busy)
+    .disabled(busy || download_running)
+    .on_click(on_click);
+    let r = row("Delete unused models").desc(desc);
+    match s.ui.unused_notes.get(&family) {
+        Some((ok, words)) => {
+            let (tone, ic) = if *ok {
+                (Tone::Ok, icons::CHECK)
+            } else {
+                (Tone::Danger, icons::ALERT)
+            };
+            r.full()
+                .aside(button)
+                .control(line(tone, ic, words.clone(), p))
+        }
+        None => r.control(button),
+    }
+    .build(p)
+    .into_any_element()
+}
+
+#[cfg(test)]
+mod unused_tests {
+    use super::unused_message;
+    use serde_json::json;
+
+    #[test]
+    fn the_delete_unused_line_says_what_went() {
+        let one = json!({ "name": "x" });
+        let r = json!({ "deleted": [one, one], "skippedActiveDownloads": [], "skippedProcessingJobs": [], "retargetedProcessingJobs": 1 });
+        assert_eq!(
+            unused_message("OCR", &r),
+            "Deleted 2 unused OCR models. Retargeted 1 queued/failed OCR job."
+        );
+        let r = json!({ "deleted": [], "skippedActiveDownloads": [one], "skippedProcessingJobs": [], "retargetedProcessingJobs": 0 });
+        assert_eq!(
+            unused_message("transcription", &r),
+            "No unused transcription models deleted. 1 running model skipped."
+        );
+        let r = json!({ "deleted": [], "skippedActiveDownloads": [], "skippedProcessingJobs": [], "retargetedProcessingJobs": 0 });
+        assert_eq!(unused_message("OCR", &r), "No unused OCR models found.");
+    }
 }

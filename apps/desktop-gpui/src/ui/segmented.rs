@@ -64,6 +64,8 @@ pub struct Segmented {
     mono: bool,
     fill: bool,
     disabled: bool,
+    /// Options that can't be picked (`disabledValues`).
+    off: Vec<usize>,
     force: Option<(usize, Force)>,
     on_change: Option<OnChange>,
 }
@@ -84,6 +86,7 @@ impl Segmented {
             mono: false,
             fill: false,
             disabled: false,
+            off: Vec::new(),
             force: None,
             on_change: None,
         }
@@ -103,6 +106,11 @@ impl Segmented {
     }
     pub fn disabled(mut self, on: bool) -> Self {
         self.disabled = on;
+        self
+    }
+    /// Grey out and refuse these options (`disabledValues`).
+    pub fn disabled_options(mut self, ix: impl IntoIterator<Item = usize>) -> Self {
+        self.off = ix.into_iter().collect();
         self
     }
     /// Pin option `ix` hovered / focused (gallery, goldens).
@@ -231,13 +239,17 @@ impl RenderOnce for Segmented {
             };
             let strong = p.text_strong;
             let on_change = self.on_change.clone();
+            let off = self.disabled || self.off.contains(&ix);
             div()
                 .id(nid(&format!("{base}-opt"), ix as u64))
                 .test_support()
                 .role(gpui_kit::Role::RadioButton)
                 .aria_label(o.label.clone())
                 .aria_selected(on)
-                .when(!self.disabled, |el| el.track_focus(&handle))
+                .when(!off, |el| el.track_focus(&handle))
+                .when(off && !self.disabled, |el| {
+                    el.opacity(theme::DISABLED_OPACITY)
+                })
                 .relative()
                 .flex()
                 .items_center()
@@ -256,7 +268,7 @@ impl RenderOnce for Segmented {
                 .when(focus_visible(&handle, forced, window), |el| {
                     el.child(ring_box(p.accent_glow, size::FOCUS_RING, radius::SM))
                 })
-                .when(!self.disabled, |el| {
+                .when(!off, |el| {
                     el.cursor_pointer().hover(move |s| s.text_color(strong))
                 })
                 .when_some(o.icon.clone(), |el, path| el.child(icon(path, ICON)))
@@ -271,7 +283,7 @@ impl RenderOnce for Segmented {
                             .child(c),
                     )
                 })
-                .when_some(on_change.filter(|_| !self.disabled), |el, f| {
+                .when_some(on_change.filter(|_| !off), |el, f| {
                     el.on_click(move |_, window, cx| f(ix, window, cx))
                 })
         });
