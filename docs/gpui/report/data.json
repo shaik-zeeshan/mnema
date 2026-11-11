@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 17:41",
- "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control is done and approved, and the rest of Settings, the Timeline, Chat and Quick Recall are done: all approved. The last two parts, Insights and the main window chrome with onboarding and small windows, are running.",
+ "updated": "2026-11-11 19:17",
+ "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control is done and approved, and the rest of Settings, the Timeline, Chat and Quick Recall are done: all approved. The main window chrome, onboarding and small windows are done too: eight screenshots are waiting for you on their page. Insights, the last part, is being finished.",
  "metrics": [
   {
    "label": "Overall",
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,125",
-   "note": "1,353 shared backend + 141 activity-source + 622 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
+   "value": "2,142",
+   "note": "1,353 shared backend + 141 activity-source + 639 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "all approved",
-   "note": "sixteen Settings, Timeline and Chat screens approved on 11 Nov; baselines recorded in 2f7092ba; two parts of the sweep still to come"
+   "value": "8 pending",
+   "note": "main window chrome, onboarding and small windows: five new screens and three changed"
   }
  ],
  "bars": [
@@ -56,14 +56,9 @@
  ],
  "now": [
   {
-   "id": "Sweep 7",
-   "title": "Main window chrome, onboarding, small windows",
-   "detail": "Titlebar, status bar, tray menu, notifications, system-wide shortcuts, licence links, onboarding end to end, and the update, access, permission and developer windows. With an agent now."
-  },
-  {
    "id": "Sweep 8",
    "title": "Insights",
-   "detail": "Overview, Journal, Subjects and Context, including the three detail windows that were built simplified. With an agent now."
+   "detail": "The last part. Most of it is built; the agent is finishing receipt audio, the day spine's hover and scroll, and the Subjects refresh pill."
   }
  ],
  "done": [
@@ -504,6 +499,12 @@
    "title": "Chat and Quick Recall match the Tauri app",
    "what": "Buttons that only re-checked now open Settings; search, rename and failed actions behave and report as in the Tauri app; the model picker has recents, Make default and Retry; Quick Recall keeps the bar open on a link and offers the full answer in Chat. Built, with click tests and a Tauri-side picture; screenshot approved on 11 Nov; not tried in the real app.",
    "commit": "f27de915"
+  },
+  {
+   "id": "Sweep 7",
+   "title": "Main window chrome, onboarding and small windows match the Tauri app",
+   "what": "Status-bar flags and button states, notification actions, onboarding's app rules, engine costs and the right Parakeet build, the expired-licence update window, the access request window following a replaced request. Built, with click tests and Tauri-side pictures; screenshots await your approval; not tried in the real app.",
+   "commit": "8f6f3056"
   }
  ],
  "next": [
@@ -819,6 +820,11 @@
   }
  ],
  "waiting": [
+  {
+   "id": "Approve",
+   "title": "Eight chrome, onboarding and small-window screenshots",
+   "detail": "Five new and three changed, each next to the Tauri app's picture. On the chrome and onboarding page, first section."
+  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -3067,5 +3073,165 @@
    "rows": []
   }
  ],
- "round8_verdict": "The Timeline with its audio drawer and frame detail, and Chat with Quick Recall, have been checked control by control against the Tauri app; about 60 differences are fixed and committed locally. You approved the seven screens on 11 Nov, and with them the text overlay hiding when the frame changes. Not tried in the real app. Nothing has been pushed."
+ "round8_verdict": "The Timeline with its audio drawer and frame detail, and Chat with Quick Recall, have been checked control by control against the Tauri app; about 60 differences are fixed and committed locally. You approved the seven screens on 11 Nov, and with them the text overlay hiding when the frame changes. Not tried in the real app. Nothing has been pushed.",
+ "round9": [
+  {
+   "anchor": "r11-approve",
+   "title": "Main window chrome, onboarding and small windows: screenshots to approve",
+   "toc": "To approve",
+   "commit": "8f6f3056",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "Eight screens need your yes, all rendered from test data, each next to the Tauri app's own picture of the same data. Five are new: the onboarding Engines tab, three status-bar flags, and the update window when the licence has expired. Three changed: the two onboarding Capture & Storage states gained the explanation line under Never recorded and plain letter tiles, and the notifications popover moved up about 5 points with slightly taller rows.",
+   "rows": [
+    {
+     "heading": "Onboarding › Engines tab (new)",
+     "shots": [
+      {
+       "file": "r11-onboarding-change-engines-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r11-onboarding-change-engines-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r11-onboarding-change-engines-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Onboarding › Capture & Storage (changed)",
+     "shots": [
+      {
+       "file": "r11-onboarding-capture-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r11-onboarding-capture-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r11-onboarding-capture-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Onboarding › Capture & Storage, permission blocked (changed)",
+     "shots": [
+      {
+       "file": "r11-onboarding-capture-blocked-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r11-onboarding-capture-blocked-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r11-onboarding-capture-blocked-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Status bar › restart to resume the screen (new)",
+     "shots": [
+      {
+       "file": "r11-shell-privacy-restart-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r11-shell-privacy-restart-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r11-shell-privacy-restart-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Status bar › low disk (new)",
+     "shots": [
+      {
+       "file": "r11-shell-low-disk-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r11-shell-low-disk-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r11-shell-low-disk-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Status bar › a start that failed (new)",
+     "shots": [
+      {
+       "file": "r11-shell-start-failed-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r11-shell-start-failed-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r11-shell-start-failed-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Notifications popover (changed)",
+     "shots": [
+      {
+       "file": "r11-shell-notifications-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r11-shell-notifications-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r11-shell-notifications-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Update window › licence expired (new)",
+     "shots": [
+      {
+       "file": "r11-update-expired-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r11-update-expired-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r11-update-expired-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r11-chrome",
+   "title": "Main window chrome, onboarding and small windows",
+   "toc": "What changed",
+   "commit": "8f6f3056",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "About 30 differences from the Tauri app. Status bar: the \"restart to resume\" flag for the privacy filter was missing; the low-disk flag did nothing when clicked and now opens Settings › Storage; the pause button lacked several of its states, including being disabled when recording will resume by itself; Stop now shows while recording starts, so the bar does not jump; the source chips' tooltips showed 1, 2 and 3 even after you rebound them. Notifications: an Open settings button left its notification behind; Start on the not-recording reminder closed the popover even when the start was refused. Onboarding: typing the name of an app that is not installed into Never recorded threw the name away, and it is now kept as a rule for when the app is installed; Parakeet picked the 2.5 GB build instead of the 670 MB default, overstating the download by about 1.9 GB; the Engines tab was missing its descriptions, cost bars, Use recommended and the cloud-option note. Small windows: with an expired licence, Refresh license in the update window showed nothing while working and failures only went to the log; the CLI access request window did not switch when another request replaced the one shown; the developer window's AI tab said \"none yet\" for lists that had failed to load. Checked and found the same: the tray menu in every state, closing, hiding and reopening windows, a second launch, licence links, system-wide shortcuts. The licence banner and receipts were checked from made-up states only, never the real licence. Kept different on purpose: Settings (⌘,), the developer window (⌘D) and the shortcuts sheet (/) work on every screen, where the Tauri app only handles them on the Timeline, which looks accidental. Not tried in the real app.",
+   "rows": []
+  }
+ ],
+ "round9_verdict": "The main window chrome, onboarding and the small windows have been checked control by control against the Tauri app; about 30 differences are fixed and committed locally. Eight screens need your approval, each next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed."
 }

@@ -134,7 +134,7 @@ def shots_page(g, d, drafts):
 def fixes_page(d, drafts, key="fixes", title="Today’s fixes: before and after",
                lede="Pictures of each fix from your hands-on test. None of the changed screenshots replace the approved "
                     "ones until you approve them, so this is the only place they show."):
-    p = [top("Mnema · GPUI desktop app · " + ("11 Nov 2026" if key in ("round4", "round5", "round6", "round7", "round8") else "10 Nov 2026"), title, lede,
+    p = [top("Mnema · GPUI desktop app · " + ("11 Nov 2026" if key.startswith("round") and key not in ("round2", "round3") else "10 Nov 2026"), title, lede,
              f'Updated {E(d["updated"])} · {link(drafts, "index", "back to the progress report")}'),
          '<div class="pp-verdict"><span class="pp-chip" data-tone="strong">Your call</span>'
          f'<p>{E(d[key + "_verdict"])}</p></div>']
@@ -188,7 +188,8 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = ([(link(drafts, "round8", "Timeline, Chat and Quick Recall, checked against the Tauri app"), "11 Nov · keys, the text overlay, audio errors, the frame detail window, the model picker",
+    rows = ([(link(drafts, "round9", "Main window chrome, onboarding and small windows, checked against the Tauri app"), "11 Nov · status-bar flags, notifications, onboarding engines and app rules, the update window",
+              page_chip(d, "round9"))] if d.get("round9") else []) + ([(link(drafts, "round8", "Timeline, Chat and Quick Recall, checked against the Tauri app"), "11 Nov · keys, the text overlay, audio errors, the frame detail window, the model picker",
               page_chip(d, "round8"))] if d.get("round8") else []) + ([(link(drafts, "round7", "The rest of Settings, checked against the Tauri app"), "11 Nov · shortcuts, capture, privacy, data, about, licence; and the keychain prompt",
               page_chip(d, "round7"))] if d.get("round7") else []) + ([(link(drafts, "round6", "The date control, checked against the Tauri app"), "11 Nov · the Insights calendar's week rows and month grid, Chat's range, the Timeline jumper",
               page_chip(d, "round6"))] if d.get("round6") else []) + ([(link(drafts, "round5", "Settings › Intelligence, checked against the Tauri app"), "11 Nov · the provider Manage panel, connectors, model sections",
@@ -266,6 +267,11 @@ def main():
          fixes_page(d, drafts, "approve", "Earlier approvals",
                     "Screenshots you approved on 10 Nov before they became references. Nothing here is waiting."),
          "Mnema GPUI — earlier approvals")
+    if d.get("round9"):
+        emit("round9", "round9.html", "Chrome and onboarding check",
+             fixes_page(d, drafts, "round9", "Main window chrome, onboarding and small windows, checked against the Tauri app",
+                        "The titlebar, status bar, notifications, tray, onboarding and the small windows, compared with the Tauri app control by control. The new-app pictures are rendered from test data; the Tauri pictures are the Tauri app's own render of the same data."),
+             "Mnema GPUI — chrome and onboarding check")
     if d.get("round8"):
         emit("round8", "round8.html", "Timeline and Chat check",
              fixes_page(d, drafts, "round8", "Timeline, Chat and Quick Recall, checked against the Tauri app",
