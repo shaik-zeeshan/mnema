@@ -101,7 +101,7 @@ impl Settings {
         };
         self.pool_loading = true;
         let task = crate::bridge::tokio::Tokio::spawn(cx, async move {
-            crate::chat::data::list_models(&core).await
+            crate::chat::data::list_models(&core, None).await
         });
         cx.spawn(async move |this, cx| {
             let (pool, failures) = task.await.unwrap_or_default();

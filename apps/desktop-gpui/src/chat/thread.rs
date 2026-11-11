@@ -81,6 +81,14 @@ fn header(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
     let pinned = chat.head_pinned();
     let title: AnyElement = if chat.renaming == Some(Rename::Header) {
         div()
+            .id("chat-rename-box")
+            // `onRenameKeydown`: Esc cancels (the field lets it through).
+            .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
+                if e.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.cancel_rename(cx);
+                }
+            }))
             .flex_initial()
             .w(px(420.))
             .min_w_0()
@@ -165,11 +173,7 @@ fn header(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
                         "icons/pin.svg".into(),
                         pinned,
                     )
-                    .on_click(cx.listener(|this, _, _, cx| {
-                        if let Some(id) = this.active.clone() {
-                            this.toggle_pin(id, cx)
-                        }
-                    })),
+                    .on_click(cx.listener(|this, _, _, cx| this.toggle_pin_active(cx))),
                 )
                 .child(
                     act(
@@ -408,7 +412,10 @@ pub fn render(
         .flex_1()
         .min_w_0()
         .min_h_0()
-        .when(!new, |d| d.child(header(chat, p, cx)))
+        // Chat.svelte draws the header in "chat" mode only: not over "deleted".
+        .when(!new && chat.pane != Pane::Missing, |d| {
+            d.child(header(chat, p, cx))
+        })
         .child(
             div()
                 .id("chat-scroll")

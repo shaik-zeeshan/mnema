@@ -98,6 +98,62 @@ fn chat_scope(
     Ok(shot)
 }
 
+/// `chat-picker-open`: the done chat's model picker clicked open while its one
+/// provider failed to list (`parity/fixtures/chat/picker.json` rejects
+/// `ai_runtime_list_models`): the failure row with Retry and the footer link.
+pub fn chat_picker(
+    cx: &mut VisualTestAppContext,
+    model: ShellModel,
+    setting: AppearanceSetting,
+) -> anyhow::Result<image::RgbaImage> {
+    let fx = chat_fixture("picker")?;
+    cx.update(|cx| theme::set_setting(setting, cx));
+    let mut chat_entity = None;
+    let window = crate::pointer::open(
+        cx,
+        compare::viewport(crate::chat::VIEWPORT),
+        |window, cx| {
+            let shell = cx.new(|cx| {
+                let mut shell = Shell::new(model, window, cx);
+                shell.go(Surface::Chat, cx);
+                shell
+            });
+            let chat = shell.read(cx).chat.clone();
+            chat.update(cx, |chat, cx| {
+                chat.set_data(fx.data.clone(), cx);
+                if let Some(convo) = &fx.open {
+                    chat.show(convo, fx.snapshot.as_ref(), cx);
+                }
+            });
+            chat_entity = Some(chat);
+            cx.new(|cx| Root::new(shell, window, cx))
+        },
+    )?;
+    cx.run_until_parked();
+    cx.update_window(window.into(), |_, window, _| window.refresh())?;
+    cx.run_until_parked();
+    click(cx, window.into(), "chat-model")?;
+    // The listing's answer, as the Svelte loader words a rejected call.
+    let chat = chat_entity.expect("chat");
+    cx.update(|cx| {
+        chat.update(cx, |c, cx| {
+            c.pool.clear();
+            c.pool_loading = false;
+            c.pool_failures = vec![mnema_gpui::ui::model_picker::ProviderFailure {
+                provider: "anthropic".into(),
+                reason: "couldn't list models".into(),
+            }];
+            cx.notify();
+        })
+    });
+    cx.run_until_parked();
+    cx.update_window(window.into(), |_, window, _| window.refresh())?;
+    cx.run_until_parked();
+    let shot = cx.capture_screenshot(window.into())?;
+    cx.update_window(window.into(), |_, window, _| window.remove_window())?;
+    Ok(shot)
+}
+
 pub fn goldens(
     cx: &mut VisualTestAppContext,
     filters: &[String],
@@ -139,6 +195,16 @@ pub fn goldens(
             if let Err(e) = compare::check_golden(&name, &shot) {
                 failures.push(e.to_string());
             }
+        }
+    }
+    for (theme_name, setting) in themes {
+        let name = format!("chat-picker-open-{theme_name}");
+        if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {
+            continue;
+        }
+        let shot = chat_picker(cx, populated.clone(), setting.clone())?;
+        if let Err(e) = compare::check_golden(&name, &shot) {
+            failures.push(e.to_string());
         }
     }
     Ok(failures)

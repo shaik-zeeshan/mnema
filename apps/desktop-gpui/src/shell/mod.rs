@@ -406,6 +406,14 @@ impl Shell {
             cx.listener(|this, _: &keymap::GoInsights, _, cx| this.go(Surface::Insights, cx)),
         )
         .on_action(cx.listener(|this, _: &keymap::OpenChats, _, cx| this.go(Surface::Chat, cx)))
+        .on_action(cx.listener(|this, _: &keymap::NextFavoriteModel, _, cx| {
+            // ⌘⇧M on Chat: the next starred model, without the picker.
+            let used = this.surface == Surface::Chat
+                && this.chat.update(cx, |c, cx| c.next_favorite(cx));
+            if !used {
+                cx.propagate();
+            }
+        }))
         .on_action(cx.listener(|this, _: &keymap::ToggleSettings, _, cx| this.toggle_settings(cx)))
         .on_action(cx.listener(|this, _: &keymap::ToggleShortcutsHelp, w, cx| {
             // `/` on Settings focuses its search instead.

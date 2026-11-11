@@ -35,6 +35,9 @@ pub struct Source {
     #[serde(default)]
     pub ended_at: String,
     pub source_kind: Option<String>,
+    /// An audio source's matched span and its frame, for the Timeline hand-off.
+    pub span_start_ms: Option<i64>,
+    pub aligned_frame_id: Option<i64>,
 }
 
 pub fn sources(value: &Value) -> Vec<Source> {

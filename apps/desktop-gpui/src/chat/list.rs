@@ -94,7 +94,13 @@ pub fn render(
                         .ghost()
                         .sm()
                         .on_click(cx.listener(|this, _, window, cx| {
-                            this.search.update(cx, |s, cx| s.set_value("", window, cx));
+                            // `clearSearch`: set_value emits no Change, so re-list now.
+                            this.search_task = None;
+                            this.search.update(cx, |s, cx| {
+                                s.set_value("", window, cx);
+                                s.focus(window, cx);
+                            });
+                            this.reload(cx);
                         }))
                         .into_any_element()],
                     p,
@@ -307,6 +313,16 @@ fn row(
     let (pin_id, ren_id, del_id) = (id.clone(), id.clone(), id.clone());
     let title_el = if renaming {
         div()
+            .id("chat-rename-box")
+            // `onRenameKeydown`: Esc cancels (the field lets it through).
+            .capture_key_down(cx.listener(|this, e: &gpui_kit::KeyDownEvent, _, cx| {
+                if e.keystroke.key == "escape" {
+                    cx.stop_propagation();
+                    this.cancel_rename(cx);
+                }
+            }))
+            // A click in the field must not open the row under it.
+            .on_click(|_, _, cx| cx.stop_propagation())
             .h(px(22.))
             .px(px(6.))
             .ml(px(-6.))

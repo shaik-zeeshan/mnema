@@ -84,6 +84,8 @@ pub struct OptionRow {
     pub starred: Option<bool>,
     /// 1-9 on a starred row in the quick view.
     pub num: Option<usize>,
+    /// Offer "Make default" (where the parent allows it, never on the current one).
+    pub can_make_default: bool,
     pub index: usize,
 }
 
@@ -124,6 +126,8 @@ pub struct Input<'a> {
     pub favorites: &'a [EngineRef],
     pub recents: &'a [EngineRef],
     pub can_star: bool,
+    /// `Some(current default)` when rows offer "Make default".
+    pub make_default_for: Option<Option<&'a EngineRef>>,
     pub loading: bool,
     pub failures: &'a [(String, String, String)],
 }
@@ -181,6 +185,9 @@ pub fn build(input: Input) -> Vec<Row> {
             selected: is_selected(provider, model),
             starred: input.can_star.then(|| input.favorites.contains(&engine)),
             num,
+            can_make_default: input
+                .make_default_for
+                .is_some_and(|current| current != Some(&engine)),
             index: *index,
         }));
         *index += 1;
@@ -196,6 +203,7 @@ pub fn build(input: Input) -> Vec<Row> {
                 selected: s.selected,
                 starred: None,
                 num: None,
+                can_make_default: false,
                 index: *index,
             }));
             *index += 1;
@@ -265,6 +273,7 @@ pub fn build(input: Input) -> Vec<Row> {
                     selected: false,
                     starred: None,
                     num: None,
+                    can_make_default: false,
                     index,
                 }));
                 index += 1;

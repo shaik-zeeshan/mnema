@@ -336,12 +336,32 @@ impl QuickRecall {
 
     /// Answer links open in the browser: the next blur must not dismiss.
     pub fn suppress_next_blur(&mut self) {
-        self.suppress_blur = true;
+        self.suppress_blur
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `openAnswerLink`: the panel stays up while the browser takes focus.
+    pub(super) fn link_opener(
+        &self,
+    ) -> impl Fn(&gpui_kit::SharedString, &gpui_kit::ClickEvent, &mut gpui_kit::Window, &mut App)
+           + Send
+           + Sync
+           + 'static {
+        let flag = self.suppress_blur.clone();
+        move |url, e, window, cx| {
+            if crate::ui::link::openable(url) {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            crate::ui::link::prose_click(url, e, window, cx)
+        }
     }
 
     /// The setup blur within 300 ms of a summon, or a one-shot suppress, keeps the panel.
     pub fn should_dismiss_on_blur(&mut self, now: Instant) -> bool {
-        if std::mem::take(&mut self.suppress_blur) {
+        if self
+            .suppress_blur
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
             return false;
         }
         !self

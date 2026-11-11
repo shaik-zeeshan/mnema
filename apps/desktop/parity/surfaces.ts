@@ -281,12 +281,15 @@ export const SURFACES: Record<string, Surface> = {
       done: "/chat?c=c-done",
       error: "/chat?c=c-error",
       peek: "/chat?c=c-done",
+      picker: "/chat?c=c-done",
     },
     // The frame peek (FrameDetailModal) on the done chat's first frame chip.
-    stateClick: { peek: [".ch-frame >> nth=0"] },
+    // The model picker opened while its provider fails to list (fixtures/chat/picker.json).
+    stateClick: { peek: [".ch-frame >> nth=0"], picker: [".ch-model"] },
     states: {
       default: "",
       peek: "state=thread",
+      picker: "state=models-failed",
       empty: "state=history-empty",
       list: "",
       "mid-stream": "state=writing",

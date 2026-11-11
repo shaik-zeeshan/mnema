@@ -11,11 +11,11 @@ use gpui_kit::{
     div, px, radians, AnyElement, App, Div, ElementId, Entity, SharedString, Transformation, Window,
 };
 
-use super::rows::{HeaderIcon, Mode, OptionRow, Pick, Row};
+use super::rows::{HeaderIcon, Mode, Pick, Row};
 use super::{state, ModelPicker, OnSelect, PickerState, Spec, Trigger};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::chip::{chip, ChipKind};
-use crate::ui::{icon, kbd, nid, popover, skeleton, with_tip, FIELD_RADIUS};
+use crate::ui::{icon, nid, popover, skeleton, with_tip, FIELD_RADIUS};
 
 /// `.ch-pop` width and `.ch-opts` max height.
 const POP_W: gpui_kit::Pixels = px(360.);
@@ -122,6 +122,7 @@ impl RenderOnce for ModelPicker {
         let query = s.search.read(cx).value().to_string();
         let rows = self.spec.rows(&query, s.mode, &s.groups);
         let highlight = s.highlight;
+        let mode = s.mode;
         let search = s.search.clone();
         let base = self.id.to_string();
 
@@ -136,10 +137,36 @@ impl RenderOnce for ModelPicker {
                 .cloned()
                 .collect();
             let (st_k, sel_k, spec_k) = (st.clone(), self.on_select.clone(), self.spec.clone());
+            let fav_k = self.on_favorite.clone();
             let st_out = st.clone();
-            let list = rows
+            // "Loading models…" under Default while the quick view's pool lists.
+            let loading_note = self.spec.loading
+                && query.trim().is_empty()
+                && mode == Mode::Quick
+                && super::rows::has_quick_view(&self.spec.favorites, &self.spec.recents);
+            let list: Vec<AnyElement> = rows
                 .iter()
-                .map(|row| self.render_row(row, highlight, &st, &base, &p));
+                .enumerate()
+                .flat_map(|(i, row)| {
+                    let note = (i == 1 && loading_note).then(|| {
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.))
+                            .px(px(8.))
+                            .pt(px(6.))
+                            .pb(px(2.))
+                            .text_size(text::SM)
+                            .text_color(p.text_subtle)
+                            .child(crate::ui::progress::spinner(size::SPIN_SM))
+                            .child("Loading models…")
+                            .into_any_element()
+                    });
+                    note.into_iter().chain(std::iter::once(
+                        self.render_row(row, highlight, &st, &base, &p),
+                    ))
+                })
+                .collect();
             let anchor = popover::surface(&p)
                 .id(ElementId::Name(format!("{base}-pop").into()))
                 .test_support()
@@ -203,15 +230,34 @@ impl RenderOnce for ModelPicker {
                         }),
                 ))
                 .when_some(self.spec.foot.clone(), |el, foot| {
+                    let link = self.foot_link.clone().map(|(label, f)| {
+                        let (st, muted, strong) = (st.clone(), p.text_muted, p.text_strong);
+                        div()
+                            .id(ElementId::Name(format!("{base}-foot-link").into()))
+                            .test_support()
+                            .role(gpui_kit::Role::Link)
+                            .ml_auto()
+                            .cursor_pointer()
+                            .text_color(muted)
+                            .hover(move |s| s.text_color(strong))
+                            .child(label)
+                            .on_click(move |_, window, cx| {
+                                close(&st, cx);
+                                f(window, cx)
+                            })
+                    });
                     el.child(
                         div()
+                            .flex()
+                            .items_center()
                             .px(px(12.))
                             .py(px(9.))
                             .border_t_1()
                             .border_color(p.overlay_border)
                             .text_size(text::SM)
                             .text_color(p.text_subtle)
-                            .child(foot),
+                            .child(foot)
+                            .children(link),
                     )
                 })
                 .capture_key_down(move |e, window, cx| {
@@ -237,6 +283,23 @@ impl RenderOnce for ModelPicker {
                         return;
                     }
                     let last = nav.len().saturating_sub(1);
+                    if key == "d" && (mods.platform || mods.control) {
+                        cx.stop_propagation();
+                        let h = st_k.read(cx).highlight;
+                        let star = nav.iter().find_map(|r| match r {
+                            Row::Option(o) if o.index == h && o.starred.is_some() => {
+                                match &o.pick {
+                                    Pick::Pool(e) => Some(e.clone()),
+                                    _ => None,
+                                }
+                            }
+                            _ => None,
+                        });
+                        if let (Some(e), Some(f)) = (star, &fav_k) {
+                            f(e, window, cx);
+                        }
+                        return;
+                    }
                     match key {
                         "down" | "up" => {
                             cx.stop_propagation();
@@ -259,6 +322,14 @@ impl RenderOnce for ModelPicker {
                         "escape" => {
                             cx.stop_propagation();
                             close(&st_k, cx);
+                        }
+                        // Typing re-filters the list: the top row is lit again.
+                        _ if (e.keystroke.key_char.is_some()
+                            && !mods.platform
+                            && !mods.control)
+                            || key == "backspace" =>
+                        {
+                            st_k.update(cx, |s, _| s.highlight = 0);
                         }
                         _ => {}
                     }
@@ -570,142 +641,37 @@ impl ModelPicker {
                 .pb(px(6.))
                 .child(skeleton::lines(2, p))
                 .into_any_element(),
-            Row::Failure { text: t } => div()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .px(px(8.))
-                .pt(px(4.))
-                .pb(px(6.))
-                .text_size(text::SM)
-                .text_color(p.warn)
-                .child(icon(IconName::TriangleAlert.path(), px(13.)))
-                .child(SharedString::from(t.clone()))
-                .into_any_element(),
+            Row::Failure { text: t } => {
+                let loading = self.spec.loading;
+                let retry = self.on_retry.clone().map(|f| {
+                    crate::ui::Button::new(
+                        ElementId::Name(format!("{base}-retry").into()),
+                        if loading { "Retrying…" } else { "Retry" },
+                    )
+                    .ghost()
+                    .sm()
+                    .disabled(loading)
+                    .on_click(move |_, window, cx| f(window, cx))
+                });
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap(px(6.))
+                    .px(px(8.))
+                    .pt(px(4.))
+                    .pb(px(6.))
+                    .text_size(text::SM)
+                    .text_color(p.warn)
+                    .child(icon(IconName::TriangleAlert.path(), px(13.)))
+                    .child(SharedString::from(t.clone()))
+                    .children(retry)
+                    .into_any_element()
+            }
             Row::Note { text: t } => note(t.clone(), p).into_any_element(),
             Row::Option(o) => hover_to(self.option(o, cursor, base, p), o.index)
                 .on_click(click(row.clone()))
                 .into_any_element(),
         }
-    }
-
-    fn option(
-        &self,
-        o: &OptionRow,
-        cursor: bool,
-        base: &str,
-        p: &Palette,
-    ) -> gpui_kit::Stateful<Div> {
-        let sentinel = o.pick == Pick::Sentinel;
-        let lit = cursor;
-        let fav = self.on_favorite.clone();
-        let engine = match &o.pick {
-            Pick::Pool(e) => Some(e.clone()),
-            _ => None,
-        };
-        let main = div()
-            .flex_1()
-            .min_w_0()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .when(sentinel, |el| el.font_family(FONT_UI))
-            .child(SharedString::from(o.main.before.clone()))
-            .when(!o.main.matched.is_empty(), |el| {
-                el.child(
-                    div()
-                        .text_color(p.accent)
-                        .font_weight(gpui_kit::FontWeight::BOLD)
-                        .child(SharedString::from(o.main.matched.clone())),
-                )
-                .child(SharedString::from(o.main.after.clone()))
-            })
-            .when_some(
-                sentinel
-                    .then(|| self.spec.sentinel.as_ref().and_then(|(_, r)| r.clone()))
-                    .flatten(),
-                |el, (_, m)| {
-                    el.child(
-                        div()
-                            .ml(px(6.))
-                            .font_family(FONT_MONO)
-                            .text_size(text::XS)
-                            .text_color(p.text_subtle)
-                            .child(SharedString::from(crate::chat::format::model_display_name(
-                                &m,
-                            ))),
-                    )
-                },
-            );
-        let meta = match (o.num, &o.sub) {
-            (Some(n), _) => Some(kbd(n.to_string(), p).into_any_element()),
-            (None, Some(s)) => Some(
-                div()
-                    .font_family(FONT_MONO)
-                    .font_weight(theme::W_REGULAR)
-                    .text_size(text::XS)
-                    .text_color(p.text_subtle)
-                    .whitespace_nowrap()
-                    .child(SharedString::from(s.clone()))
-                    .into_any_element(),
-            ),
-            _ => None,
-        };
-        let star = o.starred.zip(engine).map(|(on, e)| {
-            div()
-                .id(nid(&format!("{base}-star"), o.index as u64))
-                .role(gpui_kit::Role::Button)
-                .aria_label(if on { "Unstar" } else { "Star" })
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(20.))
-                .rounded(px(5.))
-                .text_color(if on { p.warn } else { p.text_subtle })
-                .when(!on && !lit, |el| el.invisible())
-                .child(icon(IconName::Star.path(), px(12.)))
-                .on_click(move |_, window, cx| {
-                    cx.stop_propagation();
-                    if let Some(f) = &fav {
-                        f(e.clone(), window, cx);
-                    }
-                })
-                .into_any_element()
-        });
-        div()
-            .id(nid(&format!("{base}-opt"), o.index as u64))
-            .role(gpui_kit::Role::ListBoxOption)
-            .aria_selected(o.selected)
-            .aria_label(SharedString::from(o.title.clone()))
-            .flex()
-            .items_center()
-            .gap(px(8.))
-            .w_full()
-            .px(px(8.))
-            .py(px(6.))
-            .rounded(radius::SM)
-            .cursor_pointer()
-            .font_family(FONT_MONO)
-            .font_weight(theme::W_MEDIUM)
-            .text_size(text::SM)
-            .text_color(if lit || o.selected {
-                p.text_strong
-            } else {
-                p.text
-            })
-            .when(lit, |el| el.bg(p.surface_hover))
-            .child(glyph(&o.glyph, p))
-            .child(main)
-            .children(meta)
-            .child(div().w(px(20.)).flex_none().children(star))
-            .child(
-                div()
-                    .w(px(14.))
-                    .flex_none()
-                    .text_color(p.accent)
-                    .when(o.selected, |el| {
-                        el.child(icon(IconName::Check.path(), px(13.)))
-                    }),
-            )
     }
 }

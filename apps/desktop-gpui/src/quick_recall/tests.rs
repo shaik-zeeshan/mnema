@@ -394,3 +394,94 @@ fn quick_looks_copy_button_copies_the_frame_text_and_says_copied(cx: &mut TestAp
         "reverted at 1.4 s"
     );
 }
+
+#[gpui_kit::test]
+fn an_answer_link_keeps_the_panel_up_while_the_browser_opens(cx: &mut TestAppContext) {
+    let (_, v, _) = open(cx, "idle");
+    v.update(cx, |qr, cx| {
+        qr.summoned(cx.background_executor().now());
+        qr.on_activation(true, cx);
+    });
+    advance(cx, BLUR_GRACE * 2);
+    // `openAnswerLink`: the prose's link handler suppresses the next blur.
+    let open_link = v.read_with(cx, |qr, _| qr.link_opener());
+    cx.update(|cx| {
+        let window = cx.windows()[0];
+        window
+            .update(cx, |_, window, cx| {
+                let click = gpui_kit::ClickEvent::Keyboard(Default::default());
+                open_link(&"https://example.com/notes".into(), &click, window, cx);
+            })
+            .unwrap();
+    });
+    v.update(cx, |qr, cx| qr.on_activation(false, cx));
+    assert_eq!(
+        v.read_with(cx, |qr, _| (qr.dismissals, qr.visible)),
+        (0, true),
+        "the browser's focus isn't a click away"
+    );
+    // A link that can't open suppresses nothing.
+    cx.update(|cx| {
+        let window = cx.windows()[0];
+        window
+            .update(cx, |_, window, cx| {
+                let click = gpui_kit::ClickEvent::Keyboard(Default::default());
+                open_link(&"file:///etc/passwd".into(), &click, window, cx);
+            })
+            .unwrap();
+    });
+    v.update(cx, |qr, cx| {
+        qr.on_activation(true, cx);
+        qr.on_activation(false, cx);
+    });
+    assert_eq!(v.read_with(cx, |qr, _| qr.dismissals), 1);
+}
+
+#[gpui_kit::test]
+fn a_long_answer_points_to_chat(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, "ask-done");
+    typed(cx, w, "what did ana say");
+    advance(cx, ASK_PAUSE);
+    let set = |cx: &mut TestAppContext, text: &str| {
+        v.update(cx, |qr, cx| {
+            let mut t = crate::chat::ChatTurn::new(0, "what did ana say", "streaming");
+            t.apply(
+                &capture_types::TurnUpdate::AppendProse { text: text.into() },
+                0,
+            );
+            t.view.phase = "done".into();
+            qr.ask.turn = Some(t);
+            qr.ask.thread_id = Some("c1".into());
+            cx.notify();
+        });
+        // One frame measures the answer, the next draws what that implies.
+        frame(cx, w);
+        frame(cx, w);
+        cx.update_window(w.into(), |_, window, _| {
+            window.try_find("qr-ans-more").is_some()
+        })
+        .unwrap()
+    };
+    assert!(
+        !set(cx, "Ana said the launch moved to Friday."),
+        "a short answer fits"
+    );
+    let long = (0..14)
+        .map(|i| format!("Line {i} of a model that ignored the two-sentence brief."))
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    assert!(
+        set(cx, &long),
+        "past the clip: Read the full answer in Chat"
+    );
+    v.update(cx, |qr, _| qr.visible = true);
+    let before = v.read_with(cx, |qr, _| qr.dismissals);
+    cx.update_window(w.into(), |_, window, cx| window.click("qr-ans-more", cx))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        v.read_with(cx, |qr, _| qr.dismissals),
+        before + 1,
+        "Chat opens the thread and the bar closes"
+    );
+}

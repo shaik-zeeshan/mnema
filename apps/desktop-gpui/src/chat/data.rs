@@ -236,18 +236,108 @@ pub fn toggle_favorite(core: &Arc<AppCore>, engine: (String, String)) -> Result<
         .map_err(|e| e.message)
 }
 
+/// How many recent models the backend keeps (`RECENT_MODELS_CAP`).
+pub const RECENT_MODELS_CAP: usize = 5;
+
+/// `pushRecent`: `engine` first, then the other recents that aren't starred, capped.
+pub fn next_recents(
+    recents: &[(String, String)],
+    engine: &(String, String),
+    favorites: &[(String, String)],
+) -> Vec<(String, String)> {
+    std::iter::once(engine.clone())
+        .chain(
+            recents
+                .iter()
+                .filter(|r| *r != engine && !favorites.contains(r))
+                .cloned(),
+        )
+        .take(RECENT_MODELS_CAP)
+        .collect()
+}
+
+/// Record a model picked in Chat (`update_ai_runtime_settings { recentModels }`);
+/// a no-op when it's already the most recent.
+pub fn push_recent(core: &Arc<AppCore>, engine: (String, String)) -> Result<(), String> {
+    let state = core
+        .try_state::<RecordingSettingsState>()
+        .ok_or("Settings aren't loaded yet.")?;
+    let ai = current_recording_settings(&state).ai_runtime;
+    let pair = |e: &AiEngineRef| (e.provider.clone(), e.model.clone());
+    let recents: Vec<_> = ai.recent_models.iter().map(pair).collect();
+    if recents.first() == Some(&engine) {
+        return Ok(());
+    }
+    let favorites: Vec<_> = ai.favorite_models.iter().map(pair).collect();
+    let next = next_recents(&recents, &engine, &favorites)
+        .into_iter()
+        .map(|(provider, model)| AiEngineRef { provider, model })
+        .collect();
+    let request = capture_types::UpdateAiRuntimeSettingsRequest {
+        recent_models: Some(next),
+        ..Default::default()
+    };
+    app_core::native_capture::settings_update::update_ai_runtime_settings(request, core)
+        .map(drop)
+        .map_err(|e| e.message)
+}
+
+/// "Make default": Ask AI's model (what Chat's "Default" and Quick Recall run),
+/// saved with its provider; the global default model is left alone.
+pub fn make_ask_ai_default(core: &Arc<AppCore>, engine: (String, String)) -> Result<(), String> {
+    core.try_state::<RecordingSettingsState>()
+        .ok_or("Settings aren't loaded yet.")?;
+    let request = capture_types::UpdateAccessSettingsRequest {
+        ask_ai_model: Some(engine.1),
+        ask_ai_model_provider: Some(engine.0),
+        ..Default::default()
+    };
+    app_core::native_capture::settings_update::update_access_settings(request, core)
+        .map(drop)
+        .map_err(|e| e.message)
+}
+
 /// `ai_runtime_list_models` (in app-core): the merged pool plus per-provider failures.
-pub async fn list_models(core: &AppCore) -> (Vec<PoolModel>, Vec<ProviderFailure>) {
+/// `aiListingFailureCopy`: the one machine code a listing failure passes
+/// through, in words (every picker renders the reason verbatim).
+pub fn listing_failure_copy(reason: &str) -> &str {
+    if reason.starts_with("needs_reconnect:") {
+        "sign in with ChatGPT again"
+    } else if reason.starts_with("provider_unreachable:") {
+        "unreachable"
+    } else {
+        reason
+    }
+}
+
+/// `only` lists just those providers (a Retry of the ones that failed).
+pub async fn list_models(
+    core: &AppCore,
+    only: Option<Vec<capture_types::AiProviderConfig>>,
+) -> (Vec<PoolModel>, Vec<ProviderFailure>) {
     #[derive(Deserialize)]
     struct Listed {
         models: Vec<PoolModel>,
         failures: Vec<ProviderFailure>,
     }
-    match app_core::ai_runtime::ai_runtime_list_models(core, None).await {
+    // The request's field is private to app-core; its serde shape is the contract.
+    let request =
+        only.and_then(|p| serde_json::from_value(serde_json::json!({ "providers": p })).ok());
+    match app_core::ai_runtime::ai_runtime_list_models(core, request).await {
         // The result's fields are private to app-core; its serde shape is the contract.
         Ok(result) => serde_json::to_value(result)
             .and_then(serde_json::from_value::<Listed>)
-            .map(|l| (l.models, l.failures))
+            .map(|l| {
+                let failures = l
+                    .failures
+                    .into_iter()
+                    .map(|f| ProviderFailure {
+                        reason: listing_failure_copy(&f.reason).to_string(),
+                        ..f
+                    })
+                    .collect();
+                (l.models, failures)
+            })
             .unwrap_or_default(),
         Err(e) => {
             log::warn!("chat: model listing failed: {e}");

@@ -11,6 +11,25 @@ use crate::bridge::tokio::Tokio;
 use crate::ui::clock;
 use crate::ui::toast::Toast;
 
+/// A native error alert (Svelte's `message(…, { kind: "error" })`): the bold
+/// line says what failed, the detail says why.
+pub(super) fn error_dialog(title: &str, detail: String, cx: &mut gpui_kit::App) {
+    dialog(app_core::DialogKind::Error, title, detail, cx);
+}
+
+/// `Host::message` (a native alert on the key window).
+fn dialog(kind: app_core::DialogKind, title: &str, message: String, cx: &mut gpui_kit::App) {
+    let req = app_core::MessageDialog {
+        title: title.into(),
+        message,
+        kind,
+    };
+    match core(cx) {
+        Some(core) => core.host().message(req),
+        None => crate::native::dialogs::message(req, cx),
+    }
+}
+
 fn title_from(question: &str) -> String {
     let t = question.split_whitespace().collect::<Vec<_>>().join(" ");
     if t.chars().count() > TITLE_MAX {
@@ -27,18 +46,34 @@ impl Chat {
         let (Some(core), Some(id)) = (core(cx), frame_id) else {
             return;
         };
+        // `openCapturedUrl`: one open at a time; the chip is disabled meanwhile.
+        if self.opening_url == Some(id) {
+            return;
+        }
+        self.opening_url = Some(id);
+        cx.notify();
         let task = Tokio::spawn(cx, async move { data::open_captured_url(&core, id).await });
         cx.spawn(async move |this, cx| {
-            let message = match task.await {
-                Ok(Ok(true)) => return,
-                Ok(Ok(false)) => "No openable page for this result.".to_string(),
-                Ok(Err(e)) => format!("Couldn't open page: {e}"),
-                Err(e) => format!("Couldn't open page: {e}"),
+            let outcome = match task.await {
+                Ok(r) => r,
+                Err(e) => Err(e.to_string()),
             };
             let _ = this.update(cx, |this, cx| {
-                this.toasts.update(cx, |t, cx| {
-                    t.push(crate::ui::toast::Toast::danger(message), cx)
-                });
+                this.opening_url = None;
+                cx.notify();
+                // The shared feedback: an info note for no page, an error alert for a failure.
+                let (kind, message) = match outcome {
+                    Ok(true) => return,
+                    Ok(false) => (
+                        app_core::DialogKind::Info,
+                        "No openable page for this result.".to_string(),
+                    ),
+                    Err(e) => (
+                        app_core::DialogKind::Error,
+                        format!("Couldn't open URL: {e}"),
+                    ),
+                };
+                dialog(kind, "Couldn't open page", message, cx);
             });
         })
         .detach();
@@ -182,11 +217,12 @@ impl Chat {
             async move { data::delete_last_turn(&core, &id, ix).await }
         });
         cx.spawn_in(window, async move |this, cx| {
-            let ok = matches!(task.await, Ok(Ok(())));
+            let result = task.await.unwrap_or_else(|e| Err(e.to_string()));
             let _ = this.update_in(cx, |this, window, cx| {
                 this.streaming = false;
-                if !ok {
-                    log::warn!("chat: regenerate couldn't delete the last turn");
+                if let Err(e) = result {
+                    // A failed delete keeps the old answer, and says so.
+                    error_dialog("Couldn’t regenerate this answer", e, cx);
                     cx.notify();
                     return;
                 }
@@ -216,19 +252,113 @@ impl Chat {
         .detach();
     }
 
-    /// The picker opened: list the pool once (a reopen re-lists).
+    /// The picker opened (or Retry): the first open lists everyone; a reopen
+    /// re-lists only the providers that failed, so the working ones stay put.
+    /// A changed provider set starts over.
     pub fn load_models(&mut self, cx: &mut Context<Self>) {
+        let providers = &self.data.engine.providers;
+        let sig: Vec<(String, String)> = providers
+            .iter()
+            .map(|p| (p.id.clone(), p.base_url.clone()))
+            .collect();
+        let only = if self.pool_sig.as_ref() != Some(&sig) {
+            self.pool.clear();
+            self.pool_failures.clear();
+            None
+        } else if self.pool_failures.is_empty() || self.pool_loading {
+            return;
+        } else {
+            let failed: Vec<_> = providers
+                .iter()
+                .filter(|p| self.pool_failures.iter().any(|f| f.provider == p.id))
+                .cloned()
+                .collect();
+            Some(failed)
+        };
+        self.pool_sig = Some(sig);
         let Some(core) = core(cx) else { return };
         self.pool_loading = true;
         cx.notify();
-        let task = Tokio::spawn(cx, async move { data::list_models(&core).await });
+        let retried: Option<Vec<String>> = only
+            .as_ref()
+            .map(|o| o.iter().map(|p| p.id.clone()).collect());
+        let task = Tokio::spawn(cx, async move { data::list_models(&core, only).await });
         cx.spawn(async move |this, cx| {
             let (pool, failures) = task.await.unwrap_or_default();
             let _ = this.update(cx, |this, cx| {
-                this.pool = pool;
-                this.pool_failures = failures;
+                match &retried {
+                    // Swap in only what was re-listed.
+                    Some(ids) => {
+                        this.pool.retain(|m| !ids.contains(&m.provider));
+                        this.pool.extend(pool);
+                        this.pool_failures.retain(|f| !ids.contains(&f.provider));
+                        this.pool_failures.extend(failures);
+                    }
+                    None => {
+                        this.pool = pool;
+                        this.pool_failures = failures;
+                    }
+                }
                 this.pool_loading = false;
                 cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// A model picked in the picker (or by ⌘⇧M): pin it to this chat and
+    /// remember it as recent.
+    pub fn pick_model(&mut self, engine: Option<(String, String)>, cx: &mut Context<Self>) {
+        if let (Some(e), Some(core)) = (engine.clone(), core(cx)) {
+            let task = Tokio::spawn(cx, async move {
+                let worker = core.clone();
+                core.spawn_blocking(move || data::push_recent(&worker, e))
+                    .await
+                    .unwrap_or_else(|e| Err(e.to_string()))
+            });
+            cx.spawn(async move |_, _| {
+                if let Ok(Err(e)) = task.await {
+                    log::warn!("chat: saving the recent model failed: {e}");
+                }
+            })
+            .detach();
+        }
+        self.select_model(engine, cx);
+    }
+
+    /// ⌘⇧M: this chat switches to the next starred model (wrapping), without
+    /// opening the picker. False when nothing is starred.
+    pub fn next_favorite(&mut self, cx: &mut Context<Self>) -> bool {
+        let favs = &self.data.engine.favorites;
+        if favs.is_empty() {
+            return false;
+        }
+        let current = self
+            .pin
+            .clone()
+            .or_else(|| self.data.engine.default.clone());
+        let at = favs.iter().position(|f| Some(f) == current.as_ref());
+        let next = favs[at.map_or(0, |i| (i + 1) % favs.len())].clone();
+        self.pick_model(Some(next), cx);
+        true
+    }
+
+    /// "Make default": Ask AI's model becomes this one; the settings event re-reads it.
+    pub fn make_default(&mut self, engine: (String, String), cx: &mut Context<Self>) {
+        let Some(core) = core(cx) else { return };
+        let task = Tokio::spawn(cx, async move {
+            let worker = core.clone();
+            core.spawn_blocking(move || data::make_ask_ai_default(&worker, engine))
+                .await
+                .unwrap_or_else(|e| Err(e.to_string()))
+        });
+        cx.spawn(async move |this, cx| {
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                if let Ok(Err(e)) = result {
+                    log::warn!("chat: saving the Ask AI model failed: {e}");
+                }
+                this.reload(cx);
             });
         })
         .detach();
@@ -258,8 +388,19 @@ impl Chat {
             .unwrap_or(false)
     }
 
+    /// The header's pin: a failure says why in an alert (`togglePinActive`).
+    pub fn toggle_pin_active(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.active.clone() {
+            self.pin_with(id, true, cx);
+        }
+    }
+
     /// Pin / unpin, optimistically; a failed persist reverts and toasts Retry.
     pub fn toggle_pin(&mut self, id: String, cx: &mut Context<Self>) {
+        self.pin_with(id, false, cx);
+    }
+
+    fn pin_with(&mut self, id: String, header: bool, cx: &mut Context<Self>) {
         let now = if self.active.as_deref() == Some(id.as_str()) {
             self.head_pinned()
         } else {
@@ -277,15 +418,21 @@ impl Chat {
             async move { data::set_pinned(&core, &id, pinned).await }
         });
         cx.spawn(async move |this, cx| {
-            if matches!(task.await, Ok(Ok(()))) {
+            let Err(e) = task.await.unwrap_or_else(|e| Err(e.to_string())) else {
                 return;
-            }
+            };
             let _ = this.update(cx, |this, cx| {
                 this.patch_row(&id, |r| r.pinned = !pinned);
                 if this.active.as_deref() == Some(id.as_str()) {
                     this.pinned = Some(!pinned);
                 }
-                this.pin_failed(id, pinned, cx);
+                if header {
+                    let verb = if pinned { "pin" } else { "unpin" };
+                    error_dialog(&format!("Couldn’t {verb} this chat"), e, cx);
+                    cx.notify();
+                } else {
+                    this.pin_failed(id, pinned, cx);
+                }
             });
         })
         .detach();
@@ -422,15 +569,31 @@ impl Chat {
         let Some(id) = id.filter(|_| !title.is_empty() && title != current) else {
             return;
         };
+        let header = target == Rename::Header;
+        let before = self.title.clone();
         self.patch_row(&id, |r| r.title = title.clone());
         if self.active.as_deref() == Some(id.as_str()) {
             self.title = title.clone();
         }
         let Some(core) = core(cx) else { return };
-        Tokio::spawn(cx, async move {
-            if let Err(e) = data::set_title(&core, &id, &title).await {
-                log::warn!("chat: rename failed: {e}");
-            }
+        let task = Tokio::spawn(cx, {
+            let id = id.clone();
+            async move { data::set_title(&core, &id, &title).await }
+        });
+        cx.spawn(async move |this, cx| {
+            let Err(e) = task.await.unwrap_or_else(|e| Err(e.to_string())) else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                // Undo the optimism: no `conversation_changed` fires for a failed write.
+                if this.active.as_deref() == Some(id.as_str()) {
+                    this.title = before;
+                }
+                this.reload(cx);
+                if header {
+                    error_dialog("Couldn’t rename this chat", e, cx);
+                }
+            });
         })
         .detach();
     }

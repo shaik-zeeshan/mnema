@@ -156,7 +156,9 @@ pub struct QuickRecall {
     pub visible: bool,
     pub online: bool,
     summoned_at: Option<Instant>,
-    suppress_blur: bool,
+    /// One blur that must not dismiss (an answer link opening the browser);
+    /// shared with the prose's link handler, which runs off the entity.
+    suppress_blur: Arc<std::sync::atomic::AtomicBool>,
     /// Dismissals by blur / Esc / toggle (tests read it).
     pub dismissals: u32,
     /// Text for the InputState, applied on the next render (it needs the window).
@@ -227,7 +229,7 @@ impl QuickRecall {
             visible: false,
             online: true,
             summoned_at: None,
-            suppress_blur: false,
+            suppress_blur: Arc::default(),
             dismissals: 0,
             pending_text: None,
             last_operator_query: String::new(),

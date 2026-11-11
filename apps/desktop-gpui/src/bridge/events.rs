@@ -142,7 +142,7 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
         HostMsg::Event(CoreEvent::ConversationChanged) => {
             if let Some(shell) = shell.upgrade() {
                 let chat = shell.read(cx).chat.clone();
-                chat.update(cx, |chat, cx| chat.reload(cx));
+                chat.update(cx, |chat, cx| chat.on_conversation_changed(cx));
             }
         }
         HostMsg::Event(CoreEvent::AppUpdateStatusChanged(status)) => {

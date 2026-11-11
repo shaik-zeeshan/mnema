@@ -35,8 +35,9 @@ pub fn picker_spec(chat: &Chat) -> Spec {
         sentinel_selected: chat.pin.is_none(),
         selected: chat.pin.clone().map(|(p, m)| (Some(p), m)),
         first_provider: e.default.as_ref().map(|(p, _)| p.clone()),
-        foot: Some("applies to this chat only · Settings → AI".into()),
+        foot: Some("applies to this chat only".into()),
         can_star: true,
+        make_default: Some(e.default.clone()),
     }
 }
 
@@ -76,10 +77,25 @@ fn picker(chat: &Chat, docked: bool, cx: &mut Context<Chat>) -> ModelPicker {
             let _ = open_this.update(cx, |c, cx| c.load_models(cx));
         })
         .on_select(move |engine, _, cx| {
-            let _ = this.update(cx, |c, cx| c.select_model(engine, cx));
+            let _ = this.update(cx, |c, cx| c.pick_model(engine, cx));
         })
         .on_favorite(move |engine, _, cx| {
             let _ = star_this.update(cx, |c, cx| c.toggle_favorite(engine, cx));
+        })
+        .on_retry({
+            let this = cx.entity().downgrade();
+            move |_, cx| {
+                let _ = this.update(cx, |c, cx| c.load_models(cx));
+            }
+        })
+        .on_make_default({
+            let this = cx.entity().downgrade();
+            move |engine, _, cx| {
+                let _ = this.update(cx, |c, cx| c.make_default(engine, cx));
+            }
+        })
+        .foot_link("Settings → AI ↗", |_, cx| {
+            cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
         });
     if chat.force_picker {
         picker.force_open()
@@ -139,7 +155,8 @@ fn scope_panel(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
         } else {
             format!(" at {via}")
         };
-        format!("Stays on this Mac. {name}{at}.")
+        // Only "Stays on this Mac." is bold; the name and endpoint follow plain.
+        format!(" {name}{at}.")
     } else {
         let at = if via.is_empty() {
             String::new()
@@ -150,12 +167,12 @@ fn scope_panel(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
         };
         format!("Sent to {name}{at}.")
     };
-    let body = if local {
-        String::new()
+    let (goes, body) = if local {
+        ("Stays on this Mac.".to_string(), goes)
     } else if chat.scope.about_you {
-        " Only text: screen words, transcript lines, app and window names, page addresses, and Mnema’s notes about you. Never images or audio.".into()
+        (goes, " Only text: screen words, transcript lines, app and window names, page addresses, and Mnema’s notes about you. Never images or audio.".into())
     } else {
-        " Only text: screen words, transcript lines, app and window names, and page addresses. Never images or audio.".into()
+        (goes, " Only text: screen words, transcript lines, app and window names, and page addresses. Never images or audio.".into())
     };
     let (tone_fg, tone_bd, tone_bg) = if local {
         (
@@ -301,6 +318,32 @@ fn scope_button(scope: Scope, today: time::Date, cx: &mut Context<Chat>) -> impl
     })
 }
 
+/// `composerOff`: why Ask AI can't run, in plain words, and its one action
+/// ("Check again" re-reads availability; the others open Settings › AI).
+pub(super) fn off_copy(
+    reason: &str,
+    settings: Option<&capture_types::RecordingSettings>,
+) -> (String, &'static str, Tone) {
+    use crate::insights::model::{reason_copy, Engine};
+    match reason {
+        "ask_ai_disabled" => (
+            "Ask AI is off. Past chats stay readable here.".into(),
+            "Turn on in Settings →",
+            Tone::Off,
+        ),
+        "ai_runtime_disabled" | "no_providers" => (
+            "The reasoning engine is off. Chat answers over your history once it's enabled.".into(),
+            "Open settings",
+            Tone::Off,
+        ),
+        r => match reason_copy(r, settings) {
+            Engine::Unreachable(t) => (t, "Check again", Tone::Warn),
+            Engine::Fix(t, _) => (t, "Open settings", Tone::Warn),
+            _ => (String::new(), "Open settings", Tone::Warn),
+        },
+    }
+}
+
 pub fn render(
     chat: &Chat,
     docked: bool,
@@ -320,28 +363,8 @@ pub fn render(
             .as_ref()
             .and_then(|a| a.reason.clone())
             .unwrap_or_default();
-        let (text, action, tone) = match reason.as_str() {
-            "ask_ai_disabled" => (
-                "Ask AI is off. Past chats stay readable here.",
-                "Turn on in Settings →",
-                Tone::Off,
-            ),
-            "ai_runtime_disabled" | "no_providers" => (
-                "The reasoning engine is off. Chat answers over your history once it's enabled.",
-                "Open settings",
-                Tone::Off,
-            ),
-            r if r.contains("unreachable") => (
-                "Can't reach the AI provider right now.",
-                "Check again",
-                Tone::Warn,
-            ),
-            _ => (
-                "The reasoning engine needs attention in Settings.",
-                "Open settings",
-                Tone::Warn,
-            ),
-        };
+        let (text, action, tone) = off_copy(&reason, chat.data.settings.as_ref());
+        let retry = action == "Check again";
         let glyph = if tone == Tone::Warn {
             IconName::TriangleAlert.path()
         } else {
@@ -359,7 +382,13 @@ pub fn render(
                 vec![Button::new("chat-off-action", action)
                     .ghost()
                     .sm()
-                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        if retry {
+                            this.reload(cx)
+                        } else {
+                            cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
+                        }
+                    }))
                     .into_any_element()],
                 p,
             ))

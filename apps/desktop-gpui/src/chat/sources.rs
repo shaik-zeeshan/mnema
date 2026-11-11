@@ -167,11 +167,14 @@ pub fn row(chat: &Chat, turn: i64, sources: &[Source], p: &Palette, cx: &mut Con
         );
         if let Some(url) = &s.url {
             let host = url.split('/').next().unwrap_or(url).to_string();
+            let opening = s.frame_id.is_some() && chat.opening_url == s.frame_id;
             kids.push(
                 with_tip(
                     div()
                         .id(nid(&format!("{base}-u"), i as u64))
+                        .test_support()
                         .role(gpui_kit::Role::Link)
+                        .when(opening, |d| d.opacity(theme::DISABLED_OPACITY))
                         .cursor_pointer()
                         .child(chip(host, ChipKind::Neutral, p).gap(px(4.)).child(icon(
                             gpui_kit::assets::IconName::ExternalLink.path(),

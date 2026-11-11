@@ -54,6 +54,8 @@ pub const DELETED_TOAST_TTL: Duration = Duration::from_secs(4);
 pub const PIN_FAIL_TOAST_TTL: Duration = Duration::from_secs(5);
 pub(crate) const COMPOSER_PLACEHOLDER: &str =
     "Ask about anything you've seen, heard, or worked on…";
+/// The list search waits this long after the last keystroke (`SEARCH_DEBOUNCE_MS`).
+pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(220);
 /// Titles are cut at this many chars (`TITLE_MAX`).
 pub const TITLE_MAX: usize = 80;
 /// Within this of the bottom counts as "at the bottom" (the pane follows the stream).
@@ -92,6 +94,8 @@ pub struct Chat {
     pub scope: Scope,
     /// The docked composer's context panel.
     pub ctx_open: bool,
+    /// A host chip's page is opening (`opening`).
+    pub opening_url: Option<i64>,
     /// The turn whose copy button reads "Copied".
     pub copied: Option<i64>,
     copied_task: Option<Task<()>>,
@@ -101,6 +105,12 @@ pub struct Chat {
     pub pool: Vec<PoolModel>,
     pub pool_failures: Vec<ProviderFailure>,
     pub pool_loading: bool,
+    /// Provider-reported context windows for the token bar, per answering
+    /// provider, listed once when its usage is on screen.
+    pub usage_models: HashMap<String, Vec<PoolModel>>,
+    usage_asked: HashSet<String>,
+    /// The provider set (id, base URL) the pool was listed against.
+    pool_sig: Option<Vec<(String, String)>>,
     pub peek: Option<Source>,
     /// The peeked frame's size, image and OCR, once loaded.
     pub peek_data: peek::PeekData,
@@ -139,8 +149,12 @@ pub struct Chat {
     pub force_picker: bool,
     /// Which placeholder the composer shows (docked = "Ask a follow-up…").
     docked_placeholder: bool,
+    /// `?q=` arrived before Ask AI's availability: send once it is known.
+    pending_send: bool,
     /// Drops a stale list / search answer.
     load_generation: u64,
+    /// The pending debounced search.
+    search_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -195,8 +209,12 @@ impl Chat {
             }),
             cx.subscribe_in(&search, window, |this, _, e: &InputEvent, _, cx| {
                 if matches!(e, InputEvent::Change) {
-                    // `search_conversations`; the list filters what it has until it answers.
-                    this.reload(cx);
+                    // `onSearchInput`: `search_conversations` after a pause; the
+                    // list filters what it has until it answers.
+                    this.search_task = Some(cx.spawn(async move |this, cx| {
+                        cx.background_executor().timer(SEARCH_DEBOUNCE).await;
+                        let _ = this.update(cx, |this, cx| this.reload(cx));
+                    }));
                     cx.notify();
                 }
             }),
@@ -223,6 +241,7 @@ impl Chat {
             pinned: None,
             scope: Scope::default(),
             ctx_open: false,
+            opening_url: None,
             copied: None,
             copied_task: None,
             code_copied: false,
@@ -230,6 +249,9 @@ impl Chat {
             pool: Vec::new(),
             pool_failures: Vec::new(),
             pool_loading: false,
+            pool_sig: None,
+            usage_models: HashMap::new(),
+            usage_asked: HashSet::new(),
             peek: None,
             peek_data: Default::default(),
             peek_gen: 0,
@@ -264,7 +286,9 @@ impl Chat {
             scroll: ScrollHandle::new(),
             force_picker: false,
             docked_placeholder: false,
+            pending_send: false,
             load_generation: 0,
+            search_task: None,
             _subscriptions: subs,
         }
     }
@@ -276,12 +300,12 @@ impl Chat {
 
     /// Refill the list + engine facts off-thread.
     pub fn reload(&mut self, cx: &mut Context<Self>) {
-        let Some(core) = core(cx) else { return };
         // `refreshHistory`: a search when the box has text, else the plain list;
         // a generation token drops an out-of-order answer.
-        let query = self.search.read(cx).value().trim().to_string();
         self.load_generation += 1;
         let generation = self.load_generation;
+        let Some(core) = core(cx) else { return };
+        let query = self.search.read(cx).value().trim().to_string();
         let task =
             crate::bridge::tokio::Tokio::spawn(cx, async move { data::load(&core, &query).await });
         cx.spawn(async move |this, cx| {
@@ -330,6 +354,7 @@ impl Chat {
         self.pin = None;
         self.pinned = None;
         self.renaming = None;
+        self.pending_send = false;
         self.peek = None;
         self.peek_gen += 1;
         self.close_clip(cx);
@@ -359,8 +384,23 @@ impl Chat {
             s.set_value(text.clone(), window, cx);
             s.focus(window, cx);
         });
-        if send && !text.trim().is_empty() && self.available() == Some(true) {
-            self.send(None, window, cx);
+        // `?q=` sends once availability is known; if Ask AI can't run, the
+        // question just stays in the composer.
+        if send && !text.trim().is_empty() {
+            match self.available() {
+                Some(true) => self.send(None, window, cx),
+                Some(false) => {}
+                None => self.pending_send = true,
+            }
+        }
+    }
+
+    /// `conversation_changed`: re-list; a chat that read "deleted" before its
+    /// first save landed is looked up again.
+    pub fn on_conversation_changed(&mut self, cx: &mut Context<Self>) {
+        self.reload(cx);
+        if let (Pane::Missing, Some(id)) = (&self.pane, self.active.clone()) {
+            self.open(id, cx);
         }
     }
 
@@ -528,6 +568,57 @@ impl Chat {
         }
     }
 
+    /// List each answering provider's models once its usage is on screen, for
+    /// the context window the token bar measures against.
+    fn request_usage_windows(&mut self, cx: &mut Context<Self>) {
+        let wanted: Vec<_> = self
+            .turns
+            .iter()
+            .filter(|t| t.view.context_tokens.is_some())
+            .filter_map(|t| t.view.provider.clone())
+            .filter(|id| !self.usage_asked.contains(id))
+            .collect();
+        for id in wanted {
+            let Some(config) = self.data.engine.providers.iter().find(|p| p.id == id).cloned()
+            else {
+                continue;
+            };
+            self.usage_asked.insert(id.clone());
+            let Some(core) = core(cx) else { return };
+            let task = crate::bridge::tokio::Tokio::spawn(cx, async move {
+                data::list_models(&core, Some(vec![config])).await.0
+            });
+            cx.spawn(async move |this, cx| {
+                let Ok(models) = task.await else { return };
+                let _ = this.update(cx, |this, cx| {
+                    this.usage_models.insert(id, models);
+                    cx.notify();
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// The window of the model that wrote this answer (never the picker's):
+    /// what its provider reports, else a name-based guess, but no guess for a
+    /// local server, which picks its own window (Ollama: 4k–256k by GPU memory).
+    pub fn context_window_of(&self, t: &ChatTurn) -> Option<u64> {
+        let model = t.view.model.as_deref()?;
+        let provider = t.view.provider.as_deref();
+        let reported = provider
+            .and_then(|p| self.usage_models.get(p))
+            .and_then(|ms| ms.iter().find(|m| m.id == model))
+            .and_then(|m| m.context_window);
+        if reported.is_some() {
+            return reported;
+        }
+        let config = provider.and_then(|id| self.data.engine.providers.iter().find(|p| p.id == id));
+        if config.is_some_and(|c| format::provider_is_local(Some(c))) {
+            return None;
+        }
+        format::context_window_for_model(model)
+    }
+
     /// "Copied" on `turn`'s copy button for [`COPIED_REVERT`].
     pub fn copy_answer(&mut self, turn: i64, cx: &mut Context<Self>) {
         let Some(text) = self
@@ -563,6 +654,13 @@ impl Render for Chat {
             self.composer
                 .update(cx, |s, cx| s.set_placeholder(text, window, cx));
         }
+        if self.pending_send && self.available().is_some() {
+            self.pending_send = false;
+            if self.available() == Some(true) {
+                self.send(None, window, cx);
+            }
+        }
+        self.request_usage_windows(cx);
         self.request_thumbs(cx);
         self.request_icons(cx);
         self.tick_clip(window, cx);
@@ -591,6 +689,10 @@ impl Render for Chat {
 #[cfg(test)]
 #[path = "chat_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "flow_tests.rs"]
+mod flow_tests;
 
 #[cfg(all(test, feature = "fixtures"))]
 #[path = "sources_tests.rs"]

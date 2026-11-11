@@ -83,6 +83,14 @@ impl Chat {
         let span = ms(&src.started_at)
             .zip(ms(&src.ended_at))
             .filter(|(s, e)| e > s);
+        // No playable span: the raw-Timeline hand-off (`openInTimeline`) instead.
+        let Some(span) = span else {
+            let aligned = src.aligned_frame_id;
+            let at = src.span_start_ms.unwrap_or(0);
+            cx.defer(move |cx| crate::timeline::open_audio(id, at, aligned, None, cx));
+            return;
+        };
+        let span = Some(span);
         let focus = cx.focus_handle();
         focus.focus(window, cx);
         self.clip = Some(Clip {

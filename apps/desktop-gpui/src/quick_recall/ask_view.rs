@@ -295,9 +295,15 @@ impl QuickRecall {
                 for (bi, b) in t.view.blocks.iter().enumerate() {
                     prose_col = match b {
                         AnswerBlock::Prose { markdown } => prose_col.child(
-                            prose::prose(("qr-prose", bi), markdown, live && bi == last, p)
-                                .text_size(text::PROSE)
-                                .line_height(relative(1.65)),
+                            prose::prose_on_link(
+                                ("qr-prose", bi),
+                                markdown,
+                                live && bi == last,
+                                p,
+                                self.link_opener(),
+                            )
+                            .text_size(text::PROSE)
+                            .line_height(relative(1.65)),
                         ),
                         AnswerBlock::Bars { title, items } => prose_col.child(blocks::panel(
                             title.as_deref(),
@@ -345,16 +351,50 @@ impl QuickRecall {
                             .child("No answer came back. Press ↵ in a moment, or ask again."),
                     );
                 }
+                // Measure the answer's natural height behind the clip.
+                let cell = a.prose_h.clone();
+                let prose_col = prose_col.relative().child(
+                    gpui_kit::canvas(
+                        move |bounds, window, _| {
+                            let h = f32::from(bounds.size.height);
+                            if (cell.get() - h).abs() > 0.5 {
+                                cell.set(h);
+                                window.refresh();
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right_0(),
+                );
                 let clip = div()
                     .max_h(px(CLIP_H))
                     .overflow_hidden()
                     .min_w_0()
                     .child(prose_col);
+                // Past the clip the glance panel never scrolls: it points to Chat.
+                let clipped = a.prose_h.get() > CLIP_H + 1.;
+                let more = (clipped && !live && a.thread_id.is_some()).then(|| {
+                    div()
+                        .id("qr-ans-more")
+                        .test_support()
+                        .role(Role::Link)
+                        .mt(px(6.))
+                        .cursor_pointer()
+                        .font_weight(theme::W_MEDIUM)
+                        .text_size(text::BASE)
+                        .text_color(p.accent)
+                        .child("Read the full answer in Chat →")
+                        .on_click(cx.listener(|qr, _, _, cx| qr.continue_in_chat(cx)))
+                });
                 div()
                     .flex()
                     .gap(px(18.))
                     .items_start()
-                    .child(div().flex_1().min_w_0().child(clip))
+                    .child(div().flex_1().min_w_0().child(clip).children(more))
                     .children((!timelines.is_empty()).then(|| {
                         div()
                             .flex_none()

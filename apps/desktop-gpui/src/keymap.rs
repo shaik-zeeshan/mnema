@@ -31,6 +31,7 @@ actions!(
         ToggleSourceScreen,
         ToggleSourceMicrophone,
         ToggleSourceSystemAudio,
+        NextFavoriteModel,
     ]
 );
 
@@ -352,6 +353,8 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
     let fixed = [
         KeyBinding::new("cmd-k", FocusRecall, shell),
         KeyBinding::new("cmd-j", FocusAsk, shell),
+        // Chat's `chatNextFavoriteModel`.
+        KeyBinding::new("cmd-shift-m", NextFavoriteModel, shell),
         KeyBinding::new("cmd-1", GoTimeline, shell),
         KeyBinding::new("cmd-2", GoInsights, shell),
         KeyBinding::new("escape", CloseOverlay, shell),

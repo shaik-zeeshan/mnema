@@ -14,7 +14,10 @@
 //!     .on_favorite(|engine, window, cx| /* star / unstar */)
 //! ```
 
+mod option;
 pub mod rows;
+#[cfg(test)]
+mod tests;
 mod view;
 
 use std::collections::HashMap;
@@ -64,6 +67,8 @@ pub struct Spec {
     /// The quiet footer line ("applies to this chat only").
     pub foot: Option<SharedString>,
     pub can_star: bool,
+    /// `Some(current default)`: rows offer "Make default" (Chat's picker).
+    pub make_default: Option<Option<EngineRef>>,
 }
 
 /// The trigger's look.
@@ -106,6 +111,11 @@ pub struct ModelPicker {
     pub(crate) on_select: Option<OnSelect>,
     pub(crate) on_favorite: Option<OnEngine>,
     pub(crate) on_open: Option<OnOpen>,
+    /// The failure rows' Retry (re-list the providers that failed).
+    pub(crate) on_retry: Option<OnOpen>,
+    pub(crate) on_make_default: Option<OnEngine>,
+    /// A link at the end of the footer line ("Settings → AI ↗").
+    pub(crate) foot_link: Option<(SharedString, OnOpen)>,
 }
 
 impl ModelPicker {
@@ -123,7 +133,29 @@ impl ModelPicker {
             on_select: None,
             on_favorite: None,
             on_open: None,
+            on_retry: None,
+            on_make_default: None,
+            foot_link: None,
         }
+    }
+    pub fn on_retry(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_retry = Some(Rc::new(f));
+        self
+    }
+    pub fn on_make_default(
+        mut self,
+        f: impl Fn(EngineRef, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_make_default = Some(Rc::new(f));
+        self
+    }
+    pub fn foot_link(
+        mut self,
+        label: impl Into<SharedString>,
+        f: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.foot_link = Some((label.into(), Rc::new(f)));
+        self
     }
     pub fn trigger(mut self, t: Trigger) -> Self {
         self.trigger = t;
@@ -261,6 +293,7 @@ impl Spec {
             favorites: &self.favorites,
             recents: &self.recents,
             can_star: self.can_star,
+            make_default_for: self.make_default.as_ref().map(Option::as_ref),
             loading: self.loading,
             failures: &failures,
         })

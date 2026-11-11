@@ -33,6 +33,9 @@ pub struct AskState {
     /// The lit citation (1-based, 0 = none).
     pub cite: usize,
     pub copied: bool,
+    /// The answer's natural height (measured as it lays out): past the clip
+    /// it points to Chat.
+    pub prose_h: std::rc::Rc<std::cell::Cell<f32>>,
     pause: Option<Task<()>>,
     sync_key: Option<(String, bool, bool, String)>,
 }

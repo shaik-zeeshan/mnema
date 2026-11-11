@@ -92,10 +92,24 @@ pub fn display_source(source: &str, streaming: bool) -> String {
 }
 
 pub fn prose(id: impl Into<ElementId>, source: &str, streaming: bool, p: &Palette) -> Div {
+    prose_on_link(id, source, streaming, p, crate::ui::link::prose_click)
+}
+
+/// [`prose`] with the caller's link handler (`AnswerProse`'s `onOpenLink`).
+pub fn prose_on_link(
+    id: impl Into<ElementId>,
+    source: &str,
+    streaming: bool,
+    p: &Palette,
+    on_link: impl Fn(&gpui_kit::SharedString, &gpui_kit::ClickEvent, &mut Window, &mut App)
+        + Send
+        + Sync
+        + 'static,
+) -> Div {
     let view = TextView::markdown(id, display_source(source, streaming))
         .plugin(CaretPlugin(p.accent))
         .code_block_actions(crate::ui::copy::code_actions)
-        .on_link_click(crate::ui::link::prose_click);
+        .on_link_click(on_link);
     let view = if streaming {
         view.shared_code_block_highlighter(NO_HIGHLIGHT.clone())
     } else {

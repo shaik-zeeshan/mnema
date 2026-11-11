@@ -320,11 +320,7 @@ fn actions(chat: &Chat, t: &ChatTurn, trailing: bool, p: &Palette, cx: &mut Cont
             }
         })
     });
-    let window = t
-        .view
-        .model
-        .as_deref()
-        .and_then(format::context_window_for_model);
+    let window = chat.context_window_of(t);
     div()
         .flex()
         .items_center()
@@ -387,44 +383,52 @@ fn actions(chat: &Chat, t: &ChatTurn, trailing: bool, p: &Palette, cx: &mut Cont
                 .children(where_.map(|w| SharedString::from(format!(" · {w}"))))
         }))
         .children(t.view.context_tokens.map(|tokens| {
-            div()
-                .ml_auto()
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .font_family(FONT_MONO)
-                .text_size(text::XS)
-                .text_color(p.text_subtle)
-                .map(|d| match window {
-                    Some(w) => d
-                        .child(
-                            div()
-                                .relative()
-                                .w(px(40.))
-                                .h(px(4.))
-                                .rounded(px(2.))
-                                .bg(crate::ui::alpha(p.fg, 0.08))
-                                .overflow_hidden()
-                                .child(
-                                    div()
-                                        .absolute()
-                                        .top_0()
-                                        .left_0()
-                                        .h_full()
-                                        .w(relative((tokens as f32 / w as f32).min(1.)))
-                                        .bg(p.chart_grey_4),
-                                ),
-                        )
-                        .child(SharedString::from(format!(
-                            "{} / {}",
-                            format::format_token_count(tokens),
-                            format::format_token_count(w)
+            with_tip(
+                div()
+                    .id(SharedString::from(format!("chat-ctxread-{ix}")))
+                    .ml_auto()
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .font_family(FONT_MONO)
+                    .text_size(text::XS)
+                    .text_color(p.text_subtle)
+                    .map(|d| match window {
+                        Some(w) => d
+                            .child(
+                                div()
+                                    .relative()
+                                    .w(px(40.))
+                                    .h(px(4.))
+                                    .rounded(px(2.))
+                                    .bg(crate::ui::alpha(p.fg, 0.08))
+                                    .overflow_hidden()
+                                    .child(
+                                        div()
+                                            .absolute()
+                                            .top_0()
+                                            .left_0()
+                                            .h_full()
+                                            .w(relative((tokens as f32 / w as f32).min(1.)))
+                                            .bg(p.chart_grey_4),
+                                    ),
+                            )
+                            .child(SharedString::from(format!(
+                                "{} / {}",
+                                format::format_token_count(tokens),
+                                format::format_token_count(w)
+                            ))),
+                        None => d.child(SharedString::from(format!(
+                            "{} tokens",
+                            format::format_token_count(tokens)
                         ))),
-                    None => d.child(SharedString::from(format!(
-                        "{} tokens",
-                        format::format_token_count(tokens)
-                    ))),
-                })
+                    }),
+                if window.is_some() {
+                    "Context used by this answer"
+                } else {
+                    "Tokens this answer used (window not reported)"
+                },
+            )
         }))
 }
 

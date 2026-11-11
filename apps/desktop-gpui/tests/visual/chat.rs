@@ -147,8 +147,12 @@ pub fn parity(
     setting: AppearanceSetting,
     shell_model: ShellModel,
 ) -> anyhow::Result<()> {
-    anyhow::ensure!(STATES.contains(&state), "no chat parity state {state}");
-    let shot = render(cx, shell_model, state, setting)?;
+    let shot = if state == "picker" {
+        crate::layers::chat_picker(cx, shell_model, setting)?
+    } else {
+        anyhow::ensure!(STATES.contains(&state), "no chat parity state {state}");
+        render(cx, shell_model, state, setting)?
+    };
     let shot = image::imageops::resize(
         &shot,
         VIEWPORT.0 as u32,

@@ -265,9 +265,11 @@ impl QuickRecall {
                     "No openable page for this result.",
                     cx,
                 ),
-                Err(_) => {
-                    super::panel::message("Couldn't open URL", "The page could not be opened.", cx)
-                }
+                Err(e) => super::panel::message(
+                    "Couldn't open page",
+                    &format!("Couldn't open URL: {e}"),
+                    cx,
+                ),
             },
         );
     }
