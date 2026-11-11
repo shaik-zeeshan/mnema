@@ -30,7 +30,8 @@ pub fn open<V: Render + 'static>(
     })
 }
 
-fn park(window: &mut Window, cx: &mut App) {
+/// Moves the window's pointer to [`AWAY`] (after a test click, so nothing shows hover).
+pub fn park(window: &mut Window, cx: &mut App) {
     let away = MouseMoveEvent {
         position: AWAY,
         modifiers: Modifiers::default(),

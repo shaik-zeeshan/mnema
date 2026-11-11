@@ -177,6 +177,6 @@ impl RenderOnce for Modal {
                     move |el, t| el.opacity((t / fade).min(1.)),
                 ),
         )
-        .with_priority(2)
+        .with_priority(super::popover::LAYER_MODAL)
     }
 }

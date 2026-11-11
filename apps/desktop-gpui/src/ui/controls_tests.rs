@@ -403,3 +403,27 @@ fn a_copy_button_copies_on_click_and_says_copied_for_1200ms(cx: &mut TestAppCont
     act(cx, window, |w, cx| w.click("none", cx));
     assert_eq!(clipboard(cx).as_deref(), Some("mnema 0.1 (macos/aarch64)"));
 }
+
+#[gpui_kit::test]
+fn a_click_on_a_toast_never_reaches_the_row_under_it(cx: &mut TestAppContext) {
+    let toasts = cx.new(|_| Toasts::default());
+    let hits = std::rc::Rc::new(std::cell::Cell::new(0));
+    let (held, seen) = (toasts.clone(), hits.clone());
+    let (window, _) = open(cx, move |_, _, _| {
+        let seen = seen.clone();
+        div()
+            .relative()
+            .size_full()
+            .child(
+                Button::new("under", "A row under the toast")
+                    .h(px(340.))
+                    .on_click(move |_, _, _| seen.set(seen.get() + 1)),
+            )
+            .child(held.clone())
+            .into_any_element()
+    });
+    toasts.update(cx, |t, cx| t.push(Toast::ok("Copied frame 10000"), cx));
+    advance(cx, motion::MED);
+    act(cx, window, |w, cx| w.click(nid("toast", 0), cx));
+    assert_eq!(hits.get(), 0, "the toast takes its own clicks");
+}

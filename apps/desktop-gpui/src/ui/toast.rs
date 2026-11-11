@@ -84,6 +84,8 @@ pub fn toast_box(t: &Toast, key: u64, p: &Palette) -> Div {
         .border_1()
         .border_color(p.overlay_border)
         .shadow(popover_shadow(p))
+        // Clicks and hover on the toast stay off the rows under it.
+        .occlude()
         .overflow_hidden()
         .font_family(theme::FONT_UI)
         .font_weight(theme::W_MEDIUM)

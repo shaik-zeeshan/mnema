@@ -11,8 +11,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    deferred, div, linear_color_stop, linear_gradient, px, App, ElementId, Hsla, SharedString,
-    Window,
+    div, linear_color_stop, linear_gradient, px, App, ElementId, Hsla, SharedString, Window,
 };
 use time::{Date, Duration};
 
@@ -439,6 +438,11 @@ impl RenderOnce for DateInput {
 
         let anchor_state =
             window.use_keyed_state(nid(&format!("{base}-anchor"), 0), cx, |_, _| None::<Date>);
+        let trigger = popover::Anchor::new(nid(&format!("{base}-trigger"), 0), window, cx);
+        let pop_size = popover::Anchor::new(nid(&format!("{base}-pop-size"), 0), window, cx);
+        // Up when the popover doesn't fit below and there's more room above
+        // (`DateInput.svelte` placePop: e.g. Chat's docked composer).
+        let up = trigger.opens_up(pop_size.height(cx) + size::POP_GAP * 2., window, cx);
         let pop = open.then(|| {
             let shift = *view_state.read(cx);
             let (view, _) = month_of(b, shift);
@@ -555,74 +559,93 @@ impl RenderOnce for DateInput {
                     pick(d, window, cx);
                 })
             };
-            deferred(
-                popover::surface(&p)
-                    .id(nid(&format!("{base}-pop"), 0))
-                    .role(gpui_kit::Role::Dialog)
-                    .aria_label(if ranged {
-                        "Choose a range"
-                    } else {
-                        "Choose a day"
+            let outside_trigger = trigger.clone();
+            let surface = popover::surface(&p)
+                .id(nid(&format!("{base}-pop"), 0))
+                .role(gpui_kit::Role::Dialog)
+                .aria_label(if ranged {
+                    "Choose a range"
+                } else {
+                    "Choose a day"
+                })
+                .p(px(4.))
+                // `.mx-date__pop` range = presets | month (the surface is a column).
+                .flex_row()
+                .children(presets_col)
+                .on_mouse_down_out(move |e, _, cx| {
+                    if !outside_trigger.outside(e, cx) {
+                        return; // the trigger toggles it
+                    }
+                    outside_anchor.update(cx, |x, _| *x = None);
+                    outside.update(cx, |o, cx| {
+                        *o = false;
+                        cx.notify();
                     })
+                })
+                .child(calendar(
+                    CalSpec {
+                        id: format!("{base}-cal").into(),
+                        view,
+                        today: self.today,
+                        min: self.min,
+                        max: self.max,
+                        sel,
+                        density: self.density.clone(),
+                        reset_label: SharedString::from(
+                            if self.period.is_some() && unit != Unit::Day {
+                                format!("This {}", unit.name())
+                            } else {
+                                "Today".into()
+                            },
+                        ),
+                        at_now: ranged || periods_ago(a, unit, self.max) == 0,
+                        on_pick,
+                        on_nav: Rc::new(move |k, _, cx| {
+                            nav.update(cx, |v, cx| {
+                                *v += k;
+                                cx.notify();
+                            })
+                        }),
+                    },
+                    &p,
+                ));
+            // Positioned by a measured wrapper: its height picks the side.
+            popover::float(
+                pop_size
+                    .measure(div())
                     .absolute()
-                    .top_full()
-                    .mt(size::POP_GAP)
                     .left_0()
-                    .p(px(4.))
-                    .flex()
-                    .children(presets_col)
-                    .on_mouse_down_out(move |_, _, cx| {
-                        outside_anchor.update(cx, |x, _| *x = None);
-                        outside.update(cx, |o, cx| {
-                            *o = false;
-                            cx.notify();
-                        })
+                    .map(|d| {
+                        if up {
+                            d.bottom_full().mb(size::POP_GAP)
+                        } else {
+                            d.top_full().mt(size::POP_GAP)
+                        }
                     })
-                    .child(calendar(
-                        CalSpec {
-                            id: format!("{base}-cal").into(),
-                            view,
-                            today: self.today,
-                            min: self.min,
-                            max: self.max,
-                            sel,
-                            density: self.density.clone(),
-                            reset_label: SharedString::from(
-                                if self.period.is_some() && unit != Unit::Day {
-                                    format!("This {}", unit.name())
-                                } else {
-                                    "Today".into()
-                                },
-                            ),
-                            at_now: ranged || periods_ago(a, unit, self.max) == 0,
-                            on_pick,
-                            on_nav: Rc::new(move |k, _, cx| {
-                                nav.update(cx, |v, cx| {
-                                    *v += k;
-                                    cx.notify();
-                                })
-                            }),
-                        },
-                        &p,
-                    )),
+                    .child(surface),
             )
-            .with_priority(1)
         });
 
-        div()
-            .relative()
-            .flex()
-            .flex_none()
-            .when(self.period.is_some(), |d| {
-                d.items_stretch()
-                    .h(size::H_MD)
-                    .rounded(radius::SM)
-                    .border_1()
-                    .border_color(border)
-                    .bg(p.surface_raised)
+        let esc = open_state.clone();
+        popover::esc_closes(trigger.track(div()), open, move |_, cx| {
+            esc.update(cx, |o, cx| {
+                *o = false;
+                cx.notify();
             })
-            .child(btn)
-            .children(units)
-            .children(pop)
+        })
+        .relative()
+        .flex()
+        .flex_none()
+        .when(self.period.is_some(), |d| {
+            d.items_stretch()
+                .h(size::H_MD)
+                .rounded(radius::SM)
+                .border_1()
+                .border_color(border)
+                .bg(p.surface_raised)
+        })
+        .child(btn)
+        .children(units)
+        .children(pop)
     }
 }

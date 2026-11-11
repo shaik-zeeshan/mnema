@@ -489,3 +489,28 @@ fn copy_image_puts_a_png_on_the_clipboard_and_copy_text_the_lines(cx: &mut TestA
     assert_eq!(text.as_deref(), Some("Pricing\nPro plan · $12"));
     assert_eq!(status(cx).as_deref(), Some("Copied 2 text regions"));
 }
+
+#[gpui_kit::test]
+fn the_jumper_trigger_closes_an_open_jumper(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, source(3));
+    advance(cx, EXACT_SETTLE);
+    frame(cx, w);
+    let click = |cx: &mut TestAppContext| {
+        cx.update_window(w.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click("jumper-trigger", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    click(cx);
+    assert!(
+        v.read_with(cx, |t, _| t.jumper.open),
+        "the trigger opens it"
+    );
+    click(cx);
+    assert!(
+        !v.read_with(cx, |t, _| t.jumper.open),
+        "and closes it again"
+    );
+}

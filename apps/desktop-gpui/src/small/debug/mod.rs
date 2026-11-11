@@ -56,6 +56,8 @@ pub struct DebugWindow {
     pub paused_at_ms: Option<i64>,
     pub pinned: bool,
     pub menu_open: bool,
+    /// The More button, so a press on it toggles instead of closing + reopening.
+    pub more_at: crate::ui::popover::Anchor,
     pub level: Level,
     pub feature: usize,
     pub follow: bool,
@@ -108,6 +110,7 @@ impl DebugWindow {
             paused_at_ms: None,
             pinned: false,
             menu_open: false,
+            more_at: crate::ui::popover::Anchor::owned(cx),
             level: Level::All,
             feature: 0,
             follow: true,

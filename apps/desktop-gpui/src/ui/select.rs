@@ -9,7 +9,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    deferred, div, px, radians, svg, App, ElementId, Entity, SharedString, Transformation, Window,
+    div, px, radians, svg, App, ElementId, Entity, SharedString, Transformation, Window,
 };
 
 use super::menu::{option_row, options_empty};
@@ -117,15 +117,21 @@ pub fn trigger(
         })
 }
 
-/// The `.select-content` list box: raised surface, 4 px padding, 220 px max.
-pub fn list_box(id: ElementId, p: &Palette) -> impl super::Control {
+/// The `.select-content` list box: raised surface, 4 px padding, 220 px max;
+/// `up` = above the trigger (`.select-wrapper--up`).
+pub fn list_box(id: ElementId, up: bool, p: &Palette) -> impl super::Control {
     popover::surface(p)
         .id(id)
         .test_support()
         .role(gpui_kit::Role::ListBox)
         .absolute()
-        .top_full()
-        .mt(px(4.))
+        .map(|el| {
+            if up {
+                el.bottom_full().mb(px(4.))
+            } else {
+                el.top_full().mt(px(4.))
+            }
+        })
         .left_0()
         .right_0()
         .p(px(4.))
@@ -272,73 +278,78 @@ impl RenderOnce for Select {
                 }
             })
         });
+        let anchor = popover::Anchor::new(nid(&format!("{base}-anchor"), 0), window, cx);
+        let up = anchor.opens_up(size::SELECT_MAX_H, window, cx);
         let list = open.then(|| {
-            let close = state.clone();
-            deferred(crate::ui::scroll::area(
-                list_box(nid(&format!("{base}-listbox"), 0), &p)
+            let (close, anchor) = (state.clone(), anchor.clone());
+            popover::float(crate::ui::scroll::area(
+                list_box(nid(&format!("{base}-listbox"), 0), up, &p)
                     .when(n == 0, |el| {
                         el.child(options_empty("Nothing to choose", &p))
                     })
                     .children(rows)
-                    .on_mouse_down_out(move |_, _, cx| {
-                        close.update(cx, |s, cx| {
-                            s.open = false;
-                            cx.notify();
-                        })
+                    .on_mouse_down_out(move |e, _, cx| {
+                        if anchor.outside(e, cx) {
+                            close.update(cx, |s, cx| {
+                                s.open = false;
+                                cx.notify();
+                            })
+                        }
                     }),
             ))
-            .with_priority(1)
         });
         let (toggle, keys) = (state.clone(), state.clone());
         let pick_key = self.on_change.clone();
-        div()
-            .relative()
-            .w_full()
-            .when(self.disabled, |el| el.opacity(theme::DISABLED_OPACITY))
-            .when(self.busy, |el| el.opacity(theme::BUSY_OPACITY))
-            .child(
-                trigger(self.id.clone(), value, self.placeholder.clone(), look, &p)
-                    .aria_label(self.aria.clone())
-                    .when(live, |el| {
-                        el.track_focus(&handle)
-                            .on_click(move |_, _, cx| {
-                                toggle.update(cx, |s, cx| {
-                                    s.open = !s.open;
-                                    s.highlight = None;
-                                    cx.notify();
-                                })
+        let esc = state.clone();
+        popover::esc_closes(anchor.track(div()), open, move |_, cx| {
+            esc.update(cx, |s, cx| {
+                *s = ListState::default();
+                cx.notify();
+            })
+        })
+        .relative()
+        .w_full()
+        .when(self.disabled, |el| el.opacity(theme::DISABLED_OPACITY))
+        .when(self.busy, |el| el.opacity(theme::BUSY_OPACITY))
+        .child(
+            trigger(self.id.clone(), value, self.placeholder.clone(), look, &p)
+                .aria_label(self.aria.clone())
+                .when(live, |el| {
+                    el.track_focus(&handle)
+                        .on_click(move |_, _, cx| {
+                            toggle.update(cx, |s, cx| {
+                                s.open = !s.open;
+                                s.highlight = None;
+                                cx.notify();
                             })
-                            .on_key_down(move |e, window, cx| {
-                                let key = e.keystroke.key.as_str();
-                                let mut picked = None;
-                                keys.update(cx, |s, cx| {
-                                    match key {
-                                        "down" | "up" => {
-                                            s.open = true;
-                                            s.highlight = step_highlight(
-                                                s.highlight,
-                                                selected,
-                                                n,
-                                                key == "down",
-                                            );
-                                        }
-                                        "enter" | "space" if s.open => {
-                                            picked = s.highlight;
-                                            *s = ListState::default();
-                                        }
-                                        "enter" | "space" => s.open = true,
-                                        "escape" => *s = ListState::default(),
-                                        _ => return,
+                        })
+                        .on_key_down(move |e, window, cx| {
+                            let key = e.keystroke.key.as_str();
+                            let mut picked = None;
+                            keys.update(cx, |s, cx| {
+                                match key {
+                                    "down" | "up" => {
+                                        s.open = true;
+                                        s.highlight =
+                                            step_highlight(s.highlight, selected, n, key == "down");
                                     }
-                                    cx.notify();
-                                });
-                                cx.stop_propagation();
-                                if let (Some(i), Some(f)) = (picked, &pick_key) {
-                                    f(i, window, cx);
+                                    "enter" | "space" if s.open => {
+                                        picked = s.highlight;
+                                        *s = ListState::default();
+                                    }
+                                    "enter" | "space" => s.open = true,
+                                    "escape" => *s = ListState::default(),
+                                    _ => return,
                                 }
-                            })
-                    }),
-            )
-            .children(list)
+                                cx.notify();
+                            });
+                            cx.stop_propagation();
+                            if let (Some(i), Some(f)) = (picked, &pick_key) {
+                                f(i, window, cx);
+                            }
+                        })
+                }),
+        )
+        .children(list)
     }
 }

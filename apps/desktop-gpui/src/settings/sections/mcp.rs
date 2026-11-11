@@ -556,6 +556,27 @@ pub fn picker(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Option<A
     )
 }
 
+/// Esc: close the tool list, else the picker (not while a connect or save is
+/// in flight, as its close button). True when something was open.
+pub(crate) fn escape(s: &mut Settings, cx: &mut Context<Settings>) -> bool {
+    if s.ui.mcp.tools.take().is_some() {
+        cx.notify();
+        return true;
+    }
+    if !s.ui.mcp_picker_open {
+        return false;
+    }
+    let busy = match &s.ui.mcp.step {
+        Step::Catalog => false,
+        Step::Form(f) => f.connecting,
+        Step::OAuth(f) => f.busy,
+    };
+    if !busy {
+        close_picker(s, cx);
+    }
+    true
+}
+
 /// Goldens: open one of the MCP modal states over Settings.
 #[cfg(feature = "fixtures")]
 pub(crate) fn fixture_state(

@@ -8,11 +8,15 @@ mod ask_ai;
 mod delete_recent;
 mod developer;
 mod languages;
+#[cfg(test)]
+mod layers_tests;
 mod license;
 pub(crate) mod mcp;
 mod microphone;
 mod model_row;
 mod ocr;
+#[cfg(test)]
+mod pickers_tests;
 mod privacy;
 pub(crate) mod providers;
 mod semantic_search;
@@ -27,8 +31,6 @@ mod user_context;
 mod video;
 mod voice;
 mod voice_take;
-#[cfg(test)]
-mod pickers_tests;
 
 use gpui_kit::prelude::*;
 use gpui_kit::{div, AnyElement, Context, Window};
@@ -119,4 +121,25 @@ pub fn capture_key(s: &mut Settings, k: &gpui_kit::Keystroke, cx: &mut Context<S
 /// Index of `value` in `options` (0 when absent).
 pub fn ix<T: PartialEq>(options: &[T], value: &T) -> usize {
     options.iter().position(|o| o == value).unwrap_or(0)
+}
+
+impl Settings {
+    /// Esc closes the topmost open menu or modal first (true); only with none
+    /// open is it "Back to app". The shell's Esc binding runs before any
+    /// modal's own key handler, so this is the one place Settings hears it
+    /// (Svelte's Esc also stands down while a menu or dialog is up).
+    pub fn close_top(&mut self, cx: &mut Context<Self>) -> bool {
+        if std::mem::take(&mut self.ui.add_provider_open) {
+            cx.notify();
+            return true;
+        }
+        if mcp::escape(self, cx) {
+            return true;
+        }
+        if self.ui.app_picker.take().is_some() {
+            cx.notify();
+            return true;
+        }
+        false
+    }
 }

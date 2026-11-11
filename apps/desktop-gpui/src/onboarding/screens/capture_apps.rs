@@ -6,7 +6,7 @@
 
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{deferred, div, px, AnyElement, AppContext, Context, Entity, Subscription, Window};
+use gpui_kit::{div, px, AnyElement, AppContext, Context, Entity, Subscription, Window};
 
 use crate::onboarding::Onboarding;
 use crate::theme;
@@ -115,7 +115,7 @@ impl Onboarding {
             })
             .collect();
         let empty = rows.is_empty();
-        let list = list_box(nid("ob-app-list", 0), &p)
+        let list = list_box(nid("ob-app-list", 0), false, &p)
             .when(empty, |d| {
                 d.child(options_empty(
                     if loading {
@@ -151,7 +151,7 @@ impl Onboarding {
                 )
                 .w(px(FIELD_W)),
             )
-            .child(deferred(crate::ui::scroll::area(list)).with_priority(1))
+            .child(crate::ui::float(crate::ui::scroll::area(list)))
             .into_any_element()
     }
 }

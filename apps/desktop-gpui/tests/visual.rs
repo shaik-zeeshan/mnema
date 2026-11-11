@@ -17,6 +17,8 @@ mod gallery;
 mod hover;
 #[path = "visual/insights.rs"]
 mod insights;
+#[path = "visual/layers.rs"]
+mod layers;
 #[path = "visual/licence.rs"]
 mod licence;
 #[path = "visual/onboarding.rs"]
@@ -388,6 +390,9 @@ fn run() -> anyhow::Result<()> {
     failures.extend(chat::goldens(&mut cx, &filters, &THEMES, &populated)?);
     let idle = model_for(FixtureId::Empty).unwrap();
     failures.extend(settings::goldens(&mut cx, &filters, &THEMES, &idle)?);
+    failures.extend(layers::goldens(
+        &mut cx, &filters, &THEMES, &idle, &populated,
+    )?);
     failures.extend(licence::goldens(&mut cx, &filters, &THEMES, &idle)?);
     failures.extend(insights::goldens(&mut cx, &filters, &THEMES)?);
     failures.extend(small::goldens(&mut cx, &filters, &THEMES)?);

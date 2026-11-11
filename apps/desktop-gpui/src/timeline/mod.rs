@@ -135,6 +135,8 @@ pub struct TimelineView {
     pub menu_open: bool,
     pub busy_action: Option<&'static str>,
     pub jumper: jumper::JumperState,
+    /// The jumper trigger, so a press on it toggles instead of closing + reopening.
+    pub jumper_at: crate::ui::popover::Anchor,
     pub status: Option<Status>,
     pub capture: CaptureHint,
     pub developer: bool,
@@ -185,6 +187,7 @@ impl TimelineView {
             menu_open: false,
             busy_action: None,
             jumper: jumper::JumperState::default(),
+            jumper_at: crate::ui::popover::Anchor::owned(cx),
             status: None,
             capture: CaptureHint::default(),
             developer: false,

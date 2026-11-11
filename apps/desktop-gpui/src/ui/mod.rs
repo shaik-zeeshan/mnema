@@ -41,7 +41,7 @@ mod controls_tests;
 pub use button::{Button, ButtonSize, Variant};
 pub use copy::CopyButton;
 pub use kbd::{kbd, keys};
-pub use popover::{pop_in, popover, popover_shadow};
+pub use popover::{float, pop_in, popover, popover_shadow};
 pub use tooltip::{with_tip, Tip};
 
 use gpui_kit::prelude::*;

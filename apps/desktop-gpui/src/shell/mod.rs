@@ -183,7 +183,8 @@ impl Shell {
             model.backlog = self.model.backlog.take();
         }
         let paused = model.status.running && model.status.user_paused;
-        self.pause_clock.observe(paused, cx.background_executor().now());
+        self.pause_clock
+            .observe(paused, cx.background_executor().now());
         self.model = model;
         self.arm_live_poll(cx);
         let s = &self.model.status;
@@ -396,9 +397,7 @@ impl Shell {
             cx.listener(|this, _: &keymap::GoInsights, _, cx| this.go(Surface::Insights, cx)),
         )
         .on_action(cx.listener(|this, _: &keymap::OpenChats, _, cx| this.go(Surface::Chat, cx)))
-        .on_action(
-            cx.listener(|this, _: &keymap::ToggleSettings, _, cx| this.toggle_settings(cx)),
-        )
+        .on_action(cx.listener(|this, _: &keymap::ToggleSettings, _, cx| this.toggle_settings(cx)))
         .on_action(cx.listener(|this, _: &keymap::ToggleShortcutsHelp, w, cx| {
             // `/` on Settings focuses its search instead.
             if this.surface == Surface::Settings {
@@ -414,7 +413,9 @@ impl Shell {
                 this.overlay = None;
                 cx.notify();
             } else if this.surface == Surface::Settings {
-                this.go(this.last_main, cx);
+                if !this.settings.update(cx, |s, cx| s.close_top(cx)) {
+                    this.go(this.last_main, cx);
+                }
             } else if this.surface == Surface::Insights
                 && this.insights.update(cx, |i, cx| i.close_top(cx))
             {

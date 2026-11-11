@@ -140,6 +140,84 @@ fn gear_toggles_settings_and_returns_to_where_it_came_from(cx: &mut TestAppConte
 }
 
 #[gpui_kit::test]
+fn esc_closes_the_add_provider_menu_before_leaving_settings(cx: &mut TestAppContext) {
+    let (window, shell) = open(cx);
+    let surface = |cx: &mut TestAppContext| cx.read(|cx| shell.read(cx).surface);
+    click(cx, window, "titlebar-settings");
+    let settings = cx.read(|cx| shell.read(cx).settings.clone());
+    settings.update(cx, |s, cx| {
+        s.ui.add_provider_open = true;
+        cx.notify();
+    });
+    press(cx, window, "escape");
+    assert_eq!(surface(cx), Surface::Settings, "Esc closes the menu only");
+    assert!(!cx.read(|cx| settings.read(cx).ui.add_provider_open));
+    press(cx, window, "escape");
+    assert_ne!(surface(cx), Surface::Settings, "then Esc is 'Back to app'");
+}
+
+#[gpui_kit::test]
+fn esc_closes_the_add_connector_picker_before_leaving_settings(cx: &mut TestAppContext) {
+    let (window, shell) = open(cx);
+    let surface = |cx: &mut TestAppContext| cx.read(|cx| shell.read(cx).surface);
+    click(cx, window, "titlebar-settings");
+    let settings = cx.read(|cx| shell.read(cx).settings.clone());
+    settings.update(cx, |s, cx| {
+        s.ui.mcp_picker_open = true;
+        cx.notify();
+    });
+    press(cx, window, "escape");
+    assert!(
+        !cx.read(|cx| settings.read(cx).ui.mcp_picker_open),
+        "Esc closes it"
+    );
+    assert_eq!(surface(cx), Surface::Settings, "and stays in Settings");
+}
+
+#[gpui_kit::test]
+fn esc_closes_an_open_select_before_leaving_settings(cx: &mut TestAppContext) {
+    let (window, shell) = open(cx);
+    let surface = |cx: &mut TestAppContext| cx.read(|cx| shell.read(cx).surface);
+    click(cx, window, "titlebar-settings");
+    let settings = cx.read(|cx| shell.read(cx).settings.clone());
+    settings.update(cx, |s, cx| {
+        s.set_data(
+            crate::settings::fixture::settings_data().expect("fixture"),
+            cx,
+        );
+        s.open_tab("capture", cx);
+    });
+    click(cx, window, "idle-timeout");
+    let list = || crate::ui::nid("idle-timeout-listbox", 0);
+    let shown = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, w, cx| {
+            w.render_frame(cx);
+            w.try_find(list()).is_some()
+        })
+        .unwrap()
+    };
+    assert!(shown(cx), "the trigger opens it");
+    press(cx, window, "escape");
+    assert_eq!(surface(cx), Surface::Settings, "Esc closes the list only");
+    assert!(!shown(cx), "and the list is closed");
+
+    // The model picker's search field holds focus: same rule.
+    settings.update(cx, |s, cx| s.open_tab("intelligence", cx));
+    click(cx, window, "default-model");
+    let pop = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, w, cx| {
+            w.render_frame(cx);
+            w.try_find("default-model-pop").is_some()
+        })
+        .unwrap()
+    };
+    assert!(pop(cx), "the picker opens");
+    press(cx, window, "escape");
+    assert_eq!(surface(cx), Surface::Settings, "Esc closes the picker only");
+    assert!(!pop(cx), "and the picker is closed");
+}
+
+#[gpui_kit::test]
 fn shortcuts_sheet_and_sources_follow_app_keys_but_not_while_typing(cx: &mut TestAppContext) {
     let (window, shell) = open(cx);
     press(cx, window, "/");

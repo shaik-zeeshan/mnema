@@ -4,6 +4,7 @@
 
 use capture_types::{AiEngineRef, AiProviderConfig, AiProviderKind};
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, AnyElement, ClickEvent, Context, SharedString, Window};
 
 use crate::chat::format::{kind_label, provider_instance_label, provider_label_by_id, url_host};
@@ -15,8 +16,9 @@ use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::menu::menu_item;
 use crate::ui::model_picker::{EngineRef, ModelPicker, Spec, Trigger};
+use crate::ui::popover::Anchor;
 use crate::ui::switch::Switch;
-use crate::ui::{popover, Button, Force, Tone};
+use crate::ui::{float, popover, Button, Force, Tone};
 
 const KINDS: [AiProviderKind; 6] = [
     AiProviderKind::Anthropic,
@@ -262,7 +264,12 @@ fn provider_row(
     r.build(p).into_any_element()
 }
 
-pub fn render(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settings>) -> AnyElement {
+pub fn render(
+    s: &Settings,
+    p: &Palette,
+    window: &mut Window,
+    cx: &mut Context<Settings>,
+) -> AnyElement {
     let d = s.d();
     let ai = &d.ai_runtime;
     let status = s.data.ai_status.clone().unwrap_or_default();
@@ -272,6 +279,8 @@ pub fn render(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settin
         .control(Switch::new("ai-enabled", "Enable AI features", ai.enabled).on_toggle(on(cx, |s, v: bool, cx| s.edit(|d| d.ai_runtime.enabled = v, cx))))
         .build(p)
         .into_any_element()];
+    // One anchor: only one of the two triggers (empty state / row) renders.
+    let at = Anchor::new("pv-add-at", window, cx);
     let add_menu = |s: &Settings, small: bool, cx: &mut Context<Settings>| {
         let open = s.ui.add_provider_open;
         let trigger = Button::new(
@@ -313,15 +322,25 @@ pub fn render(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settin
                 .into_any_element()
             })
             .collect();
-        div().relative().child(trigger).when(open, |d| {
-            d.child(
+        let out = at.clone();
+        let close = cx.listener(move |s, e: &gpui_kit::MouseDownEvent, _, cx| {
+            // The trigger toggles it; Svelte's window click skips the anchor too.
+            if out.outside(e, cx) {
+                s.ui.add_provider_open = false;
+                cx.notify();
+            }
+        });
+        at.track(div()).relative().child(trigger).when(open, |d| {
+            d.child(float(
                 popover("pv-add-menu", "Add provider", p)
                     .top(px(36.))
                     .right_0()
                     .w(px(220.))
                     .p(px(4.))
-                    .children(items),
-            )
+                    .children(items)
+                    .on_mouse_down_out(close)
+                    .test_support(),
+            ))
         })
     };
     if ai.providers.is_empty() {

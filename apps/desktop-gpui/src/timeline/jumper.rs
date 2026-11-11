@@ -9,7 +9,7 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{deferred, div, px, AnyElement, Context, Role, SharedString};
+use gpui_kit::{div, px, AnyElement, Context, Role, SharedString};
 use time::{Date, Duration, OffsetDateTime, Time, UtcOffset};
 
 use super::model::{clock_label, day_label, local};
@@ -212,7 +212,10 @@ pub fn trigger(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
                 }
             }))
         });
-    with_tip(btn, tip).into_any_element()
+    v.jumper_at
+        .track(div().flex().flex_none())
+        .child(with_tip(btn, tip))
+        .into_any_element()
 }
 
 /// "latest" (only when the playhead is more than 50 frames from the head).
@@ -453,9 +456,12 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
         .left(space::S4)
         .h(px(420.))
         .overflow_hidden()
-        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-            this.jumper.open = false;
-            cx.notify();
+        .on_mouse_down_out(cx.listener(|this, e, _, cx| {
+            // The trigger toggles it (`TimelineJumper.svelte` skips it too).
+            if this.jumper_at.outside(e, cx) {
+                this.jumper.open = false;
+                cx.notify();
+            }
         }))
         .child(
             div()
@@ -496,12 +502,11 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
                 .child(foot),
         );
     Some(
-        deferred(popover::pop_in(
+        popover::float(popover::pop_in(
             pop,
             space::S3 + size::CMD_H + size::POP_GAP,
             false,
         ))
-        .with_priority(1)
         .into_any_element(),
     )
 }

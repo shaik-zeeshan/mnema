@@ -66,13 +66,15 @@ pub fn strip(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Any
                 .on_click(cx.listener(|w, _, window, cx| w.to_mini(window, cx))),
         )
         .action(
-            small_icon("dv-more", "icons/ellipsis.svg", "More")
-                .pressed(w.menu_open)
-                .tip("More")
-                .on_click(cx.listener(|w, _, _, cx| {
-                    w.menu_open = !w.menu_open;
-                    cx.notify();
-                })),
+            w.more_at.track(div()).child(
+                small_icon("dv-more", "icons/ellipsis.svg", "More")
+                    .pressed(w.menu_open)
+                    .tip("More")
+                    .on_click(cx.listener(|w, _, _, cx| {
+                        w.menu_open = !w.menu_open;
+                        cx.notify();
+                    })),
+            ),
         )
         .action(div().w(space::S1))
         .into_any_element()
@@ -142,6 +144,13 @@ pub fn more_menu(
             .right(space::S2)
             .w(px(236.))
             .child(menu(items, p))
+            // A press anywhere else closes it (`DevStrip.svelte`); the button toggles.
+            .on_mouse_down_out(cx.listener(|w, e, _, cx| {
+                if w.more_at.outside(e, cx) {
+                    w.menu_open = false;
+                    cx.notify();
+                }
+            }))
             .into_any_element(),
     )
 }

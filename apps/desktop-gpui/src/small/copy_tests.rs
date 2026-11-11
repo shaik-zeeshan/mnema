@@ -170,3 +170,16 @@ fn copy_diagnostics_copies_the_report_and_says_so(cx: &mut TestAppContext) {
     );
     assert!(has(vcx, nid("toast", 0)));
 }
+
+#[gpui_kit::test]
+fn the_more_menu_closes_on_a_press_outside_and_toggles_on_its_button(cx: &mut TestAppContext) {
+    let (view, vcx, _) = drill(cx, debug_map());
+    let open = |vcx: &mut gpui_kit::VisualTestContext| view.read_with(vcx, |w, _| w.menu_open);
+    click(vcx, "dv-more".into());
+    assert!(open(vcx), "the button opens it");
+    click(vcx, "dv-more".into());
+    assert!(!open(vcx), "the button closes it again");
+    click(vcx, "dv-more".into());
+    click(vcx, nid("dv-proc", 1));
+    assert!(!open(vcx), "a press outside closes it (DevStrip.svelte)");
+}

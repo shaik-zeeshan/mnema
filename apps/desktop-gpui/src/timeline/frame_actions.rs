@@ -8,7 +8,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    deferred, div, px, AnyElement, ClipboardItem, Context, Image, ImageFormat, PromptLevel, Role,
+    div, px, AnyElement, ClipboardItem, Context, Image, ImageFormat, PromptLevel, Role,
     SharedString, Window,
 };
 
@@ -255,7 +255,12 @@ fn item(
         }))
 }
 
-fn menu(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> AnyElement {
+fn menu(
+    v: &TimelineView,
+    at: popover::Anchor,
+    p: &Palette,
+    cx: &mut Context<TimelineView>,
+) -> AnyElement {
     let frame = v.paging.active_frame();
     let ready = frame.is_some_and(|f| v.engine.exact(f.id).is_some()) && v.busy_action.is_none();
     let here = frame.map(|f| f.id) == v.ocr.frame_id;
@@ -287,9 +292,12 @@ fn menu(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> AnyEle
         .right_0()
         .min_w(px(200.))
         .p(px(4.))
-        .on_mouse_down_out(cx.listener(|this, _, _, cx| {
-            this.menu_open = false;
-            cx.notify();
+        .on_mouse_down_out(cx.listener(move |this, e, _, cx| {
+            // The ⋯ trigger toggles it.
+            if at.outside(e, cx) {
+                this.menu_open = false;
+                cx.notify();
+            }
         }))
         .child(
             item(
@@ -341,11 +349,17 @@ fn menu(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> AnyEle
             )
             .on_click(cx.listener(|this, _, _, cx| this.open_captured_url(cx)))
         }));
-    deferred(pop).with_priority(1).into_any_element()
+    popover::float(pop).into_any_element()
 }
 
 /// The headphones + ⋯ cluster at the stage's top-right.
-pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> AnyElement {
+pub fn render(
+    v: &TimelineView,
+    p: &Palette,
+    window: &mut Window,
+    cx: &mut Context<TimelineView>,
+) -> AnyElement {
+    let at = popover::Anchor::new("frame-actions-at", window, cx);
     let moment = v
         .paging
         .active_frame()
@@ -368,7 +382,7 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
             .on_click(cx.listener(|this, _, _, cx| this.play_moment(cx)))
         }))
         .child(
-            div()
+            at.track(div())
                 .relative()
                 .child(
                     Button::icon_only("frame-actions", IconName::Ellipsis.path(), "Frame actions")
@@ -383,7 +397,7 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
                             cx.notify();
                         })),
                 )
-                .when(v.menu_open, |d| d.child(menu(v, p, cx))),
+                .when(v.menu_open, |d| d.child(menu(v, at.clone(), p, cx))),
         )
         .into_any_element()
 }

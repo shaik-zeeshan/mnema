@@ -8,11 +8,11 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{deferred, div, px, App, ElementId, SharedString, Window};
+use gpui_kit::{div, px, App, ElementId, SharedString, Window};
 
 use super::menu::{option_row, options_empty};
 use super::select::{list_box, list_state, trigger, ListState, OnPick, TriggerLook};
-use super::{focus_handle, focus_visible, icon, nid, Force};
+use super::{focus_handle, focus_visible, icon, nid, popover, Force};
 use crate::theme::{self, radius, text};
 
 /// Indices of `options` whose label contains `query` (case-insensitive).
@@ -118,6 +118,9 @@ impl RenderOnce for Combobox {
             compact: false,
         };
         let value = self.selected.and_then(|i| self.options.get(i).cloned());
+        let anchor = popover::Anchor::new(nid(&format!("{base}-anchor"), 0), window, cx);
+        // Keep in sync with the list's 260 px max height (`Combobox.svelte`).
+        let up = anchor.opens_up(px(260.), window, cx);
         let list = open.then(|| {
             let rows = shown.iter().map(|&i| {
                 let (pick, state) = (self.on_change.clone(), state.clone());
@@ -138,9 +141,9 @@ impl RenderOnce for Combobox {
                     }
                 })
             });
-            let (close, esc) = (state.clone(), state.clone());
-            deferred(crate::ui::scroll::area(
-                list_box(nid(&format!("{base}-listbox"), 0), &p)
+            let (close, esc, anchor) = (state.clone(), state.clone(), anchor.clone());
+            popover::float(crate::ui::scroll::area(
+                list_box(nid(&format!("{base}-listbox"), 0), up, &p)
                     .max_h(px(260.))
                     .child(
                         div()
@@ -183,36 +186,43 @@ impl RenderOnce for Combobox {
                             });
                         }
                     })
-                    .on_mouse_down_out(move |_, _, cx| {
-                        close.update(cx, |s, cx| {
-                            s.open = false;
-                            cx.notify();
-                        })
+                    .on_mouse_down_out(move |e, _, cx| {
+                        if anchor.outside(e, cx) {
+                            close.update(cx, |s, cx| {
+                                s.open = false;
+                                cx.notify();
+                            })
+                        }
                     }),
             ))
-            .with_priority(1)
         });
         let (toggle, input) = (state.clone(), search.clone());
-        div()
-            .relative()
-            .w_full()
-            .when(self.disabled, |el| el.opacity(theme::DISABLED_OPACITY))
-            .child(
-                trigger(self.id.clone(), value, self.placeholder.clone(), look, &p)
-                    .aria_label(self.aria.clone())
-                    .when(!self.disabled, |el| {
-                        el.track_focus(&handle).on_click(move |_, window, cx| {
-                            let now_open = toggle.update(cx, |s, cx| {
-                                s.open = !s.open;
-                                cx.notify();
-                                s.open
-                            });
-                            if now_open {
-                                input.update(cx, |s, cx| s.focus(window, cx));
-                            }
-                        })
-                    }),
-            )
-            .children(list)
+        let esc = state.clone();
+        popover::esc_closes(anchor.track(div()), open, move |_, cx| {
+            esc.update(cx, |s, cx| {
+                s.open = false;
+                cx.notify();
+            })
+        })
+        .relative()
+        .w_full()
+        .when(self.disabled, |el| el.opacity(theme::DISABLED_OPACITY))
+        .child(
+            trigger(self.id.clone(), value, self.placeholder.clone(), look, &p)
+                .aria_label(self.aria.clone())
+                .when(!self.disabled, |el| {
+                    el.track_focus(&handle).on_click(move |_, window, cx| {
+                        let now_open = toggle.update(cx, |s, cx| {
+                            s.open = !s.open;
+                            cx.notify();
+                            s.open
+                        });
+                        if now_open {
+                            input.update(cx, |s, cx| s.focus(window, cx));
+                        }
+                    })
+                }),
+        )
+        .children(list)
     }
 }

@@ -9,11 +9,12 @@ use std::path::Path;
 
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
-use gpui_kit::{AppContext, VisualTestAppContext};
+use gpui_kit::{AppContext, Context, VisualTestAppContext, Window};
 use mnema_gpui::settings::fixture::{
     open_mcp_state, settings_data, FixtureBackend, MCP_STATES, STATES,
 };
 use mnema_gpui::settings::privacy_prompt::{PromptData, Recommended};
+use mnema_gpui::settings::Settings;
 use mnema_gpui::shell::{Shell, ShellModel, Surface};
 use mnema_gpui::theme;
 
@@ -76,6 +77,33 @@ pub fn render(
     if PROMPT_STATES.iter().any(|(s, _)| *s == state) {
         data.privacy_prompt = Some(prompt_catalog());
     }
+    let modal = mcp_modal(state);
+    render_open(
+        cx,
+        shell_model,
+        tab,
+        data,
+        setting,
+        None,
+        move |s, window, cx| {
+            if let Some(which) = modal {
+                open_mcp_state(s, which, window, cx)
+            }
+        },
+    )
+}
+
+/// The shell on Settings at `tab`, then `open` run on the settled page (a
+/// modal, a menu) and element `click` clicked (pointer parked after), before the shot.
+pub fn render_open(
+    cx: &mut VisualTestAppContext,
+    shell_model: ShellModel,
+    tab: &str,
+    data: mnema_gpui::settings::SettingsData,
+    setting: AppearanceSetting,
+    click: Option<&'static str>,
+    open: impl FnOnce(&mut Settings, &mut Window, &mut Context<Settings>),
+) -> anyhow::Result<image::RgbaImage> {
     cx.update(|cx| theme::set_setting(setting, cx));
     let mut settings = None;
     let window = crate::pointer::open(cx, compare::viewport(VIEWPORT), |window, cx| {
@@ -105,16 +133,21 @@ pub fn render(
         cx.new(|cx| Root::new(shell, window, cx))
     })?;
     let settings = settings.expect("settings");
+    let mut open = Some(open);
     // Lay out once, then deeplink (the scroll needs the sections' bounds), then settle.
     for step in 0..4 {
         cx.run_until_parked();
         if step == 1 {
             cx.update(|cx| settings.update(cx, |s, cx| s.open_tab(tab, cx)));
         }
-        if let (2, Some(which)) = (step, mcp_modal(state)) {
+        if step == 2 {
+            let open = open.take().expect("once");
             cx.update_window(window.into(), |_, window, cx| {
-                settings.update(cx, |s, cx| open_mcp_state(s, which, window, cx))
+                settings.update(cx, |s, cx| open(s, window, cx))
             })?;
+        }
+        if let (3, Some(id)) = (step, click) {
+            crate::layers::click(cx, window.into(), id)?;
         }
         cx.update_window(window.into(), |_, window, _| window.refresh())?;
     }

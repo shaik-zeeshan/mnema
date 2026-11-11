@@ -316,7 +316,7 @@ fn ocr_status(v: &TimelineView, p: &Palette) -> Option<AnyElement> {
 pub fn render(
     v: &TimelineView,
     p: &Palette,
-    _window: &mut Window,
+    window: &mut Window,
     cx: &mut Context<TimelineView>,
 ) -> impl IntoElement {
     let has_frames = !v.paging.frames.is_empty();
@@ -381,7 +381,7 @@ pub fn render(
                     .then(|| match_overlay::render(v, rect, p))
                     .flatten(),
             )
-            .child(frame_actions::render(v, p, cx))
+            .child(frame_actions::render(v, p, window, cx))
             .into_any_element()
     } else if v.status.as_ref().is_some_and(|s| s.error) {
         inline(

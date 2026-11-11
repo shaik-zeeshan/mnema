@@ -358,6 +358,11 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
         KeyBinding::new("shift-/", ToggleShortcutsHelp, Some(APP_CONTEXT)),
         KeyBinding::new("tab", FlipMode, field),
         KeyBinding::new("escape", Dismiss, field),
+        KeyBinding::new(
+            "escape",
+            crate::ui::popover::ClosePopover,
+            Some(crate::ui::popover::OPEN_CONTEXT),
+        ),
     ];
     let kept: Vec<KeyBinding> = cx
         .key_bindings()

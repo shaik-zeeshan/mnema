@@ -8,8 +8,7 @@ use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    deferred, div, px, radians, AnyElement, App, Div, ElementId, Entity, SharedString,
-    Transformation, Window,
+    div, px, radians, AnyElement, App, Div, ElementId, Entity, SharedString, Transformation, Window,
 };
 
 use super::rows::{HeaderIcon, Mode, OptionRow, Pick, Row};
@@ -127,7 +126,10 @@ impl RenderOnce for ModelPicker {
         let base = self.id.to_string();
 
         let trigger = self.render_trigger(is_open, &st, &p);
+        let trigger_at =
+            popover::Anchor::new(ElementId::Name(format!("{base}-at").into()), window, cx);
         let pop = is_open.then(|| {
+            let trigger_at = trigger_at.clone();
             let nav: Vec<Row> = rows
                 .iter()
                 .filter(|r| r.index().is_some())
@@ -261,10 +263,21 @@ impl RenderOnce for ModelPicker {
                         _ => {}
                     }
                 })
-                .on_mouse_down_out(move |_, _, cx| close(&st_out, cx));
-            deferred(anchor).with_priority(1)
+                .on_mouse_down_out(move |e, _, cx| {
+                    if trigger_at.outside(e, cx) {
+                        close(&st_out, cx)
+                    }
+                });
+            popover::float(anchor)
         });
-        div().relative().flex_none().child(trigger).children(pop)
+        let esc = st.clone();
+        popover::esc_closes(trigger_at.track(div()), is_open, move |_, cx| {
+            close(&esc, cx)
+        })
+        .relative()
+        .flex_none()
+        .child(trigger)
+        .children(pop)
     }
 }
 
