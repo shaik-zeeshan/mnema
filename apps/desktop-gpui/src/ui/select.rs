@@ -153,6 +153,7 @@ pub struct Select {
     compact: bool,
     force: Force,
     force_open: bool,
+    in_modal: bool,
     on_change: Option<OnPick>,
 }
 
@@ -175,6 +176,7 @@ impl Select {
             compact: false,
             force: Force::None,
             force_open: false,
+            in_modal: false,
             on_change: None,
         }
     }
@@ -207,6 +209,11 @@ impl Select {
     /// Render open (gallery, goldens).
     pub fn force_open(mut self) -> Self {
         self.force_open = true;
+        self
+    }
+    /// The list paints above the modal that holds this select.
+    pub fn in_modal(mut self) -> Self {
+        self.in_modal = true;
         self
     }
     pub fn on_change(mut self, f: impl Fn(usize, &mut Window, &mut App) + 'static) -> Self {
@@ -280,6 +287,7 @@ impl RenderOnce for Select {
         });
         let anchor = popover::Anchor::new(nid(&format!("{base}-anchor"), 0), window, cx);
         let up = anchor.opens_up(size::SELECT_MAX_H, window, cx);
+        let in_modal = self.in_modal;
         let list = open.then(|| {
             let (close, anchor) = (state.clone(), anchor.clone());
             popover::float(crate::ui::scroll::area(
@@ -297,6 +305,11 @@ impl RenderOnce for Select {
                         }
                     }),
             ))
+            .with_priority(if in_modal {
+                popover::LAYER_IN_MODAL
+            } else {
+                popover::LAYER_POPOVER
+            })
         });
         let (toggle, keys) = (state.clone(), state.clone());
         let pick_key = self.on_change.clone();

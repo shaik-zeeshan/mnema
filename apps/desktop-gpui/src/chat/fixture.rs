@@ -62,6 +62,9 @@ pub struct FixtureSources {
     pub login: Option<(String, String)>,
     /// What `settings()` answers (the MCP warm-up gate).
     pub settings: Option<RecordingSettings>,
+    /// `get_frame`'s app, window, captured-at and url (the peek's meta).
+    pub meta:
+        std::collections::HashMap<i64, (Option<String>, Option<String>, String, Option<String>)>,
     pub calls: std::sync::Mutex<Vec<String>>,
 }
 
@@ -95,6 +98,12 @@ impl super::source_data::SourceBackend for FixtureSources {
             Some(e) => Err(e.clone()),
             None => Ok(self.frames.get(&id).copied()),
         }
+    }
+    fn frame_meta(
+        &self,
+        id: i64,
+    ) -> Option<(Option<String>, Option<String>, String, Option<String>)> {
+        self.meta.get(&id).cloned()
     }
     fn preview(&self, id: i64) -> Option<std::path::PathBuf> {
         self.log(format!("preview {id}"));

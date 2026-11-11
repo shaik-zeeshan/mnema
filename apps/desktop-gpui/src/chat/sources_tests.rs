@@ -3,6 +3,7 @@
 //! drawer's fixture backend and fake player). Each covers its loaded, removed
 //! and late-answer paths.
 
+use super::peek::PeekOps as _;
 use std::path::PathBuf;
 use std::sync::Arc;
 

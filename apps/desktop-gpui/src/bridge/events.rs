@@ -125,6 +125,8 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                     let settings = shell.read(cx).settings.clone();
                     settings.update(cx, |s, cx| s.on_event(&event, cx));
                 }
+                // Insights' engine notice follows a Settings save.
+                crate::insights::on_event(&event, cx);
                 reload_shell(&shell, cx);
             }
             // Read-Only Mode flips the tray header and Start Recording.

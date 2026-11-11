@@ -73,6 +73,10 @@ pub trait Backend: Send + Sync + 'static {
     fn audio(&self, start: i64, end: i64) -> Vec<(i64, i64)> {
         Vec::new()
     }
+    /// `list_audio_segments` over the span, for a receipt's spoken turns.
+    fn audio_segments(&self, start: i64, end: i64) -> Res<Vec<super::journal::audio::SegRow>> {
+        Err("no app core".into())
+    }
     fn frame_preview(&self, frame_id: i64) -> Option<PathBuf> {
         None
     }
@@ -100,7 +104,20 @@ pub trait Backend: Send + Sync + 'static {
     fn restore_dismissed(&self, subject: &str, statement: &str) -> Res<()> {
         Err("no app core".into())
     }
-    fn correct_category(&self, id: i64, category: capture_types::ActivityCategory) -> Res<()> {
+    /// `resolve_app_icons`: (requested bundle id or name, icon PNG); a miss is absent.
+    fn app_icons(&self, apps: &[String]) -> Vec<(String, PathBuf)> {
+        Vec::new()
+    }
+    /// `user_context_correct_activity_category` (`None` = Uncategorized).
+    fn correct_category(
+        &self,
+        id: i64,
+        category: Option<capture_types::ActivityCategory>,
+    ) -> Res<()> {
+        Err("no app core".into())
+    }
+    /// `user_context_correct_activity_focus` (`None` = no focus read).
+    fn correct_focus(&self, id: i64, focus: Option<capture_types::FocusLevel>) -> Res<()> {
         Err("no app core".into())
     }
 }
@@ -346,6 +363,23 @@ impl Backend for CoreBackend {
             })
             .collect()
     }
+    fn audio_segments(&self, start: i64, end: i64) -> Res<Vec<super::journal::audio::SegRow>> {
+        let i = self.infra()?;
+        let request = req(json!({ "capturedAtStart": iso(start), "capturedAtEnd": iso(end) }))?;
+        let list = self.run(app_core::app_infra::list_audio_segments(request, &i))?;
+        Ok(list
+            .iter()
+            .filter_map(|a| {
+                let v = serde_json::to_value(a).ok()?;
+                Some(super::journal::audio::SegRow {
+                    id: v["id"].as_i64()?,
+                    start: parse_ms(v["startedAt"].as_str()?)?,
+                    end: parse_ms(v["endedAt"].as_str()?)?,
+                    mic: v["sourceKind"].as_str() == Some("microphone"),
+                })
+            })
+            .collect())
+    }
     fn frame_preview(&self, frame_id: i64) -> Option<PathBuf> {
         let request = req(json!({ "frameId": frame_id, "videoScope": null })).ok()?;
         let dto = self
@@ -409,14 +443,24 @@ impl Backend for CoreBackend {
         ))
         .map(drop)
     }
-    fn correct_category(&self, id: i64, category: capture_types::ActivityCategory) -> Res<()> {
+    fn correct_category(
+        &self,
+        id: i64,
+        category: Option<capture_types::ActivityCategory>,
+    ) -> Res<()> {
         let (core, i) = (&self.0, self.infra()?);
         self.run(uc::user_context_correct_activity_category(
-            core,
-            &i,
-            id,
-            Some(category),
+            core, &i, id, category,
         ))
         .map(drop)
+    }
+    fn app_icons(&self, apps: &[String]) -> Vec<(String, PathBuf)> {
+        use crate::timeline::data::Source as _;
+        crate::timeline::data::CoreSource(self.0.clone()).app_icons(apps)
+    }
+    fn correct_focus(&self, id: i64, focus: Option<capture_types::FocusLevel>) -> Res<()> {
+        let (core, i) = (&self.0, self.infra()?);
+        self.run(uc::user_context_correct_activity_focus(core, &i, id, focus))
+            .map(drop)
     }
 }

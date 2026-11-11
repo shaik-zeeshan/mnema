@@ -18,6 +18,8 @@ pub const FOLD_NEIGHBOUR_MS: i64 = 300_000;
 pub enum Media {
     Frames,
     Audio,
+    /// Retention removed the footage ("footage expired").
+    Expired,
     None,
 }
 
@@ -62,6 +64,9 @@ pub struct DayInput<'a> {
     pub engine_available: bool,
     pub engine_reason: Option<String>,
     pub day: (i64, i64),
+    /// Today's retention policy and now, to tell "expired" from "none".
+    pub retention: Option<&'a capture_types::RetentionPolicy>,
+    pub now: i64,
 }
 
 /// `buildJournalDay`.
@@ -100,9 +105,16 @@ pub fn build(i: DayInput) -> DayModel {
                 Media::Frames
             } else if audio_in(a.started_at_ms, a.ended_at_ms) {
                 Media::Audio
+            } else if crate::insights::parts::retention(
+                a.started_at_ms,
+                a.ended_at_ms,
+                i.retention,
+                i.now,
+            )
+            .is_some()
+            {
+                Media::Expired
             } else {
-                // shortcut: "expired" (retention removed it) isn't told apart from "none"
-                // until the retention verdict is ported; both read as no footage.
                 Media::None
             };
             Slot {
@@ -482,6 +494,8 @@ mod tests {
             engine_available: true,
             engine_reason: None,
             day: (0, DAY_MS),
+            retention: None,
+            now: 0,
         });
         assert_eq!(
             m.gaps,
@@ -497,5 +511,62 @@ mod tests {
         assert_eq!(cards[0].subs.len(), 1);
         let (lane, lanes) = stack_lanes(&[(0, 10), (5, 20), (10, 30)]);
         assert_eq!((lane, lanes), (vec![0, 1, 0], 2));
+    }
+}
+
+/// `pendingReasonCopy`: why summaries are paused, never a raw code.
+pub fn pending_reason_copy(reason: &str) -> &'static str {
+    let starts = |p: &str| reason.starts_with(p);
+    if starts("no_provider_key:") {
+        "Summaries are paused — no API key is saved for the engine's provider."
+    } else if starts("provider_not_connected:") {
+        "Summaries are paused — the engine's default provider isn't connected."
+    } else if starts("needs_reconnect:") {
+        "Summaries are paused — sign in with ChatGPT again in Settings."
+    } else if starts("provider_unreachable:") {
+        // Not the sign-in sentence: the login is fine, the network isn't.
+        "Summaries are paused — can't reach ChatGPT right now. They'll resume on their own."
+    } else {
+        match reason {
+            "user_context_disabled" => {
+                "Summaries are paused — continuous derivation is turned off."
+            }
+            "ai_runtime_disabled" => "Summaries are paused — AI features are turned off.",
+            "no_providers" => "Summaries are paused — no AI provider is connected yet.",
+            "no_default_model" => "Summaries are paused — no default model is chosen.",
+            "no_base_url" => "Summaries are paused — the local provider needs a base URL.",
+            "local_endpoint_unreachable" => {
+                "Summaries are paused — the local engine can't be reached."
+            }
+            _ => "Summaries are paused — the Reasoning Engine isn't available right now.",
+        }
+    }
+}
+
+/// `captureRuns`: frames (points) + audio spans merged into runs, cut where
+/// nothing was captured for at least `AWAY_GAP_MIN_MS`.
+pub fn capture_runs(frames: &[i64], audio: &[(i64, i64)]) -> Vec<(i64, i64)> {
+    let mut pieces: Vec<(i64, i64)> = frames
+        .iter()
+        .map(|t| (*t, *t))
+        .chain(audio.iter().copied())
+        .collect();
+    pieces.sort();
+    let mut runs: Vec<(i64, i64)> = Vec::new();
+    for p in pieces {
+        match runs.last_mut() {
+            Some(last) if p.0 - last.1 < AWAY_GAP_MIN_MS => last.1 = last.1.max(p.1),
+            _ => runs.push(p),
+        }
+    }
+    runs
+}
+
+#[cfg(test)]
+mod run_tests {
+    #[test]
+    fn runs_cut_at_five_minutes_of_nothing() {
+        let r = super::capture_runs(&[0, 60_000, 700_000], &[(100_000, 200_000)]);
+        assert_eq!(r, vec![(0, 200_000), (700_000, 700_000)]);
     }
 }

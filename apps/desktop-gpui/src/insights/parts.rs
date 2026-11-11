@@ -288,3 +288,62 @@ pub fn group_head(s: &str, right: Option<AnyElement>, p: &Palette) -> Div {
         .child(div().flex_1().h(px(1.)).bg(p.hairline))
         .children(right)
 }
+
+/// `retentionVerdict`: whether missing footage in `[start, end)` is
+/// retention's doing: `Some((removed, days))` ("removed" = the span ends before
+/// the cutoff; else it straddles it). shortcut: a guess from today's policy,
+/// as Svelte's; the upgrade is a per-segment "deleted by retention" record.
+pub fn retention(
+    start: i64,
+    end: i64,
+    policy: Option<&capture_types::RetentionPolicy>,
+    now: i64,
+) -> Option<(bool, i64)> {
+    use capture_types::RetentionPolicy as R;
+    let days = match policy? {
+        R::Never => return None,
+        R::Days7 => 7,
+        R::Days14 => 14,
+        R::Days30 => 30,
+    };
+    let cutoff = now - days * super::stats::DAY_MS;
+    if end <= cutoff {
+        Some((true, days))
+    } else if start < cutoff {
+        Some((false, days))
+    } else {
+        None
+    }
+}
+
+/// `mx-inline` with the small spinner: "Writing the read…".
+pub fn busy_line(s: impl Into<SharedString>, p: &Palette) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(px(6.))
+        .text_size(text::BASE)
+        .text_color(p.text_muted)
+        .child(crate::ui::progress::spinner(crate::theme::size::SPIN_SM))
+        .child(s.into())
+}
+
+/// The read's placeholder while it is written (two title bars, two lines).
+pub fn writing_skel(p: &Palette) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.))
+        .pt(crate::theme::space::S4)
+        .child(
+            crate::ui::skeleton::skel(p)
+                .h(px(34.))
+                .w(gpui_kit::relative(0.78)),
+        )
+        .child(
+            crate::ui::skeleton::skel(p)
+                .h(px(34.))
+                .w(gpui_kit::relative(0.52)),
+        )
+        .child(crate::ui::skeleton::lines(2, p))
+}

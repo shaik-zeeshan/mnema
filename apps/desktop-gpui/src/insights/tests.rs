@@ -21,11 +21,13 @@ use crate::ui::clock;
 
 const MS: Duration = Duration::from_millis(1);
 
-fn open(cx: &mut TestAppContext) -> (WindowHandle<Root>, Entity<Insights>, Arc<FixtureBackend>) {
+pub(super) fn open(
+    cx: &mut TestAppContext,
+) -> (WindowHandle<Root>, Entity<Insights>, Arc<FixtureBackend>) {
     open_at(cx, (1280., 800.))
 }
 
-fn open_at(
+pub(super) fn open_at(
     cx: &mut TestAppContext,
     (w, h): (f32, f32),
 ) -> (WindowHandle<Root>, Entity<Insights>, Arc<FixtureBackend>) {
@@ -56,7 +58,7 @@ fn open_at(
     (window, view, backend)
 }
 
-fn advance(cx: &mut TestAppContext, d: Duration) {
+pub(super) fn advance(cx: &mut TestAppContext, d: Duration) {
     cx.executor().advance_clock(d);
     cx.run_until_parked();
 }
@@ -77,7 +79,7 @@ fn dismiss_lead(cx: &mut TestAppContext, v: &Entity<Insights>) -> i64 {
 }
 
 /// Open the first subject; returns its lead conclusion's id.
-fn open_lead(cx: &mut TestAppContext, v: &Entity<Insights>) -> i64 {
+pub(super) fn open_lead(cx: &mut TestAppContext, v: &Entity<Insights>) -> i64 {
     let subject = v
         .read_with(cx, |i, _| {
             i.subjects

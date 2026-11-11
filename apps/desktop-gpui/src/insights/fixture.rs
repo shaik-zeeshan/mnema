@@ -36,10 +36,18 @@ pub enum Open {
     Receipt,
     /// Overview's period control switched to this unit, its calendar clicked open.
     Period(crate::ui::calendar::Unit),
+    /// An Overview detail modal; "What you worked on" with its first thread expanded.
+    Modal(super::Modal),
+    /// Context's first statement in edit.
+    Edit,
+    /// The newest card's receipt with its spoken turns (the `audio` set).
+    ReceiptAudio,
+    /// A subject's newest resolved evidence row clicked: the frame peek.
+    Peek,
 }
 
 /// The goldens and parity states, in `surfaces.ts` order.
-pub const STATES: [State; 13] = [
+pub const STATES: [State; 20] = [
     State {
         name: "overview",
         set: "populated",
@@ -118,12 +126,57 @@ pub const STATES: [State; 13] = [
         tab: Tab::Overview,
         open: Open::Period(crate::ui::calendar::Unit::Month),
     },
+    State {
+        name: "categories-open",
+        set: "populated",
+        tab: Tab::Overview,
+        open: Open::Modal(super::Modal::Categories),
+    },
+    State {
+        name: "apps-open",
+        set: "populated",
+        tab: Tab::Overview,
+        open: Open::Modal(super::Modal::Apps),
+    },
+    State {
+        name: "focus-open",
+        set: "populated",
+        tab: Tab::Overview,
+        open: Open::Modal(super::Modal::Focus),
+    },
+    State {
+        name: "context-edit",
+        set: "populated",
+        tab: Tab::Context,
+        open: Open::Edit,
+    },
+    State {
+        name: "receipt-audio",
+        set: "audio",
+        tab: Tab::Journal,
+        open: Open::ReceiptAudio,
+    },
+    State {
+        name: "journal-capture",
+        set: "capture",
+        tab: Tab::Journal,
+        open: Open::None,
+    },
+    State {
+        name: "subject-peek",
+        set: "peek",
+        tab: Tab::Subjects,
+        open: Open::Peek,
+    },
 ];
 
 pub struct FixtureBackend {
     map: Value,
     /// Writes in order: `dismiss:<id>`, `pin:<id>:<bool>`, `add:<text>`, …
     pub calls: Mutex<Vec<String>>,
+    fail: Mutex<Vec<String>>,
+    /// The span's audio segments (a receipt's spoken turns); none by default.
+    pub segments: Mutex<Vec<super::journal::audio::SegRow>>,
 }
 
 impl FixtureBackend {
@@ -131,7 +184,34 @@ impl FixtureBackend {
         Ok(Self {
             map: load("insights", set)?,
             calls: Mutex::new(Vec::new()),
+            fail: Mutex::new(Vec::new()),
+            segments: Mutex::new(Vec::new()),
         })
+    }
+
+    /// The map's `list_audio_segments` as rows.
+    fn map_segments(&self) -> Vec<super::journal::audio::SegRow> {
+        let ms = |v: &Value| {
+            time::OffsetDateTime::parse(v.as_str()?, &time::format_description::well_known::Rfc3339)
+                .ok()
+                .map(|t| (t.unix_timestamp_nanos() / 1_000_000) as i64)
+        };
+        self.list::<Value>("list_audio_segments")
+            .iter()
+            .filter_map(|v| {
+                Some(super::journal::audio::SegRow {
+                    id: v["id"].as_i64()?,
+                    start: ms(&v["startedAt"])?,
+                    end: ms(&v["endedAt"])?,
+                    mic: v["sourceKind"].as_str() == Some("microphone"),
+                })
+            })
+            .collect()
+    }
+
+    /// The raw map (the receipt golden's audio backend reads the same one).
+    pub fn map(&self) -> Value {
+        self.map.clone()
     }
 
     pub fn calls(&self) -> Vec<String> {
@@ -147,8 +227,23 @@ impl FixtureBackend {
     }
 
     fn record(&self, call: String) -> Res<()> {
+        let fail = self
+            .fail
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|f| call.starts_with(f.as_str()));
         self.calls.lock().unwrap().push(call);
-        Ok(())
+        if fail {
+            Err("the fixture was told to fail".into())
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Make every later write starting with `prefix` fail (`add:`, `delete:`, …).
+    pub fn fail(&self, prefix: &str) {
+        self.fail.lock().unwrap().push(prefix.to_string());
     }
 }
 
@@ -192,7 +287,8 @@ impl Backend for FixtureBackend {
     fn conclusions(&self, _: Option<(i64, i64)>) -> Res<Vec<Conclusion>> {
         Ok(self.list("list_user_context_conclusions"))
     }
-    fn digest(&self, _: &str, _: i64, _: i64, _: bool) -> Res<UserContextDigestResult> {
+    fn digest(&self, kind: &str, _: i64, _: i64, force: bool) -> Res<UserContextDigestResult> {
+        self.record(format!("digest:{kind}:{force}"))?;
         Ok(self
             .val("get_user_context_digest")
             .unwrap_or(UserContextDigestResult {
@@ -222,7 +318,18 @@ impl Backend for FixtureBackend {
             .collect())
     }
     fn audio(&self, _: i64, _: i64) -> Vec<(i64, i64)> {
-        Vec::new()
+        self.map_segments()
+            .iter()
+            .map(|s| (s.start, s.end))
+            .collect()
+    }
+    fn audio_segments(&self, _: i64, _: i64) -> Res<Vec<super::journal::audio::SegRow>> {
+        let set = self.segments.lock().unwrap().clone();
+        Ok(if set.is_empty() {
+            self.map_segments()
+        } else {
+            set
+        })
     }
     fn frame_preview(&self, _: i64) -> Option<PathBuf> {
         let v: Value = self.val("get_frame_preview")?;
@@ -259,7 +366,10 @@ impl Backend for FixtureBackend {
     fn restore_dismissed(&self, subject: &str, _: &str) -> Res<()> {
         self.record(format!("restore:{subject}"))
     }
-    fn correct_category(&self, id: i64, c: capture_types::ActivityCategory) -> Res<()> {
+    fn correct_category(&self, id: i64, c: Option<capture_types::ActivityCategory>) -> Res<()> {
         self.record(format!("category:{id}:{c:?}"))
+    }
+    fn correct_focus(&self, id: i64, f: Option<capture_types::FocusLevel>) -> Res<()> {
+        self.record(format!("focus:{id}:{f:?}"))
     }
 }

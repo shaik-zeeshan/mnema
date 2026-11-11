@@ -45,6 +45,11 @@ const SENSITIVE: [&str; 5] = [
     "other protected",
 ];
 
+/// The topic swatches, in `context_ops::TOPICS` order.
+pub fn topic_colors(p: &Palette) -> [gpui_kit::Hsla; 4] {
+    topics(p).map(|t| t.1)
+}
+
 /// Topic name + its swatch (`context-topics.ts`).
 fn topics(p: &Palette) -> [(&'static str, gpui_kit::Hsla); 4] {
     [
@@ -68,6 +73,10 @@ pub fn render(
             .into_any_element();
     };
     let off = clock::now(cx).offset();
+    if std::mem::take(&mut this.ctx_ui.show_dismissed) {
+        // Arriving from Subjects' "View dismissed": the archive ends the page.
+        this.scroll.scroll_to_bottom();
+    }
     let failed = d.authored.is_none();
     let rows = d.authored.clone().unwrap_or_default();
     let n = rows.len();
@@ -144,12 +153,12 @@ pub fn render(
         .flex_col()
         .gap(space::S6)
         .child(composer(this, p, window, cx))
-        .child(standing(&d, unsent, p, off, cx));
+        .child(standing(this, &d, unsent, p, off, cx));
     div()
         .flex()
         .flex_col()
         .child(read(lede_el, stats, this.width, p))
-        .child(split(left, side(&d, p, cx), this.width).items_start())
+        .child(split(left, side(this, &d, p, cx), this.width).items_start())
         .into_any_element()
 }
 
@@ -256,32 +265,46 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
                 .child(label("Topic", p))
                 .child(topic_chips)
                 .child(div().flex_1())
-                .child(
+                .child(if this.ctx_ui.submitting {
+                    Button::new("insights-add-context", "Adding…")
+                        .primary()
+                        .sm()
+                        .spinner(true)
+                        .disabled(true)
+                } else {
                     Button::new("insights-add-context", "Add context")
                         .primary()
                         .sm()
                         .icon(IconName::Plus.path())
                         .kbd("⌘↵")
-                        .disabled(len == 0)
-                        .on_click(cx.listener(|this, _, window, cx| this.submit_draft(window, cx))),
-                ),
+                        .disabled(this.composer.read(cx).value().trim().is_empty())
+                        .on_click(cx.listener(|this, _, window, cx| this.submit_draft(window, cx)))
+                }),
         )
         .children(priv_line)
         .children(this.composer_error.as_ref().map(|e| {
             crate::ui::notice::inline(
                 Tone::Danger,
                 None,
-                vec![div()
-                    .child(format!(
-                        "Couldn't save that statement — {e}. Your text is still here."
-                    ))
-                    .into_any_element()],
+                vec![
+                    div()
+                        .child(format!(
+                            "Couldn't save that statement — {e}. Your text is still here."
+                        ))
+                        .into_any_element(),
+                    Button::new("insights-add-retry", "Retry")
+                        .ghost()
+                        .sm()
+                        .on_click(cx.listener(|this, _, window, cx| this.submit_draft(window, cx)))
+                        .into_any_element(),
+                ],
                 p,
             )
         }))
 }
 
 fn standing(
+    this: &Insights,
     d: &ContextData,
     unsent: usize,
     p: &Palette,
@@ -320,7 +343,11 @@ fn standing(
             IconName::TriangleAlert.path(),
             "Couldn't load your context.",
             "Reading your statements failed. Nothing is lost.",
-            Vec::new(),
+            vec![Button::new("insights-context-retry", "Try again")
+                .sm()
+                .icon(IconName::RotateCcw.path())
+                .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+                .into_any_element()],
             p,
         ));
     }
@@ -349,6 +376,12 @@ fn standing(
         } else {
             format!("authored {}", super::stats::month_day(s.created_at_ms, off))
         };
+        let editor = this
+            .ctx_ui
+            .editor
+            .clone()
+            .filter(|_| this.ctx_ui.editing == Some(id));
+        let editing = editor.is_some();
         div()
             .id(nid("insights-stmt", id as u64))
             .flex()
@@ -361,7 +394,8 @@ fn standing(
             .border_color(p.hairline)
             .rounded(radius::SM)
             .hover(|s| s.bg(p.wash))
-            .when(!r.in_prompt, |d| d.opacity(0.38))
+            .when(!r.in_prompt && !editing, |d| d.opacity(0.38))
+            .when(editing, |d| d.bg(p.wash))
             .child(
                 div()
                     .w(px(120.))
@@ -382,55 +416,77 @@ fn standing(
                             .child(t.to_string())
                     })),
             )
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .text_size(text::LG)
-                            .line_height(relative(1.45))
-                            .text_color(p.text_strong)
-                            .child(s.text.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(text::SM)
-                            .line_height(relative(1.))
-                            .text_color(p.text_subtle)
-                            .child(format!(
-                                "{when} · {}",
-                                if r.in_prompt {
-                                    "never fades"
-                                } else {
-                                    "not sent"
-                                }
-                            )),
-                    ),
-            )
-            .child(
-                // Acts show on row hover (`.in-stmt:hover .in-stmt__acts`).
-                div()
-                    .opacity(0.)
-                    .group_hover("insights-stmt", |s| s.opacity(1.))
-                    .child(
-                        Button::icon_only(
-                            nid("insights-stmt-delete", id as u64),
-                            IconName::Trash.path(),
-                            "Delete",
+            .when_some(editor, |row, ed| {
+                row.child(super::context_ops::edit_body(this, &ed, p, cx))
+            })
+            .when(!editing, |row| {
+                row.child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .text_size(text::LG)
+                                .line_height(relative(1.45))
+                                .text_color(p.text_strong)
+                                .child(s.text.clone()),
                         )
-                        .ghost()
-                        .sm()
-                        .on_click(cx.listener(move |this, _, _, cx| this.delete_statement(id, cx))),
-                    ),
-            )
+                        .child(
+                            div()
+                                .text_size(text::SM)
+                                .line_height(relative(1.))
+                                .text_color(p.text_subtle)
+                                .child(format!(
+                                    "{when} · {}",
+                                    if r.in_prompt {
+                                        "never fades"
+                                    } else {
+                                        "not sent"
+                                    }
+                                )),
+                        ),
+                )
+            })
+            .when(!editing, |row| {
+                row.child(
+                    // Acts show on row hover (`.in-stmt:hover .in-stmt__acts`).
+                    div()
+                        .flex()
+                        .opacity(0.)
+                        .group_hover("insights-stmt", |s| s.opacity(1.))
+                        .child(
+                            Button::icon_only(
+                                nid("insights-stmt-edit", id as u64),
+                                IconName::Pencil.path(),
+                                "Edit",
+                            )
+                            .ghost()
+                            .sm()
+                            .on_click(cx.listener(
+                                move |this, _, window, cx| this.start_edit(id, window, cx),
+                            )),
+                        )
+                        .child(
+                            Button::icon_only(
+                                nid("insights-stmt-delete", id as u64),
+                                IconName::Trash.path(),
+                                "Delete",
+                            )
+                            .ghost()
+                            .sm()
+                            .on_click(
+                                cx.listener(move |this, _, _, cx| this.delete_statement(id, cx)),
+                            ),
+                        ),
+                )
+            })
     }))
 }
 
-fn side(d: &ContextData, p: &Palette, cx: &mut Context<Insights>) -> Div {
+fn side(this: &Insights, d: &ContextData, p: &Palette, cx: &mut Context<Insights>) -> Div {
     let off = clock::now(cx).offset();
     let rows = d.authored.clone().unwrap_or_default();
     let n = rows.len();
@@ -620,53 +676,74 @@ fn side(d: &ContextData, p: &Palette, cx: &mut Context<Insights>) -> Div {
         .child(mix)
         .child(views)
         .child(guard)
-        .when(!d.dismissed.is_empty(), |el| {
-            el.child(
-                div()
-                    .child(sec(
-                        kicker("Dismissed beliefs", p),
-                        Some(label("won't be re-inferred", p).into_any_element()),
-                    ))
-                    .children(d.dismissed.iter().enumerate().map(|(i, v)| {
-                        let (s, st) = (v.subject.clone(), v.statement.clone());
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(space::S3)
-                            .py(px(8.))
-                            .border_t_1()
-                            .border_color(p.hairline)
-                            .child(
-                                div()
-                                    .flex_1()
-                                    .flex()
-                                    .flex_col()
-                                    .gap(px(2.))
-                                    .child(
-                                        div()
-                                            .text_size(text::BASE)
-                                            .text_color(p.text)
-                                            .child(v.statement.clone()),
-                                    )
-                                    .child(
-                                        div().text_size(text::SM).text_color(p.text_subtle).child(
-                                            format!(
-                                                "{} · dismissed {}",
-                                                v.subject,
-                                                super::stats::month_day(v.dismissed_at_ms, off)
-                                            ),
-                                        ),
-                                    ),
+        .when(
+            !d.dismissed.is_empty() || this.ctx_ui.dismissed_error.is_some(),
+            |el| {
+                el.child(
+                    div()
+                        .child(sec(
+                            kicker("Dismissed beliefs", p),
+                            Some(label("won't be re-inferred", p).into_any_element()),
+                        ))
+                        .children(this.ctx_ui.dismissed_error.clone().map(|e| {
+                            crate::ui::notice::inline(
+                                Tone::Danger,
+                                None,
+                                vec![div().child(e).into_any_element()],
+                                p,
                             )
-                            .child(
-                                Button::new(nid("insights-restore", i as u64), "Restore")
+                        }))
+                        .children(d.dismissed.iter().enumerate().map(|(i, v)| {
+                            let (s, st) = (v.subject.clone(), v.statement.clone());
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(space::S3)
+                                .py(px(8.))
+                                .border_t_1()
+                                .border_color(p.hairline)
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .flex()
+                                        .flex_col()
+                                        .gap(px(2.))
+                                        .child(
+                                            div()
+                                                .text_size(text::BASE)
+                                                .text_color(p.text)
+                                                .child(v.statement.clone()),
+                                        )
+                                        .child(
+                                            div()
+                                                .text_size(text::SM)
+                                                .text_color(p.text_subtle)
+                                                .child(format!(
+                                                    "{} · dismissed {}",
+                                                    v.subject,
+                                                    super::stats::month_day(v.dismissed_at_ms, off)
+                                                )),
+                                        ),
+                                )
+                                .child({
+                                    let busy = this.ctx_ui.restoring.as_ref()
+                                        == Some(&(v.subject.clone(), v.statement.clone()));
+                                    Button::new(
+                                        nid("insights-restore", i as u64),
+                                        if busy { "Restoring…" } else { "Restore" },
+                                    )
                                     .ghost()
                                     .sm()
-                                    .on_click(cx.listener(move |this, _, _, cx| {
-                                        this.restore(s.clone(), st.clone(), cx)
-                                    })),
-                            )
-                    })),
-            )
-        })
+                                    .spinner(busy)
+                                    .disabled(busy)
+                                    .on_click(cx.listener(
+                                        move |this, _, _, cx| {
+                                            this.restore(s.clone(), st.clone(), cx)
+                                        },
+                                    ))
+                                })
+                        })),
+                )
+            },
+        )
 }

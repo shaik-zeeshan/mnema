@@ -6,8 +6,7 @@ use std::collections::HashMap;
 
 use capture_types::{
     Activity, ActivityMeta, AiEngineRef, AiProviderKind, Conclusion, ConfidenceSnapshot,
-    DismissedView, RecordingSettings, SubjectView, UsageChartsResponse, UserContextDigestResult,
-    UserContextStatus,
+    DismissedView, RecordingSettings, SubjectView, UsageChartsResponse, UserContextStatus,
 };
 use serde::Deserialize;
 
@@ -261,7 +260,8 @@ pub struct OverviewData {
     pub prev_activities: Vec<Activity>,
     pub conclusions: Vec<Conclusion>,
     pub engine_error: Option<String>,
-    pub digest: Option<Result<UserContextDigestResult, String>>,
+    /// A period step's placeholder: only `capture_hours` is real (skeletons).
+    pub stale: bool,
     /// Capture hours (local hour starts) for the picker's density.
     pub capture_hours: Vec<i64>,
     /// subject → conclusion id → history (the feed's spark lines).
@@ -283,7 +283,8 @@ pub struct JournalData {
     pub failed: Vec<(i64, i64)>,
     pub usage: Option<UsageChartsResponse>,
     pub history: Option<UsageChartsResponse>,
-    pub digest: Option<Result<UserContextDigestResult, String>>,
+    /// A day step's placeholder: only `history` is real (skeletons).
+    pub stale: bool,
     pub error: Option<String>,
 }
 

@@ -6,6 +6,7 @@
 use capture_types::FocusLevel;
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, Window};
 
 use super::day::{self, Card, DayModel, Row};
@@ -18,7 +19,8 @@ use crate::insights::stats::{
 use crate::insights::Insights;
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
 use crate::ui::chip::{chip, ChipKind};
-use crate::ui::{clock, icon, kbd, kicker, nid, Button};
+use crate::ui::empty::{empty, EmptyLayout};
+use crate::ui::{clock, icon, kbd, kicker, nid, Button, Tone};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render(
@@ -27,7 +29,7 @@ pub fn render(
     model: &DayModel,
     cards: &[Card],
     shown: &[capture_types::Activity],
-    day_start: i64,
+    (day_start, why, pending): (i64, Option<&str>, bool),
     p: &Palette,
     window: &mut Window,
     cx: &mut Context<Insights>,
@@ -35,6 +37,7 @@ pub fn render(
     let off = clock::now(cx).offset();
     let rows = day::river(cards, &model.gaps, &model.failed);
     let n = cards.len();
+    let day_label = stats::day_label(day_start, off);
     let gap_row = |s: String| {
         div()
             .py(space::S3)
@@ -56,37 +59,103 @@ pub fn render(
             .gap(space::S3)
             .child(h2("What you did", p))
             .child(label(
-                format!(
-                    "{n} activit{} · newest first",
-                    if n == 1 { "y" } else { "ies" }
-                ),
+                if why.is_some() {
+                    "nothing written up".to_string()
+                } else {
+                    format!(
+                        "{n} activit{} · newest first",
+                        if n == 1 { "y" } else { "ies" }
+                    )
+                },
                 p,
             )),
         None,
     ));
-    if model.pending.active {
-        if let Some(since) = model.pending.since {
-            let s = stats::clock(since, off);
-            let text_ = match &model.pending.unavailable {
-                None => "The journal trails live capture by a few minutes — the footage is already on the Timeline.".to_string(),
-                Some(_) => "Summaries are paused — the Reasoning Engine isn't available right now.".to_string(),
-            };
-            col = col.child(
-                div()
-                    .flex()
-                    .gap(space::S4)
-                    .py(space::S3)
-                    .child(div().w(px(64.)).child(mono_label(s.clone(), p)))
-                    .child(
+    if let Some(why) = why {
+        let side = side(this, j, shown, day_start, false, p, cx);
+        let body = col.child(empty(
+            EmptyLayout::Compact,
+            Tone::Neutral,
+            IconName::CircleOff.path(),
+            format!("Nothing written up on {day_label}"),
+            format!("{why} The Timeline has everything captured."),
+            Vec::new(),
+            p,
+        ));
+        return split(body, side, this.width)
+            .items_start()
+            .into_any_element();
+    }
+    if let Some(since) = model.pending.since.filter(|_| model.pending.active) {
+        let s = stats::clock(since, off);
+        let failure = this
+            .status
+            .ctx
+            .as_ref()
+            .and_then(|c| c.summarizing_failure.clone())
+            .filter(|_| crate::insights::overview::engine_on(&this.status));
+        let body = match (&model.pending.unavailable, failure) {
+            (None, Some(f)) => div()
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .child(kicker(&format!("Not written up · {s} → now"), p))
+                .child(crate::ui::notice::inline(
+                    Tone::Danger,
+                    Some(icon(IconName::TriangleAlert.path(), px(13.)).into_any_element()),
+                    vec![
                         div()
-                            .flex()
-                            .flex_col()
-                            .gap(space::S2)
-                            .child(kicker(&format!("Writing up {s} → now"), p))
-                            .child(label(text_, p)),
-                    ),
-            );
-        }
+                            .child(format!(
+                                "Summaries are failing — {} turned away the last {}.",
+                                f.provider.as_deref().unwrap_or("the AI provider"),
+                                if f.failures == 1 { "try".to_string() } else { format!("{} tries", f.failures) }
+                            ))
+                            .into_any_element(),
+                        Button::new("insights-pending-settings", "Open engine settings")
+                            .ghost()
+                            .sm()
+                            .on_click(|_, _, cx| crate::window::open_settings(Some("intelligence"), cx))
+                            .into_any_element(),
+                    ],
+                    p,
+                )),
+            (None, None) => div()
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .child(kicker(&format!("Writing up {s} → now"), p).text_color(p.accent))
+                .child(crate::ui::skeleton::skel(p).w(relative(0.46)).h(px(12.)))
+                .child(crate::ui::skeleton::skel(p).w(relative(0.72)).h(px(10.)))
+                .child(label(
+                    if model.audio_only {
+                        "Screen capture is off, so this stretch is built from what the mic and system audio picked up."
+                    } else {
+                        "The journal trails live capture by a few minutes — the footage is already on the Timeline."
+                    },
+                    p,
+                )),
+            (Some(reason), _) => div()
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .child(kicker(&format!("Not written up · {s} → now"), p))
+                .child(crate::ui::notice::inline(
+                    Tone::Neutral,
+                    Some(icon(IconName::CircleOff.path(), px(13.)).into_any_element()),
+                    vec![div().child(day::pending_reason_copy(reason)).into_any_element()],
+                    p,
+                )),
+        };
+        col = col.child(
+            div()
+                .id("insights-pending")
+                .test_support()
+                .flex()
+                .gap(space::S4)
+                .py(space::S3)
+                .child(div().w(px(64.)).flex_none().child(mono_label(s.clone(), p)))
+                .child(body.flex_1().min_w_0()),
+        );
     }
     for r in rows {
         col = col.child(match r {
@@ -105,7 +174,18 @@ pub fn render(
             Row::Card(c) => card(this, j, c, p, window, cx),
         });
     }
-    let side = side(this, j, shown, day_start, p, cx);
+    if n == 0 && pending {
+        col = col.child(empty(
+            EmptyLayout::Compact,
+            Tone::Neutral,
+            IconName::Inbox.path(),
+            "Your day is being written",
+            "Capture is landing. The first card appears within a few minutes.",
+            Vec::new(),
+            p,
+        ));
+    }
+    let side = side(this, j, shown, day_start, true, p, cx);
     split(div().child(col), side, this.width)
         .items_start()
         .into_any_element()
@@ -125,12 +205,15 @@ fn card(
     let span = (a.started_at_ms, a.ended_at_ms);
     let open = this.receipt.as_ref().is_some_and(|r| r.activity_id == id);
     let col = category_color(a.category, p);
-    let receipt_btn = Button::new(nid("insights-receipt-toggle", id as u64), "Receipt")
-        .ghost()
-        .sm()
-        .icon(IconName::Play.path())
-        .pressed(open)
-        .on_click(cx.listener(move |this, _, _, cx| this.toggle_receipt(id, span, cx)));
+    let receipt_btn = || {
+        Button::new(nid("insights-receipt-toggle", id as u64), "Receipt")
+            .ghost()
+            .sm()
+            .icon(IconName::Play.path())
+            .pressed(open)
+            .on_click(cx.listener(move |this, _, _, cx| this.toggle_receipt(id, span, cx)))
+    };
+    let slim = c.slim;
     let meta = j.meta.iter().find(|m| m.activity_id == id);
     let chips =
         div()
@@ -159,8 +242,11 @@ fn card(
                     p,
                 )
             }))
+            .when(c.slot.media == day::Media::Expired, |d| {
+                d.child(chip("footage expired", ChipKind::Neutral, p))
+            })
             .child(div().flex_1())
-            .child(receipt_btn);
+            .child(receipt_btn());
     let head = div()
         .flex()
         .items_center()
@@ -172,19 +258,31 @@ fn card(
                 .font_weight(theme::W_SEMIBOLD)
                 .text_color(p.text_strong)
                 .child(a.title.clone()),
-        );
-    let subs = div()
-        .flex()
-        .flex_col()
-        .mt(space::S2)
-        .children(c.subs.iter().map(|(s, st, en)| {
+        )
+        .when(slim, |d| d.child(div().flex_1()).child(receipt_btn()));
+    let open_sub = this.receipt.as_ref().map(|r| r.activity_id);
+    let mut subs = div().flex().flex_col().mt(space::S2);
+    for (s, st, en) in &c.subs {
+        let sid = s.activity.id;
+        let sspan = (s.activity.started_at_ms, s.activity.ended_at_ms);
+        let sub_open = open_sub == Some(sid);
+        subs = subs.child(
             div()
+                .id(nid("insights-sub", sid as u64))
+                .role(Role::Button)
                 .flex()
                 .items_center()
                 .gap(space::S2)
-                .py(px(3.))
-                .text_size(text::BASE)
+                .py(px(5.))
+                .px(px(6.))
+                .ml(px(-6.))
+                .rounded(radius::SM)
+                .cursor_pointer()
+                .hover(|d| d.bg(p.wash))
+                .text_size(text::SM)
+                .font_weight(theme::W_MEDIUM)
                 .text_color(p.text_muted)
+                .on_click(cx.listener(move |this, _, _, cx| this.toggle_receipt(sid, sspan, cx)))
                 .child(icon(IconName::CornerDownRight.path(), px(12.)))
                 .child(mono_label(stats::clock(*st, off), p))
                 .child(
@@ -193,11 +291,38 @@ fn card(
                         .text_color(p.text)
                         .child(s.activity.title.clone()),
                 )
-                .child(mono_label(format!("· {}", humanize_ms(en - st)), p))
-        }));
+                .child(mono_label(format!("· {}", humanize_ms(en - st)), p)),
+        );
+        if sub_open {
+            subs = subs.child(super::receipt::render(this, p, window, cx));
+        }
+    }
     let receipt = open.then(|| super::receipt::render(this, p, window, cx));
+    let bounds = this.card_bounds.clone();
     div()
         .id(nid("insights-act", id as u64))
+        .relative()
+        .when(this.hot == Some(id), |d| {
+            d.bg(crate::ui::alpha(p.fg, 0.025))
+        })
+        .on_hover(cx.listener(move |this, on: &bool, _, cx| {
+            if *on {
+                this.hot = Some(id);
+            } else if this.hot == Some(id) {
+                this.hot = None;
+            }
+            cx.notify();
+        }))
+        .child(
+            gpui_kit::canvas(
+                move |b, _, _| {
+                    bounds.borrow_mut().insert(id, b);
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .inset_0(),
+        )
         .flex()
         .gap(space::S4)
         .py(space::S4)
@@ -236,7 +361,7 @@ fn card(
                             .child(a.summary.clone()),
                     )
                 })
-                .child(chips)
+                .when(!slim, |d| d.child(chips))
                 .children(receipt)
                 .when(!c.subs.is_empty(), |d| d.child(subs)),
         )
@@ -248,6 +373,7 @@ fn side(
     j: &JournalData,
     shown: &[capture_types::Activity],
     day_start: i64,
+    with_mix: bool,
     p: &Palette,
     cx: &mut Context<Insights>,
 ) -> Div {
@@ -284,8 +410,20 @@ fn side(
                     .bg(category_color(*c, p))
             });
             let cap_only = d.activities == 0 && d.captured_hours > 0;
-            div()
-                .id(nid("insights-week", i as u64))
+            let tip = format!(
+                "{} · {}",
+                stats::day_label(d.start, off),
+                if d.activities > 0 {
+                    format!("{} · {} activities", humanize_ms(d.activity_ms), d.activities)
+                } else if cap_only {
+                    format!("~{}h captured · nothing written up", d.captured_hours)
+                } else {
+                    "nothing captured".into()
+                }
+            );
+            let el = div().id(nid("insights-week", i as u64));
+            let el = if d.future { el } else { crate::ui::with_tip(el, tip) };
+            el
                 .role(Role::Button)
                 .flex_1()
                 .flex()
@@ -408,7 +546,7 @@ fn side(
                 ))
                 .child(bars),
         )
-        .when(!mix.is_empty(), |d| {
+        .when(with_mix && !mix.is_empty(), |d| {
             d.child(
                 div()
                     .child(sec(

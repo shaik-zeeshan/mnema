@@ -32,6 +32,14 @@ pub trait SourceBackend: Send + Sync + 'static {
     fn peek_extras(&self, _id: i64) -> (u32, Option<String>) {
         (0, None)
     }
+    /// `get_frame`'s `(app, window title, captured at ISO, url)`: the peek's
+    /// meta when its source didn't carry them.
+    fn frame_meta(
+        &self,
+        _id: i64,
+    ) -> Option<(Option<String>, Option<String>, String, Option<String>)> {
+        None
+    }
     /// `loadOcrForFrame`: `None` = never OCR'd.
     fn ocr(&self, _id: i64) -> Res<Option<Vec<OcrBox>>> {
         Ok(None)
@@ -82,6 +90,19 @@ impl SourceBackend for CoreSources {
             .block_on(get_frame(GetFrameRequest { frame_id: id }, &infra))?;
         let dim = |v: Option<i64>| v.and_then(|v| u32::try_from(v).ok());
         Ok(dto.map(|f| (dim(f.width), dim(f.height))))
+    }
+
+    fn frame_meta(
+        &self,
+        id: i64,
+    ) -> Option<(Option<String>, Option<String>, String, Option<String>)> {
+        use app_core::app_infra::{get_frame, GetFrameRequest};
+        let infra = self.0.try_state::<AppInfraState>()?;
+        let f = self
+            .0
+            .block_on(get_frame(GetFrameRequest { frame_id: id }, &infra))
+            .ok()??;
+        Some((f.app_name, f.window_title, f.captured_at, f.url))
     }
 
     fn preview(&self, id: i64) -> Option<PathBuf> {

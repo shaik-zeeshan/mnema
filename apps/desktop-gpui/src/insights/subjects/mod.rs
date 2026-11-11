@@ -6,27 +6,33 @@
 
 mod detail;
 mod drawer;
+mod map;
+pub mod peek;
+pub mod refresh;
+pub use refresh::Ui;
+use map::map;
+pub mod pager;
 pub mod tiers;
 
 use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, Window};
+use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, SharedString, Window};
 
 pub use drawer::{drawer, push as drawer_push, step as step_conclusion};
+pub use detail::{flat as flat_conclusions, reveal as reveal_conclusion, tier_key};
 
 use super::charts::sparkline;
-use super::parts::{display, inset, label, lede, panel, prose, read, sec, split, stat_text};
+use super::parts::{display, inset, label, lede, prose, read, sec, split, stat_text};
 use super::Insights;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::segmented::Segmented;
-use crate::ui::{alpha, clock, icon, kicker, nid, Tone};
+use crate::ui::{clock, icon, kicker, nid, Tone};
 use tiers::{
-    conviction_tier, headline, list_groups, move_pts, page_label, page_slice, pct, rank_movers,
-    subject_rows, tier_names, Axis, SubjectRow, Tier, DISPLAY_FLOOR, INITIAL_BASE, MAP_PAGE,
-    STRONGLY_HELD, TIER_PAGE,
+    conviction_tier, headline, list_groups, move_pts, pct, rank_movers,
+    subject_rows, tier_names, Axis, SubjectRow, Tier, TIER_PAGE,
 };
 
 pub fn controls(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Vec<AnyElement> {
@@ -116,7 +122,11 @@ pub fn render(
             IconName::TriangleAlert.path(),
             "Couldn't load Subjects.",
             "Reading your conclusions failed. Nothing is lost.",
-            Vec::new(),
+            vec![crate::ui::Button::new("insights-subjects-retry", "Try again")
+                .sm()
+                .icon(IconName::RotateCcw.path())
+                .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+                .into_any_element()],
             p,
         ));
     }
@@ -127,14 +137,22 @@ pub fn render(
         let dismissed = ctx.map_or(0, |c| c.dismissed_count);
         let backfilling = ctx.is_some_and(|c| c.backfilling);
         let acts = ctx.map_or(0, |c| c.activity_count);
+        let held = ctx
+            .and_then(|c| c.last_distillation.as_ref())
+            .map_or(0, |d| d.guardrail_suppressed + d.below_formation_bar + d.resurface_blocked + d.ungrounded);
         let (title, body) = if backfilling {
             ("No subjects yet.".to_string(), "As Mnema forms views about you, each one appears here with its own confidence over time. It's backfilling your history now — a view needs at least two supporting activities.".to_string())
         } else if dismissed > 0 {
             ("No subjects to show right now.".into(), format!("You've dismissed {dismissed}. Restoring one in Context only lifts the block — it forms again only if recent activity supports it."))
         } else {
             let tail = if acts > 0 {
+                let held = if held > 0 {
+                    format!("; the last pass held back {held} {}", if held == 1 { "draft" } else { "drafts" })
+                } else {
+                    String::new()
+                };
                 format!(
-                    " {acts} {} summarized so far.",
+                    " {acts} {} summarized so far{held}.",
                     if acts == 1 {
                         "activity is"
                     } else {
@@ -146,17 +164,23 @@ pub fn render(
             };
             ("No subjects yet.".into(), format!("As Mnema forms views about you, each one appears here with its own confidence over time. A view needs at least two supporting activities.{tail}"))
         };
+        let view = (dismissed > 0 && !backfilling).then(|| {
+            crate::ui::Button::new("insights-view-dismissed", "View dismissed")
+                .sm()
+                .on_click(cx.listener(|this, _, _, cx| this.view_dismissed(cx)))
+                .into_any_element()
+        });
         return center(empty(
             EmptyLayout::Center,
             Tone::Neutral,
             IconName::Inbox.path(),
             title,
             body,
-            Vec::new(),
+            view.into_iter().collect(),
             p,
         ));
     }
-    let q = this.filter.read(cx).value().trim().to_string();
+    let q = this.subj_ui.applied.clone();
     let matches = (!q.is_empty()).then(|| tiers::filter(&rows, &q));
     let listed: Vec<&SubjectRow> = matches.clone().unwrap_or_else(|| rows.iter().collect());
     let names = tier_names(&rows);
@@ -183,6 +207,9 @@ pub fn render(
         })
         .collect();
     let groups = list_groups(&rows, this.axis, matches);
+    if std::mem::take(&mut this.reveal_opened) {
+        reveal(this, &groups);
+    }
     div()
         .flex()
         .flex_col()
@@ -199,297 +226,6 @@ pub fn render(
         .into_any_element()
 }
 
-/// `ConvictionMap.svelte`: bands, axis, and one row per subject (top 12).
-fn map(
-    listed: &[&SubjectRow],
-    q: &str,
-    width: gpui_kit::Pixels,
-    p: &Palette,
-    cx: &mut Context<Insights>,
-) -> AnyElement {
-    // `--map-name`: 168 px, 128 px on a window ≤1000 px wide.
-    let name_w = if width <= crate::theme::breakpoint::READ_STACK {
-        128.
-    } else {
-        168.
-    };
-    const VAL_W: f32 = 104.;
-    let (floor, base, held) = (pct(DISPLAY_FLOOR), pct(INITIAL_BASE), pct(STRONGLY_HELD));
-    let legend = div()
-        .flex()
-        .items_center()
-        .gap(space::S3)
-        .text_size(text::SM)
-        .text_color(p.text_subtle)
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .child(div().size(px(8.)).rounded_full().bg(p.text_strong))
-                .child("now"),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .child(
-                    div()
-                        .size(px(8.))
-                        .rounded_full()
-                        .border_1()
-                        .border_color(p.chart_grey_4),
-                )
-                .child("14 days ago"),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(5.))
-                .child(div().w(px(2.)).h(px(10.)).bg(p.chart_grey_3))
-                .child("other conclusions"),
-        );
-    let mut panel_el = panel(p)
-        .id("insights-map")
-        .p(space::S5)
-        .mb(space::S7)
-        .child(sec(
-            kicker("Conviction map", p),
-            Some(legend.into_any_element()),
-        ));
-    if listed.is_empty() {
-        return panel_el.child(empty(EmptyLayout::Panel, Tone::Neutral, IconName::Search.path(), format!("No subjects match “{q}”."), "Filter looks at subject names and the wording of each belief. Try a shorter term, or clear it.", Vec::new(), p)).into_any_element();
-    }
-    let at = |v: i64| relative(v as f32 / 100.);
-    let bands = [
-        (0, floor, "fading", true, false),
-        (floor, base, "taking shape", false, false),
-        (base, held, "forming", false, false),
-        (held, 100, "strongly held", false, true),
-    ];
-    let band_layer = div()
-        .absolute()
-        .top_0()
-        .bottom_0()
-        .left(px(name_w))
-        .right(px(VAL_W))
-        .children(bands.map(|(a, b, l, fade, firm)| {
-            div()
-                .absolute()
-                .top_0()
-                .bottom_0()
-                .left(at(a))
-                .w(at(b - a))
-                .border_l_1()
-                .border_dashed()
-                .border_color(p.hairline)
-                .when(firm, |d| d.bg(alpha(p.fg, 0.025)))
-                .when(fade, |d| d.bg(alpha(p.fg, 0.015)))
-                .child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left(px(8.))
-                        .font_family(FONT_MONO)
-                        .text_size(text::XS)
-                        .text_color(p.text_faint)
-                        .child(l.to_uppercase()),
-                )
-        }));
-    let axis = div()
-        .flex()
-        .h(px(44.))
-        .child(div().w(px(name_w)).flex_none())
-        .child(
-            div()
-                .relative()
-                .flex_1()
-                .h_full()
-                .children([0, floor, base, held, 100].map(|v| {
-                    div()
-                        .absolute()
-                        .bottom(px(4.))
-                        .left(at(v))
-                        .ml(px(-20.))
-                        .w(px(40.))
-                        .flex()
-                        .justify_center()
-                        .whitespace_nowrap()
-                        .font_family(FONT_MONO)
-                        .text_size(text::XS)
-                        .text_color(p.text_faint)
-                        .child(format!("{v}%"))
-                })),
-        )
-        .child(div().w(px(VAL_W)).flex_none());
-    let rows = listed.iter().take(MAP_PAGE).enumerate().map(|(i, r)| {
-        let c = pct(r.top);
-        let others: Vec<i64> = r
-            .conclusions
-            .iter()
-            .skip(1)
-            .map(|x| pct(x.confidence))
-            .collect();
-        let delta = r.then.map(|t| c - pct(t));
-        let (dtext, dcol) = match delta {
-            None => ("new".to_string(), p.accent),
-            Some(d) if d > 0 => (format!("+{d}"), p.focus_deep),
-            Some(d) if d < 0 => (format!("−{}", -d), p.focus_distracted),
-            Some(_) => ("±0".into(), p.text_subtle),
-        };
-        let subject = r.subject.clone();
-        let track = div()
-            .relative()
-            .flex_1()
-            .h_full()
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top(relative(0.5))
-                    .h(px(1.))
-                    .bg(p.hairline),
-            )
-            .children(others.iter().map(|o| {
-                div()
-                    .absolute()
-                    .top(px(14.))
-                    .left(at(*o))
-                    .ml(px(-1.))
-                    .w(px(2.))
-                    .h(px(10.))
-                    .rounded(px(1.))
-                    .bg(p.chart_grey_3)
-            }))
-            .children(r.then.filter(|_| delta.is_some_and(|d| d != 0)).map(|t| {
-                let (a, b) = (pct(t).min(c), pct(t).max(c));
-                let col = if c > pct(t) {
-                    p.focus_deep
-                } else {
-                    p.focus_distracted
-                };
-                div()
-                    .absolute()
-                    .top(px(17.5))
-                    .left(at(a))
-                    .w(at(b - a))
-                    .h(px(3.))
-                    .rounded(px(2.))
-                    .bg(alpha(col, 0.75))
-            }))
-            .children(r.then.map(|t| {
-                div()
-                    .absolute()
-                    .top(px(15.))
-                    .left(at(pct(t)))
-                    .ml(px(-4.))
-                    .size(px(8.))
-                    .rounded_full()
-                    .bg(p.surface)
-                    .border_1()
-                    .border_color(p.chart_grey_4)
-            }))
-            .child(
-                div()
-                    .absolute()
-                    .top(px(13.))
-                    .left(at(c))
-                    .ml(px(-6.))
-                    .size(px(12.))
-                    .rounded_full()
-                    .bg(if r.then.is_none() {
-                        p.accent
-                    } else {
-                        p.text_strong
-                    }),
-            );
-        div()
-            .id(nid("insights-map-row", i as u64))
-            .role(Role::Button)
-            .flex()
-            .items_center()
-            .h(px(38.))
-            .rounded(radius::SM)
-            .cursor_pointer()
-            .hover(|s| s.bg(p.wash))
-            .when(r.faded, |d| d.opacity(0.55))
-            .child(
-                div()
-                    .w(px(name_w))
-                    .flex_none()
-                    .pl(space::S3)
-                    .flex()
-                    .items_end()
-                    .gap(px(6.))
-                    .child(
-                        div()
-                            .truncate()
-                            .text_size(text::MD)
-                            .font_weight(theme::W_SEMIBOLD)
-                            .text_color(p.text_strong)
-                            .child(r.subject.clone()),
-                    )
-                    .child(
-                        div()
-                            .font_family(FONT_MONO)
-                            .text_size(text::XS)
-                            .text_color(p.text_faint)
-                            .child(r.conclusions.len().to_string()),
-                    ),
-            )
-            .child(track)
-            .child(
-                div()
-                    .w(px(VAL_W))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(space::S3)
-                    .pr(space::S3)
-                    .font_family(FONT_MONO)
-                    .child(
-                        div()
-                            .text_size(text::MD)
-                            .text_color(p.text_strong)
-                            .child(format!("{c}%")),
-                    )
-                    .child(
-                        div()
-                            .w(px(28.))
-                            .text_size(text::XS)
-                            .text_color(dcol)
-                            .child(dtext),
-                    ),
-            )
-            .on_click(cx.listener(move |this, _, _, cx| this.open_subject(subject.clone(), cx)))
-    });
-    panel_el = panel_el.child(
-        div()
-            .relative()
-            .mt(space::S4)
-            .child(band_layer)
-            .child(axis)
-            .children(rows),
-    );
-    if listed.len() > MAP_PAGE {
-        panel_el = panel_el.child(
-            label(
-                format!(
-                    "Top {MAP_PAGE} by conviction · all {} are in the list below",
-                    listed.len()
-                ),
-                p,
-            )
-            .mt(space::S3),
-        );
-    }
-    panel_el.into_any_element()
-}
-
 fn list(
     this: &Insights,
     groups: Vec<tiers::Group>,
@@ -498,10 +234,11 @@ fn list(
     cx: &mut Context<Insights>,
 ) -> Div {
     let off = clock::now(cx).offset();
-    let mut col = div().flex().flex_col();
+    let mut col = this.list_anchor.track(div().flex().flex_col());
     for g in groups {
         let folded = g.faded && !this.show_fading;
-        let (from, to, _, _) = page_slice(g.rows.len(), 0, TIER_PAGE);
+        let key = section_key(this.axis, g.id);
+        let (from, to, _, _) = pager::slice(this, &key, g.rows.len(), TIER_PAGE);
         if !g.title.is_empty() {
             let right = if folded {
                 (!g.rows.is_empty()).then(|| {
@@ -519,8 +256,30 @@ fn list(
                         .into_any_element()
                 })
             } else {
+                let hide = g.faded.then(|| {
+                    div()
+                        .id("insights-hide-fading")
+                        .role(Role::Button)
+                        .h(px(22.))
+                        .px(px(6.))
+                        .flex()
+                        .items_center()
+                        .rounded(radius::XS)
+                        .cursor_pointer()
+                        .text_color(p.text_subtle)
+                        .hover(|s| s.bg(p.wash_strong).text_color(p.text_strong))
+                        .child("HIDE")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.show_fading = false;
+                            cx.notify();
+                        }))
+                });
                 Some(
-                    super::parts::mono_label(page_label(from, to, g.rows.len()), p)
+                    div()
+                        .flex()
+                        .items_center()
+                        .children(pager::pager(this, &key, g.title, g.rows.len(), TIER_PAGE, true, cx))
+                        .children(hide)
                         .into_any_element(),
                 )
             };
@@ -543,6 +302,7 @@ fn list(
         }
         for (k, r) in g.rows[from..to].iter().enumerate() {
             let subject = r.subject.clone();
+            let current = this.last_opened.as_deref() == Some(r.subject.as_str());
             let spark = r
                 .spark
                 .iter()
@@ -573,6 +333,7 @@ fn list(
                     .rounded(radius::SM)
                     .cursor_pointer()
                     .hover(|s| s.bg(p.surface_hover))
+                    .when(current, |d| d.bg(p.wash))
                     .child(
                         div()
                             .w(px(180.))
@@ -582,11 +343,23 @@ fn list(
                             .gap(px(3.))
                             .child(
                                 div()
-                                    .truncate()
+                                    .flex()
+                                    .items_baseline()
+                                    .min_w_0()
                                     .text_size(text::MD)
                                     .font_weight(theme::W_SEMIBOLD)
                                     .text_color(p.text_strong)
-                                    .child(r.subject.clone()),
+                                    .child(div().truncate().child(r.subject.clone()))
+                                    .when(current, |d| {
+                                        d.child(
+                                            div()
+                                                .ml(px(6.))
+                                                .font_family(FONT_MONO)
+                                                .text_size(px(10.))
+                                                .text_color(p.accent)
+                                                .child("OPENED"),
+                                        )
+                                    }),
                             )
                             .child(
                                 div()
@@ -636,7 +409,7 @@ fn list(
             );
         }
     }
-    if total < tiers::SPARSE_LIMIT && this.filter.read(cx).value().trim().is_empty() {
+    if total < tiers::SPARSE_LIMIT && this.subj_ui.applied.is_empty() {
         col = col.child(
             div()
                 .mt(space::S3)
@@ -675,13 +448,19 @@ fn side(listed: &[&SubjectRow], p: &Palette, cx: &mut Context<Insights>) -> Div 
                             Some(x) if x > 0 => (format!("+{x} pts"), p.focus_deep),
                             Some(x) => (format!("−{} pts", x.abs()), p.focus_distracted),
                         };
+                        let subject = r.subject.clone();
                         div()
+                            .id(SharedString::from(format!("insights-move-{}", r.subject)))
+                            .role(Role::Button)
                             .flex()
                             .justify_between()
                             .py(px(7.))
                             .border_t_1()
                             .border_color(p.hairline)
                             .text_size(text::BASE)
+                            .cursor_pointer()
+                            .hover(|s| s.bg(p.wash))
+                            .on_click(cx.listener(move |this, _, _, cx| this.open_subject(subject.clone(), cx)))
                             .child(div().text_color(p.text).child(r.subject.clone()))
                             .child(
                                 div()
@@ -729,4 +508,103 @@ pub fn tier_of(c: &capture_types::Conclusion) -> Tier {
         c.confidence,
         c.status == capture_types::ConclusionStatus::Faded,
     )
+}
+
+/// A list section's pager key: the tiers carry the axis (each axis keeps its
+/// own pages), the matches are `search`.
+pub fn section_key(axis: Axis, id: &str) -> String {
+    match id {
+        "search" | "all" => id.to_string(),
+        _ => format!("{axis:?}:{id}"),
+    }
+}
+
+/// Back from a subject's page: turn just its tier to its row (unfolding
+/// Fading if that's where it is).
+fn reveal(this: &mut Insights, groups: &[tiers::Group]) {
+    let Some(cur) = this.last_opened.clone() else {
+        return;
+    };
+    for g in groups {
+        let Some(i) = g.rows.iter().position(|r| r.subject == cur) else {
+            continue;
+        };
+        if g.faded {
+            this.show_fading = true;
+        }
+        let key = section_key(this.axis, g.id);
+        let (from, to, _, _) = pager::slice(this, &key, g.rows.len(), TIER_PAGE);
+        if i < from || i >= to {
+            let size = pager::state(this, &key, TIER_PAGE).1;
+            this.pages.insert(key, (pager::holding(i, size), size));
+        }
+    }
+}
+
+/// ←/→ on the index: turn the tier holding the marked row, else the first
+/// tier that pages (`SubjectsList.svelte` `onKey`).
+pub fn turn_list(this: &mut Insights, d: isize, cx: &mut Context<Insights>) -> bool {
+    let Some(data) = this.subjects.clone() else {
+        return false;
+    };
+    let rows = subject_rows(&data.conclusions, &data.histories, clock::now_ms(cx));
+    let q = this.subj_ui.applied.clone();
+    let matches = (!q.is_empty()).then(|| tiers::filter(&rows, &q));
+    let groups = list_groups(&rows, this.axis, matches);
+    let pick = |g: &&tiers::Group| !(g.faded && !this.show_fading);
+    let held = groups.iter().filter(pick).find(|g| {
+        g.rows
+            .iter()
+            .any(|r| Some(&r.subject) == this.last_opened.as_ref())
+    });
+    let paged = groups
+        .iter()
+        .filter(pick)
+        .find(|g| pager::slice(this, &section_key(this.axis, g.id), g.rows.len(), TIER_PAGE).3 > 1);
+    let Some(g) = held.or(paged) else {
+        return false;
+    };
+    let key = section_key(this.axis, g.id);
+    let (_, _, page, pages) = pager::slice(this, &key, g.rows.len(), TIER_PAGE);
+    let next = page as isize + d;
+    if next < 0 || next >= pages as isize {
+        return false;
+    }
+    this.turn_page(&key, next as usize, TIER_PAGE, cx);
+    true
+}
+
+/// ←/→ on a subject's page: turn the first tier that pages.
+pub fn turn_subject(this: &mut Insights, d: isize, cx: &mut Context<Insights>) -> bool {
+    let live = detail::flat(this);
+    for (t, ..) in detail::TIERS {
+        let n = live.iter().filter(|c| tier_of(c) == t).count();
+        let key = tier_key(t);
+        let (_, _, page, pages) = pager::slice(this, &key, n, TIER_PAGE);
+        if pages > 1 {
+            let next = page as isize + d;
+            if next >= 0 && next < pages as isize {
+                this.turn_page(&key, next as usize, TIER_PAGE, cx);
+            }
+            return true;
+        }
+    }
+    false
+}
+
+impl Insights {
+    /// Subjects' "View dismissed": Context, with the Dismissed archive in view.
+    pub fn view_dismissed(&mut self, cx: &mut Context<Self>) {
+        self.set_tab(super::Tab::Context, cx);
+        self.ctx_ui.show_dismissed = true;
+    }
+
+    /// "Go to the list": bring the list's top into view, clear of the bar.
+    pub fn go_to_list(&mut self, cx: &mut Context<Self>) {
+        let list = self.list_anchor.bounds(cx);
+        let view = self.scroll.bounds();
+        let y = list.top() - view.top() - self.scroll.offset().y - space::S7;
+        self.scroll.set_offset(gpui_kit::point(px(0.), -y.max(px(0.))));
+        cx.notify();
+    }
 }

@@ -3,6 +3,7 @@
 //! and audio chips. A frame chip peeks in place (`peek.rs`), an audio chip opens
 //! its receipt under the row (`clip.rs`).
 
+use super::peek::PeekOps as _;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, img, px, relative, Context, Div, ObjectFit, SharedString};

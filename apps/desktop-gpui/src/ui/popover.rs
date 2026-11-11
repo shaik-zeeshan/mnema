@@ -46,6 +46,15 @@ pub fn esc_closes(
 pub const LAYER_POPOVER: usize = 1;
 /// `ui::dialog::Modal`'s scrim + panel.
 pub const LAYER_MODAL: usize = 2;
+/// A popover or list opened from inside a modal: deferred draws paint by
+/// priority across the whole window, so one at `LAYER_POPOVER` would paint
+/// under the modal that holds it.
+pub const LAYER_IN_MODAL: usize = 3;
+
+/// [`float`] for an overlay that lives inside a modal.
+pub fn float_in_modal(el: impl IntoElement) -> Deferred {
+    deferred(el).with_priority(LAYER_IN_MODAL)
+}
 
 /// Lift a positioned popover, menu or list out of tree order: it paints after
 /// the whole window (above content that comes later in the tree) and outside
@@ -114,6 +123,11 @@ impl Anchor {
     }
 
     /// The tracked element's last painted height (0 before its first frame).
+    /// The tracked element's bounds as last painted (window coordinates).
+    pub fn bounds(&self, cx: &App) -> Bounds<Pixels> {
+        *self.0.read(cx)
+    }
+
     pub fn height(&self, cx: &App) -> Pixels {
         self.0.read(cx).size.height
     }

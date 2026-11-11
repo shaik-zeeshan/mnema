@@ -2,6 +2,7 @@
 //! filled from `apps/desktop/parity/fixtures/chat/<state>.json` through the
 //! real types, and the parity shot for `scripts/parity.sh chat <state>`.
 
+use mnema_gpui::chat::peek::PeekOps as _;
 use std::path::Path;
 
 use capture_types::AppearanceSetting;

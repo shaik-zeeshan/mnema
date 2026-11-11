@@ -30,6 +30,7 @@ pub fn render(
     // The shell around it reads the same map the Svelte stub serves.
     let shell_model = fixture::shell_model(&fixture::load("insights", st.set)?)?;
     let backend = Arc::new(FixtureBackend::load(st.set)?);
+    let map = backend.map();
     cx.update(|cx| theme::set_setting(setting, cx));
     let mut insights = None;
     let window = crate::pointer::open(cx, compare::viewport(VIEWPORT), |window, cx| {
@@ -51,6 +52,119 @@ pub fn render(
     cx.run_until_parked();
     match st.open {
         Open::None | Open::Period(_) => {}
+        Open::Modal(m) => {
+            cx.update(|cx| {
+                insights.update(cx, |i, cx| {
+                    i.modal = Some(m);
+                    if m == mnema_gpui::insights::Modal::Categories {
+                        // The first thread, expanded (most time first).
+                        let first = i.overview.as_ref().and_then(|o| {
+                            let mut by: Vec<(Option<capture_types::ActivityCategory>, i64)> =
+                                Vec::new();
+                            for a in &o.activities {
+                                let ms = (a.ended_at_ms - a.started_at_ms).max(0);
+                                match by.iter_mut().find(|x| x.0 == a.category) {
+                                    Some(x) => x.1 += ms,
+                                    None => by.push((a.category, ms)),
+                                }
+                            }
+                            by.sort_by(|x, y| {
+                                x.0.is_none().cmp(&y.0.is_none()).then(y.1.cmp(&x.1))
+                            });
+                            by.first().map(|x| x.0)
+                        });
+                        i.ov_ui.expanded.extend(first);
+                    }
+                    cx.notify();
+                })
+            });
+        }
+        Open::ReceiptAudio => {
+            let audio = mnema_gpui::timeline::audio::Deps {
+                backend: Arc::new(
+                    mnema_gpui::timeline::audio::fixture::FixtureAudio::from_map(map.clone()),
+                ),
+                open_player: mnema_gpui::timeline::audio::fixture::FakePlayer::new(50.).factory(),
+            };
+            let newest = cx.read(|cx| {
+                insights.read(cx).journal.as_ref().and_then(|j| {
+                    j.activities
+                        .iter()
+                        .max_by_key(|a| a.started_at_ms)
+                        .map(|a| (a.id, (a.started_at_ms, a.ended_at_ms)))
+                })
+            });
+            if let Some((id, span)) = newest {
+                cx.update(|cx| {
+                    insights.update(cx, |i, cx| {
+                        i.audio = audio;
+                        i.toggle_receipt(id, span, cx);
+                        i.scroll.set_offset(point(px(0.), px(-560.)));
+                    })
+                });
+            }
+        }
+        Open::Peek => {
+            let first = cx.read(|cx| {
+                insights
+                    .read(cx)
+                    .subjects
+                    .as_ref()
+                    .and_then(|s| s.conclusions.first().map(|c| c.subject.clone()))
+            });
+            if let Some(s) = first {
+                cx.update(|cx| insights.update(cx, |i, cx| i.open_subject(s, cx)));
+                cx.run_until_parked();
+                // The lead conclusion's newest evidence row with a resolved activity.
+                let pick = cx.read(|cx| {
+                    let d = insights.read(cx).detail.as_ref()?;
+                    let c = d.view.as_ref()?.conclusions.first()?;
+                    let a = c
+                        .evidence
+                        .iter()
+                        .filter_map(|e| d.activities.get(&e.activity_id))
+                        .max_by_key(|a| a.started_at_ms)?;
+                    Some((c.id, a.id, a.evidence.first()?.subject_id))
+                });
+                if let Some((cid, aid, fid)) = pick {
+                    let f = &map["get_frame"];
+                    let s = |k: &str| f[k].as_str().map(str::to_string);
+                    let mut src = mnema_gpui::chat::fixture::FixtureSources::default();
+                    src.frames.insert(fid, (Some(2560), Some(1600)));
+                    if let Some(p) = map["get_frame_preview"]["filePath"].as_str() {
+                        src.previews.insert(fid, p.into());
+                    }
+                    src.meta.insert(
+                        fid,
+                        (
+                            s("appName"),
+                            s("windowTitle"),
+                            s("capturedAt").unwrap_or_default(),
+                            s("url"),
+                        ),
+                    );
+                    cx.update(|cx| {
+                        insights.update(cx, |i, cx| {
+                            i.open_conclusion = Some(cid);
+                            i.peek.sources = Arc::new(src);
+                            cx.notify();
+                        })
+                    });
+                    cx.update_window(window.into(), |_, window, cx| {
+                        insights.update(cx, |i, cx| i.view_evidence(aid, window, cx))
+                    })?;
+                }
+            }
+        }
+        Open::Edit => {
+            cx.update_window(window.into(), |_, window, cx| {
+                insights.update(cx, |i, cx| {
+                    i.start_edit(1, window, cx);
+                    // The standing statements sit under the lede and the composer.
+                    i.scroll.set_offset(point(px(0.), px(-760.)));
+                })
+            })?;
+        }
         Open::Subject => {
             let first = cx.read(|cx| {
                 insights

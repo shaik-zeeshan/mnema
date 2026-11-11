@@ -216,6 +216,7 @@ impl Shell {
         let recording = (self.model.status.running, self.model.status.user_paused);
         self.insights.update(cx, |i, cx| {
             i.recording = recording;
+            i.recording_since = self.model.status.session_start_ms;
             cx.notify();
         });
         self.timeline.update(cx, |t, cx| {

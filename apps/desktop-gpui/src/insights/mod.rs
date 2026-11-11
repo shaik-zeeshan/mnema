@@ -6,6 +6,7 @@
 
 pub mod charts;
 mod context;
+mod context_ops;
 pub mod data;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
@@ -16,6 +17,7 @@ pub use live::on_event;
 pub mod model;
 mod overview;
 mod parts;
+pub mod read;
 pub mod stats;
 pub mod subjects;
 pub mod undo;
@@ -40,7 +42,7 @@ use data::Backend;
 pub use model::Tab;
 use model::{ContextData, JournalData, OverviewData, Status, SubjectData, SubjectsData};
 use subjects::tiers::Axis;
-use undo::{DelayedDismiss, DISMISS_UNDO};
+use undo::DelayedDismiss;
 
 /// Range steps debounce the digest read (a changed range can cost a model call).
 pub const DIGEST_DEBOUNCE: Duration = Duration::from_millis(500);
@@ -74,17 +76,39 @@ pub struct Insights {
     pub period: (Date, Unit),
     pub overview: Option<OverviewData>,
     pub modal: Option<Modal>,
+    pub ov_ui: overview::Ui,
     pub highlight: Option<Option<ActivityCategory>>,
     // Journal
     pub day: Date,
     pub journal: Option<JournalData>,
     pub receipt: Option<journal::receipt::Receipt>,
+    /// The card under the pointer, lit on the spine and the river (`hot`).
+    pub hot: Option<i64>,
+    /// Each card's painted bounds, for the spine's click-to-card.
+    pub card_bounds: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<i64, gpui_kit::Bounds<Pixels>>>>,
+    /// A capture-only day's runs' top apps: `(day, per run)`.
+    pub run_apps: Option<(Date, Vec<Vec<String>>)>,
     pub images: Entity<crate::timeline::image_cache::FrameImages>,
+    /// The receipt's audio: the Timeline drawer's backend and player factory.
+    pub audio: crate::timeline::audio::Deps,
     // Subjects
     pub axis: Axis,
     pub subjects: Option<SubjectsData>,
     pub filter: Entity<InputState>,
     pub show_fading: bool,
+    /// Each section's `(page, size)`: the tiers, the matches, a subject's tiers.
+    pub pages: std::collections::HashMap<String, (usize, usize)>,
+    /// The section whose rows-per-page menu is open.
+    pub pager_menu: Option<String>,
+    /// The subject last opened from the index: marked, and paged back to.
+    pub last_opened: Option<String>,
+    /// Back from that subject's page: turn its tier to it once.
+    pub reveal_opened: bool,
+    /// Where the subjects list last painted ("Go to the list").
+    pub list_anchor: crate::ui::popover::Anchor,
+    pub subj_ui: subjects::Ui,
+    /// The evidence frame peek (Chat's `FrameDetailModal`).
+    pub peek: subjects::peek::Peek,
     // Subject page
     pub subject: Option<String>,
     pub detail: Option<SubjectData>,
@@ -99,15 +123,19 @@ pub struct Insights {
     pub composer: Entity<TextareaState>,
     pub draft_topic: Option<&'static str>,
     pub composer_error: Option<String>,
+    pub ctx_ui: context_ops::Ui,
     pub toasts: Entity<Toasts>,
     pub scroll: ScrollHandle,
     /// The shell's capture state: `(running, user paused)`.
     pub recording: (bool, bool),
+    /// The capture session's start (`recording_started_at_unix_ms`), while recording.
+    pub recording_since: Option<i64>,
     /// The window's width this frame, for the Svelte page's `@media` rules.
     pub width: Pixels,
     gens: [u64; 6],
-    /// A Re-read (forced digest) is in flight.
-    pub rereading: bool,
+    /// Each page's read (the digest), loaded on its own.
+    pub ov_read: read::Read,
+    pub day_read: read::Read,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -130,30 +158,61 @@ impl Insights {
             // unwrapped line in the global muted colour).
             TextareaState::new(window, cx).auto_grow(2, 6)
         });
-        let subs = vec![cx.subscribe(&filter, |_, _, e: &InputEvent, cx| {
-            if matches!(e, InputEvent::Change) {
+        let subs = vec![
+            // Typing in the bar's filter over a subject's page returns to the
+            // index (`onFilter`), and the matches start on their first page.
+            cx.subscribe(&filter, |this, _, e: &InputEvent, cx| {
+                if matches!(e, InputEvent::Change) {
+                    this.schedule_filter(cx);
+                    if this.subject.is_some() {
+                        this.close_subject(cx);
+                    }
+                    cx.notify();
+                }
+            }),
+            // ⌘↵ adds the draft; the 280-char cap holds for typing and pasting.
+            cx.subscribe_in(&composer, window, |this, state, e: &InputEvent, window, cx| {
+                match e {
+                    InputEvent::PressEnter { secondary: true, .. } => this.submit_draft(window, cx),
+                    InputEvent::Change => context_ops::clamp(state, window, cx),
+                    _ => {}
+                }
                 cx.notify();
-            }
-        })];
+            }),
+        ];
         Self {
             backend,
-            rereading: false,
+            ov_read: Default::default(),
+            day_read: Default::default(),
             tab: Tab::Overview,
             status: Status::default(),
             recording: (false, false),
+            recording_since: None,
             width: window.viewport_size().width,
             period: (today, Unit::Week),
             overview: None,
             modal: None,
+            ov_ui: Default::default(),
             highlight: None,
             day: today,
             journal: None,
             receipt: None,
+            hot: None,
+            card_bounds: Default::default(),
+            run_apps: None,
             images: crate::timeline::image_cache::FrameImages::new(Default::default(), cx),
+            audio: crate::timeline::audio::Deps::live(cx),
             axis: Axis::Conviction,
             subjects: None,
             filter,
             show_fading: false,
+            pages: Default::default(),
+            pager_menu: None,
+            last_opened: None,
+            reveal_opened: false,
+            list_anchor: crate::ui::popover::Anchor::owned(cx),
+            subj_ui: Default::default(),
+            peek: subjects::peek::Peek::new(cx),
             subject: None,
             detail: None,
             open_conclusion: None,
@@ -165,6 +224,7 @@ impl Insights {
             composer,
             draft_topic: None,
             composer_error: None,
+            ctx_ui: Default::default(),
             toasts: cx.new(|_| Toasts::default()),
             scroll: ScrollHandle::new(),
             gens: [0; 6],
@@ -233,8 +293,14 @@ impl Insights {
 
     pub fn load_tab(&mut self, cx: &mut Context<Self>) {
         match self.tab {
-            Tab::Overview => self.load_overview(cx),
-            Tab::Journal => self.load_journal(cx),
+            Tab::Overview => {
+                self.load_overview(cx);
+                self.load_read(read::Of::Overview, cx);
+            }
+            Tab::Journal => {
+                self.load_journal(cx);
+                self.load_read(read::Of::Journal, cx);
+            }
             Tab::Subjects => {
                 self.load_subjects(cx);
                 if self.subject.is_some() {
@@ -268,7 +334,6 @@ impl Insights {
             (ps + (now - s).max(0)).min(pe)
         };
         let cap_only = overview::cap_only(&self.status);
-        let engine_on = overview::engine_on(&self.status);
         let off_min = off.whole_minutes() as i32;
         self.load(
             G_OVERVIEW,
@@ -291,7 +356,6 @@ impl Insights {
                     .or(conclusions.as_ref().err())
                     .cloned();
                 let conclusions = conclusions.unwrap_or_default();
-                let unit_name = unit.name();
                 OverviewData {
                     usage_error: usage.as_ref().err().cloned(),
                     usage: usage.ok(),
@@ -306,8 +370,8 @@ impl Insights {
                     histories: data::histories(b, conclusions.iter().map(|c| c.subject.clone())),
                     conclusions,
                     engine_error,
-                    digest: engine_on.then(|| b.digest(unit_name, s, e, false)),
                     capture_hours: b.capture_hours(now - 120 * stats::DAY_MS, now, off_min),
+                    stale: false,
                 }
             },
             |this, d, _| this.overview = Some(d),
@@ -319,7 +383,6 @@ impl Insights {
         let (s, e) = stats::window(self.day, Unit::Day, off);
         let (ws, _) = stats::window(self.day, Unit::Week, off);
         let now = clock::now_ms(cx);
-        let engine_on = overview::engine_on(&self.status);
         self.load(
             G_JOURNAL,
             cx,
@@ -337,7 +400,7 @@ impl Insights {
                     failed: b.failed_windows(s, e),
                     usage: b.usage(s, e).ok(),
                     history: b.usage(now - 120 * stats::DAY_MS, now).ok(),
-                    digest: engine_on.then(|| b.digest("day", s, e, false)),
+                    stale: false,
                     error: None,
                 },
             },
@@ -394,8 +457,23 @@ impl Insights {
                     }
                 }
             },
-            |this, d, _| this.detail = Some(d),
+            |this, d, cx| match (&d.error, this.detail.as_ref().and_then(|v| v.view.as_ref())) {
+                // A failed background refresh keeps what's on screen (SD-02).
+                (Some(e), Some(_)) => {
+                    let subject = this.subject.clone().unwrap_or_default();
+                    let t = Toast::danger(format!("Couldn't refresh {subject} — {e}"));
+                    this.toasts.update(cx, |ts, cx| ts.push(t, cx));
+                }
+                _ => this.detail = Some(d),
+            },
         );
+    }
+
+    /// The subject page's Try again.
+    pub fn reload_subject(&mut self, cx: &mut Context<Self>) {
+        self.detail = None;
+        self.load_subject(cx);
+        cx.notify();
     }
 
     fn load_context(&mut self, cx: &mut Context<Self>) {
@@ -428,6 +506,9 @@ impl Insights {
         if self.subject.as_ref() != Some(&subject) {
             self.leave(cx);
         }
+        if self.tab == Tab::Subjects && self.subject.is_none() {
+            self.last_opened = Some(subject.clone());
+        }
         self.tab = Tab::Subjects;
         self.subject = Some(subject);
         self.detail = None;
@@ -440,6 +521,7 @@ impl Insights {
     pub fn close_subject(&mut self, cx: &mut Context<Self>) {
         self.leave(cx);
         self.subject = None;
+        self.reveal_opened = true;
         self.open_conclusion = None;
         self.load_subjects(cx);
         cx.notify();
@@ -447,7 +529,11 @@ impl Insights {
 
     /// Esc: the drawer, then the subject page, then a modal / receipt.
     pub fn close_top(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.modal.take().is_some() {
+        if self.peek.src.is_some() {
+            use crate::chat::peek::PeekOps as _;
+            self.close_peek(cx);
+        } else if self.ov_ui.adjusting.take().is_some() || self.pager_menu.take().is_some() {
+        } else if self.modal.take().is_some() {
         } else if self.open_conclusion.take().is_some() {
         } else if self.subject.is_some() {
             self.close_subject(cx);
@@ -475,23 +561,37 @@ impl Insights {
         let today = clock::now(cx).date();
         let next = self.day + time::Duration::days(k);
         if next <= today && next != self.day {
-            self.day = next;
-            self.receipt = None;
-            self.load_journal(cx);
-            cx.notify();
+            self.set_day(next, cx);
         }
     }
 
+    /// A day step: the old day's cards go (skeleton until this day lands; the
+    /// picker's ~120-day history stays), its read is debounced.
     pub fn set_day(&mut self, d: Date, cx: &mut Context<Self>) {
         self.day = d;
         self.receipt = None;
+        self.journal = self.journal.take().map(|j| JournalData {
+            history: j.history,
+            stale: true,
+            ..Default::default()
+        });
         self.load_journal(cx);
+        self.schedule_read(read::Of::Journal, cx);
         cx.notify();
     }
 
+    /// A period step: never another range's numbers under this range's label
+    /// (OV-13), so skeletons until it lands; the read is debounced.
     pub fn set_period(&mut self, d: Date, unit: Unit, cx: &mut Context<Self>) {
         self.period = (d, unit);
+        self.overview = self.overview.take().map(|o| OverviewData {
+            capture_hours: o.capture_hours,
+            stale: true,
+            ..Default::default()
+        });
+        self.modal = None;
         self.load_overview(cx);
+        self.schedule_read(read::Of::Overview, cx);
         cx.notify();
     }
 
@@ -509,105 +609,26 @@ impl Insights {
         }
     }
 
+    /// The days "Ask about this week" scopes Chat to (Overview's period,
+    /// `?from=&to=`); a subject's Ask keeps Chat's own scope.
+    pub fn ask_scope(&self) -> Option<(Date, Date)> {
+        (self.tab == Tab::Overview && self.subject.is_none())
+            .then(|| crate::ui::calendar::period_of(self.period.0, self.period.1))
+    }
+
     pub fn ask(&mut self, cx: &mut Context<Self>) {
-        if let Some(q) = self.ask_query(cx) {
-            cx.emit(InsightsEvent::Ask(q));
-        }
-    }
-
-    // ── Dismiss with Undo ───────────────────────────────────────────────
-
-    /// Collapse the row to "Dismissed · Undo" and commit in `DISMISS_UNDO`.
-    pub fn dismiss(&mut self, id: i64, cx: &mut Context<Self>) {
-        let now = cx.background_executor().now();
-        self.undo.start(id, now);
-        if self.open_conclusion == Some(id) {
-            self.open_conclusion = None;
-        }
-        let this = cx.entity().downgrade();
-        let toast =
-            Toast::ok("Dismissed — it won't be re-inferred").action("Undo", true, move |_, cx| {
-                this.update(cx, |i, cx| i.undo_dismiss(id, cx)).ok();
-            });
-        let toast = Toast {
-            ttl: DISMISS_UNDO,
-            ..toast
-        };
-        self.undo_toast = Some(self.toasts.update(cx, |t, cx| t.push(toast, cx)));
-        self.arm_undo(cx);
-        cx.notify();
-    }
-
-    pub fn undo_dismiss(&mut self, id: i64, cx: &mut Context<Self>) {
-        if self.undo.undo(id) {
-            if let Some(key) = self.undo_toast.take() {
-                self.toasts.update(cx, |t, cx| t.dismiss(key, cx));
-            }
-            self.open_conclusion = Some(id);
-            self.arm_undo(cx);
-            cx.notify();
-        }
-    }
-
-    /// One timer for the earliest pending deadline.
-    fn arm_undo(&mut self, cx: &mut Context<Self>) {
-        let Some(at) = self.undo.next_deadline() else {
-            self.undo_timer = None;
+        let Some(q) = self.ask_query(cx) else {
             return;
         };
-        let wait = at.saturating_duration_since(cx.background_executor().now());
-        self.undo_timer = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(wait).await;
-            this.update(cx, |this, cx| {
-                let due = this.undo.due(cx.background_executor().now());
-                this.commit_dismiss(due, cx);
-                this.arm_undo(cx);
-            })
-            .ok();
-        }));
-    }
-
-    fn commit_dismiss(&mut self, ids: Vec<i64>, cx: &mut Context<Self>) {
-        for id in ids {
-            self.write(
-                cx,
-                move |b| b.dismiss(id),
-                |this, r, cx| match r {
-                    Ok(()) => {
-                        if this.subject.is_some() {
-                            this.load_subject(cx);
-                        }
-                    }
-                    Err(e) => {
-                        log::warn!("insights: dismiss failed");
-                        this.toasts.update(cx, |t, cx| {
-                            t.push(Toast::danger(format!("Couldn't dismiss — {e}")), cx)
-                        });
-                    }
-                },
-            );
+        if let (Some((a, b)), Some(shell)) = (self.ask_scope(), crate::window::shell(cx)) {
+            let chat = shell.read(cx).chat.clone();
+            chat.update(cx, |c, cx| {
+                c.scope.start = Some(a);
+                c.scope.end = Some(b);
+                cx.notify();
+            });
         }
-    }
-
-    pub fn toggle_pin(&mut self, id: i64, pinned: bool, cx: &mut Context<Self>) {
-        self.write(
-            cx,
-            move |b| b.set_pinned(id, !pinned),
-            move |this, r, cx| {
-                let toast = match r {
-                    Ok(()) if !pinned => Some(Toast::ok("Pinned — it won't fade")),
-                    Ok(()) => None,
-                    Err(e) => Some(Toast::danger(format!(
-                        "Couldn't {} — {e}",
-                        if pinned { "unpin" } else { "pin" }
-                    ))),
-                };
-                if let Some(t) = toast {
-                    this.toasts.update(cx, |ts, cx| ts.push(t, cx));
-                }
-                this.load_subject(cx);
-            },
-        );
+        cx.emit(InsightsEvent::Ask(q));
     }
 
     /// Typing in one of the tab's fields (the bare-key shortcuts stand down).
@@ -632,6 +653,12 @@ impl Render for Insights {
             .min_h_0()
             .overflow_y_scroll()
             .track_scroll(&self.scroll)
+            // Back at the top, a staged Subjects reload swaps in on its own.
+            .on_scroll_wheel(cx.listener(|this, _, _, cx| {
+                if this.subj_ui.staged.is_some() && this.at_top() {
+                    this.apply_staged(cx);
+                }
+            }))
             .child(
                 div()
                     .w_full()
@@ -667,9 +694,14 @@ impl Render for Insights {
                     .flex_1()
                     .min_h_0()
                     .child(body)
-                    .children(drawer),
+                    .children(drawer)
+                    .children(subjects::refresh::pill(self, &p, cx)),
             )
             .children(overview::modal(self, &p, cx))
+            .children(self.peek.src.clone().map(|s| {
+                crate::chat::peek::frame_modal(self, &s, &p, window.viewport_size(), cx)
+                    .into_any_element()
+            }))
             .child(self.toasts.clone())
     }
 }
@@ -682,83 +714,6 @@ impl Insights {
             Tab::Subjects => self.subjects.is_some() || self.gens[G_SUBJECTS] > 0,
             Tab::Context => self.context.is_some() || self.gens[G_CONTEXT] > 0,
         }
-    }
-
-    /// The Context composer: add the draft as a standing statement.
-    pub fn submit_draft(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.composer.read(cx).value().trim().to_string();
-        if text.is_empty() {
-            return;
-        }
-        let topic = self.draft_topic;
-        self.composer_error = None;
-        self.write(
-            cx,
-            move |b| b.add_authored(&text, topic),
-            |this, r, cx| match r {
-                Ok(_) => this.load_context(cx),
-                Err(e) => this.composer_error = Some(e),
-            },
-        );
-        self.composer
-            .update(cx, |s, cx| s.set_value(String::new(), window, cx));
-    }
-
-    /// After the native confirm (`Host::confirm`), as the Svelte page does.
-    /// Without an `AppCore` (tests, goldens) it deletes straight away.
-    pub fn delete_statement(&mut self, id: i64, cx: &mut Context<Self>) {
-        let Some(core) = crate::chat::core(cx) else {
-            return self.delete_now(id, cx);
-        };
-        let answer = core.host().confirm(app_core::ConfirmDialog {
-            title: Some("Delete context".into()),
-            message: "Delete this statement? Mnema stops using it to steer your dossier.".into(),
-            kind: app_core::DialogKind::Warning,
-            ok_label: "OK".into(),
-            cancel_label: "Cancel".into(),
-        });
-        cx.spawn(async move |this, cx| {
-            if answer.await == Ok(true) {
-                let _ = this.update(cx, |this, cx| this.delete_now(id, cx));
-            }
-        })
-        .detach();
-    }
-
-    fn delete_now(&mut self, id: i64, cx: &mut Context<Self>) {
-        self.write(
-            cx,
-            move |b| b.delete_authored(id),
-            |this, _, cx| this.load_context(cx),
-        );
-    }
-
-    pub fn restore(&mut self, subject: String, statement: String, cx: &mut Context<Self>) {
-        self.write(
-            cx,
-            move |b| b.restore_dismissed(&subject, &statement),
-            |this, _, cx| this.load_context(cx),
-        );
-    }
-
-    pub fn correct_category(&mut self, id: i64, c: ActivityCategory, cx: &mut Context<Self>) {
-        if let Some(o) = &mut self.overview {
-            if let Some(a) = o.activities.iter_mut().find(|a| a.id == id) {
-                a.category = Some(c);
-            }
-        }
-        self.write(
-            cx,
-            move |b| b.correct_category(id, c),
-            |this, r, cx| {
-                if let Err(e) = r {
-                    this.toasts.update(cx, |t, cx| {
-                        t.push(Toast::danger(format!("Couldn't update category — {e}")), cx)
-                    });
-                    this.load_overview(cx);
-                }
-            },
-        );
     }
 }
 
@@ -780,6 +735,15 @@ pub fn register_keys(
             "up" | "down" if this.subject.is_some() => {
                 subjects::step_conclusion(this, if key == "down" { 1 } else { -1 }, cx)
             }
+            // ←/→ turn a tier's page (the index, or a subject's page).
+            "left" | "right" if this.tab == Tab::Subjects && this.modal.is_none() => {
+                let d = if key == "right" { 1 } else { -1 };
+                if this.subject.is_some() {
+                    subjects::turn_subject(this, d, cx)
+                } else {
+                    subjects::turn_list(this, d, cx)
+                }
+            }
             _ => false,
         });
         if handled {
@@ -791,3 +755,7 @@ pub fn register_keys(
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+#[cfg(test)]
+mod flow_tests;
+#[cfg(test)]
+mod link_tests;

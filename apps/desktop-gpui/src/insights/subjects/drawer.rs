@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use capture_types::{Activity, EvidenceStance};
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, relative, AnyElement, Context, Pixels, Role};
 
 use super::detail::{flat, histories, TIERS};
@@ -18,7 +19,7 @@ use crate::insights::parts::{h2, label, sec};
 use crate::insights::stats::{self, humanize_ms};
 use crate::insights::Insights;
 use crate::theme::{self, breakpoint, space, text, Palette, FONT_MONO};
-use crate::ui::{clock, icon, kicker, Button};
+use crate::ui::{clock, icon, kicker, nid, Button};
 
 /// ↑/↓ walk the conclusions and the drawer follows.
 pub fn step(this: &mut Insights, d: i64, cx: &mut Context<Insights>) -> bool {
@@ -39,6 +40,7 @@ pub fn step(this: &mut Insights, d: i64, cx: &mut Context<Insights>) -> bool {
     };
     if let Some(n) = next {
         this.open_conclusion = Some(flat[n].id);
+        super::detail::reveal(this, flat[n].id);
         cx.notify();
     }
     true
@@ -270,7 +272,7 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
     // Evidence, newest first, then the origin (`buildTimeline`).
     // shortcut: the "replaced an earlier take" audit row is left out, and the
     // page is a fixed EV_PAGE rows (Tauri fits rows to the drawer's height).
-    let mut events: Vec<(Option<i64>, String, String, Dot)> = c
+    let mut events: Vec<(Option<i64>, String, String, Dot, Option<i64>)> = c
         .evidence
         .iter()
         .map(|e| {
@@ -305,9 +307,9 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 } else {
                     format!("contradicts this · {note}")
                 };
-                (at, title, note, Dot::Contra)
+                (at, title, note, Dot::Contra, a.map(|a| a.id))
             } else {
-                (at, title, note, Dot::Evidence)
+                (at, title, note, Dot::Evidence, a.map(|a| a.id))
             }
         })
         .collect();
@@ -317,6 +319,7 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
             format!("Confidence {}% → {}%", pct(from), pct(to)),
             String::new(),
             Dot::Marker,
+            None,
         )
     }));
     events.sort_by(|a, b| b.0.unwrap_or(i64::MIN).cmp(&a.0.unwrap_or(i64::MIN)));
@@ -331,7 +334,13 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
             pct(h.first().map_or(c.confidence, |s| s.confidence))
         ),
     };
-    events.push((Some(c.formed_at_ms), formed, String::new(), Dot::Origin));
+    events.push((
+        Some(c.formed_at_ms),
+        formed,
+        String::new(),
+        Dot::Origin,
+        None,
+    ));
     let total = events.len();
     let page = if this.evidence_page.0 == id {
         this.evidence_page.1
@@ -387,7 +396,7 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 .w(px(1.))
                 .bg(p.border),
         )
-        .children(rows.map(|(at, title, note, dot)| {
+        .children(rows.map(|(at, title, note, dot, act)| {
             let marker = match dot {
                 Dot::Marker => div()
                     .size(px(7.))
@@ -428,6 +437,8 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 )
                 .child(
                     div()
+                        .id(nid("insights-ev", act.unwrap_or(-1) as u64))
+                        .test_support()
                         .flex_1()
                         .min_w_0()
                         .flex()
@@ -435,6 +446,15 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                         .gap(px(3.))
                         .text_size(text::BASE)
                         .text_color(p.text)
+                        // `.in-tl__ev`: a resolved activity opens its moment.
+                        .when_some(act, |d, aid| {
+                            d.role(Role::Button)
+                                .cursor_pointer()
+                                .hover(|s| s.text_color(p.text_strong))
+                                .on_click(cx.listener(move |this, _, window, cx| {
+                                    this.view_evidence(aid, window, cx)
+                                }))
+                        })
                         .when(dot == Dot::Marker, |d| {
                             d.font_family(FONT_MONO)
                                 .font_weight(theme::W_MEDIUM)

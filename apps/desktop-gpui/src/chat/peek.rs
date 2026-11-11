@@ -68,19 +68,91 @@ pub struct PeekData {
     copy_revert: Option<gpui_kit::Task<()>>,
 }
 
-impl Chat {
+/// A view that shows the frame peek over itself (Chat's sources, Insights'
+/// evidence): the state the peek reads and writes. The peek's behaviour is
+/// [`PeekOps`], once for every host.
+pub trait PeekHost: Sized + 'static {
+    fn peek_src(&self) -> Option<&Source>;
+    fn set_peek_src(&mut self, src: Option<Source>);
+    fn peek_data(&self) -> &PeekData;
+    fn peek_data_mut(&mut self) -> &mut PeekData;
+    fn peek_gen(&mut self) -> &mut u64;
+    fn peek_focus(&self) -> &gpui_kit::FocusHandle;
+    fn hero_size(&self) -> &Rc<std::cell::Cell<gpui_kit::Size<gpui_kit::Pixels>>>;
+    fn peek_images(&self) -> &gpui_kit::Entity<crate::timeline::image_cache::FrameImages>;
+    fn peek_sources(&self) -> std::sync::Arc<dyn super::source_data::SourceBackend>;
+}
+
+impl PeekHost for Chat {
+    fn peek_src(&self) -> Option<&Source> {
+        self.peek.as_ref()
+    }
+    fn set_peek_src(&mut self, src: Option<Source>) {
+        self.peek = src;
+    }
+    fn peek_data(&self) -> &PeekData {
+        &self.peek_data
+    }
+    fn peek_data_mut(&mut self) -> &mut PeekData {
+        &mut self.peek_data
+    }
+    fn peek_gen(&mut self) -> &mut u64 {
+        &mut self.peek_gen
+    }
+    fn peek_focus(&self) -> &gpui_kit::FocusHandle {
+        &self.peek_focus
+    }
+    fn hero_size(&self) -> &Rc<std::cell::Cell<gpui_kit::Size<gpui_kit::Pixels>>> {
+        &self.hero_size
+    }
+    fn peek_images(&self) -> &gpui_kit::Entity<crate::timeline::image_cache::FrameImages> {
+        &self.images
+    }
+    fn peek_sources(&self) -> std::sync::Arc<dyn super::source_data::SourceBackend> {
+        self.sources.clone()
+    }
+}
+
+impl<V: PeekHost> PeekOps for V {}
+
+pub trait PeekOps: PeekHost {
     /// A frame chip: open the peek, then load the frame's size and image.
-    /// (`pub` for the `chat-peek` golden, which opens it as a chip click does.)
-    pub fn peek_frame(&mut self, src: Source, window: &mut Window, cx: &mut Context<Self>) {
+    /// A source without its app / window (an Insights evidence frame) gets
+    /// them from the frame itself (`FrameDetailModal` loads the frame).
+    fn peek_frame(&mut self, src: Source, window: &mut Window, cx: &mut Context<Self>) {
         let Some(id) = src.frame_id else { return };
         // Esc reaches the modal only with focus inside it.
-        self.peek_focus.focus(window, cx);
-        self.peek_gen += 1;
-        let gen = self.peek_gen;
-        self.peek = Some(src);
-        self.peek_data = PeekData::default();
+        self.peek_focus().clone().focus(window, cx);
+        *self.peek_gen() += 1;
+        let gen = *self.peek_gen();
+        let bare = src.app_name.is_none() && src.window_title.is_none();
+        self.set_peek_src(Some(src));
+        *self.peek_data_mut() = PeekData::default();
         cx.notify();
-        let b = self.sources.clone();
+        let b = self.peek_sources();
+        let meta_b = b.clone();
+        let meta =
+            cx.background_spawn(async move { bare.then(|| meta_b.frame_meta(id)).flatten() });
+        cx.spawn(async move |this, cx| {
+            if let Some(m) = meta.await {
+                let _ = this.update(cx, |this, cx| {
+                    if *this.peek_gen() != gen {
+                        return;
+                    }
+                    if let Some(s) = this.peek_src().cloned() {
+                        this.set_peek_src(Some(Source {
+                            app_name: m.0,
+                            window_title: m.1,
+                            started_at: m.2,
+                            url: m.3,
+                            ..s
+                        }));
+                    }
+                    cx.notify();
+                });
+            }
+        })
+        .detach();
         let task = cx.background_spawn(async move {
             let (redactions, bundle) = b.peek_extras(id);
             let icon = bundle.as_ref().and_then(|bid| {
@@ -92,46 +164,43 @@ impl Chat {
         cx.spawn(async move |this, cx| {
             let (frame, image, redactions, bundle, icon) = task.await;
             let _ = this.update(cx, |this, cx| {
-                if this.peek_gen != gen {
+                if *this.peek_gen() != gen {
                     return; // closed, or another frame opened
                 }
-                this.peek_data.frame = match frame {
+                let d = this.peek_data_mut();
+                d.frame = match frame {
                     Ok(Some((w, h))) => FrameLoad::Ready { w, h },
                     Ok(None) => FrameLoad::Gone,
                     Err(e) => FrameLoad::Failed(e),
                 };
-                this.peek_data.image = image;
-                (
-                    this.peek_data.redactions,
-                    this.peek_data.bundle,
-                    this.peek_data.icon,
-                ) = (redactions, bundle, icon);
+                d.image = image;
+                (d.redactions, d.bundle, d.icon) = (redactions, bundle, icon);
                 cx.notify();
             });
         })
         .detach();
     }
 
-    pub(super) fn close_peek(&mut self, cx: &mut Context<Self>) {
-        self.peek = None;
-        self.peek_gen += 1;
-        self.peek_data = PeekData::default();
+    fn close_peek(&mut self, cx: &mut Context<Self>) {
+        self.set_peek_src(None);
+        *self.peek_gen() += 1;
+        *self.peek_data_mut() = PeekData::default();
         cx.notify();
     }
 
     /// "copy image": the preview as PNG on the clipboard, then "copied" (or
     /// "copy failed") for [`COPY_REVERT`].
-    pub(super) fn copy_peek_image(&mut self, cx: &mut Context<Self>) {
-        let Some(path) = self.peek_data.image.clone() else {
+    fn copy_peek_image(&mut self, cx: &mut Context<Self>) {
+        let Some(path) = self.peek_data().image.clone() else {
             return;
         };
-        if self.peek_data.copy == CopyState::Copying {
+        if self.peek_data().copy == CopyState::Copying {
             return;
         }
-        self.peek_data.copy = CopyState::Copying;
-        self.peek_data.copy_revert = None;
+        self.peek_data_mut().copy = CopyState::Copying;
+        self.peek_data_mut().copy_revert = None;
         cx.notify();
-        let gen = self.peek_gen;
+        let gen = *self.peek_gen();
         let task = cx.background_spawn(async move {
             std::fs::read(&path)
                 .ok()
@@ -140,10 +209,10 @@ impl Chat {
         cx.spawn(async move |this, cx| {
             let png = task.await;
             let _ = this.update(cx, |this, cx| {
-                if this.peek_gen != gen {
+                if *this.peek_gen() != gen {
                     return;
                 }
-                this.peek_data.copy = match png {
+                this.peek_data_mut().copy = match png {
                     Some(b) => {
                         let image = gpui_kit::Image::from_bytes(gpui_kit::ImageFormat::Png, b);
                         cx.write_to_clipboard(gpui_kit::ClipboardItem::new_image(&image));
@@ -151,10 +220,10 @@ impl Chat {
                     }
                     None => CopyState::Failed,
                 };
-                this.peek_data.copy_revert = Some(cx.spawn(async move |this, cx| {
+                this.peek_data_mut().copy_revert = Some(cx.spawn(async move |this, cx| {
                     cx.background_executor().timer(COPY_REVERT).await;
                     let _ = this.update(cx, |this, cx| {
-                        this.peek_data.copy = CopyState::Idle;
+                        this.peek_data_mut().copy = CopyState::Idle;
                         cx.notify();
                     });
                 }));
@@ -165,26 +234,26 @@ impl Chat {
     }
 
     /// "Show OCR": the first time loads it; after that it only shows / hides.
-    pub(super) fn toggle_peek_ocr(&mut self, cx: &mut Context<Self>) {
-        let id = self.peek.as_ref().and_then(|s| s.frame_id);
-        let (Some(id), FrameLoad::Ready { .. }) = (id, &self.peek_data.frame) else {
+    fn toggle_peek_ocr(&mut self, cx: &mut Context<Self>) {
+        let id = self.peek_src().and_then(|s| s.frame_id);
+        let (Some(id), FrameLoad::Ready { .. }) = (id, &self.peek_data().frame) else {
             return;
         };
-        let ocr = &mut self.peek_data.ocr;
+        let b = self.peek_sources();
+        let gen = *self.peek_gen();
+        let ocr = &mut self.peek_data_mut().ocr;
         ocr.visible = !ocr.visible;
         if ocr.visible && ocr.status == OcrStatus::Idle {
             ocr.status = OcrStatus::Running;
             ocr.frame_id = Some(id);
-            let gen = self.peek_gen;
-            let b = self.sources.clone();
             let task = cx.background_spawn(async move { b.ocr(id) });
             cx.spawn(async move |this, cx| {
                 let res = task.await;
                 let _ = this.update(cx, |this, cx| {
-                    if this.peek_gen != gen {
+                    if *this.peek_gen() != gen {
                         return;
                     }
-                    let o = &mut this.peek_data.ocr;
+                    let o = &mut this.peek_data_mut().ocr;
                     (o.status, o.boxes, o.error) = outcome(res);
                     cx.notify();
                 });
@@ -195,12 +264,12 @@ impl Chat {
     }
 }
 
-pub fn frame_modal(
-    chat: &Chat,
+pub fn frame_modal<V: PeekHost>(
+    chat: &V,
     s: &Source,
     p: &Palette,
     viewport: gpui_kit::Size<gpui_kit::Pixels>,
-    cx: &mut Context<Chat>,
+    cx: &mut Context<V>,
 ) -> impl IntoElement {
     let close = cx.entity().downgrade();
     // `.frame-modal__panel`: min(1060, window − 2·24) wide; the fixture's frames
@@ -208,7 +277,7 @@ pub fn frame_modal(
     let panel_h = (f32::from(viewport.height) - PANEL_GAP_H).max(HERO_H);
     let panel_w = PANEL_W.min(f32::from(viewport.width) - 48.);
     let frame_id = s.frame_id;
-    let d = &chat.peek_data;
+    let d = chat.peek_data();
     let hero = div()
         .id("chat-frame-image")
         .relative()
@@ -221,7 +290,7 @@ pub fn frame_modal(
         .overflow_hidden()
         .bg(p.bg)
         .child({
-            let cell = chat.hero_size.clone();
+            let cell = chat.hero_size().clone();
             canvas(
                 move |b, window, _| {
                     if cell.get() != b.size {
@@ -235,16 +304,16 @@ pub fn frame_modal(
             .size_full()
         });
     // Decode only once the hero has a size, so the image is fitted to it.
-    let sized = f32::from(chat.hero_size.get().width) > 0.;
+    let sized = f32::from(chat.hero_size().get().width) > 0.;
     let hero = match (&d.frame, &d.image) {
         (FrameLoad::Gone | FrameLoad::Failed(_), _) => hero.child(unavailable(&d.frame, p)),
         (FrameLoad::Ready { w, h }, Some(path)) if sized => {
-            let rect = image_rect(chat.hero_size.get(), *w, *h);
+            let rect = image_rect(chat.hero_size().get(), *w, *h);
             let o = &d.ocr;
             let entity = cx.entity().downgrade();
             hero.child(
                 img(path.clone())
-                    .image_cache(&chat.images)
+                    .image_cache(chat.peek_images())
                     .object_fit(ObjectFit::Contain)
                     .absolute()
                     .inset_0()
@@ -261,8 +330,8 @@ pub fn frame_modal(
                             p,
                             Rc::new(move |i, on, cx| {
                                 let _ = entity.update(cx, |c, cx| {
-                                    c.peek_data.ocr.hovered =
-                                        next_hover(c.peek_data.ocr.hovered, i, on);
+                                    let h = next_hover(c.peek_data().ocr.hovered, i, on);
+                                    c.peek_data_mut().ocr.hovered = h;
                                     cx.notify();
                                 });
                             }),
@@ -464,7 +533,7 @@ pub fn frame_modal(
         .child(
             div()
                 .id("chat-frame-body")
-                .track_focus(&chat.peek_focus)
+                .track_focus(chat.peek_focus())
                 .flex()
                 .flex_col()
                 .h(px(panel_h))

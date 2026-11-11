@@ -5,6 +5,7 @@
 use capture_types::{Conclusion, ConclusionStatus};
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, AnyElement, Context, Div, Role, SharedString, Window};
 
 use super::Figures;
@@ -69,6 +70,30 @@ pub fn exhibits(
     let cat_total: i64 = cats.iter().map(|c| c.ms).sum();
     let top_ms = cats.first().map_or(1, |c| c.ms);
     let scope = super::scope(this, cx);
+    let empty_note = super::engine_empty_note(this, d, f, cx);
+    let usage_failed = d.usage_error.clone().filter(|_| d.usage.is_none());
+    let chart_error = if f.cap_only {
+        usage_failed.clone()
+    } else {
+        d.engine_error.clone()
+    };
+    let retry = |id: &'static str| {
+        Button::new(id, "Retry")
+            .ghost()
+            .sm()
+            .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+    };
+    let inline_error = |id: &'static str| {
+        crate::ui::notice::inline(
+            Tone::Danger,
+            Some(icon(IconName::TriangleAlert.path(), px(13.)).into_any_element()),
+            vec![
+                div().child("Couldn't load.").into_any_element(),
+                retry(id).into_any_element(),
+            ],
+            p,
+        )
+    };
     let cat_list: Div = if f.nothing {
         compact(
             IconName::Inbox.path(),
@@ -87,7 +112,9 @@ pub fn exhibits(
         compact(
             IconName::Inbox.path(),
             "No categories yet",
-            "Categories appear once activities are written up.",
+            empty_note
+                .clone()
+                .unwrap_or_else(|| "Categories appear once activities are written up.".into()),
             p,
         )
     } else {
@@ -98,6 +125,7 @@ pub fn exhibits(
                 let key = c.category;
                 div()
                     .id(nid("insights-cat", i as u64))
+                    .test_support()
                     .role(Role::Button)
                     .flex()
                     .items_center()
@@ -160,14 +188,34 @@ pub fn exhibits(
             kicker(&format!("Where the {} went", unit.name()), p),
             Some(label(per, p).into_any_element()),
         ))
-        .child(stacked_bar(&cols, unit, this.highlight, p))
-        .child(
-            div()
-                .mt(space::S5)
-                .border_t_1()
-                .border_color(p.hairline)
-                .child(cat_list),
-        );
+        .when_some(chart_error.clone(), |w, e| {
+            w.child(empty(
+                EmptyLayout::Panel,
+                Tone::Danger,
+                IconName::TriangleAlert.path(),
+                if f.cap_only {
+                    "Couldn't load your usage charts."
+                } else {
+                    "Couldn't load your activities."
+                },
+                e,
+                vec![Button::new("insights-chart-retry", "Try again")
+                    .sm()
+                    .icon(IconName::RotateCcw.path())
+                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+                    .into_any_element()],
+                p,
+            ))
+        })
+        .when(chart_error.is_none(), |w| {
+            w.child(stacked_bar(&cols, unit, this.highlight, p)).child(
+                div()
+                    .mt(space::S5)
+                    .border_t_1()
+                    .border_color(p.hairline)
+                    .child(cat_list),
+            )
+        });
     let focus = stats::focus_counts(&f.acts);
     let detail = |id: &'static str, text_: String, m: Modal| {
         Button::new(id, text_)
@@ -177,6 +225,9 @@ pub fn exhibits(
             .icon_after()
             .on_click(cx.listener(move |this, _, _, cx| {
                 this.modal = Some(m);
+                if m == Modal::Apps {
+                    this.request_app_icons(cx);
+                }
                 cx.notify();
             }))
             .into_any_element()
@@ -188,11 +239,13 @@ pub fn exhibits(
             "Deep / mixed / scattered is judged per activity.",
             p,
         )
+    } else if d.engine_error.is_some() {
+        div().child(inline_error("insights-focus-retry"))
     } else if focus.n == 0 {
         compact(
             IconName::Inbox.path(),
             "No focus signal yet",
-            "Appears once activities are written up.",
+            empty_note.unwrap_or_else(|| "Appears once activities are written up.".into()),
             p,
         )
     } else {
@@ -200,7 +253,12 @@ pub fn exhibits(
             .child(focus_split(focus, p))
             .child(heatmap(&stats::focus_heat(&f.acts, f.range, unit, off), p))
     };
-    let apps_body: Div = if f.apps.is_empty() {
+    let no_app = super::no_app_time(this, d, f, cx);
+    let apps_body: Div = if usage_failed.is_some() {
+        div().child(inline_error("insights-apps-retry"))
+    } else if let Some((_, note)) = no_app {
+        compact(IconName::Inbox.path(), "No app time", note, p)
+    } else if f.apps.is_empty() {
         compact(
             IconName::Inbox.path(),
             "No tracked app time in this range",
@@ -236,7 +294,7 @@ pub fn exhibits(
             div()
                 .child(sec(
                     kicker("Focus", p),
-                    (!f.cap_only && focus.n > 0).then(|| {
+                    (!f.cap_only && d.engine_error.is_none() && focus.n > 0).then(|| {
                         detail("insights-focus-detail", "Focus detail".into(), Modal::Focus)
                     }),
                 ))
@@ -246,7 +304,7 @@ pub fn exhibits(
             div()
                 .child(sec(
                     kicker("Time in apps", p),
-                    (n_apps > 0).then(|| {
+                    (n_apps > 0 && usage_failed.is_none()).then(|| {
                         detail(
                             "insights-apps-all",
                             format!("All {n_apps} {}", if n_apps == 1 { "app" } else { "apps" }),
@@ -340,7 +398,11 @@ pub fn feed(
             IconName::TriangleAlert.path(),
             "Couldn't load your engine data.",
             format!("{e} Nothing is lost."),
-            Vec::new(),
+            vec![Button::new("insights-feed-retry", "Try again")
+                .sm()
+                .icon(IconName::RotateCcw.path())
+                .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+                .into_any_element()],
             p,
         )
     } else if groups.is_empty() {
@@ -359,6 +421,7 @@ pub fn feed(
             p,
         )
     } else {
+        let total: usize = groups.iter().map(|g| g.1).sum();
         let mut col = div().flex().flex_col();
         for (k, all, rows) in groups {
             let head = match k {
@@ -394,7 +457,6 @@ pub fn feed(
                         .border_color(p.hairline)
                         .cursor_pointer()
                         .group("insights-change")
-                        .when(fading, |d| d.opacity(0.6))
                         .child(
                             div()
                                 .flex_1()
@@ -405,7 +467,11 @@ pub fn feed(
                                 .child(
                                     div()
                                         .text_size(text::MD)
-                                        .text_color(p.text_strong)
+                                        .text_color(if fading {
+                                            p.text_muted
+                                        } else {
+                                            p.text_strong
+                                        })
                                         .group_hover("insights-change", |s| s.text_color(p.accent))
                                         .child(c.statement.clone()),
                                 )
@@ -422,7 +488,7 @@ pub fn feed(
                                             p,
                                         ))
                                         .when(k == Kind::Formed, |d| {
-                                            d.child(div().text_color(p.accent).child("new"))
+                                            d.child(div().text_color(p.accent).child("● new"))
                                         })
                                         .when(fading, |d| {
                                             d.child("below the display floor — kept for history")
@@ -466,6 +532,24 @@ pub fn feed(
                 );
             }
         }
+        if total > 10 {
+            col = col.child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S3)
+                    .mt(space::S3)
+                    .child(mono_label("10 latest", p))
+                    .child(
+                        Button::new("insights-feed-all", "See all")
+                            .ghost()
+                            .sm()
+                            .on_click(cx.listener(|this, _, _, cx| {
+                                this.set_tab(crate::insights::Tab::Subjects, cx)
+                            })),
+                    ),
+            );
+        }
         col
     };
     let attention: Vec<&capture_types::Activity> = {
@@ -473,7 +557,22 @@ pub fn feed(
         v.sort_by(|a, b| b.started_at_ms.cmp(&a.started_at_ms));
         v
     };
-    let attn_body: Div = if attention.is_empty() {
+    let attn_n = attention.len();
+    let attn_body: Div = if d.engine_error.is_some() {
+        div().child(crate::ui::notice::inline(
+            Tone::Danger,
+            Some(icon(IconName::TriangleAlert.path(), px(13.)).into_any_element()),
+            vec![
+                div().child("Couldn't load.").into_any_element(),
+                Button::new("insights-attn-retry", "Retry")
+                    .ghost()
+                    .sm()
+                    .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
+                    .into_any_element(),
+            ],
+            p,
+        ))
+    } else if attention.is_empty() {
         empty(
             EmptyLayout::Compact,
             Tone::Ok,
@@ -489,42 +588,98 @@ pub fn feed(
             .flex_col()
             .gap(space::S3)
             .child(prose("Mnema couldn't place these. One tap teaches it.", p))
-            .children(attention.iter().take(5).map(|a| {
-                let id = a.id;
-                let when = format!(
-                    "{} {} · {}",
-                    stats::weekday(a.started_at_ms, off),
-                    stats::clock(a.started_at_ms, off),
-                    fmt_duration(a.ended_at_ms - a.started_at_ms)
-                );
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(space::S2)
-                    .child(
+            .children(
+                attention
+                    .iter()
+                    .take(if this.ov_ui.attn_open { usize::MAX } else { 5 })
+                    .map(|a| {
+                        let id = a.id;
+                        let busy = this.ov_ui.correcting.contains(&id);
+                        let when = format!(
+                            "{} {} · {}",
+                            stats::weekday(a.started_at_ms, off),
+                            stats::clock(a.started_at_ms, off),
+                            fmt_duration(a.ended_at_ms - a.started_at_ms)
+                        );
                         div()
-                            .text_size(text::MD)
-                            .font_weight(theme::W_SEMIBOLD)
-                            .text_color(p.text_strong)
-                            .child(a.title.clone()),
-                    )
-                    .child(mono_label(when, p))
-                    .child(div().flex().flex_wrap().gap(px(6.)).children(
-                        CATEGORY_ORDER.iter().map(|k| {
-                            let k = *k;
-                            Button::new(
-                                nid(&format!("insights-tag-{id}"), k as u64),
-                                category_label(Some(k)),
+                            .flex()
+                            .flex_col()
+                            .gap(space::S2)
+                            .pt(px(12.))
+                            .border_t_1()
+                            .border_color(p.hairline)
+                            .when(busy, |d| d.opacity(0.5))
+                            .child(
+                                div()
+                                    .text_size(text::MD)
+                                    .font_weight(theme::W_MEDIUM)
+                                    .text_color(p.text_strong)
+                                    .child(a.title.clone()),
                             )
-                            .sm()
-                            .on_click(
-                                cx.listener(move |this, _, _, cx| this.correct_category(id, k, cx)),
-                            )
-                        }),
-                    ))
-            }))
+                            .child(mono_label(when, p))
+                            .child(div().flex().flex_wrap().gap(px(4.)).children(
+                                CATEGORY_ORDER.iter().map(|k| {
+                                    let k = *k;
+                                    // `mx-btn--sm` with the category's swatch (the kit Button has no lead slot).
+                                    div()
+                                        .id(nid(&format!("insights-tag-{id}"), k as u64))
+                                        .test_support()
+                                        .role(Role::Button)
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .h(px(24.))
+                                        .px(px(9.))
+                                        .rounded(radius::SM)
+                                        .border_1()
+                                        .border_color(p.border)
+                                        .bg(p.surface_raised)
+                                        .text_size(text::BASE)
+                                        .font_weight(theme::W_MEDIUM)
+                                        .text_color(p.text)
+                                        .child(swatch(category_color(Some(k), p), 8.))
+                                        .child(category_label(Some(k)))
+                                        .when(busy, |d| d.opacity(theme::DISABLED_OPACITY))
+                                        .when(!busy, |d| {
+                                            d.cursor_pointer()
+                                                .hover(|s| {
+                                                    s.bg(p.surface_hover)
+                                                        .border_color(p.border_hover)
+                                                })
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.correct(
+                                                        id,
+                                                        super::Fix::Category(Some(k)),
+                                                        cx,
+                                                    )
+                                                }))
+                                        })
+                                }),
+                            ))
+                    }),
+            )
+            .when(attn_n > 5, |d| {
+                d.child(
+                    div().flex().child(
+                        Button::new(
+                            "insights-attn-more",
+                            if this.ov_ui.attn_open {
+                                "Show fewer".to_string()
+                            } else {
+                                format!("+{} more", attn_n - 5)
+                            },
+                        )
+                        .ghost()
+                        .sm()
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.ov_ui.attn_open = !this.ov_ui.attn_open;
+                            cx.notify();
+                        })),
+                    ),
+                )
+            })
     };
-    let untagged = (!attention.is_empty())
+    let untagged = (!attention.is_empty() && d.engine_error.is_none())
         .then(|| mono_label(format!("{} untagged", attention.len()), p).into_any_element());
     split(
         div()

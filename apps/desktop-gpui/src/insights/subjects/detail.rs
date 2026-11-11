@@ -158,7 +158,11 @@ pub fn render(
                 IconName::TriangleAlert.path(),
                 "Couldn't load this subject.",
                 format!("Reading its conclusions and history failed. {e}"),
-                Vec::new(),
+                vec![Button::new("insights-subject-retry", "Try again")
+                    .sm()
+                    .icon(IconName::RotateCcw.path())
+                    .on_click(cx.listener(|this, _, _, cx| this.reload_subject(cx)))
+                    .into_any_element()],
                 p,
             ))
             .into_any_element();
@@ -288,16 +292,36 @@ pub fn render(
         Some(label(format!("{} · by confidence", live.len()), p).into_any_element()),
     ));
     for (t, title, note) in TIERS {
-        let rows: Vec<&Conclusion> = all.iter().filter(|c| tier_of(c) == t).collect();
+        // A pending Dismiss has left the list (its toast holds the Undo).
+        let rows: Vec<&Conclusion> = live.iter().copied().filter(|c| tier_of(c) == t).collect();
         if rows.is_empty() {
             continue;
         }
+        let key = tier_key(t);
+        let (from, to, _, _) = super::pager::slice(this, &key, rows.len(), super::tiers::TIER_PAGE);
+        let pager = super::pager::pager(
+            this,
+            &key,
+            title,
+            rows.len(),
+            super::tiers::TIER_PAGE,
+            true,
+            cx,
+        );
         tiers_el = tiers_el.child(group_head(
             &format!("{title} · {}", rows.len()),
-            (!tight).then(|| label(note, p).text_size(text::SM).into_any_element()),
+            Some(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(space::S2)
+                    .when(!tight, |d| d.child(label(note, p).text_size(text::SM)))
+                    .children(pager)
+                    .into_any_element(),
+            ),
             p,
         ));
-        for c in rows {
+        for c in rows[from..to].iter().copied() {
             tiers_el = tiers_el.child(row(this, c, &hist, delta(c).map(signed), p, cx));
         }
     }
@@ -554,4 +578,29 @@ fn row(
             cx.notify();
         }))
         .into_any_element()
+}
+
+/// A subject-page tier's pager key.
+pub fn tier_key(t: Tier) -> String {
+    format!("t:{t:?}")
+}
+
+/// Turn conclusion `id`'s tier to its row (`reveal`), on opening it.
+pub fn reveal(this: &mut Insights, id: i64) {
+    let live: Vec<Conclusion> = flat(this);
+    let Some(c) = live.iter().find(|c| c.id == id) else {
+        return;
+    };
+    let t = tier_of(c);
+    let Some(i) = live
+        .iter()
+        .filter(|c| tier_of(c) == t)
+        .position(|c| c.id == id)
+    else {
+        return;
+    };
+    let key = tier_key(t);
+    let size = super::pager::state(this, &key, super::tiers::TIER_PAGE).1;
+    this.pages
+        .insert(key, (super::pager::holding(i, size), size));
 }

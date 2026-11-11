@@ -1,0 +1,2602 @@
+{
+  "system_uses_24_hour_time": false,
+  "get_keyboard_bindings_settings": {
+    "schemaVersion": 1,
+    "globalShortcuts": {
+      "enabled": true,
+      "bindings": {
+        "toggleRecording": "CommandOrControl+Alt+R",
+        "pauseResumeRecording": "CommandOrControl+Alt+P",
+        "toggleMainWindow": "CommandOrControl+Alt+M",
+        "quickRecall": "CommandOrControl+Alt+Space"
+      }
+    },
+    "appShortcuts": {
+      "openSettings": "CommandOrControl+,",
+      "openDebug": "CommandOrControl+D",
+      "toggleSourceScreen": "1",
+      "toggleSourceMicrophone": "2",
+      "toggleSourceSystemAudio": "3",
+      "toggleShortcutsHelp": "/"
+    },
+    "dashboardShortcuts": {
+      "openJumpPicker": "J",
+      "jumpLatest": "L",
+      "toggleOcr": "O",
+      "refreshTimeline": "R",
+      "copyFrame": "C",
+      "downloadFrame": "D"
+    },
+    "audioDrawerShortcuts": {
+      "playPause": "Space",
+      "seekBack": "ArrowLeft",
+      "seekForward": "ArrowRight",
+      "seekBackFast": "Shift+ArrowLeft",
+      "seekForwardFast": "Shift+ArrowRight"
+    }
+  },
+  "get_license_status": {
+    "kind": "licensed",
+    "updateThroughMs": 1819702920000.0,
+    "inWindow": true,
+    "email": "ana@example.com",
+    "name": "Ana",
+    "activation": {
+      "state": "activated"
+    }
+  },
+  "take_pending_license_deep_link": null,
+  "user_context_stamp_local_offset": null,
+  "get_storage_usage": {
+    "screenBytes": 0,
+    "microphoneBytes": 0,
+    "systemAudioBytes": 0,
+    "indexBytes": 0,
+    "modelsBytes": 1100000000,
+    "captureDays": 0,
+    "freeBytes": 312000000000
+  },
+  "get_recording_settings": {
+    "captureScreen": true,
+    "captureMicrophone": true,
+    "captureSystemAudio": true,
+    "segmentDurationSeconds": 300,
+    "screenFrameRate": 1.0,
+    "screenResolution": {
+      "mode": "preset",
+      "preset": "original"
+    },
+    "videoBitrate": {
+      "mode": "preset",
+      "preset": "medium",
+      "customMbps": null
+    },
+    "saveDirectory": "/Users/ana/.mnema",
+    "autoStart": true,
+    "developerOptionsEnabled": false,
+    "previewCacheTtlSeconds": 3600,
+    "followTimelineLive": false,
+    "retentionPolicy": "never",
+    "appearance": "system",
+    "timeFormat": "system",
+    "ocr": {
+      "enabled": true,
+      "provider": "apple_vision",
+      "modelId": null,
+      "language": null,
+      "recognitionMode": "fast",
+      "languageCorrection": false,
+      "tesseractPageSegmentationMode": "single_block",
+      "tesseractPreprocessMode": "grayscale",
+      "tesseractUpscaleFactor": 1,
+      "tesseractCharWhitelist": null
+    },
+    "transcription": {
+      "enabled": true,
+      "microphoneEnabled": true,
+      "systemAudioEnabled": false,
+      "provider": "local_whisper",
+      "modelId": "base",
+      "language": "auto",
+      "memoryMode": "balanced",
+      "idleUnloadSeconds": 300,
+      "chunkSeconds": 30
+    },
+    "speakerAnalysis": {
+      "separateSpeakers": true,
+      "recognizeSavedPeople": false,
+      "autoLabelOwner": true,
+      "provider": "speakrs",
+      "modelId": "pyannote-community-1-wespeaker",
+      "timeoutSeconds": 600
+    },
+    "audioSpeechDetection": {
+      "detector": "silero"
+    },
+    "metadata": {
+      "enabled": true,
+      "browserUrlMode": "sanitized"
+    },
+    "privacy": {
+      "excludedApps": [
+        {
+          "id": "app-1",
+          "enabled": true,
+          "bundleId": "com.1password.1password",
+          "displayName": "1Password"
+        },
+        {
+          "id": "app-2",
+          "enabled": true,
+          "bundleId": "com.apple.Passwords",
+          "displayName": "Passwords"
+        }
+      ],
+      "filterSystemAudio": true
+    },
+    "access": {
+      "askAiEnabled": true,
+      "askAiMaxToolCalls": 12,
+      "askAiWebFetchEnabled": false,
+      "askAiModel": null,
+      "askAiModelProvider": null,
+      "quickRecallAutoAnswer": "localOnly"
+    },
+    "aiRuntime": {
+      "enabled": true,
+      "providers": [
+        {
+          "id": "anthropic",
+          "kind": "anthropic",
+          "label": "",
+          "baseUrl": ""
+        },
+        {
+          "id": "ollama",
+          "kind": "ollama",
+          "label": "",
+          "baseUrl": ""
+        }
+      ],
+      "defaultModel": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5"
+      },
+      "mcpServers": [
+        {
+          "id": "github",
+          "label": "GitHub",
+          "enabled": true,
+          "transport": "http",
+          "authMode": "bearer",
+          "command": null,
+          "args": [],
+          "env": [],
+          "url": "https://api.githubcopilot.com/mcp/",
+          "secretEnvName": null,
+          "enabledTools": null
+        }
+      ],
+      "favoriteModels": [],
+      "recentModels": []
+    },
+    "userContext": {
+      "enabled": true,
+      "derivationBudgetTier": "balanced",
+      "backfillWindowDays": 30,
+      "backfillGoDeeper": false
+    },
+    "semanticSearch": {
+      "enabled": true,
+      "provider": "local",
+      "modelId": "nomic-embed-text-v1.5"
+    },
+    "pauseCaptureOnInactivity": true,
+    "idleTimeoutSeconds": 10,
+    "microphoneActivitySensitivity": 50,
+    "systemAudioActivitySensitivity": 50,
+    "activityMode": "system_input_or_screen"
+  },
+  "get_capture_permissions": {
+    "permissions": {
+      "screen": "granted",
+      "microphone": "granted",
+      "systemAudio": "assumed_working"
+    },
+    "session": null
+  },
+  "get_app_notifications": [],
+  "get_ai_runtime_status": {
+    "enabled": true,
+    "hasProviders": true,
+    "configured": true,
+    "available": true,
+    "defaultModel": {
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-5"
+    },
+    "defaultProviderKind": "anthropic",
+    "reason": null
+  },
+  "get_usage_charts": {
+    "rangeStartMs": 1793557800000,
+    "rangeEndMs": 1794162600000,
+    "timePerApp": [
+      {
+        "app": "Code",
+        "appBundleId": "com.microsoft.VSCode",
+        "activeMs": 51120000,
+        "frameCount": 10224
+      },
+      {
+        "app": "Google Chrome",
+        "appBundleId": "com.google.Chrome",
+        "activeMs": 21900000,
+        "frameCount": 4380
+      },
+      {
+        "app": "Slack",
+        "appBundleId": "com.tinyspeck.slackmacgap",
+        "activeMs": 10020000,
+        "frameCount": 2004
+      },
+      {
+        "app": "Figma",
+        "appBundleId": "com.figma.Desktop",
+        "activeMs": 7320000,
+        "frameCount": 1464
+      },
+      {
+        "app": "Terminal",
+        "appBundleId": "com.apple.Terminal",
+        "activeMs": 5280000,
+        "frameCount": 1056
+      },
+      {
+        "app": "Notes",
+        "appBundleId": "com.apple.Notes",
+        "activeMs": 1260000,
+        "frameCount": 252
+      }
+    ],
+    "timePerSite": [],
+    "appTransitions": [],
+    "activityHeatmap": [
+      {
+        "bucketStartMs": 1793590200000,
+        "intensityCount": 49
+      },
+      {
+        "bucketStartMs": 1793593800000,
+        "intensityCount": 31
+      },
+      {
+        "bucketStartMs": 1793597400000,
+        "intensityCount": 38
+      },
+      {
+        "bucketStartMs": 1793601000000,
+        "intensityCount": 45
+      },
+      {
+        "bucketStartMs": 1793604600000,
+        "intensityCount": 52
+      },
+      {
+        "bucketStartMs": 1793608200000,
+        "intensityCount": 34
+      },
+      {
+        "bucketStartMs": 1793611800000,
+        "intensityCount": 41
+      },
+      {
+        "bucketStartMs": 1793615400000,
+        "intensityCount": 48
+      },
+      {
+        "bucketStartMs": 1793619000000,
+        "intensityCount": 30
+      },
+      {
+        "bucketStartMs": 1793676600000,
+        "intensityCount": 52
+      },
+      {
+        "bucketStartMs": 1793680200000,
+        "intensityCount": 34
+      },
+      {
+        "bucketStartMs": 1793683800000,
+        "intensityCount": 41
+      },
+      {
+        "bucketStartMs": 1793687400000,
+        "intensityCount": 48
+      },
+      {
+        "bucketStartMs": 1793691000000,
+        "intensityCount": 30
+      },
+      {
+        "bucketStartMs": 1793694600000,
+        "intensityCount": 37
+      },
+      {
+        "bucketStartMs": 1793698200000,
+        "intensityCount": 44
+      },
+      {
+        "bucketStartMs": 1793701800000,
+        "intensityCount": 51
+      },
+      {
+        "bucketStartMs": 1793705400000,
+        "intensityCount": 33
+      },
+      {
+        "bucketStartMs": 1793759400000,
+        "intensityCount": 48
+      },
+      {
+        "bucketStartMs": 1793763000000,
+        "intensityCount": 30
+      },
+      {
+        "bucketStartMs": 1793766600000,
+        "intensityCount": 37
+      },
+      {
+        "bucketStartMs": 1793770200000,
+        "intensityCount": 44
+      },
+      {
+        "bucketStartMs": 1793773800000,
+        "intensityCount": 51
+      },
+      {
+        "bucketStartMs": 1793777400000,
+        "intensityCount": 33
+      },
+      {
+        "bucketStartMs": 1793781000000,
+        "intensityCount": 40
+      }
+    ]
+  },
+  "list_frames": [],
+  "get_user_context_status": {
+    "engineAvailable": true,
+    "reason": null,
+    "activityCount": 16,
+    "conclusionCount": 20,
+    "lastDerivedAtMs": 1793782200000,
+    "coveredUntilMs": 1793782200000,
+    "backfilling": false,
+    "tokenUsage": {
+      "inputTokens": 1180000,
+      "outputTokens": 62000,
+      "totalTokens": 1242000,
+      "runCount": 96
+    },
+    "budgetTier": "balanced",
+    "lastDistillation": null,
+    "subjectCount": 8,
+    "dismissedCount": 1,
+    "skippedWindows24h": 0,
+    "earliestCaptureAtMs": 1788319800000,
+    "lastDayDigest": null
+  },
+  "list_user_context_authored": [
+    {
+      "id": 1,
+      "text": "I'm the only engineer on Mnema \u2014 most days are building, not meetings.",
+      "topic": "Work",
+      "createdAtMs": 1793590200000,
+      "updatedAtMs": 1793590200000,
+      "inPrompt": true
+    },
+    {
+      "id": 2,
+      "text": "Figma time is real work even when it looks like browsing.",
+      "topic": "Preferences",
+      "createdAtMs": 1793536200000,
+      "updatedAtMs": 1793536200000,
+      "inPrompt": true
+    },
+    {
+      "id": 3,
+      "text": "Ana is my design partner; calls with her are planning, not chat.",
+      "topic": "People",
+      "createdAtMs": 1793514600000,
+      "updatedAtMs": 1793687400000,
+      "inPrompt": true
+    },
+    {
+      "id": 4,
+      "text": "Ship the GPUI app to parity before the year ends.",
+      "topic": "Goals",
+      "createdAtMs": 1793507400000,
+      "updatedAtMs": 1793507400000,
+      "inPrompt": true
+    },
+    {
+      "id": 5,
+      "text": "I prefer local models for anything personal.",
+      "topic": "Preferences",
+      "createdAtMs": 1793503800000,
+      "updatedAtMs": 1793503800000,
+      "inPrompt": true
+    }
+  ],
+  "capture_presence": {
+    "screen": true,
+    "audio": true
+  },
+  "get_capture_hours": [
+    1793590200000,
+    1793593800000,
+    1793597400000,
+    1793601000000,
+    1793604600000,
+    1793608200000,
+    1793611800000,
+    1793615400000,
+    1793619000000,
+    1793676600000,
+    1793680200000,
+    1793683800000,
+    1793687400000,
+    1793691000000,
+    1793694600000,
+    1793698200000,
+    1793701800000,
+    1793705400000,
+    1793759400000,
+    1793763000000,
+    1793766600000,
+    1793770200000,
+    1793773800000,
+    1793777400000,
+    1793781000000
+  ],
+  "list_user_context_activities": [
+    {
+      "id": 1,
+      "title": "Capture pipeline: writer finalize",
+      "summary": "Reworked the segment writer's finalize path and its tests.",
+      "category": "creating",
+      "focus": "deep",
+      "startedAtMs": 1793590800000,
+      "endedAtMs": 1793599800000,
+      "createdAtMs": 1793599860000,
+      "evidence": []
+    },
+    {
+      "id": 2,
+      "title": "Standup and planning",
+      "summary": "Weekly planning with the team.",
+      "category": "meetings",
+      "focus": "mixed",
+      "startedAtMs": 1793600100000,
+      "endedAtMs": 1793602800000,
+      "createdAtMs": 1793602860000,
+      "evidence": []
+    },
+    {
+      "id": 3,
+      "title": "Reading CoreML docs",
+      "summary": "Compared CoreML compute units for the diarizer.",
+      "category": "research",
+      "focus": "deep",
+      "startedAtMs": 1793608200000,
+      "endedAtMs": 1793613600000,
+      "createdAtMs": 1793613660000,
+      "evidence": []
+    },
+    {
+      "id": 4,
+      "title": "Slack and email",
+      "summary": "",
+      "category": "communication",
+      "focus": "distracted",
+      "startedAtMs": 1793613900000,
+      "endedAtMs": 1793616000000,
+      "createdAtMs": 1793616060000,
+      "evidence": []
+    },
+    {
+      "id": 5,
+      "title": "Insights redesign review",
+      "summary": "Walked the Overview mockups.",
+      "category": "creating",
+      "focus": "mixed",
+      "startedAtMs": 1793616600000,
+      "endedAtMs": 1793622000000,
+      "createdAtMs": 1793622060000,
+      "evidence": []
+    },
+    {
+      "id": 6,
+      "title": "Rust ownership refactor",
+      "summary": "Split the scrub engine state machine.",
+      "category": "creating",
+      "focus": "deep",
+      "startedAtMs": 1793676600000,
+      "endedAtMs": 1793687400000,
+      "createdAtMs": 1793687460000,
+      "evidence": []
+    },
+    {
+      "id": 7,
+      "title": "Design sync",
+      "summary": "Reviewed the Journal spine with design.",
+      "category": "meetings",
+      "focus": "mixed",
+      "startedAtMs": 1793691000000,
+      "endedAtMs": 1793696400000,
+      "createdAtMs": 1793696460000,
+      "evidence": []
+    },
+    {
+      "id": 8,
+      "title": "Reading about speaker diarization",
+      "summary": "",
+      "category": "learning",
+      "focus": "deep",
+      "startedAtMs": 1793697000000,
+      "endedAtMs": 1793701200000,
+      "createdAtMs": 1793701260000,
+      "evidence": []
+    },
+    {
+      "id": 9,
+      "title": "Sorting the backlog",
+      "summary": "",
+      "category": null,
+      "focus": "distracted",
+      "startedAtMs": 1793701800000,
+      "endedAtMs": 1793704200000,
+      "createdAtMs": 1793704260000,
+      "evidence": []
+    },
+    {
+      "id": 10,
+      "title": "Release notes",
+      "summary": "Drafted the v0.1.24 notes.",
+      "category": "organizing",
+      "focus": "mixed",
+      "startedAtMs": 1793705400000,
+      "endedAtMs": 1793708100000,
+      "createdAtMs": 1793708160000,
+      "evidence": []
+    },
+    {
+      "id": 11,
+      "title": "Inbox and Slack",
+      "summary": "Cleared overnight threads.",
+      "category": "communication",
+      "focus": "distracted",
+      "startedAtMs": 1793762100000,
+      "endedAtMs": 1793763900000,
+      "createdAtMs": 1793763960000,
+      "evidence": []
+    },
+    {
+      "id": 12,
+      "title": "Writer finalize tests",
+      "summary": "Wrote the finalize tests for the tail segment and fixed the flaky one.",
+      "category": "creating",
+      "focus": "deep",
+      "startedAtMs": 1793764200000,
+      "endedAtMs": 1793773200000,
+      "createdAtMs": 1793773260000,
+      "evidence": [
+        {
+          "subjectType": "frame",
+          "subjectId": 5101,
+          "capturedAtMs": 1793764260000,
+          "isHeadline": true
+        },
+        {
+          "subjectType": "frame",
+          "subjectId": 5102,
+          "capturedAtMs": 1793764260000,
+          "isHeadline": false
+        },
+        {
+          "subjectType": "frame",
+          "subjectId": 5103,
+          "capturedAtMs": 1793764260000,
+          "isHeadline": false
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Call with Ana",
+      "summary": "Talked through the parity harness and the next slices.",
+      "category": "meetings",
+      "focus": "mixed",
+      "startedAtMs": 1793773800000,
+      "endedAtMs": 1793775300000,
+      "createdAtMs": 1793775360000,
+      "evidence": []
+    },
+    {
+      "id": 16,
+      "title": "Quick look at a dashboard",
+      "summary": "",
+      "category": null,
+      "focus": null,
+      "startedAtMs": 1793775360000,
+      "endedAtMs": 1793775540000,
+      "createdAtMs": 1793775600000,
+      "evidence": []
+    },
+    {
+      "id": 14,
+      "title": "Core Audio tap spike",
+      "summary": "Measured the rebuild path on a Bluetooth device switch.",
+      "category": "research",
+      "focus": "deep",
+      "startedAtMs": 1793776800000,
+      "endedAtMs": 1793779800000,
+      "createdAtMs": 1793779860000,
+      "evidence": []
+    },
+    {
+      "id": 15,
+      "title": "Insights GPUI port",
+      "summary": "Built the Overview charts in GPUI.",
+      "category": "creating",
+      "focus": "deep",
+      "startedAtMs": 1793780100000,
+      "endedAtMs": 1793782200000,
+      "createdAtMs": 1793782260000,
+      "evidence": [
+        {
+          "subjectType": "frame",
+          "subjectId": 5201,
+          "capturedAtMs": 1793780160000,
+          "isHeadline": true
+        },
+        {
+          "subjectType": "frame",
+          "subjectId": 5202,
+          "capturedAtMs": 1793780160000,
+          "isHeadline": false
+        }
+      ]
+    }
+  ],
+  "list_user_context_conclusions": [
+    {
+      "id": 101,
+      "subject": "Mnema",
+      "statement": "Building Mnema is the main thing you work on.",
+      "confidence": 0.94,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1793766600000,
+      "updatedAtMs": 1793766600000,
+      "evidence": [
+        {
+          "activityId": 1,
+          "stance": "support",
+          "activityTitle": "Capture pipeline: writer finalize",
+          "activityStartedAtMs": 1793590800000
+        },
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        },
+        {
+          "activityId": 12,
+          "stance": "support",
+          "activityTitle": "Writer finalize tests",
+          "activityStartedAtMs": 1793764200000
+        },
+        {
+          "activityId": 15,
+          "stance": "support",
+          "activityTitle": "Insights GPUI port",
+          "activityStartedAtMs": 1793780100000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 106,
+      "subject": "Rust",
+      "statement": "You write most of your code in Rust.",
+      "confidence": 0.91,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1793683800000,
+      "updatedAtMs": 1793683800000,
+      "evidence": [
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        },
+        {
+          "activityId": 15,
+          "stance": "support",
+          "activityTitle": "Insights GPUI port",
+          "activityStartedAtMs": 1793780100000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 102,
+      "subject": "Mnema",
+      "statement": "You care most about capture never losing data.",
+      "confidence": 0.81,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 1,
+          "stance": "support",
+          "activityTitle": "Capture pipeline: writer finalize",
+          "activityStartedAtMs": 1793590800000
+        },
+        {
+          "activityId": 12,
+          "stance": "support",
+          "activityTitle": "Writer finalize tests",
+          "activityStartedAtMs": 1793764200000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 110,
+      "subject": "Communication",
+      "statement": "Mornings start with Slack and email.",
+      "confidence": 0.77,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1793763000000,
+      "updatedAtMs": 1793763000000,
+      "evidence": [
+        {
+          "activityId": 4,
+          "stance": "support",
+          "activityTitle": "Slack and email",
+          "activityStartedAtMs": 1793613900000
+        },
+        {
+          "activityId": 11,
+          "stance": "support",
+          "activityTitle": "Inbox and Slack",
+          "activityStartedAtMs": 1793762100000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 103,
+      "subject": "Mnema",
+      "statement": "You test the writer paths before shipping.",
+      "confidence": 0.72,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1793770200000,
+      "updatedAtMs": 1793770200000,
+      "evidence": [
+        {
+          "activityId": 12,
+          "stance": "support",
+          "activityTitle": "Writer finalize tests",
+          "activityStartedAtMs": 1793764200000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 112,
+      "subject": "Work rhythm",
+      "statement": "Deep work lands before noon.",
+      "confidence": 0.71,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1793523720000,
+      "lastSupportedAtMs": 1793770200000,
+      "updatedAtMs": 1793770200000,
+      "evidence": [
+        {
+          "activityId": 1,
+          "stance": "support",
+          "activityTitle": "Capture pipeline: writer finalize",
+          "activityStartedAtMs": 1793590800000
+        },
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        },
+        {
+          "activityId": 12,
+          "stance": "support",
+          "activityTitle": "Writer finalize tests",
+          "activityStartedAtMs": 1793764200000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 107,
+      "subject": "Rust",
+      "statement": "You refactor state machines into pure functions.",
+      "confidence": 0.7,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 108,
+      "subject": "Rust",
+      "statement": "You read compiler errors before searching.",
+      "confidence": 0.62,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 1,
+          "stance": "support",
+          "activityTitle": "Capture pipeline: writer finalize",
+          "activityStartedAtMs": 1793590800000
+        },
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 104,
+      "subject": "Mnema",
+      "statement": "You review designs as mockups before building.",
+      "confidence": 0.55,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 5,
+          "stance": "support",
+          "activityTitle": "Insights redesign review",
+          "activityStartedAtMs": 1793616600000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 115,
+      "subject": "CoreML",
+      "statement": "You're evaluating CoreML for on-device models.",
+      "confidence": 0.52,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 3,
+          "stance": "support",
+          "activityTitle": "Reading CoreML docs",
+          "activityStartedAtMs": 1793608200000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 113,
+      "subject": "Work rhythm",
+      "statement": "Afternoons go to reviews and calls.",
+      "confidence": 0.5,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1793610120000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 7,
+          "stance": "support",
+          "activityTitle": "Design sync",
+          "activityStartedAtMs": 1793691000000
+        },
+        {
+          "activityId": 13,
+          "stance": "support",
+          "activityTitle": "Call with Ana",
+          "activityStartedAtMs": 1793773800000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 111,
+      "subject": "Communication",
+      "statement": "You keep meetings short.",
+      "confidence": 0.45,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 13,
+          "stance": "support",
+          "activityTitle": "Call with Ana",
+          "activityStartedAtMs": 1793773800000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 105,
+      "subject": "Mnema",
+      "statement": "You prefer small slices with their own checks.",
+      "confidence": 0.4,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 109,
+      "subject": "Rust",
+      "statement": "You avoid unsafe code.",
+      "confidence": 0.33,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 1,
+          "stance": "support",
+          "activityTitle": "Capture pipeline: writer finalize",
+          "activityStartedAtMs": 1793590800000
+        },
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 114,
+      "subject": "Work rhythm",
+      "statement": "You batch release chores late in the day.",
+      "confidence": 0.31,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1793696520000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 10,
+          "stance": "support",
+          "activityTitle": "Release notes",
+          "activityStartedAtMs": 1793705400000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 116,
+      "subject": "CoreML",
+      "statement": "You compare compute units before choosing.",
+      "confidence": 0.3,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 3,
+          "stance": "support",
+          "activityTitle": "Reading CoreML docs",
+          "activityStartedAtMs": 1793608200000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 117,
+      "subject": "Design",
+      "statement": "You sketch screens in Figma first.",
+      "confidence": 0.26,
+      "status": "visible",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1792054920000,
+      "evidence": [
+        {
+          "activityId": 5,
+          "stance": "support",
+          "activityTitle": "Insights redesign review",
+          "activityStartedAtMs": 1793616600000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 118,
+      "subject": "Diarization",
+      "statement": "You're researching speaker diarization.",
+      "confidence": 0.12,
+      "status": "faded",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1793676600000,
+      "evidence": [
+        {
+          "activityId": 8,
+          "stance": "support",
+          "activityTitle": "Reading about speaker diarization",
+          "activityStartedAtMs": 1793697000000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 120,
+      "subject": "Fitness",
+      "statement": "You run in the mornings.",
+      "confidence": 0.1,
+      "status": "faded",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1793583000000,
+      "evidence": [
+        {
+          "activityId": 1,
+          "stance": "support",
+          "activityTitle": "Capture pipeline: writer finalize",
+          "activityStartedAtMs": 1793590800000
+        },
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        }
+      ],
+      "formedEvidenceCount": 2
+    },
+    {
+      "id": 119,
+      "subject": "Diarization",
+      "statement": "You benchmark diarizers on DER.",
+      "confidence": 0.08,
+      "status": "faded",
+      "pinned": false,
+      "formedAtMs": 1790326920000,
+      "lastSupportedAtMs": 1792054920000,
+      "updatedAtMs": 1793590200000,
+      "evidence": [
+        {
+          "activityId": 1,
+          "stance": "support",
+          "activityTitle": "Capture pipeline: writer finalize",
+          "activityStartedAtMs": 1793590800000
+        },
+        {
+          "activityId": 6,
+          "stance": "support",
+          "activityTitle": "Rust ownership refactor",
+          "activityStartedAtMs": 1793676600000
+        }
+      ],
+      "formedEvidenceCount": 2
+    }
+  ],
+  "get_user_context_digest": {
+    "digest": {
+      "rangeKind": "week",
+      "rangeStartMs": 1793557800000,
+      "rangeEndMs": 1794162600000,
+      "headline": "A build week. The capture pipeline ate your mornings \u2014 until Tuesday's reviews took the afternoons back.",
+      "narrative": "Most deep work landed before noon. Meetings took most of Tuesday afternoon, and today is back in the writer tests.",
+      "generatedAtMs": 1793782500000
+    }
+  },
+  "regenerate_user_context_digest": {
+    "digest": {
+      "rangeKind": "week",
+      "rangeStartMs": 1793557800000,
+      "rangeEndMs": 1794162600000,
+      "headline": "A build week. The capture pipeline ate your mornings \u2014 until Tuesday's reviews took the afternoons back.",
+      "narrative": "Most deep work landed before noon. Meetings took most of Tuesday afternoon, and today is back in the writer tests.",
+      "generatedAtMs": 1793782500000
+    }
+  },
+  "get_user_context_subject": {
+    "subject": "Mnema",
+    "conclusions": [
+      {
+        "id": 101,
+        "subject": "Mnema",
+        "statement": "Building Mnema is the main thing you work on.",
+        "confidence": 0.94,
+        "status": "visible",
+        "pinned": false,
+        "formedAtMs": 1790326920000,
+        "lastSupportedAtMs": 1793766600000,
+        "updatedAtMs": 1793766600000,
+        "evidence": [
+          {
+            "activityId": 1,
+            "stance": "support",
+            "activityTitle": "Capture pipeline: writer finalize",
+            "activityStartedAtMs": 1793590800000
+          },
+          {
+            "activityId": 6,
+            "stance": "support",
+            "activityTitle": "Rust ownership refactor",
+            "activityStartedAtMs": 1793676600000
+          },
+          {
+            "activityId": 12,
+            "stance": "support",
+            "activityTitle": "Writer finalize tests",
+            "activityStartedAtMs": 1793764200000
+          },
+          {
+            "activityId": 15,
+            "stance": "support",
+            "activityTitle": "Insights GPUI port",
+            "activityStartedAtMs": 1793780100000
+          }
+        ],
+        "formedEvidenceCount": 2
+      },
+      {
+        "id": 102,
+        "subject": "Mnema",
+        "statement": "You care most about capture never losing data.",
+        "confidence": 0.81,
+        "status": "visible",
+        "pinned": false,
+        "formedAtMs": 1790326920000,
+        "lastSupportedAtMs": 1792054920000,
+        "updatedAtMs": 1792054920000,
+        "evidence": [
+          {
+            "activityId": 1,
+            "stance": "support",
+            "activityTitle": "Capture pipeline: writer finalize",
+            "activityStartedAtMs": 1793590800000
+          },
+          {
+            "activityId": 12,
+            "stance": "support",
+            "activityTitle": "Writer finalize tests",
+            "activityStartedAtMs": 1793764200000
+          }
+        ],
+        "formedEvidenceCount": 2
+      },
+      {
+        "id": 103,
+        "subject": "Mnema",
+        "statement": "You test the writer paths before shipping.",
+        "confidence": 0.72,
+        "status": "visible",
+        "pinned": false,
+        "formedAtMs": 1790326920000,
+        "lastSupportedAtMs": 1793770200000,
+        "updatedAtMs": 1793770200000,
+        "evidence": [
+          {
+            "activityId": 12,
+            "stance": "support",
+            "activityTitle": "Writer finalize tests",
+            "activityStartedAtMs": 1793764200000
+          }
+        ],
+        "formedEvidenceCount": 2
+      },
+      {
+        "id": 104,
+        "subject": "Mnema",
+        "statement": "You review designs as mockups before building.",
+        "confidence": 0.55,
+        "status": "visible",
+        "pinned": false,
+        "formedAtMs": 1790326920000,
+        "lastSupportedAtMs": 1792054920000,
+        "updatedAtMs": 1792054920000,
+        "evidence": [
+          {
+            "activityId": 5,
+            "stance": "support",
+            "activityTitle": "Insights redesign review",
+            "activityStartedAtMs": 1793616600000
+          }
+        ],
+        "formedEvidenceCount": 2
+      },
+      {
+        "id": 105,
+        "subject": "Mnema",
+        "statement": "You prefer small slices with their own checks.",
+        "confidence": 0.4,
+        "status": "visible",
+        "pinned": false,
+        "formedAtMs": 1790326920000,
+        "lastSupportedAtMs": 1792054920000,
+        "updatedAtMs": 1792054920000,
+        "evidence": [
+          {
+            "activityId": 6,
+            "stance": "support",
+            "activityTitle": "Rust ownership refactor",
+            "activityStartedAtMs": 1793676600000
+          }
+        ],
+        "formedEvidenceCount": 2
+      }
+    ],
+    "trajectories": [
+      {
+        "conclusionId": 101,
+        "statement": "Building Mnema is the main thing you work on.",
+        "history": [
+          {
+            "confidence": 0.32,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.6,
+            "snapshotAtMs": 1791190920000
+          },
+          {
+            "confidence": 0.8,
+            "snapshotAtMs": 1792054920000
+          },
+          {
+            "confidence": 0.88,
+            "snapshotAtMs": 1792918920000
+          },
+          {
+            "confidence": 0.94,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 106,
+        "statement": "You write most of your code in Rust.",
+        "history": [
+          {
+            "confidence": 0.4,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.7,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.86,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.91,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 102,
+        "statement": "You care most about capture never losing data.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.648,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.729,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.81,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 110,
+        "statement": "Mornings start with Slack and email.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.45,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.68,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.77,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 103,
+        "statement": "You test the writer paths before shipping.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.576,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.648,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.72,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 112,
+        "statement": "Deep work lands before noon.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1793523720000
+          },
+          {
+            "confidence": 0.55,
+            "snapshotAtMs": 1793653320000
+          },
+          {
+            "confidence": 0.71,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 107,
+        "statement": "You refactor state machines into pure functions.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.56,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.63,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.7,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 108,
+        "statement": "You read compiler errors before searching.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.496,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.558,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.62,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 104,
+        "statement": "You review designs as mockups before building.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.44,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.495,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.55,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 115,
+        "statement": "You're evaluating CoreML for on-device models.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.4,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.46,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.52,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 113,
+        "statement": "Afternoons go to reviews and calls.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1793610120000
+          },
+          {
+            "confidence": 0.5,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 111,
+        "statement": "You keep meetings short.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.36,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.405,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.45,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 105,
+        "statement": "You prefer small slices with their own checks.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.32,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.36,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.4,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 109,
+        "statement": "You avoid unsafe code.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.264,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.297,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.33,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 114,
+        "statement": "You batch release chores late in the day.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1793696520000
+          },
+          {
+            "confidence": 0.31,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 116,
+        "statement": "You compare compute units before choosing.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.24,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.27,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 117,
+        "statement": "You sketch screens in Figma first.",
+        "history": [
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.28,
+            "snapshotAtMs": 1792054920000
+          },
+          {
+            "confidence": 0.26,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 118,
+        "statement": "You're researching speaker diarization.",
+        "history": [
+          {
+            "confidence": 0.6,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.4,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.2,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.12,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 120,
+        "statement": "You run in the mornings.",
+        "history": [
+          {
+            "confidence": 0.5,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.15,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.1,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      },
+      {
+        "conclusionId": 119,
+        "statement": "You benchmark diarizers on DER.",
+        "history": [
+          {
+            "confidence": 0.5,
+            "snapshotAtMs": 1790326920000
+          },
+          {
+            "confidence": 0.3,
+            "snapshotAtMs": 1791478920000
+          },
+          {
+            "confidence": 0.1,
+            "snapshotAtMs": 1792630920000
+          },
+          {
+            "confidence": 0.08,
+            "snapshotAtMs": 1793782920000
+          }
+        ]
+      }
+    ]
+  },
+  "list_user_context_activity_meta": [
+    {
+      "activityId": 12,
+      "apps": [
+        "Code",
+        "Terminal"
+      ],
+      "speakers": 0
+    },
+    {
+      "activityId": 13,
+      "apps": [
+        "Google Chrome"
+      ],
+      "speakers": 2
+    },
+    {
+      "activityId": 15,
+      "apps": [
+        "Code",
+        "Figma"
+      ],
+      "speakers": 0
+    }
+  ],
+  "list_failed_derivation_windows": [],
+  "list_frame_summaries_in_range": [
+    {
+      "id": 6000,
+      "capturedAt": "2026-11-04T03:14:00.000Z"
+    },
+    {
+      "id": 6001,
+      "capturedAt": "2026-11-04T03:16:00.000Z"
+    },
+    {
+      "id": 6002,
+      "capturedAt": "2026-11-04T03:18:00.000Z"
+    },
+    {
+      "id": 6003,
+      "capturedAt": "2026-11-04T03:20:00.000Z"
+    },
+    {
+      "id": 6004,
+      "capturedAt": "2026-11-04T03:22:00.000Z"
+    },
+    {
+      "id": 6005,
+      "capturedAt": "2026-11-04T03:24:00.000Z"
+    },
+    {
+      "id": 6006,
+      "capturedAt": "2026-11-04T03:26:00.000Z"
+    },
+    {
+      "id": 6007,
+      "capturedAt": "2026-11-04T03:28:00.000Z"
+    },
+    {
+      "id": 6008,
+      "capturedAt": "2026-11-04T03:30:00.000Z"
+    },
+    {
+      "id": 6009,
+      "capturedAt": "2026-11-04T03:32:00.000Z"
+    },
+    {
+      "id": 6010,
+      "capturedAt": "2026-11-04T03:34:00.000Z"
+    },
+    {
+      "id": 6011,
+      "capturedAt": "2026-11-04T03:36:00.000Z"
+    },
+    {
+      "id": 6012,
+      "capturedAt": "2026-11-04T03:38:00.000Z"
+    },
+    {
+      "id": 6013,
+      "capturedAt": "2026-11-04T03:40:00.000Z"
+    },
+    {
+      "id": 6014,
+      "capturedAt": "2026-11-04T03:42:00.000Z"
+    },
+    {
+      "id": 6015,
+      "capturedAt": "2026-11-04T03:44:00.000Z"
+    },
+    {
+      "id": 6016,
+      "capturedAt": "2026-11-04T03:46:00.000Z"
+    },
+    {
+      "id": 6017,
+      "capturedAt": "2026-11-04T03:48:00.000Z"
+    },
+    {
+      "id": 6018,
+      "capturedAt": "2026-11-04T03:50:00.000Z"
+    },
+    {
+      "id": 6019,
+      "capturedAt": "2026-11-04T03:52:00.000Z"
+    },
+    {
+      "id": 6020,
+      "capturedAt": "2026-11-04T03:54:00.000Z"
+    },
+    {
+      "id": 6021,
+      "capturedAt": "2026-11-04T03:56:00.000Z"
+    },
+    {
+      "id": 6022,
+      "capturedAt": "2026-11-04T03:58:00.000Z"
+    },
+    {
+      "id": 6023,
+      "capturedAt": "2026-11-04T04:00:00.000Z"
+    },
+    {
+      "id": 6024,
+      "capturedAt": "2026-11-04T04:02:00.000Z"
+    },
+    {
+      "id": 6025,
+      "capturedAt": "2026-11-04T04:04:00.000Z"
+    },
+    {
+      "id": 6026,
+      "capturedAt": "2026-11-04T04:06:00.000Z"
+    },
+    {
+      "id": 6027,
+      "capturedAt": "2026-11-04T04:08:00.000Z"
+    },
+    {
+      "id": 6028,
+      "capturedAt": "2026-11-04T04:10:00.000Z"
+    },
+    {
+      "id": 6029,
+      "capturedAt": "2026-11-04T04:12:00.000Z"
+    },
+    {
+      "id": 6030,
+      "capturedAt": "2026-11-04T04:14:00.000Z"
+    },
+    {
+      "id": 6031,
+      "capturedAt": "2026-11-04T04:16:00.000Z"
+    },
+    {
+      "id": 6032,
+      "capturedAt": "2026-11-04T04:18:00.000Z"
+    },
+    {
+      "id": 6033,
+      "capturedAt": "2026-11-04T04:20:00.000Z"
+    },
+    {
+      "id": 6034,
+      "capturedAt": "2026-11-04T04:22:00.000Z"
+    },
+    {
+      "id": 6035,
+      "capturedAt": "2026-11-04T04:24:00.000Z"
+    },
+    {
+      "id": 6036,
+      "capturedAt": "2026-11-04T04:26:00.000Z"
+    },
+    {
+      "id": 6037,
+      "capturedAt": "2026-11-04T04:28:00.000Z"
+    },
+    {
+      "id": 6038,
+      "capturedAt": "2026-11-04T04:30:00.000Z"
+    },
+    {
+      "id": 6039,
+      "capturedAt": "2026-11-04T04:32:00.000Z"
+    },
+    {
+      "id": 6040,
+      "capturedAt": "2026-11-04T04:34:00.000Z"
+    },
+    {
+      "id": 6041,
+      "capturedAt": "2026-11-04T04:36:00.000Z"
+    },
+    {
+      "id": 6042,
+      "capturedAt": "2026-11-04T04:38:00.000Z"
+    },
+    {
+      "id": 6043,
+      "capturedAt": "2026-11-04T04:40:00.000Z"
+    },
+    {
+      "id": 6044,
+      "capturedAt": "2026-11-04T04:42:00.000Z"
+    },
+    {
+      "id": 6045,
+      "capturedAt": "2026-11-04T04:44:00.000Z"
+    },
+    {
+      "id": 6046,
+      "capturedAt": "2026-11-04T04:46:00.000Z"
+    },
+    {
+      "id": 6047,
+      "capturedAt": "2026-11-04T04:48:00.000Z"
+    },
+    {
+      "id": 6048,
+      "capturedAt": "2026-11-04T04:50:00.000Z"
+    },
+    {
+      "id": 6049,
+      "capturedAt": "2026-11-04T04:52:00.000Z"
+    },
+    {
+      "id": 6050,
+      "capturedAt": "2026-11-04T04:54:00.000Z"
+    },
+    {
+      "id": 6051,
+      "capturedAt": "2026-11-04T04:56:00.000Z"
+    },
+    {
+      "id": 6052,
+      "capturedAt": "2026-11-04T04:58:00.000Z"
+    },
+    {
+      "id": 6053,
+      "capturedAt": "2026-11-04T05:00:00.000Z"
+    },
+    {
+      "id": 6054,
+      "capturedAt": "2026-11-04T05:02:00.000Z"
+    },
+    {
+      "id": 6055,
+      "capturedAt": "2026-11-04T05:04:00.000Z"
+    },
+    {
+      "id": 6056,
+      "capturedAt": "2026-11-04T05:06:00.000Z"
+    },
+    {
+      "id": 6057,
+      "capturedAt": "2026-11-04T05:08:00.000Z"
+    },
+    {
+      "id": 6058,
+      "capturedAt": "2026-11-04T05:10:00.000Z"
+    },
+    {
+      "id": 6059,
+      "capturedAt": "2026-11-04T05:12:00.000Z"
+    },
+    {
+      "id": 6060,
+      "capturedAt": "2026-11-04T05:14:00.000Z"
+    },
+    {
+      "id": 6061,
+      "capturedAt": "2026-11-04T05:16:00.000Z"
+    },
+    {
+      "id": 6062,
+      "capturedAt": "2026-11-04T05:18:00.000Z"
+    },
+    {
+      "id": 6063,
+      "capturedAt": "2026-11-04T05:20:00.000Z"
+    },
+    {
+      "id": 6064,
+      "capturedAt": "2026-11-04T05:22:00.000Z"
+    },
+    {
+      "id": 6065,
+      "capturedAt": "2026-11-04T05:24:00.000Z"
+    },
+    {
+      "id": 6066,
+      "capturedAt": "2026-11-04T05:26:00.000Z"
+    },
+    {
+      "id": 6067,
+      "capturedAt": "2026-11-04T05:28:00.000Z"
+    },
+    {
+      "id": 6068,
+      "capturedAt": "2026-11-04T05:30:00.000Z"
+    },
+    {
+      "id": 6069,
+      "capturedAt": "2026-11-04T05:32:00.000Z"
+    },
+    {
+      "id": 6070,
+      "capturedAt": "2026-11-04T05:34:00.000Z"
+    },
+    {
+      "id": 6071,
+      "capturedAt": "2026-11-04T05:36:00.000Z"
+    },
+    {
+      "id": 6072,
+      "capturedAt": "2026-11-04T05:38:00.000Z"
+    },
+    {
+      "id": 6073,
+      "capturedAt": "2026-11-04T05:40:00.000Z"
+    },
+    {
+      "id": 6074,
+      "capturedAt": "2026-11-04T05:42:00.000Z"
+    },
+    {
+      "id": 6075,
+      "capturedAt": "2026-11-04T05:44:00.000Z"
+    },
+    {
+      "id": 6076,
+      "capturedAt": "2026-11-04T05:46:00.000Z"
+    },
+    {
+      "id": 6077,
+      "capturedAt": "2026-11-04T05:48:00.000Z"
+    },
+    {
+      "id": 6078,
+      "capturedAt": "2026-11-04T05:50:00.000Z"
+    },
+    {
+      "id": 6079,
+      "capturedAt": "2026-11-04T05:52:00.000Z"
+    },
+    {
+      "id": 6080,
+      "capturedAt": "2026-11-04T05:54:00.000Z"
+    },
+    {
+      "id": 6081,
+      "capturedAt": "2026-11-04T05:56:00.000Z"
+    },
+    {
+      "id": 6082,
+      "capturedAt": "2026-11-04T05:58:00.000Z"
+    },
+    {
+      "id": 6083,
+      "capturedAt": "2026-11-04T06:00:00.000Z"
+    },
+    {
+      "id": 6084,
+      "capturedAt": "2026-11-04T06:02:00.000Z"
+    },
+    {
+      "id": 6085,
+      "capturedAt": "2026-11-04T06:04:00.000Z"
+    },
+    {
+      "id": 6086,
+      "capturedAt": "2026-11-04T06:06:00.000Z"
+    },
+    {
+      "id": 6087,
+      "capturedAt": "2026-11-04T06:08:00.000Z"
+    },
+    {
+      "id": 6088,
+      "capturedAt": "2026-11-04T06:10:00.000Z"
+    },
+    {
+      "id": 6089,
+      "capturedAt": "2026-11-04T06:12:00.000Z"
+    },
+    {
+      "id": 6090,
+      "capturedAt": "2026-11-04T06:14:00.000Z"
+    },
+    {
+      "id": 6091,
+      "capturedAt": "2026-11-04T06:16:00.000Z"
+    },
+    {
+      "id": 6092,
+      "capturedAt": "2026-11-04T06:18:00.000Z"
+    },
+    {
+      "id": 6093,
+      "capturedAt": "2026-11-04T06:20:00.000Z"
+    },
+    {
+      "id": 6094,
+      "capturedAt": "2026-11-04T06:22:00.000Z"
+    },
+    {
+      "id": 6095,
+      "capturedAt": "2026-11-04T06:24:00.000Z"
+    },
+    {
+      "id": 6096,
+      "capturedAt": "2026-11-04T06:26:00.000Z"
+    },
+    {
+      "id": 6097,
+      "capturedAt": "2026-11-04T06:28:00.000Z"
+    },
+    {
+      "id": 6098,
+      "capturedAt": "2026-11-04T06:30:00.000Z"
+    },
+    {
+      "id": 6099,
+      "capturedAt": "2026-11-04T06:32:00.000Z"
+    },
+    {
+      "id": 6100,
+      "capturedAt": "2026-11-04T06:34:00.000Z"
+    },
+    {
+      "id": 6101,
+      "capturedAt": "2026-11-04T06:36:00.000Z"
+    },
+    {
+      "id": 6102,
+      "capturedAt": "2026-11-04T06:38:00.000Z"
+    },
+    {
+      "id": 6103,
+      "capturedAt": "2026-11-04T06:40:00.000Z"
+    },
+    {
+      "id": 6104,
+      "capturedAt": "2026-11-04T06:42:00.000Z"
+    },
+    {
+      "id": 6105,
+      "capturedAt": "2026-11-04T06:44:00.000Z"
+    },
+    {
+      "id": 6106,
+      "capturedAt": "2026-11-04T06:46:00.000Z"
+    },
+    {
+      "id": 6107,
+      "capturedAt": "2026-11-04T06:48:00.000Z"
+    },
+    {
+      "id": 6108,
+      "capturedAt": "2026-11-04T06:50:00.000Z"
+    },
+    {
+      "id": 6109,
+      "capturedAt": "2026-11-04T06:52:00.000Z"
+    },
+    {
+      "id": 6110,
+      "capturedAt": "2026-11-04T06:54:00.000Z"
+    },
+    {
+      "id": 6111,
+      "capturedAt": "2026-11-04T06:56:00.000Z"
+    },
+    {
+      "id": 6112,
+      "capturedAt": "2026-11-04T06:58:00.000Z"
+    },
+    {
+      "id": 6113,
+      "capturedAt": "2026-11-04T07:00:00.000Z"
+    },
+    {
+      "id": 6114,
+      "capturedAt": "2026-11-04T07:18:00.000Z"
+    },
+    {
+      "id": 6115,
+      "capturedAt": "2026-11-04T07:20:00.000Z"
+    },
+    {
+      "id": 6116,
+      "capturedAt": "2026-11-04T07:22:00.000Z"
+    },
+    {
+      "id": 6117,
+      "capturedAt": "2026-11-04T07:24:00.000Z"
+    },
+    {
+      "id": 6118,
+      "capturedAt": "2026-11-04T07:26:00.000Z"
+    },
+    {
+      "id": 6119,
+      "capturedAt": "2026-11-04T07:28:00.000Z"
+    },
+    {
+      "id": 6120,
+      "capturedAt": "2026-11-04T07:30:00.000Z"
+    },
+    {
+      "id": 6121,
+      "capturedAt": "2026-11-04T07:32:00.000Z"
+    },
+    {
+      "id": 6122,
+      "capturedAt": "2026-11-04T07:34:00.000Z"
+    },
+    {
+      "id": 6123,
+      "capturedAt": "2026-11-04T07:36:00.000Z"
+    },
+    {
+      "id": 6124,
+      "capturedAt": "2026-11-04T07:38:00.000Z"
+    },
+    {
+      "id": 6125,
+      "capturedAt": "2026-11-04T07:40:00.000Z"
+    },
+    {
+      "id": 6126,
+      "capturedAt": "2026-11-04T07:42:00.000Z"
+    },
+    {
+      "id": 6127,
+      "capturedAt": "2026-11-04T07:44:00.000Z"
+    },
+    {
+      "id": 6128,
+      "capturedAt": "2026-11-04T07:46:00.000Z"
+    },
+    {
+      "id": 6129,
+      "capturedAt": "2026-11-04T07:48:00.000Z"
+    },
+    {
+      "id": 6130,
+      "capturedAt": "2026-11-04T07:50:00.000Z"
+    },
+    {
+      "id": 6131,
+      "capturedAt": "2026-11-04T07:52:00.000Z"
+    },
+    {
+      "id": 6132,
+      "capturedAt": "2026-11-04T07:54:00.000Z"
+    },
+    {
+      "id": 6133,
+      "capturedAt": "2026-11-04T07:56:00.000Z"
+    },
+    {
+      "id": 6134,
+      "capturedAt": "2026-11-04T07:58:00.000Z"
+    },
+    {
+      "id": 6135,
+      "capturedAt": "2026-11-04T08:00:00.000Z"
+    },
+    {
+      "id": 6136,
+      "capturedAt": "2026-11-04T08:02:00.000Z"
+    },
+    {
+      "id": 6137,
+      "capturedAt": "2026-11-04T08:04:00.000Z"
+    },
+    {
+      "id": 6138,
+      "capturedAt": "2026-11-04T08:06:00.000Z"
+    },
+    {
+      "id": 6139,
+      "capturedAt": "2026-11-04T08:08:00.000Z"
+    },
+    {
+      "id": 6140,
+      "capturedAt": "2026-11-04T08:10:00.000Z"
+    },
+    {
+      "id": 6141,
+      "capturedAt": "2026-11-04T08:12:00.000Z"
+    },
+    {
+      "id": 6142,
+      "capturedAt": "2026-11-04T08:14:00.000Z"
+    },
+    {
+      "id": 6143,
+      "capturedAt": "2026-11-04T08:16:00.000Z"
+    },
+    {
+      "id": 6144,
+      "capturedAt": "2026-11-04T08:18:00.000Z"
+    },
+    {
+      "id": 6145,
+      "capturedAt": "2026-11-04T08:20:00.000Z"
+    },
+    {
+      "id": 6146,
+      "capturedAt": "2026-11-04T08:22:00.000Z"
+    },
+    {
+      "id": 6147,
+      "capturedAt": "2026-11-04T08:24:00.000Z"
+    },
+    {
+      "id": 6148,
+      "capturedAt": "2026-11-04T08:26:00.000Z"
+    },
+    {
+      "id": 6149,
+      "capturedAt": "2026-11-04T08:28:00.000Z"
+    },
+    {
+      "id": 6150,
+      "capturedAt": "2026-11-04T08:30:00.000Z"
+    },
+    {
+      "id": 6151,
+      "capturedAt": "2026-11-04T08:32:00.000Z"
+    },
+    {
+      "id": 6152,
+      "capturedAt": "2026-11-04T08:34:00.000Z"
+    },
+    {
+      "id": 6153,
+      "capturedAt": "2026-11-04T08:36:00.000Z"
+    },
+    {
+      "id": 6154,
+      "capturedAt": "2026-11-04T08:38:00.000Z"
+    },
+    {
+      "id": 6155,
+      "capturedAt": "2026-11-04T08:40:00.000Z"
+    },
+    {
+      "id": 6156,
+      "capturedAt": "2026-11-04T08:42:00.000Z"
+    },
+    {
+      "id": 6157,
+      "capturedAt": "2026-11-04T08:44:00.000Z"
+    },
+    {
+      "id": 6158,
+      "capturedAt": "2026-11-04T08:46:00.000Z"
+    },
+    {
+      "id": 6159,
+      "capturedAt": "2026-11-04T08:48:00.000Z"
+    },
+    {
+      "id": 6160,
+      "capturedAt": "2026-11-04T08:50:00.000Z"
+    },
+    {
+      "id": 6161,
+      "capturedAt": "2026-11-04T08:52:00.000Z"
+    },
+    {
+      "id": 6162,
+      "capturedAt": "2026-11-04T08:54:00.000Z"
+    },
+    {
+      "id": 6163,
+      "capturedAt": "2026-11-04T08:56:00.000Z"
+    },
+    {
+      "id": 6164,
+      "capturedAt": "2026-11-04T08:58:00.000Z"
+    },
+    {
+      "id": 6165,
+      "capturedAt": "2026-11-04T09:00:00.000Z"
+    }
+  ],
+  "list_audio_segments": [
+    {
+      "id": 901,
+      "sourceKind": "microphone",
+      "sourceSessionId": "sess-1104",
+      "segmentIndex": 3,
+      "filePath": "$REPO/missing/mic-3.m4a",
+      "startedAt": "2026-11-04T08:20:00.000Z",
+      "endedAt": "2026-11-04T08:20:50.000Z",
+      "createdAt": "2026-11-04T09:00:01.000Z",
+      "updatedAt": "2026-11-04T09:00:01.000Z"
+    }
+  ],
+  "user_context_list_dismissed": [
+    {
+      "subject": "Fitness",
+      "statement": "You skip lunch on build days.",
+      "dismissedAtMs": 1793525400000
+    }
+  ],
+  "get_frame_preview": {
+    "mimeType": "image/webp",
+    "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+    "sourceKind": "original_frame",
+    "hasSecretRedactions": false,
+    "secretRedactionCount": 0
+  },
+  "get_audio_segment": {
+    "id": 901,
+    "sourceKind": "microphone",
+    "sourceSessionId": "sess-1104",
+    "segmentIndex": 3,
+    "filePath": "$REPO/missing/mic-3.m4a",
+    "startedAt": "2026-11-04T08:20:00.000Z",
+    "endedAt": "2026-11-04T08:20:50.000Z",
+    "createdAt": "2026-11-04T09:00:01.000Z",
+    "updatedAt": "2026-11-04T09:00:01.000Z"
+  },
+  "list_speaker_turns": [
+    {
+      "id": 500,
+      "audioSegmentId": 901,
+      "sessionId": "sess-1104",
+      "clusterId": 31,
+      "segmentClusterId": null,
+      "providerClusterId": "spk31",
+      "speakerLabel": "Unknown speaker 1",
+      "personId": 1,
+      "personLinkAuto": true,
+      "suggestedPersonId": null,
+      "recognitionConfidence": null,
+      "recognitionScore": null,
+      "startMs": 0,
+      "endMs": 7400,
+      "transcriptText": "Okay, so the drawer has to open on the segment you clicked, not the newest one.",
+      "overlaps": false
+    },
+    {
+      "id": 501,
+      "audioSegmentId": 901,
+      "sessionId": "sess-1104",
+      "clusterId": 32,
+      "segmentClusterId": null,
+      "providerClusterId": "spk32",
+      "speakerLabel": "Unknown speaker 2",
+      "personId": null,
+      "personLinkAuto": false,
+      "suggestedPersonId": 2,
+      "recognitionConfidence": "medium",
+      "recognitionScore": 0.71,
+      "startMs": 7400,
+      "endMs": 15800,
+      "transcriptText": "Right, and the reader should keep up with playback without jumping around.",
+      "overlaps": false
+    },
+    {
+      "id": 502,
+      "audioSegmentId": 901,
+      "sessionId": "sess-1104",
+      "clusterId": 31,
+      "segmentClusterId": null,
+      "providerClusterId": "spk31",
+      "speakerLabel": "Unknown speaker 1",
+      "personId": 1,
+      "personLinkAuto": true,
+      "suggestedPersonId": null,
+      "recognitionConfidence": null,
+      "recognitionScore": null,
+      "startMs": 15800,
+      "endMs": 26200,
+      "transcriptText": "Karaoke follows the word that is speaking, and the paragraph stays lit through the pauses.",
+      "overlaps": false
+    },
+    {
+      "id": 503,
+      "audioSegmentId": 901,
+      "sessionId": "sess-1104",
+      "clusterId": 32,
+      "segmentClusterId": null,
+      "providerClusterId": "spk32",
+      "speakerLabel": "Unknown speaker 2",
+      "personId": null,
+      "personLinkAuto": false,
+      "suggestedPersonId": 2,
+      "recognitionConfidence": "medium",
+      "recognitionScore": 0.71,
+      "startMs": 26200,
+      "endMs": 36400,
+      "transcriptText": "Then if I scroll away it detaches, and escape brings me back to the playhead.",
+      "overlaps": false
+    },
+    {
+      "id": 504,
+      "audioSegmentId": 901,
+      "sessionId": "sess-1104",
+      "clusterId": 31,
+      "segmentClusterId": null,
+      "providerClusterId": "spk31",
+      "speakerLabel": "Unknown speaker 1",
+      "personId": 1,
+      "personLinkAuto": true,
+      "suggestedPersonId": null,
+      "recognitionConfidence": null,
+      "recognitionScore": null,
+      "startMs": 36400,
+      "endMs": 49600,
+      "transcriptText": "Exactly. Let's ship the peek state first and test the repair panel after lunch.",
+      "overlaps": false
+    }
+  ],
+  "list_person_profiles": [
+    {
+      "id": 1,
+      "displayName": "Ana Ruiz",
+      "notes": null,
+      "embeddingCount": 34,
+      "isAccountOwner": true,
+      "createdAt": "2026-10-01T09:00:00.000Z",
+      "updatedAt": "2026-10-01T09:00:00.000Z"
+    },
+    {
+      "id": 2,
+      "displayName": "Daniel Park",
+      "notes": null,
+      "embeddingCount": 12,
+      "isAccountOwner": false,
+      "createdAt": "2026-10-01T09:00:00.000Z",
+      "updatedAt": "2026-10-01T09:00:00.000Z"
+    }
+  ],
+  "list_processing_jobs": [
+    {
+      "id": 7001,
+      "subjectType": "audio_segment",
+      "subjectId": 901,
+      "processor": "audio_transcription",
+      "status": "completed",
+      "attemptCount": 1,
+      "failureCount": 0,
+      "payloadJson": "{\"provider\": \"parakeet\", \"modelId\": \"parakeet-tdt-0.6b-v3-onnx\"}",
+      "lastError": null,
+      "createdAt": "2026-11-04T09:01:12.000Z",
+      "queuedAt": "2026-11-04T09:01:12.000Z",
+      "updatedAt": "2026-11-04T09:01:20.000Z",
+      "startedAt": "2026-11-04T09:01:13.000Z",
+      "finishedAt": "2026-11-04T09:01:20.000Z",
+      "modelLocked": false
+    },
+    {
+      "id": 7002,
+      "subjectType": "audio_segment",
+      "subjectId": 901,
+      "processor": "speaker_analysis",
+      "status": "completed",
+      "attemptCount": 1,
+      "failureCount": 0,
+      "payloadJson": null,
+      "lastError": null,
+      "createdAt": "2026-11-04T09:01:12.000Z",
+      "queuedAt": "2026-11-04T09:01:12.000Z",
+      "updatedAt": "2026-11-04T09:01:20.000Z",
+      "startedAt": "2026-11-04T09:01:13.000Z",
+      "finishedAt": "2026-11-04T09:01:20.000Z",
+      "modelLocked": false
+    }
+  ]
+}

@@ -59,6 +59,119 @@ impl DelayedDismiss {
     }
 }
 
+use gpui_kit::Context;
+
+use super::{subjects, Insights};
+use crate::ui::toast::Toast;
+
+impl Insights {
+    /// Collapse the row to "Dismissed · Undo" and commit in `DISMISS_UNDO`.
+    pub fn dismiss(&mut self, id: i64, cx: &mut Context<Self>) {
+        let now = cx.background_executor().now();
+        // Dismissing the open conclusion moves the drawer to its neighbour.
+        let flat = subjects::flat_conclusions(self);
+        let next = flat.iter().position(|c| c.id == id).and_then(|i| {
+            flat.get(i + 1)
+                .or(i.checked_sub(1).and_then(|j| flat.get(j)))
+        });
+        let next = next
+            .map(|c| c.id)
+            .filter(|_| self.open_conclusion == Some(id));
+        self.undo.start(id, now);
+        if self.open_conclusion == Some(id) {
+            self.open_conclusion = next;
+            if let Some(n) = next {
+                subjects::reveal_conclusion(self, n);
+            }
+        }
+        let this = cx.entity().downgrade();
+        let toast =
+            Toast::ok("Dismissed — it won't be re-inferred").action("Undo", true, move |_, cx| {
+                this.update(cx, |i, cx| i.undo_dismiss(id, cx)).ok();
+            });
+        let toast = Toast {
+            ttl: DISMISS_UNDO,
+            ..toast
+        };
+        self.undo_toast = Some(self.toasts.update(cx, |t, cx| t.push(toast, cx)));
+        self.arm_undo(cx);
+        cx.notify();
+    }
+
+    pub fn undo_dismiss(&mut self, id: i64, cx: &mut Context<Self>) {
+        if self.undo.undo(id) {
+            if let Some(key) = self.undo_toast.take() {
+                self.toasts.update(cx, |t, cx| t.dismiss(key, cx));
+            }
+            self.open_conclusion = Some(id);
+            subjects::reveal_conclusion(self, id);
+            self.arm_undo(cx);
+            cx.notify();
+        }
+    }
+
+    /// One timer for the earliest pending deadline.
+    fn arm_undo(&mut self, cx: &mut Context<Self>) {
+        let Some(at) = self.undo.next_deadline() else {
+            self.undo_timer = None;
+            return;
+        };
+        let wait = at.saturating_duration_since(cx.background_executor().now());
+        self.undo_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            this.update(cx, |this, cx| {
+                let due = this.undo.due(cx.background_executor().now());
+                this.commit_dismiss(due, cx);
+                this.arm_undo(cx);
+            })
+            .ok();
+        }));
+    }
+
+    pub(super) fn commit_dismiss(&mut self, ids: Vec<i64>, cx: &mut Context<Self>) {
+        for id in ids {
+            self.write(
+                cx,
+                move |b| b.dismiss(id),
+                |this, r, cx| match r {
+                    Ok(()) => {
+                        if this.subject.is_some() {
+                            this.load_subject(cx);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("insights: dismiss failed");
+                        this.toasts.update(cx, |t, cx| {
+                            t.push(Toast::danger(format!("Couldn't dismiss — {e}")), cx)
+                        });
+                    }
+                },
+            );
+        }
+    }
+
+    pub fn toggle_pin(&mut self, id: i64, pinned: bool, cx: &mut Context<Self>) {
+        self.write(
+            cx,
+            move |b| b.set_pinned(id, !pinned),
+            move |this, r, cx| {
+                let toast = match r {
+                    Ok(()) if !pinned => Some(Toast::ok("Pinned — it won't fade")),
+                    Ok(()) => None,
+                    Err(e) => Some(Toast::danger(format!(
+                        "Couldn't {} — {e}",
+                        if pinned { "unpin" } else { "pin" }
+                    ))),
+                };
+                if let Some(t) = toast {
+                    this.toasts.update(cx, |ts, cx| ts.push(t, cx));
+                }
+                this.load_subject(cx);
+            },
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

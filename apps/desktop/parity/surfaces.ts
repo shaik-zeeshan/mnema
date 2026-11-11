@@ -73,7 +73,20 @@ const INSIGHTS_SET: [string, string, string[], string][] = [
   ["period-day-open", "overview", [unitClick("Day"), ".mx-date__btn"], ""],
   ["period-week-open", "overview", [unitClick("Week"), ".mx-date__btn"], ""],
   ["period-month-open", "overview", [unitClick("Month"), ".mx-date__btn"], ""],
+  ["categories-open", "overview", [".cat >> nth=0", ".thread-head >> nth=0"], ""],
+  ["apps-open", "overview", ['.side button:has-text(" apps")'], ""],
+  ["focus-open", "overview", ['button:has-text("Focus detail")'], ""],
+  ["context-edit", "context", [tabClick("Context"), '.in-stmt__acts button[aria-label="Edit"] >> nth=0'], ""],
+  ["receipt-audio", "journal", [tabClick("Journal"), 'button:has-text("Receipt")'], ""],
+  ["journal-capture", "journal", [tabClick("Journal")], ""],
+  ["subject-peek", "subjects", [tabClick("Subjects"), ".in-map__row", ".sd-row", ".in-tl__ev >> nth=0"], ""],
 ];
+/** States whose fixture set isn't `populated` / `empty` (fixtures/insights/<set>.json). */
+const INSIGHTS_FIXTURE: Record<string, string> = {
+  "receipt-audio": "audio",
+  "journal-capture": "capture",
+  "subject-peek": "peek",
+};
 
 /** Onboarding parity states: `[state, fixture, Tauri clicks]` (mirrors `onboarding::fixture::STATES`).
  *  Permissions with screen + mic granted stops at system audio, then Accessibility (Zen is installed). */
@@ -277,7 +290,10 @@ export const SURFACES: Record<string, Surface> = {
     page: "insights.html",
     selector: WIN,
     stateFixture: Object.fromEntries(
-      INSIGHTS_SET.map(([state]) => [state, state.endsWith("-empty") ? "empty" : "populated"]),
+      INSIGHTS_SET.map(([state]) => [
+        state,
+        INSIGHTS_FIXTURE[state] ?? (state.endsWith("-empty") ? "empty" : "populated"),
+      ]),
     ),
     stateClick: Object.fromEntries(INSIGHTS_SET.map(([state, , clicks]) => [state, clicks])),
     stateHash: Object.fromEntries(INSIGHTS_SET.map(([state, tab]) => [state, tab])),

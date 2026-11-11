@@ -22,7 +22,7 @@ pub struct Availability {
 
 /// One cited Answer Source; the wire carries opaque JSON, narrowed here like
 /// `coerceSources` (anything that isn't a frame or audio is dropped).
-#[derive(Clone, Debug, Deserialize, PartialEq)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct Source {
     pub kind: String,

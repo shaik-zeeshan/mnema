@@ -3,6 +3,8 @@
 //! spine; the river of cards (newest first, each expanding into its receipt)
 //! beside the week strip, the day mix and apps.
 
+pub mod audio;
+mod audio_view;
 pub mod day;
 pub mod receipt;
 mod river;
@@ -18,7 +20,9 @@ use super::parts::{
     display, lede, mono_label, prose, read, stat, stat_text, stat_value, top_value,
 };
 use super::stats::{self, category_color, category_label, humanize_ms};
+use super::read::Of;
 use super::Insights;
+use capture_types::DigestAbsentReason;
 use crate::theme::{space, Palette};
 use crate::ui::calendar::Unit;
 use crate::ui::date_input::DateInput;
@@ -81,14 +85,20 @@ pub fn on_key(this: &mut Insights, key: &str, cx: &mut Context<Insights>) -> boo
 const PITCH: &str = "Your journal is written by AI";
 
 fn center(title: String, body: &str, acts: Vec<AnyElement>, p: &Palette) -> AnyElement {
+    center_tone(title, body, acts, Tone::Neutral, p)
+}
+
+fn center_tone(title: String, body: &str, acts: Vec<AnyElement>, tone: Tone, p: &Palette) -> AnyElement {
     div()
-        .pt(space::S7)
+        .pt(space::S6)
         .flex()
         .justify_center()
         .child(empty(
             EmptyLayout::Center,
-            Tone::Neutral,
-            if title == PITCH {
+            tone,
+            if tone == Tone::Danger {
+                IconName::TriangleAlert.path()
+            } else if title == PITCH {
                 IconName::Sparkle.path()
             } else {
                 IconName::Inbox.path()
@@ -107,7 +117,11 @@ pub fn render(
     window: &mut Window,
     cx: &mut Context<Insights>,
 ) -> AnyElement {
-    let Some(j) = this.journal.clone().filter(|_| this.status.loaded) else {
+    let Some(j) = this
+        .journal
+        .clone()
+        .filter(|j| this.status.loaded && !j.stale)
+    else {
         return div()
             .id("insights-journal-loading")
             .child(crate::ui::skeleton::lines(4, p))
@@ -124,17 +138,22 @@ pub fn render(
             .sm()
             .icon(IconName::RotateCcw.path())
             .on_click(cx.listener(|this, _, _, cx| this.reload(cx)));
-        return center(
+        let timeline = Button::new("insights-journal-error-timeline", "Open in Timeline")
+            .ghost()
+            .sm()
+            .on_click(cx.listener(|_, _, _, cx| cx.emit(super::InsightsEvent::OpenTimeline)));
+        return center_tone(
             format!("Couldn't load {day_label}"),
             "Reading this day's activities failed. Nothing is lost — the footage is still on the Timeline.",
-            vec![retry.into_any_element()],
+            vec![retry.into_any_element(), timeline.into_any_element()],
+            Tone::Danger,
             p,
         );
     }
     let ctx = this.status.ctx.as_ref();
     let pitch = this.status.ai.as_ref().is_some_and(|a| !a.has_providers);
     let frames: Vec<i64> = j.frames.iter().map(|f| f.1).collect();
-    let model = day::build(day::DayInput {
+    let mut model = day::build(day::DayInput {
         activities: &j.activities,
         frames: &frames,
         audio: &j.audio,
@@ -143,14 +162,30 @@ pub fn render(
         engine_available: ctx.is_some_and(|c| c.engine_available),
         engine_reason: ctx.and_then(|c| c.reason.clone()),
         day: range,
+        retention: this.status.settings.as_ref().map(|s| &s.retention_policy),
+        now,
     });
     let cards = day::fold_cards(&model.slots);
+    let (running, paused) = this.recording;
+    // Recording today with nothing summarized yet: the first stretch shows
+    // before the first frame lands (JR-04/05), from the session's start.
+    if !model.pending.active && at_latest && running && !paused && model.slots.is_empty() {
+        let engine = ctx.is_some_and(|c| c.engine_available);
+        model.pending = day::Pending {
+            active: true,
+            since: this.recording_since.map(|s| s.max(range.0)),
+            unavailable: (!engine).then(|| ctx.and_then(|c| c.reason.clone()).unwrap_or_default()),
+        };
+    }
     if pitch && cards.is_empty() {
         return center(
             PITCH.into(),
             "Once a provider is connected, Mnema writes up what you do as activities every few minutes — with a digest of the day on top. Capture is already on the Timeline.",
             vec![
-                Button::new("insights-journal-setup", "Set up AI").sm().into_any_element(),
+                Button::new("insights-journal-setup", "Set up AI")
+                    .sm()
+                    .on_click(|_, _, cx| crate::window::open_settings(Some("intelligence"), cx))
+                    .into_any_element(),
                 Button::new("insights-journal-timeline", "Open Timeline")
                     .ghost()
                     .sm()
@@ -160,26 +195,85 @@ pub fn render(
             p,
         );
     }
-    if cards.is_empty() && !model.pending.active {
-        let (title, body) = if !model.has_capture {
-            (format!("Nothing captured on {day_label}"), "There's no capture on this day, so there's no journal to show. Days with any recording at all show whatever was captured.")
+    let live = at_latest && running && !paused;
+    // Capture-run shape: captured, nothing written up, nothing being derived.
+    let no_derive = !ctx.is_some_and(|c| c.engine_available);
+    let capture_run = cards.is_empty() && model.has_capture && no_derive;
+    let pending = model.pending.active || (live && cards.is_empty());
+    if cards.is_empty() && !pending && !capture_run {
+        let policy = this.status.settings.as_ref().map(|s| &s.retention_policy);
+        let retention = super::parts::retention(range.0, range.1, policy, now);
+        let backfill = this
+            .status
+            .settings
+            .as_ref()
+            .filter(|s| !s.user_context.backfill_go_deeper)
+            .map(|s| s.user_context.backfill_window_days as i64);
+        let mut acts = Vec::new();
+        let (title, body) = if !model.has_capture && at_latest && (!running || paused) {
+            let label = if paused { "Resume recording" } else { "Start recording" };
+            acts.push(
+                Button::new("insights-journal-record", label)
+                    .sm()
+                    .on_click(cx.listener(|_, _, _, cx| cx.emit(super::InsightsEvent::StartRecording)))
+                    .into_any_element(),
+            );
+            (
+                if paused { "Recording is paused" } else { "Mnema isn't recording" }.to_string(),
+                format!("{} and today's journal fills in as you work. The first card usually lands within about 10 minutes.", if paused { "Resume" } else { "Start recording" }),
+            )
+        } else if !model.has_capture {
+            match retention {
+                Some((true, days)) => (format!("Nothing left from {day_label}"), format!("Removed by your {days}-day retention.")),
+                _ => (format!("Nothing captured on {day_label}"), "There's no capture on this day, so there's no journal to show. Days with any recording at all show whatever was captured.".into()),
+            }
+        } else if let Some(days) = backfill.filter(|d| range.1 <= now - d * stats::DAY_MS) {
+            let kept = !matches!(retention, Some((true, _)));
+            ("This day wasn't summarized".into(), format!("Older than the {days} days Mnema summarizes on its own.{}", if kept { " The footage is still on the Timeline." } else { "" }))
         } else if ctx.is_some_and(|c| c.backfilling) {
-            ("Not summarized yet".into(), "Mnema is catching up on older history, newest first — past days fill in as it goes. The footage is already on the Timeline.")
+            ("Not summarized yet".into(), "Mnema is catching up on older history, newest first — past days fill in as it goes. The footage is already on the Timeline.".into())
         } else {
-            (format!("No cards for {day_label}"), "Nothing in this day's capture was summarized into a card. The footage is on the Timeline.")
+            (format!("No cards for {day_label}"), "Nothing in this day's capture was summarized into a card. The footage is on the Timeline.".into())
         };
-        let acts = (!at_latest)
-            .then(|| {
-                let today = clock::now(cx).date();
+        if acts.is_empty() && !at_latest {
+            let today = clock::now(cx).date();
+            acts.push(
                 Button::new("insights-go-today", "Go to today")
                     .sm()
                     .on_click(cx.listener(move |this, _, _, cx| this.set_day(today, cx)))
-                    .into_any_element()
-            })
-            .into_iter()
-            .collect();
-        return center(title, body, acts, p);
+                    .into_any_element(),
+            );
+        }
+        return center(title, &body, acts, p);
     }
+    let why = capture_run.then(|| {
+        if ctx.and_then(|c| c.reason.as_deref()) == Some("user_context_disabled") {
+            "Continuous derivation is off, so nothing was written up."
+        } else if this.status.ai.as_ref().is_some_and(|a| !a.enabled) {
+            "AI features were off, so nothing was written up."
+        } else {
+            "AI wasn't available, so nothing was written up."
+        }
+    });
+    let runs: Option<Vec<spine::Run>> = why.map(|_| {
+        let raw: Vec<(i64, i64)> = day::capture_runs(&frames, &j.audio)
+            .into_iter()
+            .map(|(s, e)| (s.max(range.0), e.min(range.1)))
+            .collect();
+        let apps = this
+            .run_apps
+            .as_ref()
+            .filter(|r| r.0 == this.day)
+            .map(|r| r.1.clone())
+            .unwrap_or_default();
+        if this.run_apps.as_ref().is_none_or(|r| r.0 != this.day) {
+            this.load_run_apps(raw.clone(), cx);
+        }
+        raw.into_iter()
+            .enumerate()
+            .map(|(i, (s, e))| (s, e, apps.get(i).cloned().unwrap_or_default()))
+            .collect()
+    });
     let shown = day::shown_activities(&cards);
     let day_acts = stats::in_range(&j.activities, range.0, range.1);
     let tracked: i64 = j
@@ -193,7 +287,7 @@ pub fn render(
         .child(read(
             lede_col(
                 this,
-                &j,
+                why,
                 &model,
                 cards.len(),
                 tracked,
@@ -204,6 +298,7 @@ pub fn render(
             ),
             lede_stats(
                 &j,
+                why.is_some(),
                 &model,
                 &day_acts,
                 &shown,
@@ -219,14 +314,25 @@ pub fn render(
             p,
         ))
         .child(spine::render(
+            this,
             &model,
             &cards,
+            runs.as_deref(),
             at_latest.then_some(now),
             p,
             off,
+            cx,
         ))
         .child(river::render(
-            this, &j, &model, &cards, &shown, range.0, p, window, cx,
+            this,
+            &j,
+            &model,
+            &cards,
+            &shown,
+            (range.0, why, pending),
+            p,
+            window,
+            cx,
         ))
         .into_any_element()
 }
@@ -234,7 +340,7 @@ pub fn render(
 #[allow(clippy::too_many_arguments)]
 fn lede_col(
     this: &Insights,
-    j: &JournalData,
+    why: Option<&str>,
     model: &day::DayModel,
     shown_n: usize,
     tracked: i64,
@@ -245,18 +351,21 @@ fn lede_col(
 ) -> gpui_kit::Div {
     let off = clock::now(cx).offset();
     let n = model.slots.len();
-    let digest = j.digest.as_ref().and_then(|r| r.as_ref().ok());
-    let dg = digest.and_then(|r| r.digest.clone());
-    let reason = digest.and_then(|r| r.reason);
+    let r = this.read_of(Of::Journal);
+    let dg = r.digest.clone();
+    let reason = r.reason;
     let engine = engine_on(&this.status);
+    let tracked_s = humanize_ms(tracked);
+    if let Some(why) = why {
+        return lede(day_label, p)
+            .child(display(format!("{tracked_s} tracked."), Some("Nothing written up.".into()), p))
+            .child(prose(format!("{why} Everything captured is on the Timeline."), p));
+    }
     let no_derive = !this.status.ctx.as_ref().is_some_and(|c| c.engine_available);
     let digest_off = no_derive
         || matches!(
             reason,
-            Some(
-                capture_types::DigestAbsentReason::DerivationOff
-                    | capture_types::DigestAbsentReason::EngineNotReady
-            )
+            Some(DigestAbsentReason::DerivationOff | DigestAbsentReason::EngineNotReady)
         );
     let kicker = if digest_off && dg.is_none() {
         day_label.to_string()
@@ -266,17 +375,23 @@ fn lede_col(
             if at_latest { "Digest so far" } else { "Digest" }
         )
     };
-    let tracked_s = humanize_ms(tracked);
-    if n < 2 || reason == Some(capture_types::DigestAbsentReason::TooFew) {
+    if n >= 2 && engine && dg.is_none() && (r.loading || r.regenerating) {
+        return lede(&kicker, p)
+            .child(super::parts::writing_skel(p))
+            .child(div().mt(space::S5).child(super::parts::busy_line("Writing the digest…", p)));
+    }
+    if n < 2 || reason == Some(DigestAbsentReason::TooFew) {
         let (h, b) = match n {
             0 => ("Your day is being written.".to_string(), "Capture is landing. The digest appears once two activities are written up."),
             1 => (format!("Too little captured on {day_label} to write a digest."), "A digest needs at least two activities; this day has one. It's below, as captured."),
             _ => (format!("Too little captured on {day_label} to write a digest."), "A digest needs at least two activities it can use. They're below, as captured."),
         };
-        return lede(&kicker, p)
-            .child(display(h, None, p))
-            .child(prose(b, p));
+        return lede(&kicker, p).child(display(h, None, p)).child(prose(b, p));
     }
+    let me = cx.entity().downgrade();
+    let regen = move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
+        let _ = me.update(cx, |i, cx| i.reread(Of::Journal, cx));
+    };
     if let Some(dg) = dg {
         let h = dg.headline.clone().unwrap_or_default();
         let mut it = h.split(" — ");
@@ -295,11 +410,24 @@ fn lede_col(
             .filter(|_| at_latest)
             .map(|c| format!(" · covers through {}", stats::clock(c, off)))
             .unwrap_or_default();
+        let reread = Button::new(
+            "insights-journal-reread",
+            if r.regenerating { "Re-reading…" } else { "Re-read" },
+        )
+        .ghost()
+        .sm()
+        .disabled(r.regenerating)
+        .on_click(regen);
+        let reread = if r.regenerating {
+            reread.spinner(true)
+        } else {
+            reread.icon(IconName::RotateCcw.path())
+        };
         return lede(&kicker, p)
             .child(display(head, turn, p))
             .child(prose(dg.narrative, p))
             .child(
-                gpui_kit::div()
+                div()
                     .flex()
                     .items_center()
                     .gap(space::S3)
@@ -308,18 +436,12 @@ fn lede_col(
                         format!("written {}{covers}", stats::clock(dg.generated_at_ms, off)),
                         p,
                     ))
-                    .when(engine, |d| {
-                        d.child(
-                            Button::new("insights-journal-reread", "Re-read")
-                                .ghost()
-                                .sm()
-                                .icon(IconName::RotateCcw.path()),
-                        )
-                    }),
+                    .when(engine, |d| d.child(reread)),
             );
     }
     let what = if this.status.ctx.as_ref().and_then(|c| c.reason.as_deref())
         == Some("user_context_disabled")
+        || reason == Some(DigestAbsentReason::DerivationOff)
     {
         "continuous derivation"
     } else {
@@ -327,7 +449,7 @@ fn lede_col(
     };
     let body = if digest_off {
         format!("No digest while {what} is off — the cards below were written before.")
-    } else if j.digest.as_ref().is_some_and(|r| r.is_err()) {
+    } else if r.error.is_some() {
         "Couldn't write the digest this time. The cards below are unaffected.".into()
     } else {
         "No digest for this day yet.".into()
@@ -339,11 +461,22 @@ fn lede_col(
             p,
         ))
         .child(prose(body, p))
+        .when(r.error.is_some() && engine, |l| {
+            l.child(
+                div().mt(space::S5).child(
+                    Button::new("insights-journal-digest-retry", "Try again")
+                        .sm()
+                        .icon(IconName::RotateCcw.path())
+                        .on_click(regen),
+                ),
+            )
+        })
 }
 
 #[allow(clippy::too_many_arguments)]
 fn lede_stats(
     j: &JournalData,
+    capture_run: bool,
     model: &day::DayModel,
     day_acts: &[capture_types::Activity],
     shown: &[capture_types::Activity],
@@ -379,6 +512,10 @@ fn lede_stats(
     }
     let n = model.slots.len();
     let gaps = model.gaps.len();
+    if capture_run {
+        out.push(stat_text("Activities", "—", Some("none · needs AI".into()), p));
+        return out.into_iter().map(|e| e.into_any_element()).collect();
+    }
     out.push(stat_text(
         "Activities",
         &shown_n.to_string(),
