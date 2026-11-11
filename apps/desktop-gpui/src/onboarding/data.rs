@@ -488,8 +488,13 @@ impl Backend for CoreBackend {
         .map_err(|e| fail(false, "marking onboarding complete", e))?;
         core.host().refresh_tray();
         if let Some(start) = start {
-            app_core::native_capture::control::start_native_capture(start, core)
-                .map_err(|e| fail(true, "the capture start", e.message))?;
+            // Off this 512 KB GPUI worker: capture start needs an ordinary thread's stack.
+            std::thread::scope(|s| {
+                s.spawn(|| app_core::native_capture::control::start_native_capture(start, core))
+                    .join()
+            })
+            .map_err(|_| fail(true, "the capture start", "capture start panicked".into()))?
+            .map_err(|e| fail(true, "the capture start", e.message))?;
         }
         Ok(())
     }

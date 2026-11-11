@@ -173,19 +173,15 @@ where
         Ok(runtime.block_on(future))
     };
 
-    if tokio::runtime::Handle::try_current().is_ok() {
-        let worker = thread::Builder::new()
-            .name(format!("mnema-native-capture-{context}"))
-            .spawn(run_future)
-            .map_err(|error| format!("failed to spawn native capture {context} worker: {error}"))?;
+    // Always its own thread: a runtime can't nest, and GPUI's 512 KB dispatch callers lack stack.
+    let worker = thread::Builder::new()
+        .name(format!("mnema-native-capture-{context}"))
+        .spawn(run_future)
+        .map_err(|error| format!("failed to spawn native capture {context} worker: {error}"))?;
 
-        worker
-            .join()
-            .map_err(|_| format!("native capture {context} worker panicked"))?
-    } else {
-        std::panic::catch_unwind(std::panic::AssertUnwindSafe(run_future))
-            .map_err(|_| format!("native capture {context} worker panicked"))?
-    }
+    worker
+        .join()
+        .map_err(|_| format!("native capture {context} worker panicked"))?
 }
 
 #[cfg(target_os = "macos")]

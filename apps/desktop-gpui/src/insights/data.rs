@@ -187,7 +187,7 @@ impl CoreBackend {
             .try_state::<AppInfraState>()
             .ok_or_else(|| "app infrastructure isn't ready".into())
     }
-    fn run<T>(&self, f: impl std::future::Future<Output = Res<T>>) -> Res<T> {
+    fn run<T: Send>(&self, f: impl std::future::Future<Output = Res<T>> + Send) -> Res<T> {
         self.0.block_on(f)
     }
 }

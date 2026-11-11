@@ -89,9 +89,43 @@ impl AppCore {
         self.runtime.spawn_blocking(func)
     }
 
-    pub fn block_on<F: Future>(&self, future: F) -> F::Output {
-        self.runtime.block_on(future)
+    /// Polls `future` to completion on the calling thread, or, when that thread's
+    /// stack is smaller than a tokio worker's, on a scoped thread with a large one.
+    pub fn block_on<F>(&self, future: F) -> F::Output
+    where
+        F: Future + Send,
+        F::Output: Send,
+    {
+        if caller_stack_size() >= MIN_POLL_STACK {
+            return self.runtime.block_on(future);
+        }
+        // GPUI calls this from 512 KB libdispatch workers, where a deep future (an AI call) overflowed.
+        std::thread::scope(|scope| {
+            std::thread::Builder::new()
+                .name("mnema-block-on".into())
+                .stack_size(POLL_STACK)
+                .spawn_scoped(scope, || self.runtime.block_on(future))
+                .expect("spawn the block_on thread")
+                .join()
+                .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+        })
     }
+}
+
+/// A tokio worker's stack, where the Tauri host polls the same futures.
+const MIN_POLL_STACK: usize = 2 * 1024 * 1024;
+/// The main thread's stack.
+const POLL_STACK: usize = 8 * 1024 * 1024;
+
+#[cfg(target_os = "macos")]
+fn caller_stack_size() -> usize {
+    // SAFETY: reads the calling thread's own stack size.
+    unsafe { libc::pthread_get_stacksize_np(libc::pthread_self()) }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn caller_stack_size() -> usize {
+    usize::MAX
 }
 
 #[cfg(test)]
@@ -133,6 +167,42 @@ mod tests {
         assert_eq!(core.block_on(blocking).unwrap(), 3);
         let handle = core.runtime_handle();
         assert_eq!(core.block_on(handle.spawn(async { 5 })).unwrap(), 5);
+    }
+
+    /// Uses ~1.5 MB of stack: 96 frames, each holding a 16 KB buffer.
+    fn burn_stack(depth: u32) -> u32 {
+        let pad = std::hint::black_box([depth as u8; 16 * 1024]);
+        if depth == 0 {
+            return 0;
+        }
+        1 + burn_stack(depth - 1) + std::hint::black_box(pad[pad.len() - 1] as u32 & 0)
+    }
+
+    /// GPUI calls `block_on` from libdispatch workers (512 KB stacks); a deep
+    /// future there overflowed the stack and killed the app (crash of 12 Nov).
+    #[test]
+    fn block_on_from_a_small_stack_thread_has_room_for_a_deep_future() {
+        let core = Arc::new(core_with(Arc::default()));
+        let small_thread = |core: Arc<AppCore>, run: fn(&AppCore) -> u32| {
+            std::thread::Builder::new()
+                .stack_size(512 * 1024)
+                .spawn(move || run(&core))
+                .unwrap()
+                .join()
+        };
+        let deep = small_thread(core.clone(), |core| {
+            core.block_on(async {
+                // The runtime context is still entered for the future.
+                let spawned = tokio::spawn(async { 1 }).await.unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                spawned + burn_stack(96)
+            })
+        });
+        assert_eq!(deep.unwrap(), 97);
+
+        let panicked = small_thread(core, |core| core.block_on(async { panic!("boom") }));
+        let payload = panicked.expect_err("the future's panic reaches the caller");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"boom"));
     }
 
     #[test]

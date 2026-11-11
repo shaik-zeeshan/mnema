@@ -439,15 +439,24 @@ impl CoreDebug {
     fn run(&self, action: Action) -> Result<Option<String>, String> {
         use app_core::native_capture::control;
         let core = &self.0;
+        // Off this 512 KB GPUI worker: capture start/stop needs an ordinary thread's stack.
+        let off_worker = |f: &(dyn Fn() -> Result<Option<String>, String> + Sync)| {
+            std::thread::scope(|s| s.spawn(f).join())
+                .unwrap_or_else(|_| Err("recording control panicked".into()))
+        };
         match action {
             // The same door as the tray's Start / Stop: saved sources, session
             // event, tray refresh.
-            Action::Record => control::start_native_capture_from_core("debug-window", core)
-                .map(|_| None)
-                .map_err(|e| e.message),
-            Action::Stop => control::stop_native_capture_from_core(core)
-                .map(|_| None)
-                .map_err(|e| e.message),
+            Action::Record => off_worker(&|| {
+                control::start_native_capture_from_core("debug-window", core)
+                    .map(|_| None)
+                    .map_err(|e| e.message)
+            }),
+            Action::Stop => off_worker(&|| {
+                control::stop_native_capture_from_core(core)
+                    .map(|_| None)
+                    .map_err(|e| e.message)
+            }),
             Action::TestAi => crate::settings::live::test_connection(core),
             Action::Derive => crate::settings::live::derive_now(core),
         }

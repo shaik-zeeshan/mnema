@@ -365,6 +365,7 @@ dependencies = [
  "global-hotkey 0.7.0",
  "htmd",
  "image",
+ "libc",
  "licensegate",
  "log",
  "minisign-verify",
