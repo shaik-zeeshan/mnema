@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 15:03",
- "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control (your Insights calendar report) is done too: six screenshots are waiting for you on its page.",
+ "updated": "2026-11-11 15:46",
+ "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control (your Insights calendar report) is done and approved too. Nothing is waiting on you right now.",
  "metrics": [
   {
    "label": "Overall",
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "6 pending",
-   "note": "the date control: four new screens and two changed pages"
+   "value": "all approved",
+   "note": "the six date-control screens approved on 11 Nov; baselines recorded in 15e25abd; more will come from the sweep"
   }
  ],
  "bars": [
@@ -483,8 +483,14 @@
   {
    "id": "Sweep 3",
    "title": "The date control has week rows, a month grid and rounded ranges",
-   "what": "The Insights calendar's square range block is gone: weeks are rounded rows with week numbers and months have their own grid, as in the Tauri app. Chat's range can be dragged; keys, wheel and drag step the control; the Timeline jumper takes the arrow keys. Built, with 9 tests on the real control; screenshots await your approval; not tried in the real app.",
+   "what": "The Insights calendar's square range block is gone: weeks are rounded rows with week numbers and months have their own grid, as in the Tauri app. Chat's range can be dragged; keys, wheel and drag step the control; the Timeline jumper takes the arrow keys. Built, with 9 tests on the real control; screenshots approved on 11 Nov; not tried in the real app.",
    "commit": "8c24859c"
+  },
+  {
+   "id": "Safety 1",
+   "title": "Tests can no longer reach your licence in the keychain",
+   "what": "A test of the Settings licence section tried to read the real licence key and macOS asked you about it. Only reads were attempted, 4 to 6 times. The licence store now refuses the real keychain whenever the test safety switch is on, and every test run redirects licence storage to a throwaway folder.",
+   "commit": "fdfa189e"
   }
  ],
  "next": [
@@ -800,11 +806,6 @@
   }
  ],
  "waiting": [
-  {
-   "id": "Approve",
-   "title": "Six date-control screenshots",
-   "detail": "The Insights calendar in Day, Week and Month mode next to the Tauri app's pictures, Chat's scope range, and two changed pages. On the date control page, first section."
-  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -2595,12 +2596,12 @@
  "round6": [
   {
    "anchor": "r8-approve",
-   "title": "The date control: screenshots to approve",
-   "toc": "To approve",
-   "commit": "8c24859c",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "Six screens need your yes, all rendered from test data. Four are new: the Insights calendar open in Day, Week and Month mode, each shown next to the Tauri app's own picture of the same data, and Chat's scope calendar with a range that crosses two rows. Two changed: the control gallery's date page now shows the week rows, and Chat's scope calendar has shorter shortcut rows and a new footer line.",
+   "title": "The date control: approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "8c24859c, baselines 15e25abd",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these six screens on 11 Nov; their baselines are recorded from the run these pictures were made from. Four are new: the Insights calendar open in Day, Week and Month mode, each shown next to the Tauri app's own picture of the same data, and Chat's scope calendar with a range that crosses two rows. Two changed: the control gallery's date page now shows the week rows, and Chat's scope calendar has shorter shortcut rows and a new footer line.",
    "rows": [
     {
      "heading": "Insights › calendar, Week mode (your report: a square block)",
@@ -2713,5 +2714,5 @@
    "rows": []
   }
  ],
- "round6_verdict": "The date control used in Insights, Chat and the Timeline has been checked against the Tauri app and rebuilt where it differed: week rows, the month grid and rounded range ends are in, with keyboard, wheel and drag stepping. Six screens need your approval; three of them sit next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed."
+ "round6_verdict": "The date control used in Insights, Chat and the Timeline has been checked against the Tauri app and rebuilt where it differed: week rows, the month grid and rounded range ends are in, with keyboard, wheel and drag stepping. You approved the six screens on 11 Nov; three of them sit next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed."
 }
