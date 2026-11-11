@@ -1,7 +1,10 @@
-//! The modal (insights.html `.in-modal`): a 62% scrim over the window and a
-//! centred raised panel (radius 16, ≤640 px) with a title + close head, rising
-//! 10 px over 420 ms expo while the scrim fades 220 ms. Esc and the scrim close.
-//! The CSS scrim blur(4px) is dropped (GPUI can't blur in-window).
+//! The modal (`.cat-modal` / `.in-modal`): a scrim over the whole window
+//! (`position: fixed; inset: 0`, so the titlebar and status bar too, which it
+//! also keeps from taking clicks and hover) and a centred raised panel
+//! (radius 16, ≤640 px) with a title + close head, rising 10 px over 420 ms
+//! expo while the scrim fades 220 ms. Esc and the scrim close. The scrim is
+//! `--app-overlay-bg` unless [`Modal::scrim`] says otherwise; the CSS blur is
+//! dropped (GPUI can't blur in-window).
 
 use std::rc::Rc;
 
@@ -10,10 +13,11 @@ use gpui_kit::prelude::*;
 use gpui_kit::AnimationExt as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    deferred, div, px, Animation, AnyElement, App, ElementId, Pixels, SharedString, Window,
+    anchored, deferred, div, px, Animation, AnyElement, App, ElementId, Pixels, SharedString,
+    Window,
 };
 
-use super::{alpha, popover_shadow, Button};
+use super::{popover_shadow, Button};
 use crate::theme::{self, motion, radius, size, space, text};
 
 type OnClose = Rc<dyn Fn(&mut Window, &mut App)>;
@@ -33,7 +37,6 @@ pub struct Modal {
     chromeless: bool,
     radius: Pixels,
     scrim: Option<gpui_kit::Hsla>,
-    whole_window: bool,
 }
 
 impl Modal {
@@ -51,7 +54,6 @@ impl Modal {
             chromeless: false,
             radius: radius::XL,
             scrim: None,
-            whole_window: false,
         }
     }
     /// A narrower panel (default `size::MODAL_MAX_W`).
@@ -90,15 +92,9 @@ impl Modal {
         self.radius = radius;
         self
     }
-    /// A scrim other than the shared 62% `bg` (a surface's own overlay token).
+    /// A scrim other than `--app-overlay-bg` (`.in-modal`'s 62% `bg`).
     pub fn scrim(mut self, c: gpui_kit::Hsla) -> Self {
         self.scrim = Some(c);
-        self
-    }
-    /// Scrim the whole window, titlebar and status bar included (a CSS
-    /// `position: fixed; inset: 0` modal), from a surface laid out between them.
-    pub fn whole_window(mut self) -> Self {
-        self.whole_window = true;
         self
     }
     pub fn child(mut self, el: impl IntoElement) -> Self {
@@ -112,7 +108,7 @@ impl Modal {
 }
 
 impl RenderOnce for Modal {
-    fn render(self, _: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = theme::tokens(cx);
         let close = self.on_close.clone();
         let (by_scrim, by_key) = (close.clone(), close.clone());
@@ -196,44 +192,45 @@ impl RenderOnce for Modal {
                 Animation::new(motion::SLOW).with_easing(motion::expo),
                 |el, t| el.top(px(10.) * (1. - t)),
             );
+        // Pinned to the window's origin at the window's size, wherever the
+        // surface that opens it sits.
         deferred(
-            div()
-                .id(self.id)
-                .test_support()
-                .role(gpui_kit::Role::Dialog)
-                .aria_label(self.title)
-                .absolute()
-                .inset_0()
-                .when(self.whole_window, |el| {
-                    el.top(-size::TITLEBAR).bottom(-size::STATUS_BAR)
-                })
-                .flex()
-                .items_center()
-                .justify_center()
-                .p(space::S6)
-                .bg(self.scrim.unwrap_or(alpha(p.bg, 0.62)))
-                .occlude()
-                .font_family(theme::FONT_UI)
-                .text_size(text::MD)
-                .text_color(p.text)
-                .when_some(by_scrim, |el, f| {
-                    el.on_mouse_down(gpui_kit::MouseButton::Left, move |_, window, cx| {
-                        f(window, cx)
-                    })
-                })
-                .when_some(by_key, |el, f| {
-                    el.on_key_down(move |e, window, cx| {
-                        if e.keystroke.key == "escape" {
+            anchored().position(gpui_kit::point(px(0.), px(0.))).child(
+                div()
+                    .id(self.id)
+                    .test_support()
+                    .role(gpui_kit::Role::Dialog)
+                    .aria_label(self.title)
+                    .w(window.viewport_size().width)
+                    .h(window.viewport_size().height)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .p(space::S6)
+                    .bg(self.scrim.unwrap_or(p.overlay_bg))
+                    .occlude()
+                    .font_family(theme::FONT_UI)
+                    .text_size(text::MD)
+                    .text_color(p.text)
+                    .when_some(by_scrim, |el, f| {
+                        el.on_mouse_down(gpui_kit::MouseButton::Left, move |_, window, cx| {
                             f(window, cx)
-                        }
+                        })
                     })
-                })
-                .child(panel)
-                .with_animation(
-                    "modal-fade",
-                    Animation::new(motion::SLOW).with_easing(motion::quart),
-                    move |el, t| el.opacity((t / fade).min(1.)),
-                ),
+                    .when_some(by_key, |el, f| {
+                        el.on_key_down(move |e, window, cx| {
+                            if e.keystroke.key == "escape" {
+                                f(window, cx)
+                            }
+                        })
+                    })
+                    .child(panel)
+                    .with_animation(
+                        "modal-fade",
+                        Animation::new(motion::SLOW).with_easing(motion::quart),
+                        move |el, t| el.opacity((t / fade).min(1.)),
+                    ),
+            ),
         )
         .with_priority(super::popover::LAYER_MODAL)
     }

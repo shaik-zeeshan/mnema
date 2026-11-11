@@ -106,7 +106,7 @@ pub(super) fn render(g: &mut Gallery, _: &mut Window, cx: &mut Context<Gallery>)
                 .p(space::S5)
                 .text_size(text::MD)
                 .text_color(p.text_muted)
-                .child("3h 12m this week across 6 apps. Scrim 62%, raised panel, radius 16."),
+                .child("3h 12m this week across 6 apps. Overlay scrim, raised panel, radius 16."),
         )
         .on_close(move |_, cx| {
             close

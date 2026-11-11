@@ -67,7 +67,9 @@ pub fn modal(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Option
         Modal::Apps => Dialog::new("insights-modal", "App usage")
             .eyebrow(range_label)
             .child(body(apps(this, d, p))),
+        // `.in-modal`: `color-mix(--app-bg 62%)`, not the others' overlay token.
         Modal::Focus => Dialog::new("insights-modal", "Focus detail")
+            .scrim(crate::ui::alpha(p.bg, 0.62))
             .bare()
             .child(focus(&f, this.period.1, &range_label, off, p)),
     };

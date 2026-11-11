@@ -525,10 +525,6 @@ pub fn frame_modal<V: PeekHost>(
         });
     Modal::new("chat-frame-modal", title)
         .chromeless(px(18.))
-        // `.frame-modal { background: var(--app-overlay-bg) }`; the CSS blur(10px)
-        // has no GPUI equivalent (no in-window blur), the 78% wash is kept.
-        .scrim(p.overlay_bg)
-        .whole_window()
         .max_w(px(panel_w))
         .child(
             div()

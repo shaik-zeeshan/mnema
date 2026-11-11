@@ -543,3 +543,74 @@ fn opening_chat_warms_mcp_each_time_and_only_with_ai_and_a_connector_on(cx: &mut
         assert_eq!(warms(cx), want, "ai {ai}, connector {connector}");
     }
 }
+
+/// A modal opened from a surface laid out between the bars (Insights' Focus
+/// detail) scrims the whole window: the titlebar and the status bar under it
+/// take no hover and no click, and Esc still closes it.
+#[gpui_kit::test]
+fn an_open_modal_blocks_the_titlebar_and_status_bar(cx: &mut TestAppContext) {
+    use crate::insights::{fixture::FixtureBackend, Modal};
+    let (window, shell) = open(cx);
+    let insights = cx.update(|cx| {
+        crate::ui::clock::freeze(Some(app_core::fixtures::fixture_now()), cx);
+        shell.update(cx, |s, cx| s.go(Surface::Insights, cx));
+        let i = shell.read(cx).insights.clone();
+        i.update(cx, |i, cx| {
+            i.backend = std::sync::Arc::new(FixtureBackend::load("populated").expect("fixture"));
+            i.reload(cx);
+        });
+        i
+    });
+    cx.run_until_parked();
+    let modal = |cx: &mut TestAppContext| cx.read(|cx| insights.read(cx).modal);
+    let reopen = |cx: &mut TestAppContext| {
+        cx.update(|cx| insights.update(cx, |i, _| i.modal = Some(Modal::Focus)));
+        cx.run_until_parked();
+    };
+    reopen(cx);
+    let shown = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).is_some()
+        })
+        .unwrap()
+    };
+    assert!(shown(cx, "insights-modal"), "the modal is open");
+
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.hover("titlebar-settings", cx);
+    })
+    .unwrap();
+    cx.executor().advance_clock(Duration::from_millis(400));
+    cx.run_until_parked();
+    assert!(!shown(cx, "tooltip"), "no titlebar hover under the scrim");
+
+    click(cx, window, "titlebar-settings");
+    assert_eq!(
+        cx.read(|cx| shell.read(cx).surface),
+        Surface::Insights,
+        "Settings stays shut"
+    );
+    assert_eq!(
+        modal(cx),
+        None,
+        "the press landed on the scrim, which closes"
+    );
+
+    reopen(cx);
+    let lane = |cx: &mut TestAppContext| cx.read(|cx| shell.read(cx).model.status.selected[0]);
+    let before = lane(cx);
+    click(cx, window, ("status-lane", 0usize));
+    assert_eq!(lane(cx), before, "the status bar's lane doesn't toggle");
+    assert_eq!(modal(cx), None);
+
+    reopen(cx);
+    press(cx, window, "escape");
+    assert_eq!(modal(cx), None, "Esc closes the modal");
+    assert_eq!(
+        cx.read(|cx| shell.read(cx).surface),
+        Surface::Insights,
+        "and only the modal"
+    );
+}

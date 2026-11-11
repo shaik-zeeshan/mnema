@@ -388,7 +388,7 @@ fn side(
     const BAR_MS: f32 = 8. * 3_600_000.;
     let bars = div()
         .flex()
-        .gap(space::S2)
+        .gap(px(6.))
         .children(week.iter().enumerate().map(|(i, d)| {
             let sel = d.start == day_start;
             let date = stats::local(d.start, off).date();
@@ -403,18 +403,53 @@ fn side(
             } else {
                 "—".into()
             };
-            let segs = d.mix.iter().rev().map(|(c, ms)| {
-                div()
-                    .w_full()
-                    .h(px((*ms as f32 / BAR_MS * 48.).min(48.)))
-                    .bg(category_color(*c, p))
-            });
             let cap_only = d.activities == 0 && d.captured_hours > 0;
+            // `.in-wk__bar`: column-reverse over the reversed mix, so top to
+            // bottom is the mix's own order; the top piece rounds 2 px.
+            let segs: Vec<(gpui_kit::Hsla, f32)> = if cap_only {
+                vec![(p.chart_grey_3, d.captured_hours as f32 / 8. * 48.)]
+            } else {
+                d.mix
+                    .iter()
+                    .map(|(c, ms)| (category_color(*c, p), *ms as f32 / BAR_MS * 48.))
+                    .collect()
+            };
+            // `.in-wk__bar:empty`: a 20 px dashed stub on the baseline.
+            let bar = if d.future || segs.is_empty() {
+                div()
+                    .w(px(14.))
+                    .h(px(20.))
+                    .mt(px(28.))
+                    .border_1()
+                    .border_dashed()
+                    .border_color(p.border)
+                    .rounded(px(2.))
+            } else {
+                div()
+                    .w(px(14.))
+                    .h(px(48.))
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .gap(px(1.))
+                    .children(segs.into_iter().enumerate().map(|(k, (c, h))| {
+                        div()
+                            .flex_none()
+                            .w_full()
+                            .h(px(h.min(48.)))
+                            .bg(c)
+                            .when(k == 0, |d| d.rounded_t(px(2.)))
+                    }))
+            };
             let tip = format!(
                 "{} · {}",
                 stats::day_label(d.start, off),
                 if d.activities > 0 {
-                    format!("{} · {} activities", humanize_ms(d.activity_ms), d.activities)
+                    format!(
+                        "{} · {} activities",
+                        humanize_ms(d.activity_ms),
+                        d.activities
+                    )
                 } else if cap_only {
                     format!("~{}h captured · nothing written up", d.captured_hours)
                 } else {
@@ -422,16 +457,31 @@ fn side(
                 }
             );
             let el = div().id(nid("insights-week", i as u64));
-            let el = if d.future { el } else { crate::ui::with_tip(el, tip) };
-            el
-                .role(Role::Button)
+            let el = if d.future {
+                el
+            } else {
+                crate::ui::with_tip(el, tip)
+            };
+            el.role(Role::Button)
                 .flex_1()
                 .flex()
                 .flex_col()
                 .items_center()
-                .gap(px(4.))
-                .py(px(6.))
+                .gap(px(6.))
+                .pt(px(8.))
+                .pb(px(7.))
                 .rounded(radius::MD)
+                .font_family(FONT_MONO)
+                .text_size(text::XS)
+                .line_height(gpui_kit::relative(1.))
+                .font_weight(theme::W_MEDIUM)
+                .text_color(if d.future {
+                    p.text_faint
+                } else if sel {
+                    p.text_strong
+                } else {
+                    p.text_subtle
+                })
                 // `[aria-pressed]`: surface + strong hairline (inset: no layout shift).
                 .when(sel, |e| {
                     e.bg(p.surface)
@@ -440,41 +490,9 @@ fn side(
                 .when(!d.future, |e| {
                     e.cursor_pointer().hover(|s| s.bg(p.surface_hover))
                 })
-                .child(
-                    div()
-                        .w(px(14.))
-                        .h(px(48.))
-                        .flex()
-                        .flex_col()
-                        .justify_end()
-                        .rounded(px(3.))
-                        .overflow_hidden()
-                        .bg(p.wash)
-                        .when(cap_only, |b| {
-                            b.child(
-                                div()
-                                    .w_full()
-                                    .h(px((d.captured_hours as f32 / 8. * 48.).min(48.)))
-                                    .bg(p.chart_grey_3),
-                            )
-                        })
-                        .when(!cap_only, |b| b.children(segs)),
-                )
-                .child(
-                    div()
-                        .font_family(FONT_MONO)
-                        .text_size(text::XS)
-                        .font_weight(theme::W_SEMIBOLD)
-                        .text_color(p.text)
-                        .child(stats::weekday(d.start, off)),
-                )
-                .child(
-                    div()
-                        .font_family(FONT_MONO)
-                        .text_size(text::XS)
-                        .text_color(p.text_subtle)
-                        .child(if d.future { "—".into() } else { caption }),
-                )
+                .child(bar)
+                .child(div().child(stats::weekday(d.start, off)))
+                .child(div().child(if d.future { "—".into() } else { caption }))
                 .when(!d.future, |e| {
                     e.on_click(cx.listener(move |this, _, _, cx| this.set_day(date, cx)))
                 })
