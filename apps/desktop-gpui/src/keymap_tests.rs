@@ -72,6 +72,14 @@ fn help_sheet_is_built_from_state() {
     assert_eq!(&global[..2], ["Stop recording", "Resume recording"]);
     assert!(global.contains(&"Open debug"));
     assert_eq!(groups.len(), 2, "empty surface groups are dropped");
+
+    // `ShortcutsPop.svelte` drops a row whose shortcut was cleared.
+    let cleared = Bindings {
+        open_debug: String::new(),
+        ..Bindings::default()
+    };
+    let groups = help_groups(&cleared, recording, vec![]);
+    assert!(!groups[0].rows.iter().any(|r| r.label == "Open debug"));
 }
 
 // ── Rebinding takes effect at once (the old key stops, gpui-kit's stay) ──

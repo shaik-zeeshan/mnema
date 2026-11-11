@@ -96,6 +96,9 @@ pub struct Chat {
     /// The turn whose copy button reads "Copied".
     pub copied: Option<i64>,
     copied_task: Option<Task<()>>,
+    /// The ChatGPT sign-in code's copy button reads "Copied".
+    pub code_copied: bool,
+    code_copied_task: Option<Task<()>>,
     pub pool: Vec<PoolModel>,
     pub pool_failures: Vec<ProviderFailure>,
     pub pool_loading: bool,
@@ -223,6 +226,8 @@ impl Chat {
             ctx_open: false,
             copied: None,
             copied_task: None,
+            code_copied: false,
+            code_copied_task: None,
             pool: Vec::new(),
             pool_failures: Vec::new(),
             pool_loading: false,

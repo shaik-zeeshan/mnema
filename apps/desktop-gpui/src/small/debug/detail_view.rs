@@ -19,7 +19,7 @@ use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::notice::notice_el;
 use crate::ui::segmented::{opt_count, Segmented};
-use crate::ui::{focus_handle, icon, nid, ring_box, Tone};
+use crate::ui::{focus_handle, icon, nid, ring_box, CopyButton, Tone};
 
 /// `.mx-spec` label column in the drill-in.
 pub(super) const LABEL_W: gpui_kit::Pixels = px(110.);
@@ -61,18 +61,30 @@ pub(super) fn note(s: &str) -> Option<SharedString> {
 }
 
 /// The raw error string inside a notice (`.dv-raw-err`): mono, wrapped anywhere.
-pub(super) fn raw_err(e: &str, p: &Palette) -> Div {
+/// The raw error box, with a copy button for a bug report.
+pub(super) fn raw_err(copy_id: &'static str, e: &str, p: &Palette) -> Div {
     div()
         .mt(px(6.))
-        .px(px(8.))
-        .py(px(6.))
+        .pl(px(8.))
+        .pr(px(4.))
+        .py(px(4.))
+        .flex()
+        .items_start()
+        .gap(px(6.))
         .rounded(theme::radius::SM)
         .bg(p.wash)
-        .font_family(FONT_MONO)
-        .text_size(text::SM)
-        .line_height(relative(1.45))
-        .text_color(p.text)
-        .child(e.to_string())
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .py(px(2.))
+                .font_family(FONT_MONO)
+                .text_size(text::SM)
+                .line_height(relative(1.45))
+                .text_color(p.text)
+                .child(e.to_string()),
+        )
+        .child(CopyButton::icon(copy_id, "Copy error", e.to_string()).h(px(22.)))
 }
 
 fn link(
@@ -205,7 +217,7 @@ fn meaning_index(w: &DebugWindow, p: &Palette) -> Vec<AnyElement> {
                 Tone::Danger,
                 "icons/triangle-alert.svg",
                 "The model couldn\u{2019}t load",
-                Some(raw_err(e, p).into_any_element()),
+                Some(raw_err("dv-load-error-copy", e, p).into_any_element()),
                 vec![],
                 p,
             )
@@ -363,13 +375,11 @@ fn lane_view(
                     .text_color(p.text_subtle)
                     .child(t)
             }))
-            .children(d.error.clone().map(|e| {
-                div()
-                    .text_size(text::SM)
-                    .line_height(relative(1.4))
-                    .text_color(p.danger_text)
-                    .child(e)
-            }));
+            .children(
+                d.error
+                    .clone()
+                    .map(|e| super::tabs::err_line("dv-jobs-error-copy", e, p)),
+            );
     }
     out.push(section.into_any_element());
     out
@@ -459,7 +469,15 @@ fn unreachable(
                 detail::provider_name(&provider)
             ),
             Some(body.into_any_element()),
-            vec![button.into_any_element()],
+            vec![
+                CopyButton::icon(
+                    "dv-unreachable-copy",
+                    "Copy error",
+                    error.unwrap_or_default().to_string(),
+                )
+                .into_any_element(),
+                button.into_any_element(),
+            ],
             p,
         )
         .into_any_element(),

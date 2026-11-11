@@ -368,3 +368,45 @@ fn picker_rows_quick_view_and_typed_id() {
         .iter()
         .any(|r| matches!(r, Row::Option(o) if o.pick == exact)));
 }
+
+#[gpui_kit::test]
+fn the_answer_and_its_code_blocks_copy_by_click(cx: &mut TestAppContext) {
+    let (window, chat) = open(cx);
+    live(cx, &chat);
+    chat.update(cx, |c, cx| {
+        c.on_update(
+            ev(2, 0, prose("Run this:\n\n```sh\nbun run check\n```\n")),
+            cx,
+        );
+        c.on_update(ev(3, 0, TurnUpdate::Done), cx);
+    });
+    cx.run_until_parked();
+    let clip =
+        |cx: &mut TestAppContext| cx.read(|cx| cx.read_from_clipboard().and_then(|c| c.text()));
+    let act = |cx: &mut TestAppContext, f: &dyn Fn(&mut gpui_kit::Window, &mut gpui_kit::App)| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            f(window, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    act(cx, &|w, cx| w.click("chat-copy-0", cx));
+    assert_eq!(
+        clip(cx),
+        Some(answer(&chat, cx)),
+        "the answer, as plain text"
+    );
+    assert_eq!(chat.read_with(cx, |c, _| c.copied), Some(0), "Copied");
+    // The code block's own Copy (`AnswerProse.svelte`'s `data-copy-code`).
+    act(cx, &|w, cx| w.click("copy", cx));
+    assert_eq!(
+        clip(cx).as_deref().map(str::trim_end),
+        Some("bun run check")
+    );
+    let label = std::cell::RefCell::new(String::new());
+    act(cx, &|w, _| {
+        *label.borrow_mut() = w.find("copy").label().unwrap_or_default().into()
+    });
+    assert_eq!(label.borrow().as_str(), "Copied");
+}

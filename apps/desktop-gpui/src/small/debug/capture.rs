@@ -284,31 +284,39 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                 .into_any_element(),
             );
         }
-        Some("lowDisk") => out.push(
-            notice::notice(
-                Tone::Warn,
-                "icons/triangle-alert.svg",
-                format!(
-                    "Recording paused until {} is free",
-                    resume_at.map_or("more space".into(), |r| format!("{} GB", gb(r)))
-                ),
-                Some("It picks up on its own once there is room again.".into()),
-                vec![],
-                p,
+        Some("lowDisk") => {
+            let title = format!(
+                "Recording paused until {} is free",
+                resume_at.map_or("more space".into(), |r| format!("{} GB", gb(r)))
+            );
+            let body = "It picks up on its own once there is room again.";
+            out.push(
+                notice::notice(
+                    Tone::Warn,
+                    "icons/triangle-alert.svg",
+                    title.clone(),
+                    Some(body.into()),
+                    vec![copy_warning("dv-low-disk-copy", &title, body)],
+                    p,
+                )
+                .into_any_element(),
             )
-            .into_any_element(),
-        ),
-        Some("privacyFilter") if susp.bool_at(&["restartRequired"]) => out.push(
-            notice::notice(
-                Tone::Danger,
-                "icons/triangle-alert.svg",
-                "The privacy filter needs a restart",
-                Some("The screen stays off until then. Press Stop, then Record.".into()),
-                vec![],
-                p,
+        }
+        Some("privacyFilter") if susp.bool_at(&["restartRequired"]) => {
+            let title = "The privacy filter needs a restart";
+            let body = "The screen stays off until then. Press Stop, then Record.";
+            out.push(
+                notice::notice(
+                    Tone::Danger,
+                    "icons/triangle-alert.svg",
+                    title,
+                    Some(body.into()),
+                    vec![copy_warning("dv-privacy-filter-copy", title, body)],
+                    p,
+                )
+                .into_any_element(),
             )
-            .into_any_element(),
-        ),
+        }
         _ => {}
     }
     if !recording {
@@ -548,4 +556,9 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
     }
     out.push(disk.into_any_element());
     out
+}
+
+/// A warning notice's words, for pasting into a bug report.
+fn copy_warning(id: &'static str, title: &str, body: &str) -> AnyElement {
+    crate::ui::CopyButton::icon(id, "Copy message", format!("{title}. {body}")).into_any_element()
 }

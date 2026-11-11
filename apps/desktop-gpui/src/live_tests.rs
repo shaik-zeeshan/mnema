@@ -23,7 +23,7 @@ use gpui_kit::{
 use crate::bridge::events::{self, Core};
 use crate::chat::{self, History};
 use crate::host::{GpuiHost, HostMsg};
-use crate::shell::{data as shell_data, Shell, ShellModel};
+use crate::shell::{data as shell_data, Overlay, Shell, ShellModel};
 use crate::timeline::data::{CoreSource, Source};
 use crate::timeline::fixture::{Call, FixtureSource};
 use crate::{keymap, native, theme};
@@ -638,6 +638,58 @@ fn every_shell_event_reloads_the_model(cx: &mut TestAppContext) {
         assert!(Instant::now() < deadline, "the offset was never stamped");
         std::thread::sleep(Duration::from_millis(10));
     }
+}
+
+/// `StatusPop.svelte`'s foot: "Open developer window" only with developer
+/// options on; it closes the popover and opens the window.
+#[gpui_kit::test]
+fn the_status_popover_opens_the_developer_window_with_developer_options(cx: &mut TestAppContext) {
+    let mut live = live();
+    let (window, shell) = open_shell(cx, &live, None);
+    wait_for(cx, &mut live, &shell, "the first load", |_| true);
+    let has = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, w, cx| {
+            w.render_frame(cx);
+            w.try_find("status-pop-debug").is_some()
+        })
+        .unwrap()
+    };
+    let toggle = |cx: &mut TestAppContext| {
+        cx.update(|cx| shell.update(cx, |s, cx| s.toggle_overlay(Overlay::Status, cx)));
+        cx.run_until_parked();
+    };
+    toggle(cx);
+    assert!(!has(cx), "developer options off: no button");
+    toggle(cx);
+
+    {
+        let state = live
+            .core
+            .state::<app_core::recording_settings::RecordingSettingsState>();
+        state.lock().unwrap().settings.developer_options_enabled = true;
+    }
+    live.core
+        .host()
+        .emit(CoreEvent::RecordingSettingsChanged(serde_json::Value::Null));
+    wait_for(cx, &mut live, &shell, "developer options on", |cx| {
+        cx.read(|cx| shell.read(cx).model.developer_options)
+    });
+    toggle(cx);
+    assert!(has(cx), "developer options on: the button");
+    let before = cx.read(|cx| cx.windows().len());
+    cx.update_window(window.into(), |_, w, cx| w.click("status-pop-debug", cx))
+        .unwrap();
+    pump(cx, &mut live, &shell);
+    assert_eq!(
+        cx.read(|cx| shell.read(cx).overlay),
+        None,
+        "the popover closed"
+    );
+    assert_eq!(
+        cx.read(|cx| cx.windows().len()),
+        before + 1,
+        "the developer window opened"
+    );
 }
 
 // ── Settings ────────────────────────────────────────────────────────────────

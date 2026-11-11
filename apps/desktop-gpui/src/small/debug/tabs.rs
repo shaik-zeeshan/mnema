@@ -12,7 +12,7 @@ use crate::insights::stats;
 use crate::settings::model::Json;
 use crate::small::parts::{dot, spec_row};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
-use crate::ui::{icon, mix, nid, ring_box, Tone};
+use crate::ui::{icon, mix, nid, ring_box, CopyButton, Tone};
 
 pub(super) fn clock(ms: i64, cx: &gpui_kit::App) -> String {
     stats::clock(ms, crate::ui::clock::now(cx).offset())
@@ -63,6 +63,21 @@ fn row(
     };
     let ok = r.tone == Tone::Ok;
     let wash = p.wash;
+    // A warning or error row's words, for pasting into a bug report.
+    // Overview only: a processor row (`plain`) names its engine, not the trouble.
+    let copy = (!plain && matches!(r.tone, Tone::Warn | Tone::Danger)).then(|| {
+        let mut text = format!("{}: {}", r.name, r.why);
+        if !r.metric.is_empty() {
+            text.push_str(&format!(" \u{b7} {}", r.metric));
+        }
+        CopyButton::icon(
+            SharedString::from(format!("{id}-copy")),
+            "Copy message",
+            text,
+        )
+        // Inside the row's 34 px minimum, so a warning row is no taller than a fine one.
+        .h(px(20.))
+    });
     div()
         .id(id)
         .test_support()
@@ -128,6 +143,7 @@ fn row(
                 .whitespace_nowrap()
                 .child(r.metric.clone()),
         )
+        .children(copy)
         .child(
             div()
                 .flex_none()
@@ -135,6 +151,24 @@ fn row(
                 .child(icon("icons/chevron-right.svg", px(14.))),
         )
         .into_any_element()
+}
+
+/// A failed read's words (`danger_text`), with the copy button beside them.
+pub(super) fn err_line(id: &str, e: String, p: &Palette) -> Div {
+    div()
+        .flex()
+        .items_start()
+        .gap(px(6.))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_size(text::SM)
+                .line_height(relative(1.4))
+                .text_color(p.danger_text)
+                .child(e.clone()),
+        )
+        .child(CopyButton::icon(SharedString::from(id.to_string()), "Copy error", e).h(px(18.)))
 }
 
 pub(super) fn list(p: &Palette) -> Div {
@@ -301,10 +335,7 @@ fn pipeline(
         ("Frame batches", bat, at(bat_at.as_deref())),
         ("App jobs", jobs, at(jobs_at.as_deref())),
     ];
-    let err = |e: &Option<String>| {
-        e.clone()
-            .map(|e| div().text_size(text::SM).text_color(p.danger_text).child(e))
-    };
+    let err = |e: &Option<String>| e.clone().map(|e| err_line("dv-pipeline-error-copy", e, p));
     vec![
         sec(p)
             .child(h("Flow", Some("failed = last 24 h".into()), p))

@@ -317,6 +317,7 @@ impl UpdateWindow {
                     .child(match model::note_blocks(&n) {
                         Some(blocks) => notes_view(blocks, cx, p).into_any_element(),
                         None => TextView::markdown("up-notes-md", n)
+                            .code_block_actions(crate::ui::copy::code_actions)
                             .on_link_click(crate::ui::link::prose_click)
                             .style(notes_style(p, theme::mode(cx) == theme::Mode::Dark))
                             .into_any_element(),

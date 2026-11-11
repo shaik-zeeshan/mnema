@@ -351,3 +351,55 @@ fn segmented_hugs_its_options_in_a_column_unless_filled(cx: &mut TestAppContext)
         ".fill() spans the column"
     );
 }
+
+// ── CopyButton ──────────────────────────────────────────────────────────────
+
+fn label(cx: &mut TestAppContext, window: WindowHandle<Root>, id: &'static str) -> String {
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).label().unwrap_or_default().to_string()
+    })
+    .unwrap()
+}
+
+fn clipboard(cx: &mut TestAppContext) -> Option<String> {
+    cx.read(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+}
+
+#[gpui_kit::test]
+fn a_copy_button_copies_on_click_and_says_copied_for_1200ms(cx: &mut TestAppContext) {
+    use super::copy::{CopyButton, COPIED_FOR};
+    let (window, _) = open(cx, |_, _, _| {
+        div()
+            .flex()
+            .gap(px(20.))
+            .child(CopyButton::icon("ico", "Copy line", "the line"))
+            .child(CopyButton::label(
+                "lbl",
+                "Copy details",
+                "mnema 0.1 (macos/aarch64)",
+            ))
+            .child(CopyButton::icon("none", "Copy nothing", ""))
+            .into_any_element()
+    });
+    assert_eq!(label(cx, window, "ico"), "Copy line");
+    act(cx, window, |w, cx| w.click("ico", cx));
+    assert_eq!(clipboard(cx).as_deref(), Some("the line"));
+    assert_eq!(label(cx, window, "ico"), "Copied");
+    advance(cx, COPIED_FOR - Duration::from_millis(1));
+    assert_eq!(
+        label(cx, window, "ico"),
+        "Copied",
+        "still Copied at 1199 ms"
+    );
+    advance(cx, Duration::from_millis(1));
+    assert_eq!(label(cx, window, "ico"), "Copy line", "reverted at 1200 ms");
+
+    act(cx, window, |w, cx| w.click("lbl", cx));
+    assert_eq!(clipboard(cx).as_deref(), Some("mnema 0.1 (macos/aarch64)"));
+    assert_eq!(label(cx, window, "lbl"), "Copied");
+
+    // Nothing to copy: drawn disabled, the clipboard keeps what it had.
+    act(cx, window, |w, cx| w.click("none", cx));
+    assert_eq!(clipboard(cx).as_deref(), Some("mnema 0.1 (macos/aarch64)"));
+}

@@ -255,3 +255,33 @@ fn skipping_ai_still_finishes(cx: &mut TestAppContext) {
     });
     assert!(backend.calls().iter().any(|c| c.starts_with("finish")));
 }
+
+#[gpui_kit::test]
+fn the_chatgpt_code_copies_by_click_and_says_copied(cx: &mut TestAppContext) {
+    use gpui_kit::test::TestWindowExt as _;
+    let (view, vcx, _) = open(cx, None);
+    vcx.simulate_resize(gpui_kit::size(gpui_kit::px(1120.), gpui_kit::px(1400.)));
+    view.update(vcx, |o, cx| {
+        o.ai_set_kind(AiProviderKind::Chatgpt, cx);
+        o.ai_chatgpt_sign_in(cx);
+    });
+    vcx.run_until_parked();
+    vcx.update(|window, cx| {
+        window.render_frame(cx);
+        window.click("ob-ai-copy-code", cx);
+    });
+    vcx.run_until_parked();
+    let (clip, label) = vcx.update(|window, cx| {
+        window.render_frame(cx);
+        (
+            cx.read_from_clipboard().and_then(|c| c.text()),
+            window
+                .find("ob-ai-copy-code")
+                .label()
+                .unwrap_or_default()
+                .to_string(),
+        )
+    });
+    assert_eq!(clip.as_deref(), Some("WXYZ-1234"));
+    assert_eq!(label, "Copied");
+}

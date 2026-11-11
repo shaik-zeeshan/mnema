@@ -12,6 +12,7 @@ pub mod chip;
 pub mod choice;
 pub mod clock;
 pub mod combobox;
+pub mod copy;
 pub mod date_input;
 pub mod dialog;
 pub mod empty;
@@ -38,6 +39,7 @@ pub mod window_strip;
 mod controls_tests;
 
 pub use button::{Button, ButtonSize, Variant};
+pub use copy::CopyButton;
 pub use kbd::{kbd, keys};
 pub use popover::{pop_in, popover, popover_shadow};
 pub use tooltip::{with_tip, Tip};

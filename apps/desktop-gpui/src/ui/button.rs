@@ -186,6 +186,11 @@ impl Button {
         self.focus = Some(h.clone());
         self
     }
+    /// The accessible name, when it should say more than (or other than) the label.
+    pub fn aria(mut self, a: impl Into<SharedString>) -> Self {
+        self.aria = Some(a.into());
+        self
+    }
     pub fn tip(mut self, t: impl Into<SharedString>) -> Self {
         self.tip = Some(t.into());
         self

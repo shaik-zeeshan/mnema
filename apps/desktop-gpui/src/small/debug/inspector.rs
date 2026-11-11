@@ -129,7 +129,7 @@ pub fn view(
                     div()
                         .id("dv-insp-error")
                         .test_support()
-                        .child(raw_err(e, p))
+                        .child(raw_err("dv-insp-error-copy", e, p))
                         .into_any_element(),
                 ),
                 vec![],

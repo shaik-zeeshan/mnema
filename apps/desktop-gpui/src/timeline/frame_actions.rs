@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     deferred, div, px, AnyElement, ClipboardItem, Context, Image, ImageFormat, PromptLevel, Role,
     SharedString, Window,
@@ -26,13 +27,15 @@ fn ext(mime: &str) -> &'static str {
     }
 }
 
-fn format(mime: &str) -> ImageFormat {
-    match mime {
-        "image/jpeg" => ImageFormat::Jpeg,
-        "image/webp" => ImageFormat::Webp,
-        "image/gif" => ImageFormat::Gif,
-        _ => ImageFormat::Png,
-    }
+/// The stored preview (WebP, or JPEG) as PNG: most apps can't paste a WebP
+/// pasteboard item, so `FrameDetailModal.svelte` re-encodes it too (via RGBA).
+pub fn as_png(bytes: &[u8]) -> Option<Vec<u8>> {
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::load_from_memory(bytes)
+        .ok()?
+        .write_to(&mut out, image::ImageFormat::Png)
+        .ok()?;
+    Some(out.into_inner())
 }
 
 /// `activeFrameDownloadName`: `frame-<id>-<captured, punctuation dashed>.<ext>`.
@@ -96,22 +99,20 @@ impl TimelineView {
             view.set_status(Some("Copying…".into()), None, false, cx);
             let path = preview.file_path.clone();
             cx.spawn(async move |this, cx| {
-                let bytes = cx
+                let png = cx
                     .background_executor()
-                    .spawn(async move { std::fs::read(&path) })
+                    .spawn(async move { std::fs::read(&path).ok().and_then(|b| as_png(&b)) })
                     .await;
                 this.update(cx, |view, cx| {
                     view.busy_action = None;
-                    match bytes {
-                        // shortcut: the Svelte page re-encodes to RGBA via a canvas;
-                        // this hands the stored bytes over in their own format.
-                        Ok(b) => {
-                            let image = Image::from_bytes(format(&preview.mime_type), b);
+                    match png {
+                        Some(b) => {
+                            let image = Image::from_bytes(ImageFormat::Png, b);
                             cx.write_to_clipboard(ClipboardItem::new_image(&image));
                             view.menu_open = false;
                             view.set_status(Some(format!("Copied frame {id}")), None, false, cx);
                         }
-                        Err(_) => view.set_status(
+                        None => view.set_status(
                             Some("Copy failed: clipboard write was rejected".into()),
                             None,
                             false,
@@ -223,10 +224,11 @@ fn item(
     meta: Option<&'static str>,
     enabled: bool,
     p: &Palette,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
+) -> impl crate::ui::Control {
     let hover = (p.surface_hover, p.text_strong);
     div()
         .id(id)
+        .test_support()
         .role(Role::MenuItem)
         .flex()
         .items_center()

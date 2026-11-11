@@ -2,7 +2,7 @@
 //! update status panel + Check / Install, and the third-party notices.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, AnyElement, ClipboardItem, Context};
+use gpui_kit::{div, px, AnyElement, Context};
 use serde_json::Value;
 
 use crate::settings::model::{short_datetime, Json};
@@ -11,7 +11,7 @@ use crate::settings::{click, Settings};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::link::Link;
-use crate::ui::{nid, Button};
+use crate::ui::{nid, Button, CopyButton};
 
 /// `appUpdateStateLabel`.
 fn state_label(u: Option<&Value>) -> &'static str {
@@ -52,17 +52,16 @@ fn message(u: Option<&Value>) -> String {
     }
 }
 
+/// `About.svelte`'s copy buttons: the label reads "Copied" for 2 s.
 fn copy_button(
     id: &'static str,
     label: &'static str,
+    aria: &'static str,
     text_: String,
-    cx: &mut Context<Settings>,
-) -> Button {
-    Button::new(id, label)
-        .sm()
-        .on_click(click(cx, move |_, cx| {
-            cx.write_to_clipboard(ClipboardItem::new_string(text_.clone()))
-        }))
+) -> CopyButton {
+    CopyButton::label(id, label, text_)
+        .aria(aria)
+        .revert(std::time::Duration::from_millis(2000))
 }
 
 /// `set_app_update_channel`: preview builds ask first (they are less tested).
@@ -176,7 +175,12 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
             row("Copy details")
                 .desc("Copy version and build details to the clipboard.")
                 .no_divider()
-                .control(copy_button("about-copy", "Copy details", details, cx))
+                .control(copy_button(
+                    "about-copy",
+                    "Copy details",
+                    "Copy version and build details to the clipboard",
+                    details,
+                ))
                 .build(p)
                 .into_any_element(),
         ],
@@ -341,7 +345,12 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
                     .flex_col()
                     .gap(space::S4)
                     .w_full()
-                    .child(div().child(copy_button("notices-copy", "Copy notices", plain, cx)))
+                    .child(div().child(copy_button(
+                        "notices-copy",
+                        "Copy notices",
+                        "Copy the full third-party notices to the clipboard",
+                        plain,
+                    )))
                     .children(groups),
             )
             .build(p)

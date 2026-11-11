@@ -460,7 +460,12 @@ pub fn help_groups(b: &Bindings, s: HelpState, extra: Vec<HelpGroup>) -> Vec<Hel
             rows: here,
         },
     ];
-    groups.extend(extra.into_iter().filter(|g| !g.rows.is_empty()));
+    groups.extend(extra);
+    // `ShortcutsPop.svelte`: a cleared shortcut has no row, and an emptied group no title.
+    for g in &mut groups {
+        g.rows.retain(|r| !r.keys.trim().is_empty());
+    }
+    groups.retain(|g| !g.rows.is_empty());
     groups
 }
 

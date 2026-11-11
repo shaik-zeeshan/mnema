@@ -27,6 +27,7 @@ use gpui_kit::{
     ScrollHandle, Task, Window,
 };
 
+use crate::ui::toast::{Toast, Toasts};
 use data::{DebugBackend, DebugData, Section};
 use model::Tab;
 use readouts::Level;
@@ -35,6 +36,8 @@ pub const SIZE: (f32, f32) = (520., 640.);
 pub const MIN: (f32, f32) = (440., 480.);
 pub const MINI: (f32, f32) = (300., 120.);
 const TICK: Duration = Duration::from_secs(1);
+/// `LogsTab.svelte`'s `is-copied` mark.
+pub const LINE_COPIED_FOR: Duration = Duration::from_millis(1200);
 /// The drill-in's jobs poll (`controller.poll(detail.fetchJobs, 2000)`).
 const JOBS_EVERY: Duration = Duration::from_secs(2);
 
@@ -57,6 +60,12 @@ pub struct DebugWindow {
     pub feature: usize,
     pub follow: bool,
     pub needle: Entity<InputState>,
+    /// The log line just copied (it reads "copied" for [`LINE_COPIED_FOR`]) and
+    /// the one under the pointer (it shows its copy button), by raw text.
+    pub copied_line: Option<String>,
+    copied_line_task: Option<Task<()>>,
+    pub hovered_line: Option<String>,
+    pub toasts: Entity<Toasts>,
     pub(crate) body_scroll: ScrollHandle,
     pub(crate) log_scroll: ScrollHandle,
     /// The full-mode size to return to from mini.
@@ -103,6 +112,10 @@ impl DebugWindow {
             feature: 0,
             follow: true,
             needle,
+            copied_line: None,
+            copied_line_task: None,
+            hovered_line: None,
+            toasts: cx.new(|_| Toasts::default()),
             body_scroll: ScrollHandle::new(),
             log_scroll: ScrollHandle::new(),
             restore: None,
@@ -296,9 +309,34 @@ impl DebugWindow {
         out
     }
 
+    /// `DevStrip.svelte`'s toast, as this window's outcome line.
     pub fn copy_diagnostics(&mut self, cx: &mut Context<Self>) {
         self.menu_open = false;
         cx.write_to_clipboard(ClipboardItem::new_string(self.diagnostics()));
+        self.toasts.update(cx, |t, cx| {
+            t.push(
+                Toast::ok("Diagnostics copied \u{b7} health, versions, queues, last 200 log lines"),
+                cx,
+            );
+        });
+        cx.notify();
+    }
+
+    /// Click a log line: it goes on the clipboard and reads "copied" for a moment.
+    pub fn copy_line(&mut self, raw: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()));
+        self.mark_copied(raw, cx);
+    }
+
+    pub fn mark_copied(&mut self, raw: String, cx: &mut Context<Self>) {
+        self.copied_line = Some(raw);
+        self.copied_line_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(LINE_COPIED_FOR).await;
+            let _ = this.update(cx, |w, cx| {
+                w.copied_line = None;
+                cx.notify();
+            });
+        }));
         cx.notify();
     }
 
@@ -330,7 +368,7 @@ impl Render for DebugWindow {
             .key_context("DebugWindow")
             .track_focus(&self.root_focus)
             .on_key_down(cx.listener(Self::on_key));
-        match self.mode {
+        let root = match self.mode {
             Mode::Mini => root.child(chrome::mini(self, cx, &p)),
             Mode::Full => root
                 .child(chrome::strip(self, cx, &p))
@@ -338,7 +376,8 @@ impl Render for DebugWindow {
                 .child(chrome::tab_bar(self, cx, &p))
                 .child(tabs::body(self, window, cx, &p))
                 .children(chrome::more_menu(self, cx, &p)),
-        }
+        };
+        root.child(self.toasts.clone())
     }
 }
 

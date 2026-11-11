@@ -25,7 +25,7 @@ use mnema_gpui::theme;
 use super::compare;
 
 /// `(surface, state, fixture file)` for every golden; the fixture defaults like `shoot.ts`.
-pub const STATES: [(&str, &str, &str); 23] = [
+pub const STATES: [(&str, &str, &str); 24] = [
     ("access", "request", "request"),
     ("access", "widen", "widen"),
     ("access", "no-request", "no-request"),
@@ -49,6 +49,8 @@ pub const STATES: [(&str, &str, &str); 23] = [
     ("debug", "capture", "default"),
     ("debug", "ai", "default"),
     ("debug", "logs", "default"),
+    // The ERROR line under the pointer (its copy button) and the WARN line just copied.
+    ("debug", "logs-copy", "default"),
     ("debug-mini", "mini", "default"),
 ];
 
@@ -138,7 +140,7 @@ pub fn render(
                         "pipeline" | "jobs" | "job" => Tab::Pipeline,
                         "capture" => Tab::Capture,
                         "ai" => Tab::Ai,
-                        "logs" => Tab::Logs,
+                        "logs" | "logs-copy" => Tab::Logs,
                         _ => Tab::Overview,
                     };
                     if surface == "debug-mini" {
@@ -168,6 +170,23 @@ pub fn render(
                 // The failed job at its attempt ceiling, with a multi-line error.
                 let job = w.detail.jobs.iter().find(|j| j["id"] == 48213871).cloned();
                 w.open_job(job.expect("the fixture's failed job"), cx);
+            })
+        })?;
+        settle(cx, window)?;
+    }
+    if let (Some(v), "logs-copy") = (&debug_view, state) {
+        let line = |i: usize| {
+            map["tail_app_log"]["lines"][i]
+                .as_str()
+                .unwrap_or("")
+                .to_string()
+        };
+        let (error, warn) = (format!("{}\n{}", line(5), line(6)), line(2));
+        cx.update_window(window, |_, _, cx| {
+            v.update(cx, |w, cx| {
+                w.hovered_line = Some(error);
+                w.copied_line = Some(warn);
+                cx.notify();
             })
         })?;
         settle(cx, window)?;

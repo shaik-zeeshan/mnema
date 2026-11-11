@@ -174,14 +174,14 @@ impl ModelRow {
                             .child(path),
                     )
                     .child(
-                        Button::new(SharedString::from(format!("{id}-copy-folder")), "Copy")
-                            .ghost()
-                            .sm()
-                            .on_click(crate::settings::click(cx, move |_, cx| {
-                                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
-                                    copy.clone(),
-                                ))
-                            })),
+                        // `ModelDownloadRow.svelte`: "Copied" for 1.5 s.
+                        crate::ui::CopyButton::label(
+                            SharedString::from(format!("{id}-copy-folder")),
+                            "Copy",
+                            copy,
+                        )
+                        .ghost()
+                        .revert(std::time::Duration::from_millis(1500)),
                     ),
             );
         }

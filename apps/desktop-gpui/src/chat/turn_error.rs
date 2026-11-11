@@ -11,15 +11,34 @@ use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, AnyElement, ClipboardItem, Context, Div, SharedString};
 use serde_json::Value;
+use std::time::Duration;
 
 use super::{Chat, ChatTurn};
 use crate::insights::model::{reason_copy, Engine};
 use crate::theme::{self, size, text, Palette, FONT_MONO};
 use crate::ui::link::Link;
 use crate::ui::notice::notice;
-use crate::ui::{icon, icon_button, Button, Tone};
+use crate::ui::{icon, icon_button, with_tip, Button, Tone};
 
 const VERIFY_HOST: &str = "auth.openai.com/codex/device";
+/// `ChatgptConnect.svelte`: the copy button reads "Copied" for 1.5 s.
+pub const CODE_COPIED_FOR: Duration = Duration::from_millis(1500);
+
+impl Chat {
+    /// The device code on the clipboard, and "Copied" on its button (either click).
+    pub fn copy_code(&mut self, code: String, cx: &mut Context<Self>) {
+        cx.write_to_clipboard(ClipboardItem::new_string(code));
+        self.code_copied = true;
+        self.code_copied_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(CODE_COPIED_FOR).await;
+            let _ = this.update(cx, |this, cx| {
+                this.code_copied = false;
+                cx.notify();
+            });
+        }));
+        cx.notify();
+    }
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Action {
@@ -183,10 +202,10 @@ fn sign_in(chat: &Chat, id: &str, p: &Palette, cx: &mut Context<Chat>) -> AnyEle
     if let Some(Login::Waiting { code, url }) = state {
         let copy = |c: &String| {
             let c = c.clone();
-            move |_: &gpui_kit::ClickEvent, _: &mut gpui_kit::Window, cx: &mut gpui_kit::App| {
-                cx.write_to_clipboard(ClipboardItem::new_string(c.clone()))
-            }
+            cx.listener(move |this, _: &gpui_kit::ClickEvent, _, cx| this.copy_code(c.clone(), cx))
         };
+        let copied = chat.code_copied;
+        let label = if copied { "Copied" } else { "Copy code" };
         return col
             .child(
                 div()
@@ -218,9 +237,20 @@ fn sign_in(chat: &Chat, id: &str, p: &Palette, cx: &mut Context<Chat>) -> AnyEle
                             .on_click(copy(code)),
                     )
                     .child(
-                        icon_button("chat-signin-copy", "Copy code", size::H_SM, false, p)
-                            .child(icon(IconName::Copy.path(), px(14.)))
-                            .on_click(copy(code)),
+                        with_tip(
+                            icon_button("chat-signin-copy", label, size::H_SM, false, p).child(
+                                icon(
+                                    if copied {
+                                        IconName::Check.path()
+                                    } else {
+                                        IconName::Copy.path()
+                                    },
+                                    px(14.),
+                                ),
+                            ),
+                            label,
+                        )
+                        .on_click(copy(code)),
                     ),
             )
             .child(

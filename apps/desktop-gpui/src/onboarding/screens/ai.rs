@@ -5,7 +5,7 @@
 
 use capture_types::AiProviderKind;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, ClipboardItem, Context, Hsla, SharedString, Window};
+use gpui_kit::{div, px, relative, AnyElement, Context, Hsla, SharedString, Window};
 
 use super::{button, on_ix};
 use crate::chat::format::{kind_label, provider_instance_label};
@@ -355,10 +355,9 @@ impl Onboarding {
                     .gap(space::S3)
                     .child(parts::mono(code, text::XL, p.text_strong))
                     .child(
-                        button("ob-ai-copy-code", "Copy code", cx, move |_, _, cx| {
-                            cx.write_to_clipboard(ClipboardItem::new_string(copy.clone()))
-                        })
-                        .sm(),
+                        // `ChatgptConnect.svelte`: "Copied" for 1.5 s.
+                        crate::ui::CopyButton::label("ob-ai-copy-code", "Copy code", copy)
+                            .revert(crate::chat::turn_error::CODE_COPIED_FOR),
                     )
                     .child(
                         button("ob-ai-open-page", "Open the page", cx, |this, _, cx| {

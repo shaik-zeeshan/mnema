@@ -89,7 +89,12 @@ fn capture_health(map: &mut serde_json::Value) {
     ]);
 }
 
-const SHELL_STATES: [State; 7] = [
+/// Developer options on: the status popover ends with "Open developer window".
+fn developer(map: &mut serde_json::Value) {
+    map["get_recording_settings"]["developerOptionsEnabled"] = true.into();
+}
+
+const SHELL_STATES: [State; 8] = [
     State {
         name: "populated",
         fixture: FixtureId::Populated,
@@ -131,6 +136,13 @@ const SHELL_STATES: [State; 7] = [
         overlay: Some(Overlay::Shortcuts),
         viewport: MAIN,
         patch: None,
+    },
+    State {
+        name: "recording-developer",
+        fixture: FixtureId::Populated,
+        overlay: Some(Overlay::Status),
+        viewport: MAIN,
+        patch: Some(developer),
     },
     State {
         name: "capture-health",
@@ -185,7 +197,9 @@ fn render(
     cx.update(|cx| theme::set_setting(setting, cx));
     let overlay = state.overlay;
     // The Timeline under the shell shows the same parity data the Tauri shot does.
-    let fixture = if state.fixture == FixtureId::Populated {
+    // Developer options draw the stage's frame debug panel (absolute file path,
+    // live counters): that state goes over the frameless Timeline instead.
+    let fixture = if state.fixture == FixtureId::Populated && state.name != "recording-developer" {
         "default"
     } else {
         "first-run"

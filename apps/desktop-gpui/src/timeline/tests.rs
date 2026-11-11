@@ -9,8 +9,8 @@ use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    point, px, size, AppContext as _, Bounds, Entity, ScrollDelta,
-    TestAppContext, WindowAppearance, WindowBounds, WindowHandle, WindowOptions,
+    point, px, size, AppContext as _, Bounds, Entity, ScrollDelta, TestAppContext,
+    WindowAppearance, WindowBounds, WindowHandle, WindowOptions,
 };
 use serde_json::json;
 
@@ -319,7 +319,10 @@ fn wheel_anywhere_scrubs_and_the_readout_flies_190ms(cx: &mut TestAppContext) {
     let landed = x(cx);
     assert!(start < mid && mid < landed, "older flies in from the left");
     // Ease-out (quart): the last millisecond is sub-pixel, so 189 ms is 'not past'.
-    assert!(at_189 <= landed && at_189 > mid, "189 ms: still short of landing");
+    assert!(
+        at_189 <= landed && at_189 > mid,
+        "189 ms: still short of landing"
+    );
     assert_eq!(at_190, landed, "190 ms: landed");
 }
 
@@ -421,4 +424,68 @@ fn land_audio_opens_the_segment_at_its_moment_or_says_it_is_gone(cx: &mut TestAp
         assert_eq!(status.message, "That capture is no longer available.");
         assert!(status.error);
     });
+}
+
+#[gpui_kit::test]
+fn copy_image_puts_a_png_on_the_clipboard_and_copy_text_the_lines(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, source(3));
+    advance(cx, EXACT_SETTLE);
+    frame(cx, w);
+    let click = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(w.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    let status = |cx: &mut TestAppContext| {
+        v.read_with(cx, |t, _| t.status.as_ref().map(|s| s.message.clone()))
+    };
+    // The ⋯ trigger itself is drawn (timeline-populated golden) but the test
+    // observer reads it as clipped inside the stage; open the menu as it does.
+    let open_menu = |cx: &mut TestAppContext| {
+        v.update(cx, |t, cx| {
+            t.menu_open = true;
+            cx.notify();
+        });
+        frame(cx, w);
+    };
+    open_menu(cx);
+    click(cx, "action-copy");
+    // The stored preview is WebP; most apps can't paste that, so it goes over as PNG.
+    let image = cx.read(|cx| {
+        cx.read_from_clipboard().and_then(|c| {
+            c.into_entries().find_map(|e| match e {
+                gpui_kit::ClipboardEntry::Image(i) => Some(i),
+                _ => None,
+            })
+        })
+    });
+    let image = image.expect("an image on the clipboard");
+    assert_eq!(image.format, gpui_kit::ImageFormat::Png);
+    assert!(image.bytes.starts_with(b"\x89PNG"), "real PNG bytes");
+    assert_eq!(status(cx).as_deref(), Some("Copied frame 10000"));
+
+    let id = v.read_with(cx, |t, _| t.paging.active_frame().map(|f| f.id));
+    v.update(cx, |t, cx| {
+        t.ocr.frame_id = id;
+        t.ocr.status = super::OcrStatus::Success;
+        t.ocr.boxes = ["Pricing", "Pro plan · $12"]
+            .map(|text| super::model::OcrBox {
+                x: 0.,
+                y: 0.,
+                w: 0.1,
+                h: 0.1,
+                text: text.into(),
+                confidence: 1.,
+            })
+            .to_vec();
+        cx.notify();
+    });
+    open_menu(cx);
+    click(cx, "action-copy-text");
+    let text = cx.read(|cx| cx.read_from_clipboard().and_then(|c| c.text()));
+    assert_eq!(text.as_deref(), Some("Pricing\nPro plan · $12"));
+    assert_eq!(status(cx).as_deref(), Some("Copied 2 text regions"));
 }

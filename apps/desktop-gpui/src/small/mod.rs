@@ -11,6 +11,8 @@ pub mod parts;
 pub mod update;
 
 #[cfg(test)]
+mod copy_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;

@@ -94,6 +94,7 @@ pub fn display_source(source: &str, streaming: bool) -> String {
 pub fn prose(id: impl Into<ElementId>, source: &str, streaming: bool, p: &Palette) -> Div {
     let view = TextView::markdown(id, display_source(source, streaming))
         .plugin(CaretPlugin(p.accent))
+        .code_block_actions(crate::ui::copy::code_actions)
         .on_link_click(crate::ui::link::prose_click);
     let view = if streaming {
         view.shared_code_block_highlighter(NO_HIGHLIGHT.clone())

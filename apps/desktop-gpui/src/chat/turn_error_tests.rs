@@ -291,4 +291,42 @@ mod sign_in {
         );
         assert!(present(cx, w, "chat-signin"));
     }
+
+    #[gpui_kit::test]
+    fn the_sign_in_code_copies_from_its_button_or_itself_and_says_copied(cx: &mut TestAppContext) {
+        use crate::chat::turn_error::CODE_COPIED_FOR;
+        let (w, chat, _) = setup(cx, Some(("ABCD-1234".into(), URL.into())));
+        click(cx, w, "chat-signin");
+        let label = |cx: &mut TestAppContext| {
+            cx.update_window(w.into(), |_, window, cx| {
+                window.render_frame(cx);
+                window
+                    .find("chat-signin-copy")
+                    .label()
+                    .unwrap_or_default()
+                    .to_string()
+            })
+            .unwrap()
+        };
+        let clip =
+            |cx: &mut TestAppContext| cx.read(|cx| cx.read_from_clipboard().and_then(|c| c.text()));
+        assert_eq!(label(cx), "Copy code");
+        click(cx, w, "chat-signin-copy");
+        assert_eq!(clip(cx).as_deref(), Some("ABCD-1234"));
+        assert_eq!(label(cx), "Copied");
+        cx.executor().advance_clock(CODE_COPIED_FOR);
+        cx.run_until_parked();
+        assert_eq!(label(cx), "Copy code", "reverted at 1.5 s");
+        cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("other".into()));
+        click(cx, w, "chat-signin-code");
+        assert_eq!(
+            clip(cx).as_deref(),
+            Some("ABCD-1234"),
+            "the code itself copies too"
+        );
+        assert!(
+            chat.read_with(cx, |c, _| c.code_copied),
+            "and flips the button"
+        );
+    }
 }

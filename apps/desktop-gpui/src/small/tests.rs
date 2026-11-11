@@ -21,7 +21,7 @@ use crate::theme;
 
 const MS: Duration = Duration::from_millis(1);
 
-fn init(cx: &mut TestAppContext) {
+pub(super) fn init(cx: &mut TestAppContext) {
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(AppearanceSetting::Dark, WindowAppearance::Dark, cx);
@@ -310,7 +310,7 @@ fn the_log_tail_is_one_row_per_line_and_scrolls(cx: &mut TestAppContext) {
         w.follow = false;
     });
     vcx.run_until_parked();
-    vcx.update(|window, cx| window.refresh());
+    vcx.update(|window, _| window.refresh());
     vcx.run_until_parked();
     let scroll = view.read_with(vcx, |w, _| w.log_scroll.clone());
     // 300 rows + the footer (a merged tail was 1 row + footer).
@@ -336,14 +336,14 @@ use super::debug::detail::SPECS;
 use super::debug::model::Tab;
 use crate::ui::nid;
 
-fn debug_map() -> Value {
+pub(super) fn debug_map() -> Value {
     serde_json::from_str(include_str!(
         "../../../desktop/parity/fixtures/debug/default.json"
     ))
     .unwrap()
 }
 
-fn drill(
+pub(super) fn drill(
     cx: &mut TestAppContext,
     map: Value,
 ) -> (
@@ -364,7 +364,7 @@ fn drill(
     (view, vcx, backend)
 }
 
-fn click(vcx: &mut VisualTestContext, id: gpui_kit::ElementId) {
+pub(super) fn click(vcx: &mut VisualTestContext, id: gpui_kit::ElementId) {
     vcx.update(|window, cx| {
         window.render_frame(cx);
         window.click(id, cx);
@@ -373,7 +373,7 @@ fn click(vcx: &mut VisualTestContext, id: gpui_kit::ElementId) {
     vcx.update(|window, cx| window.render_frame(cx));
 }
 
-fn has(vcx: &mut VisualTestContext, id: impl Into<gpui_kit::ElementId>) -> bool {
+pub(super) fn has(vcx: &mut VisualTestContext, id: impl Into<gpui_kit::ElementId>) -> bool {
     let id = id.into();
     vcx.update(|window, _| window.try_find(id).is_some())
 }

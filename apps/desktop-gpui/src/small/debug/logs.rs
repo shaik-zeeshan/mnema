@@ -4,17 +4,18 @@
 
 use crate::ui::input::FieldText as _;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, ClipboardItem, Context, Window};
+use gpui_kit::TestSupportExt as _;
+use gpui_kit::{div, px, relative, AnyElement, Context, Window};
 
 use super::data::LOG_TAIL_LINES;
 use super::readouts::{filter_entries, group_log_lines, Level, LOG_FEATURES};
 use super::DebugWindow;
 use crate::settings::model::Json;
-use crate::theme::{self, size, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::segmented::Segmented;
 use crate::ui::switch::Switch;
-use crate::ui::{mix, nid, Button, Tone};
+use crate::ui::{mix, nid, Button, CopyButton, Tone};
 
 const LEVELS: [Level; 3] = [Level::All, Level::Warn, Level::Error];
 
@@ -30,6 +31,24 @@ pub fn tab(
     let exists = tail.is_some_and(|t| t.bool_at(&["exists"]));
     let path = tail.and_then(|t| t.str_at(&["path"])).map(str::to_string);
     let this2 = this.clone();
+    let offset = crate::ui::clock::now(cx).offset().whole_seconds() as i64;
+    let lines: Vec<String> = tail
+        .and_then(|t| t["lines"].as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|l| l.as_str().map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    let grouped = group_log_lines(&lines, offset);
+    let needle = w.needle.read(cx).value().to_string();
+    let shown = filter_entries(&grouped, w.level, w.feature, &needle);
+    // What the filters leave on screen, oldest first (a backtrace stays with its line).
+    let visible = shown
+        .iter()
+        .map(|e| e.raw.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
     let bar = div()
         .flex()
         .flex_col()
@@ -70,6 +89,10 @@ pub fn tab(
                             },
                         ))
                         .child("Follow"),
+                )
+                .child(
+                    CopyButton::icon("dv-copy-visible", "Copy visible lines", visible)
+                        .tip("Copy visible lines"),
                 )
                 .child(
                     Button::icon_only("dv-reveal-log", "icons/folder.svg", "Reveal in Finder")
@@ -119,18 +142,6 @@ pub fn tab(
                 })),
         );
 
-    let offset = crate::ui::clock::now(cx).offset().whole_seconds() as i64;
-    let lines: Vec<String> = tail
-        .and_then(|t| t["lines"].as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|l| l.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let grouped = group_log_lines(&lines, offset);
-    let needle = w.needle.read(cx).value().to_string();
-    let shown = filter_entries(&grouped, w.level, w.feature, &needle);
     let compact = |tone, glyph: &'static str, title: &str, body: String| {
         empty(
             EmptyLayout::Compact,
@@ -178,9 +189,16 @@ pub fn tab(
                 let (tc, tbg, _) =
                     tone.map_or((p.text_subtle, p.surface_subtle, p.border), |t| t.colors(p));
                 let raw = e.raw.clone();
+                let copied = w.copied_line.as_deref() == Some(e.raw.as_str());
+                let hovered = w.hovered_line.as_deref() == Some(e.raw.as_str());
                 let wash = p.wash;
+                let (on_click, on_hover, marked) = (raw.clone(), raw.clone(), raw.clone());
+                let me = cx.entity().downgrade();
                 div()
                     .id(nid("dv-line", i as u64))
+                    .test_support()
+                    .role(gpui_kit::Role::ListItem)
+                    .relative()
                     .flex()
                     .gap(px(8.))
                     .px(space::S4)
@@ -188,8 +206,39 @@ pub fn tab(
                     .cursor_pointer()
                     .when_some(tone, |d, _| d.bg(mix(tbg, p.surface_subtle, 0.7)))
                     .hover(move |s| s.bg(wash))
-                    .on_click(move |_, _, cx| {
-                        cx.write_to_clipboard(ClipboardItem::new_string(raw.clone()))
+                    .on_hover(cx.listener(move |w, on: &bool, _, cx| {
+                        if *on {
+                            w.hovered_line = Some(on_hover.clone());
+                        } else if w.hovered_line.as_ref() == Some(&on_hover) {
+                            w.hovered_line = None;
+                        }
+                        cx.notify();
+                    }))
+                    .on_click(cx.listener(move |w, _, _, cx| w.copy_line(on_click.clone(), cx)))
+                    // The visible way to copy: a small button on the line under the pointer.
+                    .when(hovered, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(1.))
+                                .right(space::S2)
+                                .rounded(radius::SM)
+                                .border_1()
+                                .border_color(p.hairline)
+                                .bg(p.surface_raised)
+                                .child(
+                                    CopyButton::icon(
+                                        nid("dv-line-copy", i as u64),
+                                        "Copy line",
+                                        raw,
+                                    )
+                                    .h(px(18.))
+                                    .on_copied(move |_, cx| {
+                                        let _ = me
+                                            .update(cx, |w, cx| w.mark_copied(marked.clone(), cx));
+                                    }),
+                                ),
+                        )
                     })
                     .child(
                         div()
@@ -205,7 +254,9 @@ pub fn tab(
                             .text_size(text::XS)
                             .text_color(tc)
                             .when(tone.is_some(), |d| d.font_weight(theme::W_SEMIBOLD))
-                            .child(e.head.as_ref().map_or(String::new(), |h| h.level.clone())),
+                            .child(e.head.as_ref().map_or(String::new(), |h| h.level.clone()))
+                            // `.dv-line.is-copied .dv-line__l::after { content: " copied" }`.
+                            .when(copied, |d| d.child("copied")),
                     )
                     .child(
                         div()

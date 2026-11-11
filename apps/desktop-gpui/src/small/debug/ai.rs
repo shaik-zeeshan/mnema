@@ -47,6 +47,11 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                         .join(" \u{b7} "),
                 ),
             };
+            // The engine's trouble, in words, for a bug report.
+            let copy_text = match &sub {
+                Some(s) => format!("{title} \u{b7} {s}"),
+                None => title.clone(),
+            };
             div()
                 .child(dot(tone, px(7.), p))
                 .child(
@@ -68,6 +73,13 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                                 .child(s)
                         })),
                 )
+                .when(matches!(tone, Tone::Warn | Tone::Danger), |d| {
+                    d.child(crate::ui::CopyButton::icon(
+                        "dv-ai-engine-copy",
+                        "Copy message",
+                        copy_text,
+                    ))
+                })
                 .child({
                     let me = cx.entity().downgrade();
                     Button::new("dv-test-ai", "Test connection")

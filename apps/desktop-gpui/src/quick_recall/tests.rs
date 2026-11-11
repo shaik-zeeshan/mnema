@@ -351,3 +351,46 @@ fn the_panel_warms_mcp_once_and_only_with_ai_and_a_connector_on(cx: &mut TestApp
         assert_eq!(warms, want, "ai {ai}, connector {connector}");
     }
 }
+
+#[gpui_kit::test]
+fn quick_looks_copy_button_copies_the_frame_text_and_says_copied(cx: &mut TestAppContext) {
+    let (w, v, b) = open(cx, "results");
+    typed(cx, w, "pricing page");
+    advance(cx, SEARCH_DEBOUNCE);
+    keys(cx, w, "down");
+    keys(cx, w, "space");
+    frame(cx, w);
+    let is_screen = v.read_with(cx, |qr, _| qr.look.as_ref().map(|l| l.is_screen()));
+    assert!(is_screen.is_some(), "Quick Look is open");
+    cx.update_window(w.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click("qr-look-copy", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let clip = cx.read(|cx| cx.read_from_clipboard().and_then(|c| c.text()));
+    let expected = if is_screen == Some(true) {
+        b.ocr_text(0)
+    } else {
+        v.read_with(cx, |qr, _| {
+            qr.look
+                .as_ref()
+                .and_then(|l| l.turn())
+                .map(|t| t.text.clone())
+        })
+    };
+    assert!(
+        clip.as_deref().is_some_and(|t| !t.is_empty()),
+        "something real: {clip:?}"
+    );
+    assert_eq!(clip, expected);
+    assert!(
+        v.read_with(cx, |qr, _| qr.look.as_ref().unwrap().copied),
+        "the label reads Copied"
+    );
+    advance(cx, COPIED_LOOK);
+    assert!(
+        !v.read_with(cx, |qr, _| qr.look.as_ref().unwrap().copied),
+        "reverted at 1.4 s"
+    );
+}

@@ -558,3 +558,75 @@ fn window_focus_rechecks_access_without_touching_an_unsaved_edit(cx: &mut TestAp
         "and still saves"
     );
 }
+
+// ── Copy buttons ─────────────────────────────────────────────────────────────
+
+fn clipboard(cx: &mut TestAppContext) -> Option<String> {
+    cx.read(|cx| cx.read_from_clipboard().and_then(|c| c.text()))
+}
+
+fn click_and_label(cx: &mut TestAppContext, window: WindowHandle<Root>, id: &str) -> String {
+    let id = gpui_kit::SharedString::from(id.to_string());
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.click(id.clone(), cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    label_of(cx, window, &id)
+}
+
+fn label_of(cx: &mut TestAppContext, window: WindowHandle<Root>, id: &str) -> String {
+    let id = gpui_kit::SharedString::from(id.to_string());
+    cx.update_window(window.into(), |_, window, cx| {
+        window.render_frame(cx);
+        window.find(id).label().unwrap_or_default().to_string()
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn about_copy_details_and_notices_copy_and_say_copied_for_2s(cx: &mut TestAppContext) {
+    // Tall enough that the notices' button is on screen without scrolling.
+    let (window, v, _) = open_at(cx, false, (1280., 2400.));
+    v.update(cx, |s, cx| s.open_tab("about", cx));
+    cx.run_until_parked();
+    frame(cx, window);
+    assert_eq!(click_and_label(cx, window, "about-copy"), "Copied");
+    let details = clipboard(cx).unwrap_or_default();
+    assert!(
+        details == "Mnema 0.1.23 (macos/aarch64) day.mnema",
+        "{details}"
+    );
+    advance(cx, Duration::from_millis(1999));
+    assert_eq!(label_of(cx, window, "about-copy"), "Copied", "at 1999 ms");
+    advance(cx, MS);
+    assert_eq!(
+        label_of(cx, window, "about-copy"),
+        "Copy version and build details to the clipboard",
+        "reverted at 2 s"
+    );
+    assert_eq!(click_and_label(cx, window, "notices-copy"), "Copied");
+    let notices = clipboard(cx).unwrap_or_default();
+    assert!(
+        notices.len() > 200,
+        "the full notices: {} bytes",
+        notices.len()
+    );
+}
+
+#[gpui_kit::test]
+fn a_model_folder_copies_its_path(cx: &mut TestAppContext) {
+    let (window, v, _) = open(cx, false);
+    v.update(cx, |s, cx| s.open_tab("semantic-search", cx));
+    cx.run_until_parked();
+    frame(cx, window);
+    assert_eq!(
+        click_and_label(cx, window, "ss-model-row-copy-folder"),
+        "Copied"
+    );
+    assert_eq!(
+        clipboard(cx).as_deref(),
+        Some("/Users/ana/Library/Application Support/day.mnema/config/semantic_search_models")
+    );
+}

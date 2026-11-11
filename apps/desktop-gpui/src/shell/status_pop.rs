@@ -163,6 +163,28 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
     });
     let disk = pop_rows::disk_row(m).map(|r| group("Disk", p).child(rows(&[r], p, cx)));
     let ai = pop_rows::ai_row(m).map(|r| group("AI", p).child(rows(&[r], p, cx)));
+    // `.ss-pop__foot`: developer options only; closes the popover, then opens the window.
+    let foot = shell.model.developer_options.then(|| {
+        let key = keymap::display(&shell.bindings.open_debug);
+        div()
+            .mt(space::S1)
+            .mx(space::S2)
+            .pt(space::S2)
+            .border_t_1()
+            .border_color(p.hairline)
+            .child(
+                Button::new("status-pop-debug", "Open developer window")
+                    .ghost()
+                    .sm()
+                    .block()
+                    .when(!key.is_empty(), |b| b.kbd(key))
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.overlay = None;
+                        this.open_debug(cx);
+                        cx.notify();
+                    })),
+            )
+    });
     pop_in(
         popover("status-popover", "What Mnema is doing", p)
             .left(space::S2)
@@ -178,7 +200,8 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
             .children(capture)
             .children(catching)
             .children(disk)
-            .children(ai),
+            .children(ai)
+            .children(foot),
         theme::size::STATUS_BAR + theme::size::POP_GAP,
         true,
     )
