@@ -205,19 +205,46 @@ fn read_service_token(service: &str, account: &str) -> Result<Option<String>> {
     }
 }
 
+/// Tests and tools run with `MNEMA_TRIPWIRE_NO_KEYCHAIN=1` (see `secret_vault`).
+/// Under it the developer's REAL `day.mnema.licensing` items are off limits: on
+/// 2026-11-11 a test of the Settings licence panel reached this store without
+/// `MNEMA_LICENSE_TOKEN_DIR` and prompted for the founder's licence. An error,
+/// not a panic: every caller already treats a store error as "no licence", so a
+/// test that strays here gets an unlicensed app instead of a real key.
+/// Not `cfg(test)`: the callers are other crates' tests, where it is false.
+#[cfg(any(target_os = "macos", test))]
+fn tripwire_refusal(tripwire_set: bool) -> Result<()> {
+    if tripwire_set {
+        return Err(AppInfraError::LicenseTokenStore(
+            "tripwire: refusing the real licence keychain (MNEMA_TRIPWIRE_NO_KEYCHAIN is set); \
+             point MNEMA_LICENSE_TOKEN_DIR at a scratch folder"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn refuse_real_keychain_under_tripwire() -> Result<()> {
+    tripwire_refusal(std::env::var_os("MNEMA_TRIPWIRE_NO_KEYCHAIN").is_some())
+}
+
 #[cfg(target_os = "macos")]
 fn load_platform_token(account: &str) -> Result<Option<String>> {
+    refuse_real_keychain_under_tripwire()?;
     read_service_token(KEYCHAIN_SERVICE, account)
 }
 
 #[cfg(target_os = "macos")]
 fn store_platform_token(account: &str, token: &str) -> Result<()> {
+    refuse_real_keychain_under_tripwire()?;
     security_framework::passwords::set_generic_password(KEYCHAIN_SERVICE, account, token.as_bytes())
         .map_err(|error| AppInfraError::LicenseTokenStore(error.to_string()))
 }
 
 #[cfg(target_os = "macos")]
 fn delete_platform_token(account: &str) -> Result<()> {
+    refuse_real_keychain_under_tripwire()?;
     match security_framework::passwords::delete_generic_password(KEYCHAIN_SERVICE, account) {
         Ok(()) => Ok(()),
         Err(error) if error.code() == ERR_SEC_ITEM_NOT_FOUND => Ok(()),
@@ -252,6 +279,16 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    /// The env read is one line in `refuse_real_keychain_under_tripwire`, which
+    /// load, store and delete all call first; this pins the decision itself
+    /// without touching the process environment or the keychain.
+    #[test]
+    fn the_tripwire_refuses_the_real_keychain() {
+        let refused = tripwire_refusal(true).expect_err("tripwire set must refuse");
+        assert!(refused.to_string().contains("tripwire"));
+        assert!(tripwire_refusal(false).is_ok());
+    }
 
     struct TestDir {
         path: PathBuf,
@@ -405,7 +442,9 @@ mod tests {
         // Trial-issuance stamp: round-trips, and clear removes it (clearing an
         // already-absent stamp stays success — the dev reset knob is idempotent).
         clear_trial_issuance().expect("clearing an absent stamp should succeed");
-        assert!(load_trial_issuance().expect("load should succeed").is_none());
+        assert!(load_trial_issuance()
+            .expect("load should succeed")
+            .is_none());
         store_trial_issuance(r#"{"first_attempt_at_ms":42,"used":false}"#)
             .expect("store should succeed");
         assert_eq!(
@@ -413,7 +452,9 @@ mod tests {
             Some(r#"{"first_attempt_at_ms":42,"used":false}"#.to_string())
         );
         clear_trial_issuance().expect("clear should succeed");
-        assert!(load_trial_issuance().expect("load should succeed").is_none());
+        assert!(load_trial_issuance()
+            .expect("load should succeed")
+            .is_none());
 
         std::env::remove_var("MNEMA_LICENSE_TOKEN_DIR");
     }
