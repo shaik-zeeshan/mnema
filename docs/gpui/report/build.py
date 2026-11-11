@@ -124,7 +124,7 @@ def shots_page(g, d, drafts):
 def fixes_page(d, drafts, key="fixes", title="Today’s fixes: before and after",
                lede="Pictures of each fix from your hands-on test. None of the changed screenshots replace the approved "
                     "ones until you approve them, so this is the only place they show."):
-    p = [top("Mnema · GPUI desktop app · 10 Nov 2026", title, lede,
+    p = [top("Mnema · GPUI desktop app · " + ("11 Nov 2026" if key == "round4" else "10 Nov 2026"), title, lede,
              f'Updated {E(d["updated"])} · {link(drafts, "index", "back to the progress report")}'),
          '<div class="pp-verdict"><span class="pp-chip" data-tone="strong">Your call</span>'
          f'<p>{E(d[key + "_verdict"])}</p></div>']
@@ -178,7 +178,8 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = ([(link(drafts, "round3", "Real-app test and behaviour audit"), "10 Nov night · what works when actually used, what is broken, what the old app does that the new one doesn't",
+    rows = ([(link(drafts, "round4", "11 Nov hands-on round: fixes"), "11 Nov · menus drawn under the page, copy buttons, missing models, the developer window from the status popover",
+              chip("awaiting your approval" if any(s.get("awaiting") for s in d["round4"]) else "done", "strong"))] if d.get("round4") else []) + ([(link(drafts, "round3", "Real-app test and behaviour audit"), "10 Nov night · what works when actually used, what is broken, what the old app does that the new one doesn't",
               chip("fixes in progress", "strong"))] if d.get("round3") else []) + ([(link(drafts, "round2", "Second hands-on round: fixes"), "10 Nov evening · search, text cursor, developer logs, links, scroll bars",
               chip("in progress", "strong"))] if d.get("round2") else []) + ([(link(drafts, "receipts", "Licence receipts: the final design"), "your pick on every licence receipt, with the three original directions below",
               chip("awaiting your approval", "strong"))] if d.get("receipts") else []) + [(link(drafts, "approve", "Waiting for your approval"), "screenshots that need your yes before they become references",
@@ -251,6 +252,11 @@ def main():
          fixes_page(d, drafts, "approve", "Waiting for your approval",
                     "Every screenshot that needs your yes before it becomes a reference, in one place."),
          "Mnema GPUI — screenshots waiting for approval")
+    if d.get("round4"):
+        emit("round4", "round4.html", "11 Nov hands-on round",
+             fixes_page(d, drafts, "round4", "11 Nov hands-on round: fixes",
+                        "What you found using the real dev build on 11 Nov, and what was done about each. The pictures are rendered from test data."),
+             "Mnema GPUI — 11 Nov hands-on round")
     if d.get("round3"):
         emit("round3", "round3.html", "Real-app test and behaviour audit",
              fixes_page(d, drafts, "round3", "Real-app test and behaviour audit",

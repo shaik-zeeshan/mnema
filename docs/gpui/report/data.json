@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 10:47",
- "verdict": "Every screen is built and connected to the real backend. On 11 Nov your seven decisions were finished, and your morning hands-on round is fixed too: models are found again (the missing-model error), three more mix-ups of the same kind, copy buttons that now work and say so, new copy buttons in the developer window, and the developer window opening from the status popover. A signed dev build with all of it is ready. Everything is in local commits; nothing is pushed. You approved the five copy-button screenshots on 11 Nov and their baselines are recorded, so no screenshot is waiting. What is left for you: a hands-on pass whenever you like, and your call on a deep review before cut-over.",
+ "updated": "2026-11-11 12:24",
+ "verdict": "Every screen is built and connected to the real backend. On 11 Nov your seven decisions were finished and your hands-on rounds that day are fixed: models are found again, three mix-ups of the same kind, copy buttons, the developer window from the status popover, and now the menu that was drawn under the page, with seven related faults found by checking every menu and list in the app. Everything is in local commits; nothing is pushed. What needs you: five screenshots to approve on the 11 Nov hands-on round page, and a word on when the open dev app may be restarted with the new build.",
  "metrics": [
   {
    "label": "Overall",
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,010",
-   "note": "1,353 shared backend + 141 activity-source + 507 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
+   "value": "2,020",
+   "note": "1,353 shared backend + 141 activity-source + 517 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "all approved",
-   "note": "the last five (copy buttons, popover button) approved on 11 Nov; baselines recorded in f65a2487"
+   "value": "5 pending",
+   "note": "four new pictures of open menus and lists, and the changed gallery dropdown page"
   }
  ],
  "bars": [
@@ -723,6 +723,16 @@
   }
  ],
  "waiting": [
+  {
+   "id": "Approve",
+   "title": "Five screenshots",
+   "detail": "Four new pictures of menus and lists open over the page, and the control gallery's dropdown page, which changed. On the 11 Nov hands-on round page, first section."
+  },
+  {
+   "id": "Restart",
+   "title": "Say when I may restart the dev app",
+   "detail": "The fix for the menus is committed and a new build is prepared, but the app you have open is the 10:08 build. Swapping it in means closing the app for about a minute."
+  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -1769,124 +1779,8 @@
    ]
   }
  ],
- "round3_verdict": "Your morning round on 11 Nov is fixed and committed locally: the missing-model error, three more mix-ups of the same kind found by an audit, the copy buttons, and the developer window from the status popover. The model fix is confirmed in the real app's log: no missing-model error, and the Whisper transcriber loaded and was unloaded on quit. You approved the five screenshots and their baselines are recorded; the full screenshot suite passes. The seven decisions from earlier are done. Nothing has been pushed.",
+ "round3_verdict": "Everything found by the real-app test and the behaviour audit on 10 Nov is fixed and committed locally, and the seven decisions from it are done. The rounds from 11 Nov have their own page. Nothing has been pushed.",
  "round3": [
-  {
-   "anchor": "r4-approve",
-   "title": "Copy buttons and the developer window button: approved on 11 Nov",
-   "toc": "Approved",
-   "commit": "eab577a8, baselines f65a2487",
-   "state": "approved · baselines recorded",
-   "awaiting": false,
-   "what": "You approved these five screens on 11 Nov; their baselines are recorded from a run that matches these pictures. All are rendered from test data. Three changed: the developer window's issue rows and a failed job's error box each gain a small copy icon, and the Logs toolbar gains Copy visible lines next to Follow. Two are new: a log line under the pointer with its copy button, with another line marked \"copied\"; and the status popover ending in Open developer window with its key, shown only when developer options are on.",
-   "rows": [
-    {
-     "heading": "Developer window › Overview › issue rows",
-     "shots": [
-      {
-       "file": "r4-debug-overview-issues-light.jpg",
-       "caption": "Light. Left: before. Right: after."
-      },
-      {
-       "file": "r4-debug-overview-issues-dark.jpg",
-       "caption": "Dark. Left: before. Right: after."
-      }
-     ]
-    },
-    {
-     "heading": "Developer window › a failed job",
-     "shots": [
-      {
-       "file": "r4-debug-job-light.jpg",
-       "caption": "Light. Left: before. Right: after."
-      },
-      {
-       "file": "r4-debug-job-dark.jpg",
-       "caption": "Dark. Left: before. Right: after."
-      }
-     ]
-    },
-    {
-     "heading": "Developer window › Logs toolbar",
-     "shots": [
-      {
-       "file": "r4-debug-logs-light.jpg",
-       "caption": "Light. Left: before. Right: after."
-      },
-      {
-       "file": "r4-debug-logs-dark.jpg",
-       "caption": "Dark. Left: before. Right: after."
-      }
-     ]
-    },
-    {
-     "heading": "New: a log line being copied",
-     "shots": [
-      {
-       "file": "r4-debug-logs-copy-light.jpg",
-       "caption": "Light"
-      },
-      {
-       "file": "r4-debug-logs-copy-dark.jpg",
-       "caption": "Dark"
-      }
-     ]
-    },
-    {
-     "heading": "New: status popover with Open developer window",
-     "shots": [
-      {
-       "file": "r4-shell-recording-developer-light.jpg",
-       "caption": "Light"
-      },
-      {
-       "file": "r4-shell-recording-developer-dark.jpg",
-       "caption": "Dark"
-      }
-     ]
-    }
-   ]
-  },
-  {
-   "anchor": "r4-copy",
-   "title": "Copy buttons that did nothing",
-   "toc": "Copy buttons",
-   "commit": "eab577a8",
-   "state": "fixed · committed",
-   "awaiting": false,
-   "what": "The dead one was most likely Timeline › ⋯ › Copy image: it put a WebP picture on the clipboard, which most apps cannot paste. It now copies a PNG. Six more copied correctly but showed nothing, so they looked dead: About's Copy details and Copy notices, the model folder, the sign-in codes in onboarding and Chat, a clicked log line, and Copy diagnostics. Each now says Copied, as the Tauri app does. Two the Tauri app has were missing and are built: Copy on code blocks inside answers and in the update window's notes. New, as you asked: a copy button on each developer-window log line, Copy visible lines, and a copy icon on every warning and error in the developer window. Every copy button now has a test that clicks it and reads the clipboard. Not checked: pasting a copied frame into another app, and none of this has been clicked in the real app yet. Small leftover: About's button gets narrower while it says Copied; the Tauri app keeps its width.",
-   "rows": []
-  },
-  {
-   "anchor": "r4-popover",
-   "title": "Developer window from the status popover",
-   "toc": "Popover button",
-   "commit": "eab577a8",
-   "state": "built · approved",
-   "awaiting": false,
-   "what": "The popover that opens from the recording readout now ends with Open developer window and your shortcut (⌘D by default) when developer options are on, like the Tauri app. Clicking it closes the popover and opens the window. The shortcuts sheet also hides a shortcut you have cleared, where it used to show an empty key box. Tested with a click; not yet clicked in the real app.",
-   "rows": []
-  },
-  {
-   "anchor": "r4-models",
-   "title": "\"Model is not installed\" for every model",
-   "toc": "Missing models",
-   "commit": "6d710352",
-   "state": "fixed · confirmed in the real app's log",
-   "awaiting": false,
-   "what": "Models are saved in the app's support folder, but nine places looked for them in the recordings folder, so every installed transcription, speaker and search model was reported missing. Fixed in the other session and committed here after the full checks; a test now fails if any code looks there again. In the rebuilt app the error did not appear, and the Whisper transcriber loaded and was unloaded on quit. Not checked: a transcript on screen.",
-   "rows": []
-  },
-  {
-   "anchor": "r4-audit",
-   "title": "Two more mix-ups of the same kind, and one left as it is",
-   "toc": "Similar issues",
-   "commit": "212fc4f9",
-   "state": "fixed · committed",
-   "awaiting": false,
-   "what": "An audit compared every folder, identity and bundled-file lookup in the old Tauri code with what the shared backend does now. Everything else matched. Fixed: 1. Connector sign-in could never finish in the new dev app: the browser was sent back to the Tauri dev app's link, while the new app listens on its own. 2. The new dev app counted its own windows as your activity, because it was missing from the list of Mnema's own apps. Left as it is, by your ruling on 11 Nov: the new app's dev build does not read the licence-checking settings from the .env file, so it carries a placeholder and warns about the licence list at every start. That warning is harmless in a dev build, which skips the licence check anyway. The change that made the build scripts read that file was taken out again. Also here: connector log lines no longer contain the label you typed, even inside the error text (decision 7, finished). Not done: a real connector sign-in in the new dev app.",
-   "rows": []
-  },
   {
    "anchor": "r3-approve",
    "title": "Screenshots approved on 11 Nov",
@@ -2122,5 +2016,230 @@
    "what": "The agent drove the app through macOS scripting and a click tool, capturing only the app's own windows. It stopped recording for the memory test; then the Mac locked and auto-start failed on relaunch, so the dev app is running but not recording. One click landed on T3 Code's top-right area and it does not know what it hit; two scrolls also went to T3 Code and two clicks landed on the lock screen. It opened one browser tab on purpose for the link check, and a screenshot test may have opened OpenAI's device sign-in page once. Two things happened that it could not explain and may have caused itself: Auto-start recording flipped off once (it set it back on), and the app quit once while it was only reading logs.",
    "rows": []
   }
- ]
+ ],
+ "round4": [
+  {
+   "anchor": "r5-approve",
+   "title": "Menus drawn under the page: screenshots to approve",
+   "toc": "To approve",
+   "commit": "44031552",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "Five screens need your yes, all rendered from test data. Four are new, each showing a list open over the content that used to cover it or cut it off: the Add provider menu, the Add connector picker, the Pause capture when idle list near the bottom of the window, and Chat's scope calendar. One changed: in the control gallery the two open search lists now open upward, because they have 252 px below them and the Tauri app's rule opens a list upward below 260. If you would rather keep that gallery picture as it was, the gallery row can be given more room instead.",
+   "rows": [
+    {
+     "heading": "Settings › Intelligence › Add provider (your screenshot)",
+     "shots": [
+      {
+       "file": "r5-settings-add-provider-open-before.jpg",
+       "caption": "Before: the rows below paint over the menu"
+      },
+      {
+       "file": "r5-settings-add-provider-open-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r5-settings-add-provider-open-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › Capture › Pause capture when idle, near the bottom edge",
+     "shots": [
+      {
+       "file": "r5-settings-idle-timeout-open-before.jpg",
+       "caption": "Before: the list runs off the window, 2 of 9 options visible"
+      },
+      {
+       "file": "r5-settings-idle-timeout-open-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r5-settings-idle-timeout-open-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Chat › scope calendar",
+     "shots": [
+      {
+       "file": "r5-chat-scope-range-open-before.jpg",
+       "caption": "Before: opens past the bottom edge, shortcuts stacked above the month"
+      },
+      {
+       "file": "r5-chat-scope-range-open-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r5-chat-scope-range-open-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › MCP › Add connector",
+     "shots": [
+      {
+       "file": "r5-settings-add-connector-open-before.jpg",
+       "caption": "Before: drawn correctly; only its Escape key was wrong"
+      },
+      {
+       "file": "r5-settings-add-connector-open-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r5-settings-add-connector-open-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Control gallery › dropdowns (changed)",
+     "shots": [
+      {
+       "file": "r5-gallery-select-before.jpg",
+       "caption": "Before: the approved picture, lists opening downward"
+      },
+      {
+       "file": "r5-gallery-select-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r5-gallery-select-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r5-layers",
+   "title": "Menus drawn under the page, and seven more like it",
+   "toc": "Menus and lists",
+   "commit": "44031552",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "Your screenshot: the Add provider menu was drawn in the middle of the page, so everything after the button was painted over it. It is now on a layer above the page. Every menu, list, picker, popover, tooltip and toast in the app was then checked for six things: drawn on top, not cut off by a scrolling area, stays inside the window, clicks do not fall through, layers stack in the right order, closes on Escape and on a click outside. Found and fixed: 1. Clicking the button of an open list closed it and instantly reopened it, in every dropdown, the date and model pickers, the Timeline date jumper and frame menu. 2. Escape on an open list in Settings jumped back to the Timeline and left the list open. 3. Escape with a Settings pop-up open left Settings, and the pop-up was still open on return. 4. Lists near the bottom of the window ran off the screen. 5. Chat's scope calendar opened past the bottom edge. 6. A click on a toast also clicked whatever was under it. 7. The developer window's More menu ignored clicks outside it. Each has a test or picture that fails on the old code. Checked and found right: the status, notifications and shortcuts popovers, pop-up windows, tooltips, the Quick Recall filter picker, drawers and right-click menus. Not checked in the real app yet. Two small unknowns: a list could change sides if you scroll Settings while it is open, and Escape while typing in a field inside the connector form may need two presses.",
+   "rows": []
+  },
+  {
+   "anchor": "r4-approve",
+   "title": "Copy buttons and the developer window button: approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "eab577a8, baselines f65a2487",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these five screens on 11 Nov; their baselines are recorded from a run that matches these pictures. All are rendered from test data. Three changed: the developer window's issue rows and a failed job's error box each gain a small copy icon, and the Logs toolbar gains Copy visible lines next to Follow. Two are new: a log line under the pointer with its copy button, with another line marked \"copied\"; and the status popover ending in Open developer window with its key, shown only when developer options are on.",
+   "rows": [
+    {
+     "heading": "Developer window › Overview › issue rows",
+     "shots": [
+      {
+       "file": "r4-debug-overview-issues-light.jpg",
+       "caption": "Light. Left: before. Right: after."
+      },
+      {
+       "file": "r4-debug-overview-issues-dark.jpg",
+       "caption": "Dark. Left: before. Right: after."
+      }
+     ]
+    },
+    {
+     "heading": "Developer window › a failed job",
+     "shots": [
+      {
+       "file": "r4-debug-job-light.jpg",
+       "caption": "Light. Left: before. Right: after."
+      },
+      {
+       "file": "r4-debug-job-dark.jpg",
+       "caption": "Dark. Left: before. Right: after."
+      }
+     ]
+    },
+    {
+     "heading": "Developer window › Logs toolbar",
+     "shots": [
+      {
+       "file": "r4-debug-logs-light.jpg",
+       "caption": "Light. Left: before. Right: after."
+      },
+      {
+       "file": "r4-debug-logs-dark.jpg",
+       "caption": "Dark. Left: before. Right: after."
+      }
+     ]
+    },
+    {
+     "heading": "New: a log line being copied",
+     "shots": [
+      {
+       "file": "r4-debug-logs-copy-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r4-debug-logs-copy-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "New: status popover with Open developer window",
+     "shots": [
+      {
+       "file": "r4-shell-recording-developer-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r4-shell-recording-developer-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r4-copy",
+   "title": "Copy buttons that did nothing",
+   "toc": "Copy buttons",
+   "commit": "eab577a8",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "The dead one was most likely Timeline › ⋯ › Copy image: it put a WebP picture on the clipboard, which most apps cannot paste. It now copies a PNG. Six more copied correctly but showed nothing, so they looked dead: About's Copy details and Copy notices, the model folder, the sign-in codes in onboarding and Chat, a clicked log line, and Copy diagnostics. Each now says Copied, as the Tauri app does. Two the Tauri app has were missing and are built: Copy on code blocks inside answers and in the update window's notes. New, as you asked: a copy button on each developer-window log line, Copy visible lines, and a copy icon on every warning and error in the developer window. Every copy button now has a test that clicks it and reads the clipboard. Not checked: pasting a copied frame into another app, and none of this has been clicked in the real app yet. Small leftover: About's button gets narrower while it says Copied; the Tauri app keeps its width.",
+   "rows": []
+  },
+  {
+   "anchor": "r4-popover",
+   "title": "Developer window from the status popover",
+   "toc": "Popover button",
+   "commit": "eab577a8",
+   "state": "built · approved",
+   "awaiting": false,
+   "what": "The popover that opens from the recording readout now ends with Open developer window and your shortcut (⌘D by default) when developer options are on, like the Tauri app. Clicking it closes the popover and opens the window. The shortcuts sheet also hides a shortcut you have cleared, where it used to show an empty key box. Tested with a click; not yet clicked in the real app.",
+   "rows": []
+  },
+  {
+   "anchor": "r4-models",
+   "title": "\"Model is not installed\" for every model",
+   "toc": "Missing models",
+   "commit": "6d710352",
+   "state": "fixed · confirmed in the real app's log",
+   "awaiting": false,
+   "what": "Models are saved in the app's support folder, but nine places looked for them in the recordings folder, so every installed transcription, speaker and search model was reported missing. Fixed in the other session and committed here after the full checks; a test now fails if any code looks there again. In the rebuilt app the error did not appear, and the Whisper transcriber loaded and was unloaded on quit. Not checked: a transcript on screen.",
+   "rows": []
+  },
+  {
+   "anchor": "r4-audit",
+   "title": "Two more mix-ups of the same kind, and one left as it is",
+   "toc": "Similar issues",
+   "commit": "212fc4f9",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "An audit compared every folder, identity and bundled-file lookup in the old Tauri code with what the shared backend does now. Everything else matched. Fixed: 1. Connector sign-in could never finish in the new dev app: the browser was sent back to the Tauri dev app's link, while the new app listens on its own. 2. The new dev app counted its own windows as your activity, because it was missing from the list of Mnema's own apps. Left as it is, by your ruling on 11 Nov: the new app's dev build does not read the licence-checking settings from the .env file, so it carries a placeholder and warns about the licence list at every start. That warning is harmless in a dev build, which skips the licence check anyway. The change that made the build scripts read that file was taken out again. Also here: connector log lines no longer contain the label you typed, even inside the error text (decision 7, finished). Not done: a real connector sign-in in the new dev app.",
+   "rows": []
+  }
+ ],
+ "round4_verdict": "What you found using the real dev build on 11 Nov is fixed and committed locally: the menu drawn under the page and seven related faults, the copy buttons, the missing-model error and two more mix-ups of the same kind, and the developer window from the status popover. Five screenshots from the menu fix need your approval. The fixes before the menu one are in the 10:08 dev build you have open; the menu fix needs a restart of the app. Nothing has been pushed."
 }
