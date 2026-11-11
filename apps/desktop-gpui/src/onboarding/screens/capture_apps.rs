@@ -10,6 +10,7 @@ use gpui_kit::{div, px, AnyElement, AppContext, Context, Entity, Subscription, W
 
 use crate::onboarding::Onboarding;
 use crate::theme;
+use crate::ui::app_icon::icon_or_initial;
 use crate::ui::input::TextInput;
 use crate::ui::menu::{option_row, options_empty};
 use crate::ui::select::list_box;
@@ -91,27 +92,31 @@ pub fn excluded_note(entries: &[capture_types::ExcludedAppEntry]) -> (String, &'
 
 impl Onboarding {
     /// Ask once, off the main thread, for the icons of the listed apps that
-    /// have a bundle id (a rule waiting for its app has none to draw).
+    /// have a bundle id (a rule waiting for its app has none to draw) and of
+    /// the open type-ahead's matches, a screenful per ask so the first rows
+    /// don't wait on the whole list.
     pub(super) fn request_app_icons(&mut self, cx: &mut Context<Self>) {
-        let ask: Vec<String> = self
+        let mut ids: Vec<String> = self
             .draft
             .privacy
             .excluded_apps
             .iter()
             .map(|a| a.bundle_id.trim().to_string())
-            .filter(|b| !b.is_empty() && self.app_pick.icons_asked.insert(b.clone()))
             .collect();
-        if ask.is_empty() {
-            return;
+        if self.app_pick.query.is_some() {
+            ids.extend(self.app_matches(cx).into_iter().map(|(b, _)| b));
         }
-        self.run(
-            cx,
-            move |b| b.app_icons(&ask),
-            |s, got, cx| {
-                s.app_pick.icons.extend(got);
-                cx.notify();
-            },
-        );
+        ids.retain(|b| !b.is_empty() && self.app_pick.icons_asked.insert(b.clone()));
+        for ask in ids.chunks(12).map(<[String]>::to_vec) {
+            self.run(
+                cx,
+                move |b| b.app_icons(&ask),
+                |s, got, cx| {
+                    s.app_pick.icons.extend(got);
+                    cx.notify();
+                },
+            );
+        }
     }
 
     pub fn open_app_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -197,12 +202,35 @@ impl Onboarding {
         };
         let p = theme::tokens(cx);
         let loading = self.app_pick.candidates.is_none();
+        let (raised, border_strong, strong) = (p.surface_raised, p.border_strong, p.text_strong);
         let rows: Vec<AnyElement> = self
             .app_matches(cx)
             .into_iter()
             .enumerate()
             .map(|(i, (bundle, name))| {
-                option_row(nid("ob-app-cand", i as u64), name.clone(), false, false, &p)
+                // The chips' `.ob-app` tile, at the option's text size.
+                let tile = move || {
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(18.))
+                        .rounded(px(5.))
+                        .font_weight(theme::W_SEMIBOLD)
+                        .text_size(theme::text::XS)
+                        .text_color(strong)
+                        .bg(raised)
+                        .shadow(vec![crate::ui::inset(border_strong, px(1.))])
+                };
+                let icon = self.app_pick.icons.get(&bundle).cloned();
+                let label = div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(icon_or_initial(icon, &name, 18., tile))
+                    .child(name.clone());
+                option_row(nid("ob-app-cand", i as u64), label, false, false, &p)
                     .on_click(cx.listener(move |this, _, _, cx| this.add_app(&bundle, &name, cx)))
                     .into_any_element()
             })

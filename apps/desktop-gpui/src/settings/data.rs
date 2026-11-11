@@ -375,6 +375,11 @@ pub trait Backend: Send + Sync + 'static {
         let _ = (id, mark);
         Err("no app core".into())
     }
+    /// `resolve_app_icons`: `(bundle id, icon PNG)` for each that has one.
+    fn app_icons(&self, bundle_ids: &[String]) -> Vec<(String, std::path::PathBuf)> {
+        let _ = bundle_ids;
+        Vec::new()
+    }
     /// Window focus: [`load_access`] only (`None` = nothing to re-read).
     fn recheck_access(&self) -> Option<SettingsData> {
         None
@@ -486,6 +491,11 @@ pub trait Backend: Send + Sync + 'static {
 pub struct CoreBackend(pub Arc<AppCore>);
 
 impl Backend for CoreBackend {
+    fn app_icons(&self, bundle_ids: &[String]) -> Vec<(String, std::path::PathBuf)> {
+        use crate::timeline::data::Source as _;
+        crate::timeline::data::CoreSource(self.0.clone()).app_icons(bundle_ids)
+    }
+
     fn recheck_access(&self) -> Option<SettingsData> {
         let mut d = SettingsData::default();
         load_access(&self.0, &mut d);

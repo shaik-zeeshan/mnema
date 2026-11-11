@@ -96,6 +96,7 @@ impl Render for Settings {
         self.ensure_provider_inputs(window, cx);
         self.sync_controls(window, cx);
         self.sync_access_poll(cx);
+        self.sync_app_icons(cx);
         sections::transcription::sync_key_placeholder(self, window, cx);
         if let Some(section) = self.pending_scroll {
             scroll_to(self, section);

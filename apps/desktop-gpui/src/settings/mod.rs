@@ -119,6 +119,10 @@ pub struct Ui {
     /// "Add app…": the installed apps to pick from (`None` = closed).
     /// `(bundle id, name, running)` per installed app.
     pub app_picker: Option<Vec<(String, String, bool)>>,
+    /// `resolve_app_icons` answers by bundle id (a miss stays a letter), and
+    /// the ids already asked (`requestedCanonicalIconBundleIds`).
+    pub app_icons: HashMap<String, std::path::PathBuf>,
+    pub icons_asked: HashSet<String>,
     /// The MCP modals: Add / Edit / Connect steps, tool curation, Node probe.
     pub(crate) mcp: sections::mcp::McpUi,
     /// Model downloads in flight, by `provider:model`: `(done, total, status)`.

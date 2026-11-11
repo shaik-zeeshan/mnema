@@ -176,6 +176,16 @@ pub fn open_model_state(
                 ("com.apple.Passwords".into(), "Passwords".into(), false),
                 ("org.mozilla.firefox".into(), "Firefox".into(), true),
             ]);
+            // `resolve_app_icons` from the same fixture the Tauri side reads.
+            if let Ok(map) = load("settings", "privacy-add-app") {
+                for r in map["resolve_app_icons"].as_array().into_iter().flatten() {
+                    if let (Some(id), Some(path)) = (r["bundleId"].as_str(), r["iconPath"].as_str())
+                    {
+                        s.ui.icons_asked.insert(id.into());
+                        s.ui.app_icons.insert(id.into(), path.into());
+                    }
+                }
+            }
         }
         "license-overcap" => {
             s.data.license = Some(capture_types::LicenseStatus::Licensed {
@@ -319,6 +329,8 @@ pub struct FixtureBackend {
     pub no_node: bool,
     /// When set, `mcp_tools` / `mcp_set_secret` / `mcp_oauth_begin` fail with it.
     pub mcp_error: Mutex<Option<String>>,
+    /// What `resolve_app_icons` knows: `(bundle id, icon PNG)`.
+    pub icons: Mutex<Vec<(String, std::path::PathBuf)>>,
 }
 
 /// The fixture's ChatGPT device code and verify page.
@@ -357,6 +369,12 @@ impl FixtureBackend {
 }
 
 impl Backend for FixtureBackend {
+    fn app_icons(&self, bundle_ids: &[String]) -> Vec<(String, std::path::PathBuf)> {
+        let asked = |id: &String| bundle_ids.contains(id);
+        let icons = self.icons.lock().unwrap();
+        icons.iter().filter(|(id, _)| asked(id)).cloned().collect()
+    }
+
     fn save_domain(
         &self,
         unit: Unit,

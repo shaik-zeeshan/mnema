@@ -64,7 +64,7 @@ pub fn menu(items: impl IntoIterator<Item = impl IntoElement>, p: &Palette) -> i
 /// A Select / Combobox option: check slot, label; selected = the wash fill.
 pub fn option_row(
     id: impl Into<ElementId>,
-    label: impl Into<SharedString>,
+    label: impl IntoElement,
     selected: bool,
     highlighted: bool,
     p: &Palette,
@@ -103,7 +103,7 @@ pub fn option_row(
                 .text_color(p.accent)
                 .when(selected, |d| d.child(icon(IconName::Check.path(), px(12.)))),
         )
-        .child(label.into())
+        .child(label)
 }
 
 /// The "Loading…" / "No matches" line of an empty option list.

@@ -514,3 +514,44 @@ fn cli_access_rereads_every_30s_only_while_data_is_shown(cx: &mut TestAppContext
     advance(cx, Duration::from_secs(90));
     assert_eq!(rechecks(&b), 3, "no timer outlives the page");
 }
+
+/// Excluded rows and the "Add app…" list draw each app's icon when
+/// `resolve_app_icons` has one (asked once, off the main thread), else the letter.
+#[gpui_kit::test]
+fn excluded_rows_and_the_add_app_list_draw_app_icons(cx: &mut TestAppContext) {
+    use crate::ui::app_icon::{fixture_icon, icon_drawn};
+    let (w, v, b) = open(cx, "privacy");
+    *b.icons.lock().unwrap() = vec![
+        ("com.1password.1password".into(), fixture_icon('a')),
+        ("com.bitwarden.desktop".into(), fixture_icon('b')),
+    ];
+    v.update(cx, |s, cx| {
+        s.ui.icons_asked.clear();
+        s.ui.app_picker = Some(apps());
+        cx.notify();
+    });
+    for _ in 0..3 {
+        frame(cx, w);
+    }
+    v.read_with(cx, |s, _| {
+        // Excluded "Passwords" has no icon: a fact, so it keeps its letter.
+        assert!(s.ui.icons_asked.contains("com.apple.Passwords"));
+        assert!(!s.ui.app_icons.contains_key("com.apple.Passwords"));
+        assert!(
+            s.ui.icons_asked.contains("com.apple.Notes"),
+            "a listed match"
+        );
+        assert!(!s.ui.app_icons.contains_key("com.apple.Notes"));
+    });
+    // `.excl-app` is 22 pt: a 44 px decode on the 2x test window.
+    on_window(cx, w, |window, cx| {
+        assert!(
+            icon_drawn(window, cx, fixture_icon('a'), 44),
+            "excluded row"
+        );
+        assert!(
+            icon_drawn(window, cx, fixture_icon('b'), 44),
+            "Add app list"
+        );
+    });
+}

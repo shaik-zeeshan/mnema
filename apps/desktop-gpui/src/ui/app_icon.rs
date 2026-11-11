@@ -234,3 +234,120 @@ mod tests {
         assert_eq!(device_side(18., 1.), 18);
     }
 }
+
+/// Real-Mac probe of the privacy lists' icon chain: installed apps →
+/// `resolve_app_icons` → cached PNG → this module's decode. Reads only
+/// `/Applications` and app bundles; the cache goes to a temp dir. Run with
+/// `cargo test -p mnema-gpui --lib real_mac_app_icon_probe -- --ignored --nocapture`;
+/// it prints counts only and should show every listed app with a decodable icon.
+#[cfg(all(test, target_os = "macos"))]
+mod probe {
+    use std::sync::Arc;
+
+    use app_core::native_capture::app_candidates::{
+        list_privacy_app_candidates, resolve_app_icons, ResolveAppIconsRequest,
+    };
+
+    #[test]
+    #[ignore = "reads this Mac's installed apps"]
+    fn real_mac_app_icon_probe() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = app_core::Paths {
+            data: dir.path().join("data"),
+            config: dir.path().join("config"),
+            cache: dir.path().join("cache"),
+            log: dir.path().join("log"),
+        };
+        let (host, _rx) = crate::host::GpuiHost::new();
+        let core = Arc::new(app_core::AppCore::new(Arc::new(host), paths).unwrap());
+        let apps = core.block_on(list_privacy_app_candidates()).unwrap();
+        let listed_with_path = apps.iter().filter(|a| a.icon_path.is_some()).count();
+        println!(
+            "listed apps: {}, with an icon path in the listing: {listed_with_path}",
+            apps.len()
+        );
+        let ids: Vec<String> = apps.iter().map(|a| a.bundle_id.clone()).collect();
+        let t = std::time::Instant::now();
+        let got = core
+            .block_on(resolve_app_icons(
+                &core,
+                ResolveAppIconsRequest { bundle_ids: ids },
+            ))
+            .unwrap();
+        println!("resolve took {} ms", t.elapsed().as_millis());
+        let t = std::time::Instant::now();
+        let with_path: Vec<_> = got.iter().filter_map(|r| r.icon_path.clone()).collect();
+        let exists = with_path
+            .iter()
+            .filter(|p| std::path::Path::new(p).is_file())
+            .count();
+        let decoded: Vec<_> = with_path
+            .iter()
+            .filter_map(|p| std::fs::read(p).ok())
+            .filter_map(|b| super::decode(&b, 36).ok().map(|i| i.size(0)))
+            .collect();
+        println!("decode took {} ms", t.elapsed().as_millis());
+        println!(
+            "resolved: {}, icon path: {}, file exists: {exists}, decodes: {}, 36px fits: {}",
+            got.len(),
+            with_path.len(),
+            decoded.len(),
+            decoded
+                .iter()
+                .filter(|s| s.width.0 <= 36 && s.height.0 <= 36)
+                .count(),
+        );
+        for id in ["com.apple.Safari", "com.apple.Notes", "com.apple.TextEdit"] {
+            let r = got.iter().find(|r| r.bundle_id == id);
+            println!(
+                "{id}: listed {}, icon {}",
+                r.is_some(),
+                r.is_some_and(|r| r.icon_path.is_some())
+            );
+        }
+        assert_eq!(decoded.len(), with_path.len());
+        // The onboarding chips' own door, off the main thread as `Onboarding::run` calls it.
+        let seeds: Vec<String> = [
+            "com.apple.Passwords",
+            "com.apple.keychainaccess",
+            "com.1password.1password",
+            "com.bitwarden.desktop",
+        ]
+        .map(String::from)
+        .to_vec();
+        let backend = crate::onboarding::data::CoreBackend(core.clone());
+        let got = std::thread::spawn(move || {
+            use crate::onboarding::data::Backend as _;
+            backend.app_icons(&seeds)
+        })
+        .join()
+        .unwrap();
+        for (id, path) in &got {
+            let ok = std::fs::read(path)
+                .ok()
+                .and_then(|b| super::decode(&b, 36).ok())
+                .is_some();
+            println!("onboarding door {id}: icon decodes {ok}");
+        }
+    }
+}
+
+/// The two fixture icons (`tests/assets`), standing in for other apps' icons.
+#[cfg(test)]
+pub(crate) fn fixture_icon(which: char) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!("tests/assets/app-icon-{which}.png"))
+}
+
+/// Whether a `side` device-px decode of `path` was asked for by a drawn
+/// element and succeeded: the icon, not its letter, is on screen.
+#[cfg(test)]
+pub(crate) fn icon_drawn(
+    window: &mut gpui_kit::Window,
+    cx: &mut App,
+    path: PathBuf,
+    side: u32,
+) -> bool {
+    window
+        .get_asset::<Fit>(&(Src::File(path), side), cx)
+        .is_some_and(|r| r.is_ok())
+}

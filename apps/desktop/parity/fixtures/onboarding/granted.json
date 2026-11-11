@@ -1562,5 +1562,9 @@
    "systemAudioActivitySensitivity": 50,
    "activityMode": "system_input_or_screen"
   }
- }
+ },
+ "resolve_app_icons": [
+  { "bundleId": "com.1password.1password", "iconPath": "$REPO/apps/desktop-gpui/tests/assets/app-icon-a.png" },
+  { "bundleId": "com.apple.Passwords", "iconPath": "$REPO/apps/desktop-gpui/tests/assets/app-icon-b.png" }
+ ]
 }

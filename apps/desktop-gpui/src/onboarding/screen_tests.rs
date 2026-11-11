@@ -161,3 +161,47 @@ fn never_recorded_asks_once_for_the_listed_apps_icons(cx: &mut TestAppContext) {
     let asks = backend.calls().iter().filter(|c| *c == "app_icons").count();
     assert_eq!(asks, 1);
 }
+
+/// "Never recorded" chips and the type-ahead's rows draw each app's icon when
+/// `resolve_app_icons` has one, else the letter (Svelte's datalist has none;
+/// the founder asked for icons wherever apps are added).
+#[gpui_kit::test]
+fn never_recorded_chips_and_the_type_ahead_draw_app_icons(cx: &mut TestAppContext) {
+    use crate::ui::app_icon::{fixture_icon, icon_drawn};
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(AppearanceSetting::Dark, WindowAppearance::Dark, cx);
+    });
+    let mut map: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../desktop/parity/fixtures/onboarding/granted.json"
+    ))
+    .unwrap();
+    map["resolve_app_icons"] = serde_json::json!([
+        { "bundleId": "com.1password.1password", "iconPath": fixture_icon('a') },
+        { "bundleId": "com.apple.Safari", "iconPath": fixture_icon('b') }
+    ]);
+    let b: Arc<dyn Backend> = Arc::new(FixtureBackend::new(map));
+    let (view, vcx) = cx.add_window_view(move |_, cx| Onboarding::new(b.clone(), |_, _| {}, cx));
+    vcx.run_until_parked();
+    view.update_in(vcx, |o, window, cx| {
+        o.go(Step::Capture, cx);
+        o.open_app_pick(window, cx);
+    });
+    for _ in 0..3 {
+        vcx.update(|window, cx| window.render_frame(cx));
+        vcx.run_until_parked();
+    }
+    view.read_with(vcx, |o, _| {
+        // Keychain Access (a chip) and Slack (a row) have none: their letters stay.
+        assert!(!o.app_pick.icons.contains_key("com.apple.keychainaccess"));
+        assert!(!o.app_pick.icons.contains_key("com.tinyspeck.slackmacgap"));
+    });
+    // Both are 18 pt: a 36 px decode on the 2x test window.
+    vcx.update(|window, cx| {
+        assert!(icon_drawn(window, cx, fixture_icon('a'), 36), "chip");
+        assert!(
+            icon_drawn(window, cx, fixture_icon('b'), 36),
+            "type-ahead row"
+        );
+    });
+}

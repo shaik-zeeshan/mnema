@@ -1705,5 +1705,9 @@
       "running": true,
       "iconPath": null
     }
+  ],
+  "resolve_app_icons": [
+    { "bundleId": "com.1password.1password", "iconPath": "$REPO/apps/desktop-gpui/tests/assets/app-icon-a.png" },
+    { "bundleId": "org.mozilla.firefox", "iconPath": "$REPO/apps/desktop-gpui/tests/assets/app-icon-b.png" }
   ]
 }

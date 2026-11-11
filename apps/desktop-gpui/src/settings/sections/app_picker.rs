@@ -10,6 +10,7 @@ use gpui_kit::{div, px, AnyElement, Context, SharedString};
 use crate::settings::commands::{candidates, exclude_app};
 use crate::settings::{icons, Settings};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::ui::app_icon::icon_or_initial;
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::input::TextInput;
 use crate::ui::popover::{esc_closes, float, popover};
@@ -49,29 +50,62 @@ impl Settings {
     }
 }
 
-/// An installed app's letter tile (`.excl-app` with no icon).
-fn letter(name: &str, bundle: &str, p: &Palette) -> AnyElement {
-    let l: String = name
-        .trim()
-        .chars()
-        .chain(bundle.trim().chars())
-        .next()
-        .map_or("?".into(), |c| c.to_uppercase().collect());
-    div()
-        .flex()
-        .flex_none()
-        .items_center()
-        .justify_center()
-        .size(px(22.))
-        .rounded(px(6.))
-        .border_1()
-        .border_color(p.border)
-        .bg(p.surface_raised)
-        .text_size(text::SM)
-        .font_weight(theme::W_SEMIBOLD)
-        .text_color(p.text_strong)
-        .child(l)
-        .into_any_element()
+impl Settings {
+    /// Ask once, off the main thread, for the icons of the excluded apps and
+    /// the open picker's matches (the controller's two `resolveAppIcons` effects).
+    pub(crate) fn sync_app_icons(&mut self, cx: &mut Context<Self>) {
+        let mut ids: Vec<String> = self
+            .d()
+            .privacy
+            .excluded_apps
+            .iter()
+            .map(|a| a.bundle_id.trim().to_string())
+            .collect();
+        if self.ui.app_picker.is_some() {
+            let query = self.inputs.app_search.read(cx).value().to_string();
+            ids.extend(candidates(self, &query).iter().map(|c| c.0.clone()));
+        }
+        ids.retain(|b| !b.is_empty() && self.ui.icons_asked.insert(b.clone()));
+        if ids.is_empty() {
+            return;
+        }
+        let backend = self.backend.clone();
+        let job = cx.background_spawn(async move { backend.app_icons(&ids) });
+        cx.spawn(async move |this, cx| {
+            let got = job.await;
+            let _ = this.update(cx, |s, cx| {
+                s.ui.app_icons.extend(got);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+}
+
+/// `.excl-app`: the app's icon, else `appIconFallback`'s letter on a 22 px tile.
+pub(super) fn excl_app(s: &Settings, name: &str, bundle: &str, p: &Palette) -> AnyElement {
+    let (raised, border, strong) = (p.surface_raised, p.border, p.text_strong);
+    let label = if name.trim().is_empty() { bundle } else { name };
+    icon_or_initial(
+        s.ui.app_icons.get(bundle.trim()).cloned(),
+        label,
+        22.,
+        move || {
+            div()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(px(22.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(border)
+                .bg(raised)
+                .text_size(text::SM)
+                .font_weight(theme::W_SEMIBOLD)
+                .text_color(strong)
+        },
+    )
 }
 
 /// The trigger and, while open, its dropdown.
@@ -123,7 +157,7 @@ pub fn add_app(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElem
                         cx.notify();
                     }
                 }))
-                .child(letter(&name, &bundle, p))
+                .child(excl_app(s, &name, &bundle, p))
                 .child(
                     div()
                         .flex()

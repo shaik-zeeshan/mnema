@@ -46,12 +46,6 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
         .border_color(p.border)
         .children(apps.into_iter().map(|app| {
             let (id, id2) = (app.id.clone(), app.id.clone());
-            let letter: String = app
-                .display_name
-                .chars()
-                .next()
-                .map(|c| c.to_uppercase().collect())
-                .unwrap_or_default();
             div()
                 .flex()
                 .items_center()
@@ -61,22 +55,12 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
                 .border_b_1()
                 .border_color(p.hairline)
                 .when(!app.enabled, |d| d.opacity(theme::DISABLED_OPACITY))
-                .child(
-                    div()
-                        .flex()
-                        .flex_none()
-                        .items_center()
-                        .justify_center()
-                        .size(px(22.))
-                        .rounded(radius::SM)
-                        .bg(p.surface_subtle)
-                        .border_1()
-                        .border_color(p.hairline)
-                        .text_size(text::SM)
-                        .font_weight(theme::W_SEMIBOLD)
-                        .text_color(p.text_muted)
-                        .child(letter),
-                )
+                .child(super::app_picker::excl_app(
+                    s,
+                    &app.display_name,
+                    &app.bundle_id,
+                    p,
+                ))
                 .child(
                     div()
                         .text_size(text::MD)
