@@ -166,12 +166,14 @@ fn start_native_capture_inner(
                     &app_notifications_state,
                     &settings,
                 );
+                let selection = audio_transcription_selection_label(&settings.transcription);
                 return Err(CaptureErrorResponse {
                     code: "audio_transcription_model_unavailable".to_string(),
-                    message: format!(
-                        "{} is unavailable. Install or choose an available transcription model before recording requested audio.",
-                        audio_transcription_selection_label(&settings.transcription)
-                    ),
+                    message: if audio_transcription_engine_in_build(&settings.transcription) {
+                        format!("{selection} is unavailable. Install or choose an available transcription model before recording requested audio.")
+                    } else {
+                        format!("{selection} is not included in this build of Mnema. Choose another transcription engine before recording requested audio.")
+                    },
                 });
             }
             Err(error) => {

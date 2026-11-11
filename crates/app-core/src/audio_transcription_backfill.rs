@@ -275,6 +275,7 @@ fn insert_speaker_analysis_timeout_option(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use audio_transcription::providers::PARAKEET_TDT_0_6B_V3_ONNX_INT8_MODEL_ID;
     use std::fs;
 
     #[test]
@@ -287,20 +288,34 @@ mod tests {
         assert!(!missing.provider_available);
         assert_eq!(missing.payload_json, None);
 
+        // Parakeet, not the default Whisper: app-core's own build has no `local-whisper`, so an
+        // installed Whisper model is refused here (see `audio_transcription_models` tests).
+        let settings = AudioTranscriptionSettings {
+            provider: capture_types::AudioTranscriptionProvider::Parakeet,
+            model_id: Some(PARAKEET_TDT_0_6B_V3_ONNX_INT8_MODEL_ID.to_string()),
+            ..settings
+        };
         let models_dir = audio_transcription::audio_transcription_models_dir(dir.path());
         let install_dir = audio_transcription::model_install_dir(
             &models_dir,
-            audio_transcription::LOCAL_WHISPER_PROVIDER_ID,
-            "base",
+            audio_transcription::PARAKEET_PROVIDER_ID,
+            PARAKEET_TDT_0_6B_V3_ONNX_INT8_MODEL_ID,
         )
         .expect("model install directory");
         fs::create_dir_all(&install_dir).expect("model install directory should be created");
-        fs::write(install_dir.join("ggml-base.bin"), b"model")
-            .expect("model artifact should be written");
+        for file in [
+            "config.json",
+            "nemo128.onnx",
+            "encoder-model.int8.onnx",
+            "decoder_joint-model.int8.onnx",
+            "vocab.txt",
+        ] {
+            fs::write(install_dir.join(file), b"model").expect("model file should be written");
+        }
         audio_transcription::write_installed_marker(
             &models_dir,
-            audio_transcription::LOCAL_WHISPER_PROVIDER_ID,
-            "base",
+            audio_transcription::PARAKEET_PROVIDER_ID,
+            PARAKEET_TDT_0_6B_V3_ONNX_INT8_MODEL_ID,
         )
         .expect("installed marker should be written");
 
@@ -314,11 +329,11 @@ mod tests {
                 .expect("available model should freeze payload"),
         )
         .expect("payload should deserialize");
+        assert_eq!(payload.provider, audio_transcription::PARAKEET_PROVIDER_ID);
         assert_eq!(
-            payload.provider,
-            audio_transcription::LOCAL_WHISPER_PROVIDER_ID
+            payload.model_id.as_deref(),
+            Some(PARAKEET_TDT_0_6B_V3_ONNX_INT8_MODEL_ID)
         );
-        assert_eq!(payload.model_id.as_deref(), Some("base"));
         assert_eq!(payload.language, "auto");
     }
 }

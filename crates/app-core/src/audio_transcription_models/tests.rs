@@ -128,6 +128,38 @@ fn selected_apple_speech_model_tracks_provider_availability() {
     );
 }
 
+/// An installed model whose engine this build lacks is unavailable, so capture start refuses
+/// instead of queueing jobs that fail forever as an outage (the GPUI build once shipped without
+/// `local-whisper`). app-core's own build is exactly such a build.
+#[test]
+fn an_installed_model_without_its_engine_in_the_build_is_unavailable() {
+    assert!(
+        !audio_transcription::providers::provider_runtime_available(LOCAL_WHISPER_PROVIDER_ID),
+        "app-core tests build audio-transcription without `local-whisper`; this test relies on it"
+    );
+    let temp = tempfile::tempdir().expect("tempdir");
+    let models_dir = audio_transcription::audio_transcription_models_dir(temp.path());
+    let install_dir = model_install_dir(&models_dir, LOCAL_WHISPER_PROVIDER_ID, "base").unwrap();
+    fs::create_dir_all(&install_dir).unwrap();
+    fs::write(install_dir.join("ggml-base.bin"), b"model").unwrap();
+    write_installed_marker(&models_dir, LOCAL_WHISPER_PROVIDER_ID, "base").unwrap();
+    let mut settings = crate::recording_settings::default_recording_settings().transcription;
+    settings.enabled = true;
+    settings.provider = capture_types::AudioTranscriptionProvider::LocalWhisper;
+    settings.model_id = Some("base".to_string());
+
+    let manifest = builtin_model_manifest();
+    let descriptor =
+        find_model_descriptor(&manifest, LOCAL_WHISPER_PROVIDER_ID, Some("base")).unwrap();
+    assert!(
+        detect_model_status(&models_dir, descriptor)
+            .unwrap()
+            .is_available(),
+        "the model files themselves are installed"
+    );
+    assert!(!selected_audio_transcription_model_available(temp.path(), &settings).unwrap());
+}
+
 // Denied ≠ missing (ADR 0048 amendment). These test the extracted pure
 // helpers rather than the full functions: the Deepgram branch reads keys
 // via the process-global vault slot, which is shared with other parallel

@@ -213,7 +213,7 @@ fn assemble_turn_tools(
                 // turn (remedy is the enabled toggle; next turn retries).
                 log::warn!(
                     "Ask AI MCP connector \"{}\" unavailable this turn: {}",
-                    cfg.label,
+                    cfg.id,
                     connect_failure_log_head(&error)
                 );
                 continue;
@@ -227,14 +227,17 @@ fn assemble_turn_tools(
                  cannot accept; they are unavailable",
                 cfg.label
             );
-            log::debug!("Ask AI {line}");
+            log::debug!(
+                "Ask AI MCP server \"{}\" dropped {dropped_invalid_names} invalid tool name(s)",
+                cfg.id
+            );
             notes.push(line);
         }
         let (offered, note) = offered_tools(&discovered, cfg.enabled_tools.as_deref());
         if let Some(note) = note {
             // Non-silent trim: log AND surface one preamble note.
             let line = format!("MCP server \"{}\" {}", cfg.label, note);
-            log::debug!("Ask AI {line}");
+            log::debug!("Ask AI MCP server \"{}\" {}", cfg.id, note);
             notes.push(line);
         }
         for tool in offered {
@@ -390,7 +393,7 @@ impl McpManager {
                 if let Err(error) = ready {
                     log::warn!(
                         "Ask AI MCP warm connect for \"{}\" failed (will retry on use): {}",
-                        cfg.label,
+                        cfg.id,
                         connect_failure_log_head(&error)
                     );
                 }
@@ -439,7 +442,7 @@ impl McpManager {
                     // the in-flight connect keeps running for the next turn.
                     log::warn!(
                         "Ask AI MCP connector \"{}\" not ready within {}s; proceeding without it",
-                        cfg.label,
+                        cfg.id,
                         DISCOVERY_TURN_BUDGET.as_secs()
                     );
                     None

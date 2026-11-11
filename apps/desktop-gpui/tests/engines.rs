@@ -21,6 +21,20 @@ fn ocr_engines_are_compiled_in() {
     }
 }
 
+/// The capture-start guard refuses a provider whose engine is missing; in this build it must pass.
+#[test]
+fn transcription_engines_pass_the_capture_start_build_check() {
+    for provider in [
+        LOCAL_WHISPER_PROVIDER_ID,
+        audio_transcription::PARAKEET_PROVIDER_ID,
+    ] {
+        assert!(
+            audio_transcription::providers::provider_runtime_available(provider),
+            "{provider} transcription runtime is not compiled into mnema-gpui"
+        );
+    }
+}
+
 #[test]
 fn local_whisper_runtime_is_compiled_in() {
     let dir = tempfile::tempdir().unwrap();

@@ -56,18 +56,29 @@ pub(crate) fn audio_transcription_selection_label(settings: &AudioTranscriptionS
     }
 }
 
+/// False when this build lacks the selected provider's engine, so the fix is another engine, not
+/// a download.
+pub(crate) fn audio_transcription_engine_in_build(settings: &AudioTranscriptionSettings) -> bool {
+    audio_transcription::providers::provider_runtime_available(
+        crate::audio_transcription_models::provider_id_for_settings(settings.provider),
+    )
+}
+
 pub(crate) fn audio_transcription_unavailable_notification(
     settings: &RecordingSettings,
     created_at_unix_ms: u64,
 ) -> AppNotification {
     let selection = audio_transcription_selection_label(&settings.transcription);
+    let message = if audio_transcription_engine_in_build(&settings.transcription) {
+        format!("{selection} is not available. Requested audio will not be transcribed until you install or choose an available model.")
+    } else {
+        format!("{selection} is not included in this build of Mnema. Requested audio will not be transcribed until you choose another transcription engine.")
+    };
     AppNotification {
         id: AUDIO_TRANSCRIPTION_UNAVAILABLE_NOTIFICATION_ID.to_string(),
         severity: "warning".to_string(),
         title: "Transcription model unavailable".to_string(),
-        message: format!(
-            "{selection} is not available. Requested audio will not be transcribed until you install or choose an available model."
-        ),
+        message,
         created_at_unix_ms,
         action: Some(AppNotificationAction::OpenSettingsTab {
             tab: TRANSCRIPTION_SETTINGS_TAB_ID.to_string(),

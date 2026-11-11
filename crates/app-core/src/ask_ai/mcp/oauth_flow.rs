@@ -273,7 +273,7 @@ impl McpManager {
         // Starting a fresh authorize clears any stale *Needs reconnect* flag and
         // bumps the generation so an in-flight warm write can't resurrect it.
         lock_recover(&self.inner().oauth_reconnect_needed).clear_and_bump(id);
-        log::info!("Ask AI MCP OAuth authorization began for \"{}\"", cfg.label);
+        log::info!("Ask AI MCP OAuth authorization began for \"{}\"", cfg.id);
         Ok(())
     }
 
@@ -465,11 +465,11 @@ async fn revoke_inner(cfg: &McpServerConfig) {
     match outcome {
         Ok(_) => log::debug!(
             "Ask AI MCP best-effort token revoke posted for \"{}\"",
-            cfg.label
+            cfg.id
         ),
         Err(error) => log::warn!(
             "Ask AI MCP best-effort token revoke for \"{}\" failed (ignored): {}",
-            cfg.label,
+            cfg.id,
             error.without_url()
         ),
     }

@@ -91,7 +91,7 @@ pub fn tab(
                     .aria_label("Filter lines")
                     .appearance(false)
                     .px_0()
-                    .h(px(18.))
+                    .field_h(px(18.))
                     .field_text(text::BASE)
                     .into_any_element(),
                 p,

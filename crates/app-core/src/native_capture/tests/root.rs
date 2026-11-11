@@ -314,6 +314,8 @@ fn audio_transcription_unavailable_notification_opens_transcription_settings_tab
     assert_eq!(notification.severity, "warning");
     assert_eq!(notification.title, "Transcription model unavailable");
     assert!(notification.message.contains("Local Whisper `base`"));
+    // app-core's test build has no `local-whisper`, so the fix offered is another engine.
+    assert!(notification.message.contains("not included in this build"));
     assert_eq!(notification.created_at_unix_ms, 1234);
 
     let payload = serde_json::to_value(&notification).expect("notification should serialize");

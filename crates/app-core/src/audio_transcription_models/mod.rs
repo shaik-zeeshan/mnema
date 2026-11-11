@@ -10,11 +10,11 @@ use std::{
 use audio_transcription::{
     audio_transcription_models_dir, builtin_model_manifest, detect_model_status,
     find_model_descriptor, install_downloaded_model_artifact, model_install_dir,
-    providers::AppleSpeechOnDeviceAvailabilityStatus, remove_model_dir_if_exists,
-    remove_model_file_if_exists, validate_artifact_sha256, write_downloading_marker,
-    write_failed_marker, AudioTranscriptionModelDescriptor, AudioTranscriptionModelStatus,
-    ModelArtifact, ModelArtifactFile, ModelArtifactShape, ModelManagement, ModelStatusError,
-    ModelStatusKind, DOWNLOADING_MARKER_FILE_NAME,
+    providers::{provider_runtime_available, AppleSpeechOnDeviceAvailabilityStatus},
+    remove_model_dir_if_exists, remove_model_file_if_exists, validate_artifact_sha256,
+    write_downloading_marker, write_failed_marker, AudioTranscriptionModelDescriptor,
+    AudioTranscriptionModelStatus, ModelArtifact, ModelArtifactFile, ModelArtifactShape,
+    ModelManagement, ModelStatusError, ModelStatusKind, DOWNLOADING_MARKER_FILE_NAME,
 };
 use capture_types::{AudioTranscriptionProvider, AudioTranscriptionSettings};
 use futures_util::StreamExt;
@@ -383,7 +383,7 @@ pub fn selected_audio_transcription_model_available(
     };
 
     let status = detect_model_status(audio_transcription_models_dir(app_data_dir), descriptor)?;
-    if !status.is_available() {
+    if !(status.is_available() && provider_runtime_available(provider)) {
         return Ok(false);
     }
     if descriptor.provider == audio_transcription::APPLE_SPEECH_ON_DEVICE_PROVIDER_ID {
