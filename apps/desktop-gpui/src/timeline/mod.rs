@@ -135,6 +135,8 @@ pub struct TimelineView {
     pub menu_open: bool,
     pub busy_action: Option<&'static str>,
     pub jumper: jumper::JumperState,
+    /// The jumper's day grid: one Tab stop, arrow keys move its cursor.
+    pub jumper_grid: gpui_kit::FocusHandle,
     /// The jumper trigger, so a press on it toggles instead of closing + reopening.
     pub jumper_at: crate::ui::popover::Anchor,
     pub status: Option<Status>,
@@ -187,6 +189,7 @@ impl TimelineView {
             menu_open: false,
             busy_action: None,
             jumper: jumper::JumperState::default(),
+            jumper_grid: cx.focus_handle().tab_stop(true),
             jumper_at: crate::ui::popover::Anchor::owned(cx),
             status: None,
             capture: CaptureHint::default(),
@@ -417,6 +420,9 @@ impl Render for TimelineView {
         let p = theme::tokens(cx);
         self.settle_painted(window, cx);
         self.sync_drawer(window, cx);
+        if std::mem::take(&mut self.jumper.focus_grid) && self.jumper.open {
+            window.focus(&self.jumper_grid, cx); // opening moves focus inside the picker
+        }
         div()
             .id("timeline")
             .role(Role::Main)

@@ -188,6 +188,8 @@ pub mod motion {
     pub const FLASH: Duration = Duration::from_millis(1400);
     /// `.mx-spin`: one turn, linear, forever (the app's only looping motion).
     pub const SPIN: Duration = Duration::from_millis(800);
+    /// `.mx-date[data-dragging] .mx-date__tape`: the density strip keeps up with a drag.
+    pub const SCRUB: Duration = Duration::from_millis(80);
 
     /// `cubic-bezier(.16, 1, .3, 1)`.
     pub fn expo(t: f32) -> f32 {

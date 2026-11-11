@@ -52,6 +52,7 @@ pub fn controls(this: &Insights, _: &Palette, cx: &mut Context<Insights>) -> Vec
     };
     let entity = cx.entity().downgrade();
     let date = DateInput::new("insights-day", this.day, today)
+        .align_end()
         .range(min.min(this.day), today)
         .density(density)
         .on_change(move |start, _, _, _, cx| {

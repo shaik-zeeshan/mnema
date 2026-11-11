@@ -8,12 +8,14 @@ pub mod app_icon;
 pub mod baseline;
 pub mod button;
 pub mod calendar;
+pub mod calendar_view;
 pub mod chip;
 pub mod choice;
 pub mod clock;
 pub mod combobox;
 pub mod copy;
 pub mod date_input;
+mod date_input_pop;
 pub mod dialog;
 pub mod empty;
 pub mod input;
@@ -37,6 +39,8 @@ pub mod window_strip;
 
 #[cfg(test)]
 mod controls_tests;
+#[cfg(test)]
+mod date_input_tests;
 
 pub use button::{Button, ButtonSize, Variant};
 pub use copy::CopyButton;

@@ -121,6 +121,7 @@ pub fn controls(
         .on_click(cx.listener(|this, _, _, cx| this.ask(cx)));
     let date = DateInput::new("insights-period", this.period.0, today)
         .period(this.period.1)
+        .align_end()
         .range(min, today)
         .density(density)
         .on_change(move |start, _, unit, _, cx| {

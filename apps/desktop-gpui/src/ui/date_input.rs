@@ -1,9 +1,10 @@
 //! `DateInput.svelte`: the scrubbable capsule (calendar icon, bold label +
 //! mono caption, density ruler) over a calendar popover. `period(unit)` adds
-//! the D · W · M switch sharing the capsule border. ←/→ (and the wheel) step,
-//! Home/End jump to the latest, ↵/Space or a click opens, Esc closes.
-//! `span(..)` is range mode (Chat scope): All time + presets beside the
-//! calendar, where two day clicks pick a span.
+//! the D · W · M switch sharing the capsule border. ←/→ ↑/↓, the wheel and a
+//! drag step; Home/End jump to the latest, ↵/Space or a click opens, Esc
+//! closes. `span(..)` is range mode (Chat scope): All time + presets beside
+//! the calendar, where a drag across days (or two presses) picks a span.
+//! The popover itself is `date_input_pop.rs`.
 
 use std::rc::Rc;
 
@@ -11,16 +12,20 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    div, linear_color_stop, linear_gradient, px, App, ElementId, Hsla, SharedString, Window,
+    div, linear_color_stop, linear_gradient, px, Animation, AnimationExt as _, App, ElementId,
+    EmptyView, Entity, Hsla, MouseButton, Pixels, ScrollDelta, Window,
 };
 use time::{Date, Duration};
 
 use super::calendar::{
-    calendar, capsule_label, month_of, period_of, periods_ago, presets, relative_label, span_label,
-    span_relative, step, CalSpec, Unit,
+    capsule_label, latest_span, month_of, period_of, periods_ago, relative_label, span_label,
+    span_relative, step, step_span, Unit,
 };
-use super::{focus_handle, focus_visible, icon, nid, outline, popover, Force};
-use crate::theme::{self, radius, size, text, Palette, FONT_MONO};
+use super::date_input_pop::{content, release, Act, Commit, Pop, RangePick};
+use super::{
+    focus_handle, focus_visible, icon, last_change, nid, outline, popover, with_tip, Force,
+};
+use crate::theme::{self, motion, radius, size, text, Palette, FONT_MONO};
 
 /// `(start, end, period unit or None for day mode)`.
 pub type OnDate = Rc<dyn Fn(Date, Date, Option<Unit>, &mut Window, &mut App)>;
@@ -42,6 +47,8 @@ pub struct DateInput {
     /// Range mode: `Some(None)` = all time.
     span: Option<Option<(Date, Date)>>,
     on_span: Option<OnSpan>,
+    /// `align="end"`: the popover's right edge under the capsule's.
+    align_end: bool,
 }
 
 impl DateInput {
@@ -60,6 +67,7 @@ impl DateInput {
             on_change: None,
             span: None,
             on_span: None,
+            align_end: false,
         }
     }
     /// Range mode on `span` (`None` = all time), with an All time preset.
@@ -85,6 +93,11 @@ impl DateInput {
     /// Captured density per day, 0..=3.
     pub fn density(mut self, f: impl Fn(Date) -> u8 + 'static) -> Self {
         self.density = Rc::new(f);
+        self
+    }
+    /// Right-align the popover under the capsule (`align="end"`).
+    pub fn align_end(mut self) -> Self {
+        self.align_end = true;
         self
     }
     pub fn force(mut self, f: Force) -> Self {
@@ -148,22 +161,60 @@ fn edge(left: bool, from: Hsla) -> gpui_kit::Div {
         ))
 }
 
+/// The drag payload while the capsule is scrubbed (its element id).
+struct Scrub(String);
+
+/// A scrub in progress: where it started, the span it started on, steps applied.
+#[derive(Clone, Copy)]
+struct Drag {
+    x0: Pixels,
+    start: (Date, Date),
+    applied: i32,
+    dragged: bool,
+}
+
+/// Pixels of drag per step (`stepPx`): a day per ruler tick.
+fn step_px(unit: Option<Unit>) -> f32 {
+    match unit {
+        Some(Unit::Day) => PITCH,
+        Some(Unit::Month) => 36.,
+        _ => 24.,
+    }
+}
+
+fn set<T: 'static>(e: &Entity<T>, v: T, cx: &mut App) {
+    e.update(cx, |x, cx| {
+        *x = v;
+        cx.notify();
+    })
+}
+
+fn cap(s: &str) -> String {
+    format!("{}{}", s[..1].to_uppercase(), &s[1..])
+}
+
 impl RenderOnce for DateInput {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = theme::tokens(cx);
         let base = self.id.to_string();
-        let handle = focus_handle(nid(&format!("{base}-focus"), 0), window, cx);
-        let open_state = window.use_keyed_state(nid(&format!("{base}-open"), 0), cx, |_, _| false);
-        let view_state = window.use_keyed_state(nid(&format!("{base}-view"), 0), cx, |_, _| 0i32);
+        let key = |s: &str| nid(&format!("{base}-{s}"), 0);
+        let handle = focus_handle(key("focus"), window, cx);
+        let open_state = window.use_keyed_state(key("open"), cx, |_, _| false);
+        let view_state = window.use_keyed_state(key("view"), cx, |_, _| None::<(Date, Date)>);
+        let pick_state = window.use_keyed_state(key("anchor"), cx, |_, _| RangePick::default());
+        let drag_state = window.use_keyed_state(key("drag"), cx, |_, _| None::<Drag>);
+        let wheel_state = window.use_keyed_state(key("wheel"), cx, |_, _| 0f32);
         let open = *open_state.read(cx) || self.force_open;
         let ring = focus_visible(&handle, self.force, window);
         let hover = self.force == Force::Hover;
+        let dragging = cx.has_active_drag() && drag_state.read(cx).is_some_and(|d| d.dragged);
         let unit = self.period.unwrap_or(Unit::Day);
         let ranged = self.span.is_some();
         let unbounded = self.span == Some(None);
+        // The span the control steps from (all time steps from today, like Svelte's seed).
         let (a, b) = match self.span {
             Some(Some(ab)) => ab,
-            Some(None) => (self.min, self.max),
+            Some(None) => (self.today, self.today),
             None => period_of(self.value, unit),
         };
         let own = matches!(self.period, Some(Unit::Week | Unit::Month));
@@ -176,8 +227,8 @@ impl RenderOnce for DateInput {
             ),
         };
 
-        // Ruler: whole history (day) scrolled so the selection sits under the
-        // notch, or just the period's own days centred (week / month).
+        // Ruler: whole history (day / range) scrolled so the selection sits under
+        // the notch, or just the period's own days centred (week / month).
         let ruler_w = f32::from(size::DATE_RULER_W);
         let density = self.density.clone();
         let heat = |d: Date| -> i8 {
@@ -187,7 +238,8 @@ impl RenderOnce for DateInput {
                 density(d) as i8
             }
         };
-        let ticks: Vec<_> = if own {
+        // The tape: ticks at their own offsets, the whole strip slid to `tape_x`.
+        let (tape_x, ticks): (f32, Vec<(f32, f32, i8, bool)>) = if own {
             let (tw, pitch) = if unit == Unit::Month {
                 (1., 2.)
             } else {
@@ -195,26 +247,56 @@ impl RenderOnce for DateInput {
             };
             let n = (b - a).whole_days() as f32 + 1.;
             let x0 = (ruler_w - (n * pitch - (pitch - tw))) / 2.;
-            (0..n as i64)
+            let ticks = (0..n as i64)
                 .map(|i| {
-                    let d = a + Duration::days(i);
-                    let h = heat(d);
-                    tick(x0 + i as f32 * pitch, tw, h, h >= 0, &p)
+                    let h = heat(a + Duration::days(i));
+                    (i as f32 * pitch, tw, h, h >= 0)
                 })
-                .collect()
+                .collect();
+            (x0, ticks)
         } else {
-            let mid = ((a - self.min).whole_days() + (b - self.min).whole_days()) as f32 / 2.;
-            let x0 = ruler_w / 2. - (mid * PITCH + 1.);
+            let (sa, sb) = if unbounded {
+                (self.min, self.max)
+            } else {
+                (a, b)
+            };
+            let mid = ((sa - self.min).whole_days() + (sb - self.min).whole_days()) as f32 / 2.;
             let days = (self.max - self.min).whole_days();
-            (0..=days)
-                .filter_map(|i| {
-                    let x = x0 + i as f32 * PITCH;
-                    (x > -2. && x < ruler_w).then(|| {
-                        let d = self.min + Duration::days(i);
-                        tick(x, 2., heat(d).max(0), d >= a && d <= b, &p)
-                    })
+            let ticks = (0..=days)
+                .map(|i| {
+                    let d = self.min + Duration::days(i);
+                    (i as f32 * PITCH, 2., heat(d).max(0), d >= sa && d <= sb)
                 })
-                .collect()
+                .collect();
+            (ruler_w / 2. - (mid * PITCH + 1.), ticks)
+        };
+        // `.mx-date__tape { transition: transform }`: 220 ms expo, 80 ms while dragging.
+        let (from_x, gen) = last_change(key("tape-x"), tape_x, window, cx);
+        let (lo, hi) = (from_x.min(tape_x), from_x.max(tape_x));
+        let tape = div()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .left(px(tape_x))
+            // A probe at the tape's origin, so tests can watch it slide.
+            .child(div().id(key("tape")).test_support())
+            // Only ticks inside the ruler at either end of the slide.
+            .children(
+                ticks
+                    .into_iter()
+                    .filter(|(x, ..)| x + hi > -2. && x + lo < ruler_w)
+                    .map(|(x, w, h, sel)| tick(x, w, h, sel, &p)),
+            );
+        let tape = if gen == 0 {
+            tape.into_any_element()
+        } else {
+            let dur = if dragging { motion::SCRUB } else { motion::MED };
+            tape.with_animation(
+                nid(&format!("{base}-tape"), gen),
+                Animation::new(dur).with_easing(motion::expo),
+                move |el, t| el.left(px(from_x + (tape_x - from_x) * t)),
+            )
+            .into_any_element()
         };
         let cap_bg = if hover {
             p.surface_hover
@@ -229,7 +311,7 @@ impl RenderOnce for DateInput {
             .overflow_hidden()
             .rounded(radius::XS)
             .when(!own, |d| d.bg(p.wash))
-            .children(ticks)
+            .child(tape)
             .when(!own, |d| {
                 d.child(edge(true, cap_bg))
                     .child(edge(false, cap_bg))
@@ -244,36 +326,74 @@ impl RenderOnce for DateInput {
                     )
             });
 
-        let change = self.on_change.clone();
-        let (min, max, period) = (self.min, self.max, self.period);
-        let commit = move |d: Date, window: &mut Window, cx: &mut App| {
-            if let Some(f) = &change {
-                let (s, e) = period_of(d, unit);
+        // `apply`: every step, commit and unit switch reports the new span.
+        let (on_change, on_span, period) =
+            (self.on_change.clone(), self.on_span.clone(), self.period);
+        let emit: Commit = Rc::new(move |(s, e), window, cx| {
+            if ranged {
+                if let Some(f) = &on_span {
+                    f(Some((s, e)), window, cx);
+                }
+            } else if let Some(f) = &on_change {
                 f(s, e, period, window, cx);
             }
+        });
+        let (min, max) = (self.min, self.max);
+        let stepped = move |(a, b): (Date, Date), k: i32| {
+            if ranged {
+                step_span(a, b, k, min, max)
+            } else {
+                step(a, unit, k, min, max)
+            }
         };
-        let commit = Rc::new(commit);
+        let latest = if ranged {
+            latest_span(a, b, max)
+        } else {
+            period_of(max, unit)
+        };
+        // A popover pick closes it and hands focus back to the capsule.
+        let commit: Commit = {
+            let (emit, close, focus) = (emit.clone(), open_state.clone(), handle.clone());
+            Rc::new(move |span, window, cx| {
+                set(&close, false, cx);
+                window.focus(&focus, cx);
+                emit(span, window, cx);
+            })
+        };
         let border = if open {
             p.accent_border
+        } else if dragging {
+            p.border_hover
         } else {
             p.border_strong
         };
         let hover_bg = p.surface_hover;
-        let (toggle, keys, wheel) = (open_state.clone(), open_state.clone(), commit.clone());
-        let key_commit = commit.clone();
-        let value = self.value;
+        let (toggle, keys, wheel_emit, key_emit) = (
+            open_state.clone(),
+            open_state.clone(),
+            emit.clone(),
+            emit.clone(),
+        );
+        let (toggle_view, toggle_pick) = (view_state.clone(), pick_state.clone());
+        let (down_drag, move_drag, move_open, drag_emit) = (
+            drag_state.clone(),
+            drag_state.clone(),
+            open_state.clone(),
+            emit.clone(),
+        );
+        let scrub_id = base.clone();
         let btn = div()
             .id(self.id.clone())
             .test_support()
             .role(gpui_kit::Role::Button)
             .aria_label(format!(
-                "{}: {label}, {rel}. Arrow keys to step, Enter for calendar.",
+                "{}: {label}, {rel}. Arrow keys or drag to step, Enter for calendar.",
                 if ranged {
-                    "Range"
+                    "Range".to_string()
                 } else if self.period.is_some() {
-                    unit.name()
+                    cap(unit.name())
                 } else {
-                    "Day"
+                    "Day".to_string()
                 }
             ))
             .aria_expanded(open)
@@ -309,7 +429,13 @@ impl RenderOnce for DateInput {
                     .flex()
                     .flex_col()
                     .gap(px(3.))
-                    .min_w(px(if self.period.is_some() { 108. } else { 92. }))
+                    .min_w(px(if self.period.is_some() {
+                        108.
+                    } else if ranged {
+                        104.
+                    } else {
+                        92.
+                    }))
                     .line_height(gpui_kit::relative(1.))
                     .child(
                         div()
@@ -328,61 +454,112 @@ impl RenderOnce for DateInput {
             )
             .child(ruler)
             .when(ring, |d| d.child(outline(p.accent, px(6.))))
+            // Enter / Space land here too (GPUI's keyboard click on the focused capsule).
             .on_click(move |_, _, cx| {
-                toggle.update(cx, |o, cx| {
-                    *o = !*o;
-                    cx.notify();
-                })
+                let opening = !*toggle.read(cx);
+                if opening {
+                    set(&toggle_view, None, cx);
+                    set(&toggle_pick, RangePick::default(), cx);
+                }
+                set(&toggle, opening, cx);
             })
             .on_key_down(move |e, window, cx| {
                 let k = match e.keystroke.key.as_str() {
-                    // shortcut: range mode doesn't step a span by keys/wheel/drag yet (Tauri's
-                    // stepSpan); upgrade if Chat scope users ask for it.
-                    "left" | "right" | "home" | "end" if ranged => return,
-                    "left" => -1,
-                    "right" => 1,
+                    _ if e.keystroke.modifiers.platform => return,
+                    "left" | "down" => -1,
+                    "right" | "up" => 1,
                     "home" | "end" => {
-                        key_commit(max, window, cx);
+                        key_emit(latest, window, cx);
                         return cx.stop_propagation();
                     }
-                    "enter" | "space" => {
-                        keys.update(cx, |o, cx| {
-                            *o = !*o;
-                            cx.notify();
-                        });
-                        return cx.stop_propagation();
-                    }
-                    "escape" => {
-                        keys.update(cx, |o, cx| {
-                            *o = false;
-                            cx.notify();
-                        });
-                        return;
-                    }
+                    "escape" => return set(&keys, false, cx),
                     _ => return,
                 };
-                if let Some((s, _)) = step(value, unit, k, min, max) {
-                    key_commit(s, window, cx);
+                if let Some(span) = stepped((a, b), k) {
+                    key_emit(span, window, cx);
                 }
                 cx.stop_propagation();
             })
+            // The wheel steps once per 40 px (a line = a step), like `onWheel`.
             .on_scroll(move |e, window, cx| {
-                if ranged {
+                let (dx, dy) = match e.delta {
+                    ScrollDelta::Pixels(d) => (-f32::from(d.x), -f32::from(d.y)),
+                    ScrollDelta::Lines(l) => (-l.x * 40., -l.y * 40.),
+                };
+                let acc = *wheel_state.read(cx) + if dx.abs() > dy.abs() { dx } else { dy };
+                if acc.abs() < 40. {
+                    return wheel_state.update(cx, |w, _| *w = acc);
+                }
+                wheel_state.update(cx, |w, _| *w = 0.);
+                if let Some(span) = stepped((a, b), acc.signum() as i32) {
+                    wheel_emit(span, window, cx);
+                }
+            })
+            // Drag scrub: right pulls earlier days under the notch; a drag is not a click.
+            .on_mouse_down(MouseButton::Left, move |e, _, cx| {
+                down_drag.update(cx, |d, _| {
+                    *d = Some(Drag {
+                        x0: e.position.x,
+                        start: (a, b),
+                        applied: 0,
+                        dragged: false,
+                    })
+                })
+            })
+            .on_drag(Scrub(scrub_id.clone()), |_, _, _, cx| cx.new(|_| EmptyView))
+            .on_drag_move::<Scrub>(move |e, window, cx| {
+                if e.drag(cx).0 != scrub_id {
                     return;
                 }
-                let dy = e.delta.pixel_delta(px(16.)).y;
-                let k = if dy > px(0.) {
-                    -1
-                } else if dy < px(0.) {
-                    1
-                } else {
+                let Some(mut d) = *move_drag.read(cx) else {
                     return;
                 };
-                if let Some((s, _)) = step(value, unit, k, min, max) {
-                    wheel(s, window, cx);
+                let x = e.event.position.x;
+                let dx = f32::from(x - d.x0);
+                if !d.dragged && dx.abs() > 3. {
+                    d.dragged = true;
+                    set(&move_open, false, cx);
                 }
+                let px_step = step_px(if ranged { None } else { Some(unit) });
+                let want = -(dx / px_step).trunc() as i32;
+                if want != d.applied {
+                    let (mut cur, mut got) = (d.start, 0);
+                    while got != want {
+                        let dir = (want - got).signum();
+                        match stepped(cur, dir) {
+                            Some(n) => (cur, got) = (n, got + dir),
+                            None => break,
+                        }
+                    }
+                    if got != want {
+                        d.x0 = x + px(got as f32 * px_step); // pinned at an edge: no debt
+                    }
+                    if got != d.applied {
+                        d.applied = got;
+                        drag_emit(cur, window, cx);
+                    }
+                }
+                set(&move_drag, Some(d), cx);
             });
 
+        let switch_unit: Rc<dyn Fn(Unit, &mut Window, &mut App)> = {
+            let (change, today) = (self.on_change.clone(), self.today);
+            Rc::new(move |u, window, cx| {
+                if u == unit {
+                    return;
+                }
+                // Lands on "now" if the current period showed, else on the old start.
+                let focus = if periods_ago(a, unit, today) == 0 {
+                    today
+                } else {
+                    a.max(min)
+                };
+                let (s, e) = period_of(focus, u);
+                if let Some(f) = &change {
+                    f(s, e, Some(u), window, cx);
+                }
+            })
+        };
         let units = self.period.map(|_| {
             div()
                 .flex()
@@ -397,13 +574,13 @@ impl RenderOnce for DateInput {
                         .enumerate()
                         .map(|(i, u)| {
                             let on = u == unit;
-                            let (change, today) = (self.on_change.clone(), self.today);
+                            let switch = switch_unit.clone();
                             let hover = (p.wash, p.text_strong);
-                            div()
+                            let el = div()
                                 .id(nid(&format!("{base}-unit"), i as u64))
                                 .test_support()
                                 .role(gpui_kit::Role::Button)
-                                .aria_label(u.name())
+                                .aria_label(cap(u.name()))
                                 .aria_selected(on)
                                 .flex()
                                 .items_center()
@@ -411,210 +588,93 @@ impl RenderOnce for DateInput {
                                 .min_w(px(22.))
                                 .px(px(6.))
                                 .rounded(radius::XS)
+                                .cursor_pointer()
                                 .font_weight(theme::W_MEDIUM)
                                 .text_size(text::XS)
                                 .text_color(if on { p.text_strong } else { p.text_subtle })
                                 .when(on, |d| d.bg(p.wash_strong))
-                                .when(!on, |d| {
-                                    d.cursor_pointer()
-                                        .hover(move |s| s.bg(hover.0).text_color(hover.1))
-                                })
+                                .when(!on, |d| d.hover(move |s| s.bg(hover.0).text_color(hover.1)))
                                 .child(u.name()[..1].to_uppercase())
-                                .on_click(move |_, window, cx| {
-                                    // Switch lands on "now" if the current period showed, else on the old start.
-                                    let focus = if periods_ago(a, unit, today) == 0 {
-                                        today
-                                    } else {
-                                        a.max(min)
-                                    };
-                                    let (s, e) = period_of(focus, u);
-                                    if let Some(f) = &change {
-                                        f(s, e, Some(u), window, cx);
-                                    }
-                                })
+                                .on_click(move |_, window, cx| switch(u, window, cx));
+                            with_tip(el, cap(u.name()))
                         }),
                 )
         });
 
-        let anchor_state =
-            window.use_keyed_state(nid(&format!("{base}-anchor"), 0), cx, |_, _| None::<Date>);
-        let trigger = popover::Anchor::new(nid(&format!("{base}-trigger"), 0), window, cx);
-        let pop_size = popover::Anchor::new(nid(&format!("{base}-pop-size"), 0), window, cx);
+        let trigger = popover::Anchor::new(key("trigger"), window, cx);
+        let pop_size = popover::Anchor::new(key("pop-size"), window, cx);
         // Up when the popover doesn't fit below and there's more room above
         // (`DateInput.svelte` placePop: e.g. Chat's docked composer).
         let up = trigger.opens_up(pop_size.height(cx) + size::POP_GAP * 2., window, cx);
         let pop = open.then(|| {
-            let shift = *view_state.read(cx);
-            let (view, _) = month_of(b, shift);
-            let (pick, nav, close, outside) = (
-                commit.clone(),
-                view_state.clone(),
-                open_state.clone(),
-                open_state.clone(),
-            );
-            let anchor = *anchor_state.read(cx);
-            let outside_anchor = anchor_state.clone();
-            // All time marks no days; a first click marks just its anchor.
-            let sel = match (anchor, unbounded) {
-                (Some(x), _) => (x, x),
-                (None, true) => (Date::MIN, Date::MIN),
-                _ => (a, b),
+            let view = match *view_state.read(cx) {
+                Some((v, at)) if at == a => v,
+                _ => month_of(a, 0).0,
             };
-            let on_span = self.on_span.clone();
-            let presets_col =
-                ranged.then(|| {
-                    let pick_span = |s: Option<(Date, Date)>| {
-                        let (f, close) = (on_span.clone(), open_state.clone());
-                        move |_: &gpui_kit::ClickEvent, window: &mut Window, cx: &mut App| {
-                            close.update(cx, |o, cx| {
-                                *o = false;
-                                cx.notify();
-                            });
-                            if let Some(f) = &f {
-                                f(s, window, cx);
-                            }
-                        }
-                    };
-                    let row = |i: usize, l: String, small: String, on: bool| {
-                        let hover = p.wash_strong;
-                        div()
-                            .id(nid(&format!("{base}-preset"), i as u64))
-                            .test_support()
-                            .role(gpui_kit::Role::Button)
-                            .aria_selected(on)
-                            .flex()
-                            .flex_col()
-                            .gap(px(3.))
-                            .px(px(9.))
-                            .py(px(7.))
-                            .rounded(radius::SM)
-                            .cursor_pointer()
-                            .text_size(text::BASE)
-                            .font_weight(theme::W_MEDIUM)
-                            .text_color(if on { p.text_strong } else { p.text })
-                            .when(on, |d| d.bg(p.wash_strong))
-                            .hover(move |s| s.bg(hover))
-                            .child(l)
-                            .child(
-                                div()
-                                    .font_family(FONT_MONO)
-                                    .font_weight(theme::W_REGULAR)
-                                    .text_size(text::XS)
-                                    .text_color(p.text_subtle)
-                                    .child(small),
-                            )
-                    };
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(1.))
-                        .w(px(156.))
-                        .p(px(6.))
-                        .border_r_1()
-                        .border_color(p.hairline)
-                        .child(
-                            row(0, "All time".into(), "no limit".into(), unbounded)
-                                .on_click(pick_span(None)),
-                        )
-                        .children(presets(self.today).into_iter().enumerate().map(
-                            |(i, (l, s, e))| {
-                                row(
-                                    i + 1,
-                                    l.into(),
-                                    span_label(s, e),
-                                    !unbounded && (s, e) == (a, b),
-                                )
-                                .on_click(pick_span(Some((s, e))))
-                            },
-                        ))
-                });
-            let span_pick = (self.on_span.clone(), anchor_state.clone());
-            let on_pick: super::calendar::OnPickDay = if ranged {
-                let close = close.clone();
-                Rc::new(move |d, window, cx| {
-                    let (f, anchor) = (&span_pick.0, &span_pick.1);
-                    match anchor.read(cx).as_ref().copied() {
-                        None => anchor.update(cx, |x, cx| {
-                            *x = Some(d);
-                            cx.notify();
-                        }),
-                        Some(x) => {
-                            anchor.update(cx, |x, _| *x = None);
-                            close.update(cx, |o, cx| {
-                                *o = false;
-                                cx.notify();
-                            });
-                            if let Some(f) = f {
-                                f(Some((x.min(d), x.max(d))), window, cx);
-                            }
-                        }
+            let all_time: Act = {
+                let (f, close, focus) = (self.on_span.clone(), open_state.clone(), handle.clone());
+                Rc::new(move |window, cx| {
+                    set(&close, false, cx);
+                    window.focus(&focus, cx);
+                    if let Some(f) = &f {
+                        f(None, window, cx);
                     }
                 })
-            } else {
-                Rc::new(move |d, window, cx| {
-                    close.update(cx, |o, cx| {
-                        *o = false;
-                        cx.notify();
-                    });
-                    pick(d, window, cx);
-                })
             };
-            let outside_trigger = trigger.clone();
+            let (outside, outside_trigger) = (open_state.clone(), trigger.clone());
+            let (up_pick, up_commit) = (pick_state.clone(), commit.clone());
+            let (out_pick, out_commit) = (pick_state.clone(), commit.clone());
             let surface = popover::surface(&p)
-                .id(nid(&format!("{base}-pop"), 0))
+                .id(key("pop"))
                 .role(gpui_kit::Role::Dialog)
                 .aria_label(if ranged {
                     "Choose a range"
+                } else if self.period.is_some() {
+                    "Choose a period"
                 } else {
                     "Choose a day"
                 })
                 .p(px(4.))
-                // `.mx-date__pop` range = presets | month (the surface is a column).
-                .flex_row()
-                .children(presets_col)
                 .on_mouse_down_out(move |e, _, cx| {
-                    if !outside_trigger.outside(e, cx) {
-                        return; // the trigger toggles it
+                    if outside_trigger.outside(e, cx) {
+                        set(&outside, false, cx); // the trigger toggles it itself
                     }
-                    outside_anchor.update(cx, |x, _| *x = None);
-                    outside.update(cx, |o, cx| {
-                        *o = false;
-                        cx.notify();
-                    })
                 })
-                .child(calendar(
-                    CalSpec {
-                        id: format!("{base}-cal").into(),
-                        view,
+                .on_mouse_up(MouseButton::Left, move |_, window, cx| {
+                    release(&up_pick, &up_commit, window, cx)
+                })
+                .on_mouse_up_out(MouseButton::Left, move |_, window, cx| {
+                    release(&out_pick, &out_commit, window, cx)
+                })
+                .child(content(
+                    Pop {
+                        base: base.clone(),
+                        span: (a, b),
+                        unit,
+                        period: self.period.is_some(),
+                        ranged,
+                        unbounded,
                         today: self.today,
-                        min: self.min,
-                        max: self.max,
-                        sel,
+                        min,
+                        max,
                         density: self.density.clone(),
-                        reset_label: SharedString::from(
-                            if self.period.is_some() && unit != Unit::Day {
-                                format!("This {}", unit.name())
-                            } else {
-                                "Today".into()
-                            },
-                        ),
-                        at_now: ranged || periods_ago(a, unit, self.max) == 0,
-                        on_pick,
-                        on_nav: Rc::new(move |k, _, cx| {
-                            nav.update(cx, |v, cx| {
-                                *v += k;
-                                cx.notify();
-                            })
-                        }),
+                        view,
+                        pick: pick_state.clone(),
+                        view_state: view_state.clone(),
+                        commit: commit.clone(),
+                        all_time,
+                        switch_unit: switch_unit.clone(),
                     },
                     &p,
+                    cx,
                 ));
+            let end = self.align_end;
             // Positioned by a measured wrapper: its height picks the side.
             popover::float(
                 pop_size
                     .measure(div())
                     .absolute()
-                    .left_0()
+                    .map(|d| if end { d.right_0() } else { d.left_0() })
                     .map(|d| {
                         if up {
                             d.bottom_full().mb(size::POP_GAP)
@@ -628,10 +688,7 @@ impl RenderOnce for DateInput {
 
         let esc = open_state.clone();
         popover::esc_closes(trigger.track(div()), open, move |_, cx| {
-            esc.update(cx, |o, cx| {
-                *o = false;
-                cx.notify();
-            })
+            set(&esc, false, cx)
         })
         .relative()
         .flex()

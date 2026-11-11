@@ -55,6 +55,8 @@ const insights = (tab: string, label: string, ids: string): Surface => ({
 });
 
 const tabClick = (label: string) => `.in-bar button:has-text("${label}")`;
+/** Overview's period capsule D · W · M switch (not the popover's copy). */
+const unitClick = (label: string) => `.mx-date > .mx-date__units button[aria-label="${label}"]`;
 /** Insights parity states: `[state, mockup anchor, Tauri clicks, mockup query]` (mirrors
  *  `insights::fixture::STATES`). */
 const INSIGHTS_SET: [string, string, string[], string][] = [
@@ -68,6 +70,9 @@ const INSIGHTS_SET: [string, string, string[], string][] = [
   ["context-empty", "context", [tabClick("Context")], "state=new-user"],
   ["subject", "subjects", [tabClick("Subjects"), ".in-map__row", ".sd-row"], "state=detail"],
   ["receipt", "journal", [tabClick("Journal"), 'button:has-text("Receipt")'], ""],
+  ["period-day-open", "overview", [unitClick("Day"), ".mx-date__btn"], ""],
+  ["period-week-open", "overview", [unitClick("Week"), ".mx-date__btn"], ""],
+  ["period-month-open", "overview", [unitClick("Month"), ".mx-date__btn"], ""],
 ];
 
 /** Onboarding parity states: `[state, fixture, Tauri clicks]` (mirrors `onboarding::fixture::STATES`).

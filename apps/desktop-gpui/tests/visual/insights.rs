@@ -50,7 +50,7 @@ pub fn render(
     let insights = insights.expect("insights");
     cx.run_until_parked();
     match st.open {
-        Open::None => {}
+        Open::None | Open::Period(_) => {}
         Open::Subject => {
             let first = cx.read(|cx| {
                 insights
@@ -97,6 +97,18 @@ pub fn render(
                 });
             }
         }
+    }
+    if let Open::Period(unit) = st.open {
+        // The unit through its D · W · M button (as a user does), then the calendar.
+        let ix = unit as u64;
+        cx.run_until_parked();
+        cx.update_window(window.into(), |_, window, cx| {
+            use gpui_kit::test::TestWindowExt as _;
+            window.render_frame(cx);
+            window.click(mnema_gpui::ui::nid("insights-period-unit", ix), cx);
+        })?;
+        cx.run_until_parked();
+        crate::layers::click(cx, window.into(), "insights-period")?;
     }
     // Loads land, images decode (FrameImages loads in the draw), then settle.
     let deadline = Instant::now() + Duration::from_secs(10);

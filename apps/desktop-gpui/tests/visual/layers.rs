@@ -52,11 +52,13 @@ pub fn click(
 }
 
 /// Chat with a thread open (docked composer at the window's foot), the scope
-/// panel shown and its range calendar clicked open.
+/// panel shown and its range calendar clicked open; `span` = scoped Sat Oct 24 –
+/// Sat Oct 31 (both caps and a row break inside one month), else all time.
 fn chat_scope(
     cx: &mut VisualTestAppContext,
     model: ShellModel,
     setting: AppearanceSetting,
+    span: bool,
 ) -> anyhow::Result<image::RgbaImage> {
     let fx = chat_fixture("done")?;
     cx.update(|cx| theme::set_setting(setting, cx));
@@ -76,6 +78,11 @@ fn chat_scope(
                     chat.show(convo, fx.snapshot.as_ref(), cx);
                 }
                 chat.ctx_open = true;
+                if span {
+                    let today = mnema_gpui::ui::clock::now(cx).date();
+                    chat.scope.start = Some(today - time::Duration::days(11));
+                    chat.scope.end = Some(today - time::Duration::days(4));
+                }
             });
             cx.new(|cx| Root::new(shell, window, cx))
         },
@@ -122,14 +129,16 @@ pub fn goldens(
             }
         }
     }
-    for (theme_name, setting) in themes {
-        let name = format!("chat-scope-range-open-{theme_name}");
-        if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {
-            continue;
-        }
-        let shot = chat_scope(cx, populated.clone(), setting.clone())?;
-        if let Err(e) = compare::check_golden(&name, &shot) {
-            failures.push(e.to_string());
+    for (state, span) in [("range-open", false), ("span-open", true)] {
+        for (theme_name, setting) in themes {
+            let name = format!("chat-scope-{state}-{theme_name}");
+            if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {
+                continue;
+            }
+            let shot = chat_scope(cx, populated.clone(), setting.clone(), span)?;
+            if let Err(e) = compare::check_golden(&name, &shot) {
+                failures.push(e.to_string());
+            }
         }
     }
     Ok(failures)

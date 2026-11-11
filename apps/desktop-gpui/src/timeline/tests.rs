@@ -379,6 +379,39 @@ fn arrows_step_one_and_shift_ten_and_j_opens_the_jumper(cx: &mut TestAppContext)
     assert_eq!(active(cx), 0);
     press(cx, "j");
     assert!(t.read_with(cx, |t, _| t.jumper.open));
+    let reset = cx
+        .update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find("jumper-cal-reset").is_some()
+        })
+        .unwrap();
+    assert!(
+        !reset,
+        "the jumper's calendar has no Today button (JumperCalendar.svelte)"
+    );
+    // bits-ui's grid keys: the open picker owns the arrows (the frame stays put).
+    let picked = t.read_with(cx, |t, _| t.jumper.picked).unwrap();
+    let before = active(cx);
+    press(cx, "left");
+    assert_eq!(
+        active(cx),
+        before,
+        "arrows move the calendar cursor, not the frame"
+    );
+    let cursor = |cx: &mut TestAppContext| t.read_with(cx, |t, _| t.jumper.cursor);
+    assert_eq!(cursor(cx), Some(picked - time::Duration::days(1)));
+    press(cx, "up");
+    assert_eq!(
+        cursor(cx),
+        Some(picked - time::Duration::days(8)),
+        "↑ is a week"
+    );
+    press(cx, "enter");
+    assert_eq!(
+        t.read_with(cx, |t, _| (t.jumper.picked, t.jumper.open)),
+        (Some(picked - time::Duration::days(8)), true),
+        "Enter previews the cursor's day and keeps the picker open"
+    );
     press(cx, "escape");
     assert!(
         !t.read_with(cx, |t, _| t.jumper.open),

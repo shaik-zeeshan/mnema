@@ -1,17 +1,9 @@
-//! The date math behind DateInput (`lib/components/date-input.ts`) and the
-//! `.mx-cal` day grid: Monday-first weeks, density dots, today underline,
-//! selected / in-period fills.
+//! The date math behind DateInput (`lib/components/date-input.ts`); the
+//! `.mx-cal` popover body is `calendar_view.rs`.
 
-use std::rc::Rc;
-
-use gpui_kit::assets::IconName;
-use gpui_kit::prelude::*;
-use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, App, Div, Hsla, SharedString, Window};
 use time::{Date, Duration, Month};
 
-use super::{alpha, mix, nid, Button};
-use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
+pub use super::calendar_view::{calendar, Body, CalSpec, Foot, GridKeys, OnPickDay, RangeHooks};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unit {
@@ -143,16 +135,21 @@ pub fn span_label(a: Date, b: Date) -> String {
     }
 }
 
-/// The range capsule's small line: a preset's name, else `N days`.
+/// The range capsule's small line: a preset's name, else `October` /
+/// `week of Oct 5` / `N days` (`relativeLabel`).
 pub fn span_relative(a: Date, b: Date, today: Date) -> String {
     match presets(today)
         .into_iter()
         .find(|(_, s, e)| *s == a && *e == b)
     {
         Some((name, ..)) => name.into(),
-        None => match (b - a).whole_days() + 1 {
-            1 => "1 day".into(),
-            n => format!("{n} days"),
+        None => match unit_of(a, b) {
+            Some(Unit::Month) => a.month().to_string(),
+            Some(Unit::Week) => format!("week of {}", md(a)),
+            _ => match (b - a).whole_days() + 1 {
+                1 => "1 day".into(),
+                n => format!("{n} days"),
+            },
         },
     }
 }
@@ -167,223 +164,79 @@ pub fn month_cells(view: Date) -> Vec<Date> {
 
 pub const WEEKDAYS: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
 
-/// Density dot colour/size for 0..=3 captured (0 = no dot).
-fn dot(h: u8, p: &Palette) -> Option<(f32, Hsla)> {
-    match h {
-        0 => None,
-        1 => Some((3., p.chart_grey_2)),
-        2 => Some((4., p.chart_grey_3)),
-        _ => Some((5., p.chart_grey_5)),
+/// Which unit a span is (`unitOf`): `None` = a custom span.
+pub fn unit_of(s: Date, e: Date) -> Option<Unit> {
+    if s == e {
+        return Some(Unit::Day);
+    }
+    if s == monday(s) && (e - s).whole_days() == 6 {
+        return Some(Unit::Week);
+    }
+    (month_of(s, 0) == (s, e)).then_some(Unit::Month)
+}
+
+/// Step a range-mode span `k` of its own units (`stepSpan`): a custom span
+/// moves by its length; `None` when it would leave `[min, max]`.
+pub fn step_span(a: Date, b: Date, k: i32, min: Date, max: Date) -> Option<(Date, Date)> {
+    match unit_of(a, b) {
+        Some(u) => step(a, u, k, min, max),
+        None => {
+            let len = Duration::days(((b - a).whole_days() + 1) * k as i64);
+            let (na, nb) = (a + len, b + len);
+            (!(na > max || nb < min)).then_some((na, nb))
+        }
     }
 }
 
-pub type OnPickDay = Rc<dyn Fn(Date, &mut Window, &mut App)>;
-
-/// Everything one `.mx-cal` render needs.
-pub struct CalSpec {
-    pub id: SharedString,
-    pub view: Date,
-    pub today: Date,
-    pub min: Date,
-    pub max: Date,
-    /// The selected span (`a == b` for a single day).
-    pub sel: (Date, Date),
-    pub density: Rc<dyn Fn(Date) -> u8>,
-    pub reset_label: SharedString,
-    /// The selection already holds the latest day / the current period.
-    pub at_now: bool,
-    pub on_pick: OnPickDay,
-    pub on_nav: Rc<dyn Fn(i32, &mut Window, &mut App)>,
+/// Home/End in range mode (`latestSpan`): the newest span of the same unit;
+/// a custom span keeps its length.
+pub fn latest_span(a: Date, b: Date, max: Date) -> (Date, Date) {
+    match unit_of(a, b) {
+        Some(u) => period_of(max, u),
+        None => (max - (b - a), max),
+    }
 }
 
-pub fn calendar(c: CalSpec, p: &Palette) -> Div {
-    let (vfirst, _) = month_of(c.view, 0);
-    let single = c.sel.0 == c.sel.1;
-    let nav = |k: i32, disabled: bool| {
-        let f = c.on_nav.clone();
-        let (glyph, label) = if k < 0 {
-            (IconName::ChevronLeft, "Previous month")
-        } else {
-            (IconName::ChevronRight, "Next month")
-        };
-        Button::icon_only(
-            nid(&format!("{}-nav", c.id), (k + 1) as u64),
-            glyph.path(),
-            label,
-        )
-        .ghost()
-        .sm()
-        .disabled(disabled)
-        .on_click(move |_, window, cx| f(k, window, cx))
+/// The month's pickable days (`getSelectableCells`: in the month, inside `[min, max]`).
+fn pickable(first: Date, min: Date, max: Date) -> Vec<Date> {
+    let (f, l) = month_of(first, 0);
+    (0..=(l - f).whole_days())
+        .map(|i| f + Duration::days(i))
+        .filter(|d| *d >= min && *d <= max)
+        .collect()
+}
+
+/// bits-ui's `shiftCalendarFocus` (the Timeline jumper's arrow keys): move the
+/// keyboard cursor `add` places (±1 a day, ±7 a week) through the month's
+/// pickable days, rolling the overflow into the month before / after unless
+/// that month is out of `[min, max]`. `(cursor, first of the month to show)`.
+pub fn shift_cursor(
+    cursor: Date,
+    add: i32,
+    view: Date,
+    min: Date,
+    max: Date,
+) -> Option<(Date, Date)> {
+    let first = month_of(view, 0).0;
+    let here = pickable(first, min, max);
+    let at = |days: &[Date], i: i32| (i >= 0).then(|| days.get(i as usize).copied()).flatten();
+    let next = here.iter().position(|d| *d == cursor)? as i32 + add;
+    if let Some(d) = at(&here, next) {
+        return Some((d, first));
+    }
+    let (other, i) = if next < 0 {
+        if first <= month_of(min, 0).0 {
+            return None;
+        }
+        let prev = month_of(first, -1).0;
+        (prev, pickable(prev, min, max).len() as i32 + next)
+    } else {
+        if first >= month_of(max, 0).0 {
+            return None;
+        }
+        (month_of(first, 1).0, next - here.len() as i32)
     };
-    let days = month_cells(c.view).into_iter().enumerate().map(|(i, d)| {
-        let off = d < c.min || d > c.max;
-        let out = d.month() != vfirst.month();
-        let sel = single && d == c.sel.0;
-        let within = !single && d >= c.sel.0 && d <= c.sel.1;
-        let (fg, bg) = if sel {
-            (p.accent_contrast, Some(p.accent))
-        } else if off {
-            (p.text_faint, None)
-        } else if within {
-            (
-                p.text_strong,
-                Some(mix(p.accent, gpui_kit::transparent_black(), 0.11)),
-            )
-        } else if out {
-            (p.text_subtle, None)
-        } else {
-            (p.text, None)
-        };
-        let col = i % 7;
-        let r = radius::SM;
-        let pick = c.on_pick.clone();
-        let hover = (p.wash_strong, p.text_strong);
-        let dot = (!off).then(|| dot((c.density)(d), p)).flatten();
-        div()
-            .id(nid(&format!("{}-day", c.id), d.to_julian_day() as u64))
-            .test_support()
-            .role(gpui_kit::Role::Button)
-            .aria_label(format!("{}, {} {}", d.weekday(), d.month(), d.day()))
-            .relative()
-            .flex()
-            .items_center()
-            .justify_center()
-            .w(size::CAL_CELL_W)
-            .h(size::CAL_CELL_H)
-            .pb(px(4.))
-            .text_size(text::BASE)
-            .font_weight(if sel {
-                theme::W_SEMIBOLD
-            } else {
-                theme::W_MEDIUM
-            })
-            .line_height(gpui_kit::relative(1.))
-            .text_color(fg)
-            .when_some(bg, |el, bg| el.bg(bg))
-            .map(|el| {
-                if within {
-                    let start = d == c.sel.0 || col == 0;
-                    let end = d == c.sel.1 || col == 6;
-                    el.when(start, |el| el.rounded_l(r))
-                        .when(end, |el| el.rounded_r(r))
-                } else {
-                    el.rounded(r)
-                }
-            })
-            .when(!off && !sel && !within, |el| {
-                el.cursor_pointer()
-                    .hover(move |s| s.bg(hover.0).text_color(hover.1))
-            })
-            .when(!off, |el| {
-                el.on_click(move |_, window, cx| pick(d, window, cx))
-            })
-            .child(
-                div()
-                    .when(d == c.today && !sel, |el| {
-                        el.border_b(px(1.5)).border_color(p.accent)
-                    })
-                    .child(d.day().to_string()),
-            )
-            .when_some(dot, |el, (s, color)| {
-                el.child(
-                    div()
-                        .absolute()
-                        .bottom(px(5.))
-                        .left(size::CAL_CELL_W / 2. - px(s / 2.))
-                        .size(px(s))
-                        .rounded_full()
-                        .bg(if sel {
-                            alpha(p.accent_contrast, 0.7)
-                        } else {
-                            color
-                        }),
-                )
-            })
-    });
-    let legend_dot = |s: f32, c: Hsla| div().size(px(s)).rounded_full().bg(c);
-    let reset_pick = c.on_pick.clone();
-    let max = c.max;
-    div()
-        .flex()
-        .flex_col()
-        .pt(px(8.))
-        .px(px(10.))
-        .pb(px(6.))
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(px(2.))
-                .pb(px(8.))
-                .pl(px(4.))
-                .child(
-                    div()
-                        .flex_1()
-                        .font_weight(theme::W_SEMIBOLD)
-                        .text_size(text::MD)
-                        .line_height(gpui_kit::relative(1.))
-                        .text_color(p.text_strong)
-                        .child(format!("{} {}", vfirst.month(), vfirst.year())),
-                )
-                .child(nav(-1, vfirst <= month_of(c.min, 0).0))
-                .child(nav(1, vfirst >= month_of(c.max, 0).0)),
-        )
-        .child(div().flex().children(WEEKDAYS.iter().map(|w| {
-            div()
-                .w(size::CAL_CELL_W)
-                .h(px(22.))
-                .flex()
-                .items_center()
-                .justify_center()
-                .font_family(FONT_MONO)
-                .font_weight(theme::W_MEDIUM)
-                .text_size(text::XS)
-                .text_color(p.text_subtle)
-                .child(*w)
-        })))
-        .child(
-            div()
-                .flex()
-                .flex_wrap()
-                .w(size::CAL_CELL_W * 7.)
-                .gap_y(px(2.))
-                .children(days),
-        )
-        .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(space::S2)
-                .min_h(px(32.))
-                .mt(px(6.))
-                .pt(px(6.))
-                .pl(px(4.))
-                .border_t_1()
-                .border_color(p.hairline)
-                .font_family(FONT_MONO)
-                .font_weight(theme::W_MEDIUM)
-                .text_size(text::XS)
-                .text_color(p.text_subtle)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(3.))
-                        .mr_auto()
-                        .child(legend_dot(3., p.chart_grey_2))
-                        .child(legend_dot(4., p.chart_grey_3))
-                        .child(legend_dot(5., p.chart_grey_5).mr(px(3.)))
-                        .child("captured"),
-                )
-                .child(
-                    Button::new(format!("{}-reset", c.id), c.reset_label.clone())
-                        .ghost()
-                        .sm()
-                        .disabled(c.at_now)
-                        .on_click(move |_, window, cx| reset_pick(max, window, cx)),
-                ),
-        )
+    at(&pickable(other, min, max), i).map(|d| (d, other))
 }
 
 #[cfg(test)]
@@ -427,5 +280,25 @@ mod tests {
         assert_eq!(cells.first(), Some(&date!(2026 - 09 - 28)));
         assert_eq!(cells.len() % 7, 0);
         assert_eq!(cells.last(), Some(&date!(2026 - 11 - 01)));
+        // Arrow keys: a week down from Oct 28 rolls into November at the same offset.
+        let (min, view) = (date!(2026 - 06 - 01), date!(2026 - 10 - 01));
+        assert_eq!(
+            shift_cursor(date!(2026 - 10 - 05), 7, view, min, today),
+            None,
+            "October ends at today (Oct 9) and November is past max"
+        );
+        let max = date!(2026 - 12 - 31);
+        assert_eq!(
+            shift_cursor(date!(2026 - 10 - 28), 7, view, min, max),
+            Some((date!(2026 - 11 - 04), date!(2026 - 11 - 01)))
+        );
+        assert_eq!(
+            shift_cursor(date!(2026 - 10 - 01), -1, view, min, max),
+            Some((date!(2026 - 09 - 30), date!(2026 - 09 - 01)))
+        );
+        assert_eq!(
+            shift_cursor(date!(2026 - 10 - 05), 1, view, min, max),
+            Some((date!(2026 - 10 - 06), view))
+        );
     }
 }

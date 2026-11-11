@@ -34,10 +34,12 @@ pub enum Open {
     Subject,
     /// The Journal's newest card with its receipt open.
     Receipt,
+    /// Overview's period control switched to this unit, its calendar clicked open.
+    Period(crate::ui::calendar::Unit),
 }
 
 /// The goldens and parity states, in `surfaces.ts` order.
-pub const STATES: [State; 10] = [
+pub const STATES: [State; 13] = [
     State {
         name: "overview",
         set: "populated",
@@ -97,6 +99,24 @@ pub const STATES: [State; 10] = [
         set: "populated",
         tab: Tab::Journal,
         open: Open::Receipt,
+    },
+    State {
+        name: "period-day-open",
+        set: "populated",
+        tab: Tab::Overview,
+        open: Open::Period(crate::ui::calendar::Unit::Day),
+    },
+    State {
+        name: "period-week-open",
+        set: "populated",
+        tab: Tab::Overview,
+        open: Open::Period(crate::ui::calendar::Unit::Week),
+    },
+    State {
+        name: "period-month-open",
+        set: "populated",
+        tab: Tab::Overview,
+        open: Open::Period(crate::ui::calendar::Unit::Month),
     },
 ];
 
