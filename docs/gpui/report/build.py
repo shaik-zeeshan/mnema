@@ -188,7 +188,7 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = ([(link(drafts, "round11", "The dim layer behind a window, and the day spine"), "11 Nov · ten approved pictures changed by the backdrop fix; the day spine before, after and in the Tauri app",
+    rows = ([(link(drafts, "round11", "The dim layer behind a window, and the day spine"), "11–12 Nov · ten approved pictures changed by the backdrop fix; the day spine before, after and in the Tauri app; five pictures changed by the app-icon fix",
               page_chip(d, "round11"))] if d.get("round11") else []) + ([(link(drafts, "round10", "Insights, checked against the Tauri app"), "11 Nov · detail windows, receipts with audio, the day spine, Subjects paging, Context editing",
               page_chip(d, "round10"))] if d.get("round10") else []) + ([(link(drafts, "round9", "Main window chrome, onboarding and small windows, checked against the Tauri app"), "11 Nov · status-bar flags, notifications, onboarding engines and app rules, the update window",
               page_chip(d, "round9"))] if d.get("round9") else []) + ([(link(drafts, "round8", "Timeline, Chat and Quick Recall, checked against the Tauri app"), "11 Nov · keys, the text overlay, audio errors, the frame detail window, the model picker",

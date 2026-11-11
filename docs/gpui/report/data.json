@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 22:26",
- "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. Everything is in local commits; nothing is pushed. Every screenshot from the check is approved. What needs you: a hands-on pass in the real app, since none of this has been used by hand yet.",
+ "updated": "2026-11-12 05:10",
+ "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. On 12 Nov the dev build crashed after six hours: opening Insights started writing the week's summary with the AI model on a thread with too little room, and it ran out. That is fixed for every backend call the app makes, with a test that crashed before the fix. Everything is in local commits; nothing is pushed. Every screenshot is approved. What needs you: a hands-on pass in the real app, since none of this has been used by hand yet.",
  "metrics": [
   {
    "label": "Overall",
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,174",
-   "note": "1,353 shared backend + 141 activity-source + 671 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
+   "value": "2,175",
+   "note": "1,354 shared backend + 671 GPUI + 6 wiring run on 12 Nov after the crash fix, with no failures; 141 activity-source + 3 engines last run on 11 Nov; the Tauri app compiles; its own 71 tests were last run before 10 Nov"
   },
   {
    "label": "Screenshots approved",
-   "value": "5 pending",
-   "note": "five approved pictures changed by the app-icon fix"
+   "value": "all",
+   "note": "the five pictures changed by the app-icon fix were approved on 12 Nov"
   }
  ],
  "bars": [
@@ -515,8 +515,14 @@
   {
    "id": "Fix 21",
    "title": "Other apps' icons load in Settings › Privacy and onboarding's add-app list",
-   "what": "Settings never asked for icons and onboarding's add-app list did not either; both now load them in the background through the loader the Timeline uses. Built, with tests on made-up icons and a check of the real lookup on this Mac; pictures await your approval; not seen in the real app yet.",
+   "what": "Settings never asked for icons and onboarding's add-app list did not either; both now load them in the background through the loader the Timeline uses. Built, with tests on made-up icons and a check of the real lookup on this Mac; pictures approved on 12 Nov (baselines 25865156); not seen in the real app yet.",
    "commit": "f4a26f74"
+  },
+  {
+   "id": "Fix 22",
+   "title": "The crash on 12 Nov: backend calls ran out of room on small threads",
+   "what": "Opening Insights started writing the week's summary with the AI model on one of macOS's small background threads (512 KB), and the request ran out of room, which killed the app. Every backend call from the app now gets a large thread when the caller's is small; calls from the main thread run as before. The same weakness was closed where recording starts from onboarding's last step and from the developer window, and where recording saves its audio. A test crashed before the fix and passes after. Built and wired; not tried in the real app yet.",
+   "commit": "8d78c45a"
   }
  ],
  "next": [
@@ -833,14 +839,9 @@
  ],
  "waiting": [
   {
-   "id": "Approve",
-   "title": "Five pictures changed by the app-icon fix",
-   "detail": "Add app…, the two onboarding Capture & Storage states, and two Privacy pictures where only the letter tile's colours changed. On the window backdrop and day spine page, first section."
-  },
-  {
    "id": "Hands-on",
    "title": "Try the app",
-   "detail": "Every part of the app has been checked against the Tauri app, but none of today's fixes has been used by hand in the real app. A signed dev build with all of it is ready."
+   "detail": "Every part of the app has been checked against the Tauri app, but none of the fixes has been used by hand in the real app. A signed dev build with all of it, including the crash fix, is ready. Opening Insights for this week is the step that crashed before."
   },
   {
    "id": "Review",
@@ -3455,10 +3456,10 @@
    "anchor": "r14-icons",
    "title": "Other apps' icons: five approved pictures changed",
    "toc": "App icons",
-   "commit": "f4a26f74",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "You found that other apps' icons do not load where apps are added, in Settings and in onboarding. The lookup itself works: run on this Mac it listed 151 installed apps and 149 have an icon that loads. The new app never asked for it. In Settings, neither the excluded-app rows nor the Add app list requested icons, so they could only draw letters. In onboarding the Never recorded chips did ask, but the list that appears when you add an app did not. Both now request icons in the background and draw them as they arrive; an app with no icon keeps its letter. The pictures use two made-up icons, not real apps' icons. Five approved pictures change: three now show icons, and in two the letter tile takes the Tauri app's colours. Not confirmed in the real app yet: please check that the onboarding chips show real icons too, since you reported onboarding as broken and the chips were thought to be working.",
+   "commit": "f4a26f74, baselines 25865156",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these five changed pictures on 12 Nov; their baselines are recorded. You found that other apps' icons do not load where apps are added, in Settings and in onboarding. The lookup itself works: run on this Mac it listed 151 installed apps and 149 have an icon that loads. The new app never asked for it. In Settings, neither the excluded-app rows nor the Add app list requested icons, so they could only draw letters. In onboarding the Never recorded chips did ask, but the list that appears when you add an app did not. Both now request icons in the background and draw them as they arrive; an app with no icon keeps its letter. The pictures use two made-up icons, not real apps' icons. Five approved pictures change: three now show icons, and in two the letter tile takes the Tauri app's colours. Not confirmed in the real app yet: please check that the onboarding chips show real icons too, since you reported onboarding as broken and the chips were thought to be working.",
    "rows": [
     {
      "heading": "Settings › Privacy › Add app…",
@@ -3749,5 +3750,5 @@
    ]
   }
  ],
- "round11_verdict": "Three things you pointed out on 11 Nov after the screen-by-screen check: the dim layer behind a window, the day spine, and other apps' icons not loading where apps are added. All three are fixed and committed locally. The first two are approved; the icon fix changes five approved pictures, shown here before and after. Not tried in the real app. Nothing has been pushed."
+ "round11_verdict": "Three things you pointed out on 11 Nov after the screen-by-screen check: the dim layer behind a window, the day spine, and other apps' icons not loading where apps are added. All three are fixed, committed locally, and their pictures approved (the icon pictures on 12 Nov). Not tried in the real app. Nothing has been pushed."
 }
