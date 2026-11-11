@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 15:46",
- "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control (your Insights calendar report) is done and approved too. Nothing is waiting on you right now.",
+ "updated": "2026-11-11 16:18",
+ "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control is done and approved, and the rest of Settings is done: nine screenshots are waiting for you on its page.",
  "metrics": [
   {
    "label": "Overall",
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,066",
-   "note": "1,353 shared backend + 141 activity-source + 563 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
+   "value": "2,089",
+   "note": "1,353 shared backend + 141 activity-source + 586 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "all approved",
-   "note": "the six date-control screens approved on 11 Nov; baselines recorded in 15e25abd; more will come from the sweep"
+   "value": "9 pending",
+   "note": "the rest of Settings: eight new screens and one changed"
   }
  ],
  "bars": [
@@ -56,19 +56,19 @@
  ],
  "now": [
   {
-   "id": "Sweep 4",
-   "title": "Settings › General, Capture, Data, About",
-   "detail": "The same control-by-control check. With an agent now."
-  },
-  {
    "id": "Sweep 5",
    "title": "Timeline, audio drawer, frame detail",
+   "detail": "About 25 differences found and fixed; the agent is finishing the last items and merging."
+  },
+  {
+   "id": "Sweep 6",
+   "title": "Chat and Quick Recall",
    "detail": "With an agent now."
   },
   {
    "id": "Queued",
-   "title": "Three more parts",
-   "detail": "Chat and Quick Recall; Insights; then the main window chrome, onboarding and small windows."
+   "title": "Two more parts",
+   "detail": "Insights; then the main window chrome, onboarding and small windows."
   }
  ],
  "done": [
@@ -491,6 +491,12 @@
    "title": "Tests can no longer reach your licence in the keychain",
    "what": "A test of the Settings licence section tried to read the real licence key and macOS asked you about it. Only reads were attempted, 4 to 6 times. The licence store now refuses the real keychain whenever the test safety switch is on, and every test run redirects licence storage to a throwaway folder.",
    "commit": "fdfa189e"
+  },
+  {
+   "id": "Sweep 4",
+   "title": "The rest of Settings matches the Tauri app",
+   "what": "Three actions that deleted or discarded things without asking now ask; shortcut rebinding takes keys and checks conflicts; Video no longer claims sizes a Mac cannot record; many busy, failure and confirm states added across Capture, Data and About. Built, with 17 click-through tests and Tauri-side pictures; screenshots await your approval; not tried in the real app.",
+   "commit": "46175ba8"
   }
  ],
  "next": [
@@ -806,6 +812,11 @@
   }
  ],
  "waiting": [
+  {
+   "id": "Approve",
+   "title": "Nine Settings screenshots",
+   "detail": "Eight new screens next to the Tauri app's pictures, and Settings › Data, which changed. On the rest-of-Settings page, first section."
+  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -2714,5 +2725,192 @@
    "rows": []
   }
  ],
- "round6_verdict": "The date control used in Insights, Chat and the Timeline has been checked against the Tauri app and rebuilt where it differed: week rows, the month grid and rounded range ends are in, with keyboard, wheel and drag stepping. You approved the six screens on 11 Nov; three of them sit next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed."
+ "round6_verdict": "The date control used in Insights, Chat and the Timeline has been checked against the Tauri app and rebuilt where it differed: week rows, the month grid and rounded range ends are in, with keyboard, wheel and drag stepping. You approved the six screens on 11 Nov; three of them sit next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed.",
+ "round7": [
+  {
+   "anchor": "r9-approve",
+   "title": "The rest of Settings: screenshots to approve",
+   "toc": "To approve",
+   "commit": "46175ba8",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "Nine screens need your yes, all rendered from test data. Eight are new and each sits next to the Tauri app's own picture of the same data. One changed: Settings › Data shows the save folder as a path chip, as the Tauri app does. One thing I noticed in the pictures and left alone, because you approved that look earlier: on the Shortcuts page the new app draws each key in its own small box, where the Tauri app shows the keys as plain glyphs inside one box. Say if you want that changed to match.",
+   "rows": [
+    {
+     "heading": "General › Shortcuts with a conflict",
+     "shots": [
+      {
+       "file": "r9-settings-shortcuts-conflict-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r9-settings-shortcuts-conflict-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r9-settings-shortcuts-conflict-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Capture › Privacy › Add app…, now a dropdown with search",
+     "shots": [
+      {
+       "file": "r9-settings-privacy-add-app-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r9-settings-privacy-add-app-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r9-settings-privacy-add-app-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "About › licence already active on 3 devices",
+     "shots": [
+      {
+       "file": "r9-settings-license-overcap-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r9-settings-license-overcap-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r9-settings-license-overcap-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Capture › System Audio may be blocked",
+     "shots": [
+      {
+       "file": "r9-settings-capture-sysaudio-hint-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r9-settings-capture-sysaudio-hint-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r9-settings-capture-sysaudio-hint-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Capture › Video › custom size and bitrate errors",
+     "shots": [
+      {
+       "file": "r9-settings-video-custom-errors-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r9-settings-video-custom-errors-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r9-settings-video-custom-errors-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Data › after a cleanup and a deletion",
+     "shots": [
+      {
+       "file": "r9-settings-storage-after-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r9-settings-storage-after-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r9-settings-storage-after-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Intelligence › AI status could not be read",
+     "shots": [
+      {
+       "file": "r9-settings-ai-status-error-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r9-settings-ai-status-error-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r9-settings-ai-status-error-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Intelligence › unused models deleted",
+     "shots": [
+      {
+       "file": "r9-settings-ocr-unused-deleted-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r9-settings-ocr-unused-deleted-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r9-settings-ocr-unused-deleted-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Data (changed)",
+     "shots": [
+      {
+       "file": "r9-settings-data-before.jpg",
+       "caption": "Before"
+      },
+      {
+       "file": "r9-settings-data-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r9-settings-data-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r9-rest",
+   "title": "Settings shell, General, Capture, Data and About",
+   "toc": "What changed",
+   "commit": "46175ba8",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "Every control and flow outside Intelligence was listed from the Tauri app's code and matched to the new app. Things that deleted or lost data without asking: \"Run cleanup now\" deleted captures at once; \"Delete Log File\" deleted at once; blocking a CLI tool threw away unsaved settings. All three now ask first or keep your edits. A flow that was dead: clicking a shortcut to rebind it never took the keys you pressed. It works now, with the Tauri app's conflict rules: both conflicting rows are marked, a \"Shortcuts not saved\" notice offers Jump to conflict, and saving waits until it is fixed. Wrong information: on a Mac that can only record at original size, Video claimed scaled sizes were supported; it now says they are not and switches back. Also fixed: save failures have their own titles and retry by themselves; Dismiss reverts only the setting that failed; the System Audio hint sits in its row; permission errors show on the row that failed; custom video size and bitrate are checked as you type; \"Add app…\" is a searchable dropdown; changing the save folder offers Restart; retention changes confirm and report on their row; CLI Access shows busy and failure states and refreshes every 30 seconds; About has every update status; the licence section has the notice for a licence already on its 3 devices, and Refresh and Activate report on their own row. Seventeen new tests click and type through these flows. Not tried in the real app: macOS permission prompts, the restart, the folder dialog, installing an update, and anything that talks to the licence server. Kept different on purpose: the folder picker is the standard macOS one, and installing an update restarts in one step.",
+   "rows": []
+  },
+  {
+   "anchor": "r9-keychain",
+   "title": "A test tried to read your licence from the keychain",
+   "toc": "Keychain",
+   "commit": "fdfa189e, 46175ba8",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "While this part was being built, macOS asked you whether a test could read your Mnema licence. The cause: a new \"N of M devices activated\" line read the stored licence key whenever Settings finished loading, and two existing tests open Settings on a real backend. The test safety switch blocked the secret vault and the real data folders but did not cover the licence store. Only reads were attempted, about 4 to 6 times across two runs; nothing was written, deleted or deactivated. If a read was allowed, the key was held in the test process and one read-only check was sent to the licence server. Fixed three ways: the licence store now refuses the real keychain whenever the safety switch is on (your yes, fdfa189e); the device count is skipped in dev builds; and the tests themselves point licence storage at a throwaway folder, which was checked afterwards and is empty. Every agent brief now carries the rule. Not checked: two other places in the backend that talk to the keychain directly, the recording database key and the update installer's signature check.",
+   "rows": []
+  }
+ ],
+ "round7_verdict": "The rest of Settings has been checked control by control against the Tauri app, and what was missing or wrong is built and committed locally. Three actions that deleted or discarded things without asking now ask; shortcut rebinding works; Video no longer claims sizes a Mac cannot record. Nine screens need your approval, eight of them next to the Tauri app's own picture. This page also records the keychain prompt you got and what was done about it. Not tried in the real app. Nothing has been pushed."
 }
