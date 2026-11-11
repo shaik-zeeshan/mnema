@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 17:27",
- "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control is done and approved, and the rest of Settings, the Timeline, Chat and Quick Recall are done: sixteen screenshots are waiting for you on two pages. The last two parts, Insights and the main window chrome with onboarding and small windows, are running.",
+ "updated": "2026-11-11 17:41",
+ "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control is done and approved, and the rest of Settings, the Timeline, Chat and Quick Recall are done: all approved. The last two parts, Insights and the main window chrome with onboarding and small windows, are running.",
  "metrics": [
   {
    "label": "Overall",
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "16 pending",
-   "note": "nine from the rest of Settings and seven from the Timeline and Chat"
+   "value": "all approved",
+   "note": "sixteen Settings, Timeline and Chat screens approved on 11 Nov; baselines recorded in 2f7092ba; two parts of the sweep still to come"
   }
  ],
  "bars": [
@@ -490,19 +490,19 @@
   {
    "id": "Sweep 4",
    "title": "The rest of Settings matches the Tauri app",
-   "what": "Three actions that deleted or discarded things without asking now ask; shortcut rebinding takes keys and checks conflicts; Video no longer claims sizes a Mac cannot record; many busy, failure and confirm states added across Capture, Data and About. Built, with 17 click-through tests and Tauri-side pictures; screenshots await your approval; not tried in the real app.",
+   "what": "Three actions that deleted or discarded things without asking now ask; shortcut rebinding takes keys and checks conflicts; Video no longer claims sizes a Mac cannot record; many busy, failure and confirm states added across Capture, Data and About. Built, with 17 click-through tests and Tauri-side pictures; screenshots approved on 11 Nov; not tried in the real app.",
    "commit": "46175ba8"
   },
   {
    "id": "Sweep 5",
    "title": "Timeline, audio drawer and frame detail match the Tauri app",
-   "what": "Timeline keys no longer leak into the drawer and pickers; the rail takes Home, End and Page keys; the text overlay behaves as in the Tauri app; audio errors can be retried; the frame detail window is rebuilt against its Tauri picture. Built, with click and key tests and Tauri-side pictures; screenshots await your approval; not tried in the real app.",
+   "what": "Timeline keys no longer leak into the drawer and pickers; the rail takes Home, End and Page keys; the text overlay behaves as in the Tauri app; audio errors can be retried; the frame detail window is rebuilt against its Tauri picture. Built, with click and key tests and Tauri-side pictures; screenshots approved on 11 Nov; not tried in the real app.",
    "commit": "972e4250, fc62e189"
   },
   {
    "id": "Sweep 6",
    "title": "Chat and Quick Recall match the Tauri app",
-   "what": "Buttons that only re-checked now open Settings; search, rename and failed actions behave and report as in the Tauri app; the model picker has recents, Make default and Retry; Quick Recall keeps the bar open on a link and offers the full answer in Chat. Built, with click tests and a Tauri-side picture; screenshot awaits your approval; not tried in the real app.",
+   "what": "Buttons that only re-checked now open Settings; search, rename and failed actions behave and report as in the Tauri app; the model picker has recents, Make default and Retry; Quick Recall keeps the bar open on a link and offers the full answer in Chat. Built, with click tests and a Tauri-side picture; screenshot approved on 11 Nov; not tried in the real app.",
    "commit": "f27de915"
   }
  ],
@@ -819,16 +819,6 @@
   }
  ],
  "waiting": [
-  {
-   "id": "Approve",
-   "title": "Nine Settings screenshots",
-   "detail": "Eight new screens next to the Tauri app's pictures, and Settings › Data, which changed. On the rest-of-Settings page, first section."
-  },
-  {
-   "id": "Approve 2",
-   "title": "Seven Timeline and Chat screenshots",
-   "detail": "Six new screens next to the Tauri app's pictures and the changed shortcuts sheet. On the Timeline and Chat page, first section."
-  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -2741,12 +2731,12 @@
  "round7": [
   {
    "anchor": "r9-approve",
-   "title": "The rest of Settings: screenshots to approve",
-   "toc": "To approve",
-   "commit": "46175ba8",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "Nine screens need your yes, all rendered from test data. Eight are new and each sits next to the Tauri app's own picture of the same data. One changed: Settings › Data shows the save folder as a path chip, as the Tauri app does. One thing I noticed in the pictures and left alone, because you approved that look earlier: on the Shortcuts page the new app draws each key in its own small box, where the Tauri app shows the keys as plain glyphs inside one box. Say if you want that changed to match.",
+   "title": "The rest of Settings: approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "46175ba8, baselines 2f7092ba",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these nine screens on 11 Nov; their baselines are recorded from the runs these pictures were made from. Eight are new and each sits next to the Tauri app's own picture of the same data. One changed: Settings › Data shows the save folder as a path chip, as the Tauri app does. One thing I noticed in the pictures and left alone, because you approved that look earlier: on the Shortcuts page the new app draws each key in its own small box, where the Tauri app shows the keys as plain glyphs inside one box. Say if you want that changed to match.",
    "rows": [
     {
      "heading": "General › Shortcuts with a conflict",
@@ -2924,16 +2914,16 @@
    "rows": []
   }
  ],
- "round7_verdict": "The rest of Settings has been checked control by control against the Tauri app, and what was missing or wrong is built and committed locally. Three actions that deleted or discarded things without asking now ask; shortcut rebinding works; Video no longer claims sizes a Mac cannot record. Nine screens need your approval, eight of them next to the Tauri app's own picture. This page also records the keychain prompt you got and what was done about it. Not tried in the real app. Nothing has been pushed.",
+ "round7_verdict": "The rest of Settings has been checked control by control against the Tauri app, and what was missing or wrong is built and committed locally. Three actions that deleted or discarded things without asking now ask; shortcut rebinding works; Video no longer claims sizes a Mac cannot record. You approved the nine screens on 11 Nov; eight of them sit next to the Tauri app's own picture. This page also records the keychain prompt you got and what was done about it. Not tried in the real app. Nothing has been pushed.",
  "round8": [
   {
    "anchor": "r10-approve",
-   "title": "Timeline, Chat and Quick Recall: screenshots to approve",
-   "toc": "To approve",
-   "commit": "972e4250, f27de915, fc62e189",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "Seven screens need your yes, all rendered from test data. Six are new and each sits next to the Tauri app's own picture of the same data. One changed: the shortcuts sheet now groups Timeline, Frame and Audio Drawer keys as the Tauri app does and leaves out rows that cannot act right now. One difference you will see in every pair: the Tauri app blurs what is behind a window and the new app only dims it, because the toolkit cannot blur.",
+   "title": "Timeline, Chat and Quick Recall: approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "972e4250, f27de915, fc62e189, baselines 2f7092ba",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these seven screens on 11 Nov; their baselines are recorded from the runs these pictures were made from. Six are new and each sits next to the Tauri app's own picture of the same data. One changed: the shortcuts sheet now groups Timeline, Frame and Audio Drawer keys as the Tauri app does and leaves out rows that cannot act right now. One difference you will see in every pair: the Tauri app blurs what is behind a window and the new app only dims it, because the toolkit cannot blur.",
    "rows": [
     {
      "heading": "Frame detail window (rebuilt to match)",
@@ -3063,7 +3053,7 @@
    "commit": "972e4250, fc62e189",
    "state": "fixed · committed",
    "awaiting": false,
-   "what": "About 35 differences from the Tauri app, found by listing every control and flow from its code. Keys: inside the audio drawer, the date picker or the frame menu, the Timeline's keys (O, C, D, J, L, R, P and the arrows) still acted on the Timeline behind; Home, End, Page Up and Page Down did nothing on the rail. Text overlay: it stayed on and reloaded on every scrub step, where the Tauri app hides it when the frame changes; the engine chip, the run / rerunning states and two notes were missing. Stage: \"audio unavailable\" had no retry; with the screen off and audio recorded the stage did not list the recent segments or offer \"Record the screen too\"; a deleted frame showed a raw error; Start recording had no starting state. Frame menu: the open-page row's wording and states, and keyboard focus into the menu. Frame detail window: rebuilt against its Tauri picture, with copy image, the redactions badge, the app avatar and the Tauri size. Developer panel: missing rows added, and its values no longer collapse to nothing. One behaviour change to confirm: the text overlay now hides on each new frame, to match the Tauri app; say if you preferred it staying on. One thing left for a later batch: everything below the stage sits 3 px higher than in the Tauri app; fixing it shifts 16 approved Timeline pictures, so it should be done together with refreshing those. Not tried in the real app: playback, the real clipboard, keyboard focus.",
+   "what": "About 35 differences from the Tauri app, found by listing every control and flow from its code. Keys: inside the audio drawer, the date picker or the frame menu, the Timeline's keys (O, C, D, J, L, R, P and the arrows) still acted on the Timeline behind; Home, End, Page Up and Page Down did nothing on the rail. Text overlay: it stayed on and reloaded on every scrub step, where the Tauri app hides it when the frame changes; the engine chip, the run / rerunning states and two notes were missing. Stage: \"audio unavailable\" had no retry; with the screen off and audio recorded the stage did not list the recent segments or offer \"Record the screen too\"; a deleted frame showed a raw error; Start recording had no starting state. Frame menu: the open-page row's wording and states, and keyboard focus into the menu. Frame detail window: rebuilt against its Tauri picture, with copy image, the redactions badge, the app avatar and the Tauri size. Developer panel: missing rows added, and its values no longer collapse to nothing. The text overlay now hides on each new frame, to match the Tauri app (approved with the pictures on 11 Nov). One thing left for a later batch: everything below the stage sits 3 px higher than in the Tauri app; fixing it shifts 16 approved Timeline pictures, so it should be done together with refreshing those. Not tried in the real app: playback, the real clipboard, keyboard focus.",
    "rows": []
   },
   {
@@ -3077,5 +3067,5 @@
    "rows": []
   }
  ],
- "round8_verdict": "The Timeline with its audio drawer and frame detail, and Chat with Quick Recall, have been checked control by control against the Tauri app; about 60 differences are fixed and committed locally. Seven screens need your approval, six of them next to the Tauri app's own picture. One behaviour change to confirm: the text overlay now hides when the frame changes. Not tried in the real app. Nothing has been pushed."
+ "round8_verdict": "The Timeline with its audio drawer and frame detail, and Chat with Quick Recall, have been checked control by control against the Tauri app; about 60 differences are fixed and committed locally. You approved the seven screens on 11 Nov, and with them the text overlay hiding when the frame changes. Not tried in the real app. Nothing has been pushed."
 }
