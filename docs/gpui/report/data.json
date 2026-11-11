@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 21:10",
- "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. Everything is in local commits; nothing is pushed. What needs you: ten Insights screenshots, ten already-approved pictures that changed when the dim layer behind a window was fixed, and a hands-on pass in the real app, since none of this has been used by hand yet.",
+ "updated": "2026-11-11 21:22",
+ "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. Everything is in local commits; nothing is pushed. Every screenshot from the check is approved. What needs you: a hands-on pass in the real app, since none of this has been used by hand yet.",
  "metrics": [
   {
    "label": "Overall",
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "20 pending",
-   "note": "ten Insights screens, and ten already-approved pictures changed by the backdrop fix"
+   "value": "all approved",
+   "note": "the last twenty (Insights and the changed window pictures) approved on 11 Nov; baselines recorded in 1e26a521"
   }
  ],
  "bars": [
@@ -503,13 +503,13 @@
   {
    "id": "Sweep 8",
    "title": "Insights matches the Tauri app",
-   "what": "Dead buttons, lost text in Context, the page waiting on the AI, missing paging in Subjects and the three simplified detail windows are fixed; receipts play their cited audio; the day spine and its cards are linked. Built, with 24 tests on the real view and Tauri-side pictures; screenshots await your approval; not tried in the real app.",
+   "what": "Dead buttons, lost text in Context, the page waiting on the AI, missing paging in Subjects and the three simplified detail windows are fixed; receipts play their cited audio; the day spine and its cards are linked. Built, with 24 tests on the real view and Tauri-side pictures; screenshots approved on 11 Nov; not tried in the real app.",
    "commit": "03b56f15"
   },
   {
    "id": "Fix 20",
    "title": "The dim layer covers the whole window; the day spine stands full height",
-   "what": "Behind any window the titlebar and status bar are now dimmed and blocked too, with the Tauri app's overlay colour. Day spine blocks stand on their strip, hour lines stop at the baseline, and the week bars are corrected. Built, with a test and Tauri-side pictures; pictures await your approval; not tried in the real app.",
+   "what": "Behind any window the titlebar and status bar are now dimmed and blocked too, with the Tauri app's overlay colour. Day spine blocks stand on their strip, hour lines stop at the baseline, and the week bars are corrected. Built, with a test and Tauri-side pictures; pictures approved on 11 Nov; not tried in the real app.",
    "commit": "84934ebf"
   }
  ],
@@ -827,16 +827,6 @@
  ],
  "waiting": [
   {
-   "id": "Approve",
-   "title": "Ten Insights screenshots (replaced)",
-   "detail": "The same ten screens, re-rendered after the backdrop and day-spine fixes, each next to the Tauri app's picture. On the Insights page, first section."
-  },
-  {
-   "id": "Approve 2",
-   "title": "Ten already-approved pictures that changed",
-   "detail": "Connector windows, licence receipts and one gallery page: the dim layer now covers the whole window and is stronger, as in the Tauri app. On the window backdrop page, before and after."
-  },
-  {
    "id": "Hands-on",
    "title": "Try the app",
    "detail": "Every part of the app has been checked against the Tauri app, but none of today's fixes has been used by hand in the real app. A signed dev build with all of it is ready."
@@ -845,6 +835,11 @@
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
    "detail": "About 30 patches were merged on tests alone since 10 Nov. A careful review of them before cut-over is recommended; say the word and it starts."
+  },
+  {
+   "id": "Decide",
+   "title": "A 3 px offset and a refresh of older baselines",
+   "detail": "Everything below the Timeline stage sits 3 px higher than in the Tauri app; fixing it shifts 16 approved Timeline pictures. About 78 older pictures also pass within tolerance but are no longer pixel-identical. Recommended: do both in one batch, with the pictures put in front of you first."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -3253,12 +3248,12 @@
  "round10": [
   {
    "anchor": "r12-approve",
-   "title": "Insights: screenshots to approve",
-   "toc": "To approve",
-   "commit": "03b56f15, 84934ebf",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "Ten screens need your yes, all rendered from test data, each next to the Tauri app's own picture of the same data. These pictures were replaced on 11 Nov at 21:00 after your two remarks: the dim layer behind a window now covers the titlebar and status bar, and the day spine's blocks stand the full height on their strip. Seven are new: the three rebuilt Overview detail windows, a Journal receipt with its spoken turns, a day with captures but nothing written up, the frame window opened from a subject's evidence, and editing a statement in Context. Three changed: the Journal, a receipt and the empty Journal. In some pairs the Tauri picture is scrolled to a different place; the content is the same.",
+   "title": "Insights: approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "03b56f15, 84934ebf, baselines 1e26a521",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these ten screens on 11 Nov, in their corrected form; their baselines are recorded from the run these pictures were made from. Seven are new: the three rebuilt Overview detail windows, a Journal receipt with its spoken turns, a day with captures but nothing written up, the frame window opened from a subject's evidence, and editing a statement in Context. Three changed: the Journal, a receipt and the empty Journal. In some pairs the Tauri picture is scrolled to a different place; the content is the same.",
    "rows": [
     {
      "heading": "Overview › What you worked on (rebuilt)",
@@ -3443,16 +3438,16 @@
    "rows": []
   }
  ],
- "round10_verdict": "Insights was the last part of the screen-by-screen check against the Tauri app. Its dead buttons, lost text, missing paging and simplified detail windows are fixed, and so are the two things you pointed out in its pictures: the dim layer behind a window now covers the whole window, and the day spine's blocks stand the full height. Ten screens need your approval, each next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed.",
+ "round10_verdict": "Insights was the last part of the screen-by-screen check against the Tauri app. Its dead buttons, lost text, missing paging and simplified detail windows are fixed, and so are the two things you pointed out in its pictures: the dim layer behind a window now covers the whole window, and the day spine's blocks stand the full height. You approved the ten screens on 11 Nov; each sits next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed.",
  "round11": [
   {
    "anchor": "r13-approve",
-   "title": "The dim layer behind a window: ten approved pictures changed",
-   "toc": "To approve",
-   "commit": "84934ebf",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "You pointed out that the top bar stayed bright behind a window. The fix is in the one component every such window uses, so it changes ten pictures you had already approved. In each, the dim layer now covers the titlebar and the status bar, and it uses the Tauri app's own overlay colour, which is stronger than before: in the light theme the app behind is washed out much more, as it is in the Tauri app (where it is also blurred, which the toolkit cannot do). While a window is open the titlebar and status bar no longer take clicks or show hover tips, and Escape still closes it.",
+   "title": "The dim layer behind a window: ten changed pictures, approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "84934ebf, baselines 1e26a521",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these ten changed pictures on 11 Nov; their baselines are recorded. You pointed out that the top bar stayed bright behind a window. The fix is in the one component every such window uses, so it changes ten pictures you had already approved. In each, the dim layer now covers the titlebar and the status bar, and it uses the Tauri app's own overlay colour, which is stronger than before: in the light theme the app behind is washed out much more, as it is in the Tauri app (where it is also blurred, which the toolkit cannot do). While a window is open the titlebar and status bar no longer take clicks or show hover tips, and Escape still closes it.",
    "rows": [
     {
      "heading": "Settings › Add a connector",
@@ -3647,5 +3642,5 @@
    ]
   }
  ],
- "round11_verdict": "Your two remarks on the Insights pictures are fixed and committed locally: the dim layer behind a window now covers the whole window, and the day spine's blocks stand the full height. The first fix changes ten pictures you had already approved, shown here before and after. Not tried in the real app. Nothing has been pushed."
+ "round11_verdict": "Your two remarks on the Insights pictures are fixed and committed locally: the dim layer behind a window now covers the whole window, and the day spine's blocks stand the full height. The first fix changed ten pictures you had already approved; you approved the new versions on 11 Nov. Not tried in the real app. Nothing has been pushed."
 }
