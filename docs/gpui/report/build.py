@@ -188,7 +188,8 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = ([(link(drafts, "round10", "Insights, checked against the Tauri app"), "11 Nov · detail windows, receipts with audio, the day spine, Subjects paging, Context editing",
+    rows = ([(link(drafts, "round11", "The dim layer behind a window, and the day spine"), "11 Nov · ten approved pictures changed by the backdrop fix; the day spine before, after and in the Tauri app",
+              page_chip(d, "round11"))] if d.get("round11") else []) + ([(link(drafts, "round10", "Insights, checked against the Tauri app"), "11 Nov · detail windows, receipts with audio, the day spine, Subjects paging, Context editing",
               page_chip(d, "round10"))] if d.get("round10") else []) + ([(link(drafts, "round9", "Main window chrome, onboarding and small windows, checked against the Tauri app"), "11 Nov · status-bar flags, notifications, onboarding engines and app rules, the update window",
               page_chip(d, "round9"))] if d.get("round9") else []) + ([(link(drafts, "round8", "Timeline, Chat and Quick Recall, checked against the Tauri app"), "11 Nov · keys, the text overlay, audio errors, the frame detail window, the model picker",
               page_chip(d, "round8"))] if d.get("round8") else []) + ([(link(drafts, "round7", "The rest of Settings, checked against the Tauri app"), "11 Nov · shortcuts, capture, privacy, data, about, licence; and the keychain prompt",
@@ -268,6 +269,11 @@ def main():
          fixes_page(d, drafts, "approve", "Earlier approvals",
                     "Screenshots you approved on 10 Nov before they became references. Nothing here is waiting."),
          "Mnema GPUI — earlier approvals")
+    if d.get("round11"):
+        emit("round11", "round11.html", "Window backdrop and day spine",
+             fixes_page(d, drafts, "round11", "The dim layer behind a window, and the day spine",
+                        "Two things you pointed out in the Insights pictures on 11 Nov, and the already-approved pictures the first fix changed. All pictures are rendered from test data."),
+             "Mnema GPUI — window backdrop and day spine")
     if d.get("round10"):
         emit("round10", "round10.html", "Insights check",
              fixes_page(d, drafts, "round10", "Insights, checked against the Tauri app",

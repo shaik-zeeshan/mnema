@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 19:54",
- "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. Everything is in local commits; nothing is pushed. What needs you: ten Insights screenshots to approve, and a hands-on pass in the real app, since none of this has been used by hand yet.",
+ "updated": "2026-11-11 21:10",
+ "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. Everything is in local commits; nothing is pushed. What needs you: ten Insights screenshots, ten already-approved pictures that changed when the dim layer behind a window was fixed, and a hands-on pass in the real app, since none of this has been used by hand yet.",
  "metrics": [
   {
    "label": "Overall",
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,171",
-   "note": "1,353 shared backend + 141 activity-source + 668 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
+   "value": "2,172",
+   "note": "1,353 shared backend + 141 activity-source + 669 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "10 pending",
-   "note": "Insights: seven new screens and three changed"
+   "value": "20 pending",
+   "note": "ten Insights screens, and ten already-approved pictures changed by the backdrop fix"
   }
  ],
  "bars": [
@@ -54,13 +54,7 @@
    "pct": 0
   }
  ],
- "now": [
-  {
-   "id": "Final check",
-   "title": "One combined check and a fresh dev build",
-   "detail": "Every test suite on the final commit from a clean checkout, and a signed dev build with everything from 11 Nov."
-  }
- ],
+ "now": [],
  "done": [
   {
    "id": "T0",
@@ -511,6 +505,12 @@
    "title": "Insights matches the Tauri app",
    "what": "Dead buttons, lost text in Context, the page waiting on the AI, missing paging in Subjects and the three simplified detail windows are fixed; receipts play their cited audio; the day spine and its cards are linked. Built, with 24 tests on the real view and Tauri-side pictures; screenshots await your approval; not tried in the real app.",
    "commit": "03b56f15"
+  },
+  {
+   "id": "Fix 20",
+   "title": "The dim layer covers the whole window; the day spine stands full height",
+   "what": "Behind any window the titlebar and status bar are now dimmed and blocked too, with the Tauri app's overlay colour. Day spine blocks stand on their strip, hour lines stop at the baseline, and the week bars are corrected. Built, with a test and Tauri-side pictures; pictures await your approval; not tried in the real app.",
+   "commit": "84934ebf"
   }
  ],
  "next": [
@@ -828,13 +828,18 @@
  "waiting": [
   {
    "id": "Approve",
-   "title": "Ten Insights screenshots",
-   "detail": "Seven new and three changed, each next to the Tauri app's picture. On the Insights page, first section."
+   "title": "Ten Insights screenshots (replaced)",
+   "detail": "The same ten screens, re-rendered after the backdrop and day-spine fixes, each next to the Tauri app's picture. On the Insights page, first section."
+  },
+  {
+   "id": "Approve 2",
+   "title": "Ten already-approved pictures that changed",
+   "detail": "Connector windows, licence receipts and one gallery page: the dim layer now covers the whole window and is stronger, as in the Tauri app. On the window backdrop page, before and after."
   },
   {
    "id": "Hands-on",
    "title": "Try the app",
-   "detail": "Every part of the app has now been checked against the Tauri app, but none of today's fixes has been used by hand in the real app. A fresh signed dev build with all of it is being prepared."
+   "detail": "Every part of the app has been checked against the Tauri app, but none of today's fixes has been used by hand in the real app. A signed dev build with all of it is ready."
   },
   {
    "id": "Review",
@@ -3250,10 +3255,10 @@
    "anchor": "r12-approve",
    "title": "Insights: screenshots to approve",
    "toc": "To approve",
-   "commit": "03b56f15",
+   "commit": "03b56f15, 84934ebf",
    "state": "awaiting your approval",
    "awaiting": true,
-   "what": "Ten screens need your yes, all rendered from test data, each next to the Tauri app's own picture of the same data. Seven are new: the three rebuilt Overview detail windows, a Journal receipt with its spoken turns, a day with captures but nothing written up, the frame window opened from a subject's evidence, and editing a statement in Context. Three changed: the Journal (its live \"writing up\" row), a receipt (the 1× · 8× · 16× speed picker and ticks for cited frames) and the empty Journal (a top margin). In some pairs the Tauri picture is scrolled to a different place; the content is the same.",
+   "what": "Ten screens need your yes, all rendered from test data, each next to the Tauri app's own picture of the same data. These pictures were replaced on 11 Nov at 21:00 after your two remarks: the dim layer behind a window now covers the titlebar and status bar, and the day spine's blocks stand the full height on their strip. Seven are new: the three rebuilt Overview detail windows, a Journal receipt with its spoken turns, a day with captures but nothing written up, the frame window opened from a subject's evidence, and editing a statement in Context. Three changed: the Journal, a receipt and the empty Journal. In some pairs the Tauri picture is scrolled to a different place; the content is the same.",
    "rows": [
     {
      "heading": "Overview › What you worked on (rebuilt)",
@@ -3431,12 +3436,216 @@
    "anchor": "r12-insights",
    "title": "Insights: Overview, Journal, Subjects, Context",
    "toc": "What changed",
-   "commit": "03b56f15",
+   "commit": "03b56f15, 84934ebf",
    "state": "fixed · committed",
    "awaiting": false,
    "what": "Dead buttons: Journal's Re-read and Set up AI did nothing; Context showed a ⌘↵ hint on Add that nothing handled. Lost text: in Context a failed add cleared the box even though the message said your text was still there. Slow and misleading: the Overview read and the Journal's day digest were loaded together with everything else, so Insights sat on placeholders until a model call finished, and stepping the period showed the previous week's numbers under the new label; they now load on their own with their own states. The notice about the AI engine went stale after a Settings change or a ChatGPT sign-in. \"Ask about this week\" sent only the question, where the Tauri app opens Chat limited to that week. Subjects showed only the first 10 rows of each tier, with no paging; evidence rows could not be clicked. Context had no way to edit a statement. The three Overview detail windows were simplified and cut their content off; all three are rebuilt and scroll. Several error states had no Try again, and failed re-reads, deletes and restores were swallowed. Also built: every Journal empty state, the day with captures but no summary, hover and click between the day spine and its cards, receipts that play their cited audio, the \"N views updated · Refresh\" pill in Subjects, \"Recording since\" while waiting for the first summary, and a frame's evidence opening the frame window in place. Settled toward the Tauri app, overrule if you prefer the old way: a dismissed conclusion leaves the list with Undo on the toast for 5 seconds. Not tried in the real app: real audio playback, scroll feel, and the live \"Recording since\" line.",
    "rows": []
   }
  ],
- "round10_verdict": "Insights was the last part of the screen-by-screen check against the Tauri app. Its dead buttons, lost text, missing paging and simplified detail windows are fixed and committed locally. Ten screens need your approval, each next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed."
+ "round10_verdict": "Insights was the last part of the screen-by-screen check against the Tauri app. Its dead buttons, lost text, missing paging and simplified detail windows are fixed, and so are the two things you pointed out in its pictures: the dim layer behind a window now covers the whole window, and the day spine's blocks stand the full height. Ten screens need your approval, each next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed.",
+ "round11": [
+  {
+   "anchor": "r13-approve",
+   "title": "The dim layer behind a window: ten approved pictures changed",
+   "toc": "To approve",
+   "commit": "84934ebf",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "You pointed out that the top bar stayed bright behind a window. The fix is in the one component every such window uses, so it changes ten pictures you had already approved. In each, the dim layer now covers the titlebar and the status bar, and it uses the Tauri app's own overlay colour, which is stronger than before: in the light theme the app behind is washed out much more, as it is in the Tauri app (where it is also blurred, which the toolkit cannot do). While a window is open the titlebar and status bar no longer take clicks or show hover tips, and Escape still closes it.",
+   "rows": [
+    {
+     "heading": "Settings › Add a connector",
+     "shots": [
+      {
+       "file": "r13-settings-add-connector-open-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-settings-add-connector-open-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-settings-add-connector-open-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › the Connect step",
+     "shots": [
+      {
+       "file": "r13-settings-mcp-preset-connect-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-settings-mcp-preset-connect-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-settings-mcp-preset-connect-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › custom connector form",
+     "shots": [
+      {
+       "file": "r13-settings-mcp-custom-form-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-settings-mcp-custom-form-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-settings-mcp-custom-form-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › a connector's tools",
+     "shots": [
+      {
+       "file": "r13-settings-mcp-tool-list-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-settings-mcp-tool-list-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-settings-mcp-tool-list-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › connector sign-in",
+     "shots": [
+      {
+       "file": "r13-settings-mcp-oauth-idle-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-settings-mcp-oauth-idle-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-settings-mcp-oauth-idle-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Licence receipt › activated",
+     "shots": [
+      {
+       "file": "r13-licence-receipt-activated-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-licence-receipt-activated-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-licence-receipt-activated-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Licence receipt › device limit",
+     "shots": [
+      {
+       "file": "r13-licence-receipt-overcap-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-licence-receipt-overcap-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-licence-receipt-overcap-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Licence receipt › pending",
+     "shots": [
+      {
+       "file": "r13-licence-receipt-pending-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-licence-receipt-pending-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-licence-receipt-pending-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Licence receipt › renewed",
+     "shots": [
+      {
+       "file": "r13-licence-receipt-renewed-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-licence-receipt-renewed-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-licence-receipt-renewed-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Control gallery › windows and menus",
+     "shots": [
+      {
+       "file": "r13-gallery-overlays-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r13-gallery-overlays-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r13-gallery-overlays-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r13-spine",
+   "title": "The day spine, your screenshot",
+   "toc": "Day spine",
+   "commit": "84934ebf",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "You sent the spine of a day with captures but nothing written up, where the grey runs sat as short bands in the middle of the hour lines. The picture below stacks three renders of that exact view: before, after, and the Tauri app. The runs now stand the plot's full height on the baseline, the hour lines stop at the baseline with the hour labels just under it, the \"now\" label is back, and the \"away\" box is smaller and centred. The same was done for a normal day: activity blocks stand on their coloured focus strip, and the stretch still being written up is a hatched box. The week bars next to \"What you did\" had similar differences and are fixed: no grey track behind them, future and empty days are small dashed stubs, and the colours stack the right way up. The full pictures are on the Insights page.",
+   "rows": [
+    {
+     "heading": "Before, after, the Tauri app",
+     "shots": [
+      {
+       "file": "r13-spine-compare.jpg",
+       "caption": "Top: before. Middle: after. Bottom: the Tauri app."
+      }
+     ]
+    }
+   ]
+  }
+ ],
+ "round11_verdict": "Your two remarks on the Insights pictures are fixed and committed locally: the dim layer behind a window now covers the whole window, and the day spine's blocks stand the full height. The first fix changes ten pictures you had already approved, shown here before and after. Not tried in the real app. Nothing has been pushed."
 }
