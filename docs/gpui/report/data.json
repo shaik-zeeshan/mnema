@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-11 21:22",
+ "updated": "2026-11-11 22:26",
  "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. Everything is in local commits; nothing is pushed. Every screenshot from the check is approved. What needs you: a hands-on pass in the real app, since none of this has been used by hand yet.",
  "metrics": [
   {
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,172",
-   "note": "1,353 shared backend + 141 activity-source + 669 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
+   "value": "2,174",
+   "note": "1,353 shared backend + 141 activity-source + 671 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "all approved",
-   "note": "the last twenty (Insights and the changed window pictures) approved on 11 Nov; baselines recorded in 1e26a521"
+   "value": "5 pending",
+   "note": "five approved pictures changed by the app-icon fix"
   }
  ],
  "bars": [
@@ -511,6 +511,12 @@
    "title": "The dim layer covers the whole window; the day spine stands full height",
    "what": "Behind any window the titlebar and status bar are now dimmed and blocked too, with the Tauri app's overlay colour. Day spine blocks stand on their strip, hour lines stop at the baseline, and the week bars are corrected. Built, with a test and Tauri-side pictures; pictures approved on 11 Nov; not tried in the real app.",
    "commit": "84934ebf"
+  },
+  {
+   "id": "Fix 21",
+   "title": "Other apps' icons load in Settings › Privacy and onboarding's add-app list",
+   "what": "Settings never asked for icons and onboarding's add-app list did not either; both now load them in the background through the loader the Timeline uses. Built, with tests on made-up icons and a check of the real lookup on this Mac; pictures await your approval; not seen in the real app yet.",
+   "commit": "f4a26f74"
   }
  ],
  "next": [
@@ -826,6 +832,11 @@
   }
  ],
  "waiting": [
+  {
+   "id": "Approve",
+   "title": "Five pictures changed by the app-icon fix",
+   "detail": "Add app…, the two onboarding Capture & Storage states, and two Privacy pictures where only the letter tile's colours changed. On the window backdrop and day spine page, first section."
+  },
   {
    "id": "Hands-on",
    "title": "Try the app",
@@ -3441,6 +3452,102 @@
  "round10_verdict": "Insights was the last part of the screen-by-screen check against the Tauri app. Its dead buttons, lost text, missing paging and simplified detail windows are fixed, and so are the two things you pointed out in its pictures: the dim layer behind a window now covers the whole window, and the day spine's blocks stand the full height. You approved the ten screens on 11 Nov; each sits next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed.",
  "round11": [
   {
+   "anchor": "r14-icons",
+   "title": "Other apps' icons: five approved pictures changed",
+   "toc": "App icons",
+   "commit": "f4a26f74",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "You found that other apps' icons do not load where apps are added, in Settings and in onboarding. The lookup itself works: run on this Mac it listed 151 installed apps and 149 have an icon that loads. The new app never asked for it. In Settings, neither the excluded-app rows nor the Add app list requested icons, so they could only draw letters. In onboarding the Never recorded chips did ask, but the list that appears when you add an app did not. Both now request icons in the background and draw them as they arrive; an app with no icon keeps its letter. The pictures use two made-up icons, not real apps' icons. Five approved pictures change: three now show icons, and in two the letter tile takes the Tauri app's colours. Not confirmed in the real app yet: please check that the onboarding chips show real icons too, since you reported onboarding as broken and the chips were thought to be working.",
+   "rows": [
+    {
+     "heading": "Settings › Privacy › Add app…",
+     "shots": [
+      {
+       "file": "r14-settings-privacy-add-app-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r14-settings-privacy-add-app-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r14-settings-privacy-add-app-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Onboarding › Capture & Storage",
+     "shots": [
+      {
+       "file": "r14-onboarding-capture-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r14-onboarding-capture-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r14-onboarding-capture-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Onboarding › Capture & Storage, permission blocked",
+     "shots": [
+      {
+       "file": "r14-onboarding-capture-blocked-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r14-onboarding-capture-blocked-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r14-onboarding-capture-blocked-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › Privacy (tile colours)",
+     "shots": [
+      {
+       "file": "r14-settings-capture-privacy-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r14-settings-capture-privacy-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r14-settings-capture-privacy-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Settings › Privacy with the prompt (tile colours)",
+     "shots": [
+      {
+       "file": "r14-settings-capture-privacy-prompt-before.jpg",
+       "caption": "Before (approved earlier)"
+      },
+      {
+       "file": "r14-settings-capture-privacy-prompt-light.jpg",
+       "caption": "After, light"
+      },
+      {
+       "file": "r14-settings-capture-privacy-prompt-dark.jpg",
+       "caption": "After, dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
    "anchor": "r13-approve",
    "title": "The dim layer behind a window: ten changed pictures, approved on 11 Nov",
    "toc": "Approved",
@@ -3642,5 +3749,5 @@
    ]
   }
  ],
- "round11_verdict": "Your two remarks on the Insights pictures are fixed and committed locally: the dim layer behind a window now covers the whole window, and the day spine's blocks stand the full height. The first fix changed ten pictures you had already approved; you approved the new versions on 11 Nov. Not tried in the real app. Nothing has been pushed."
+ "round11_verdict": "Three things you pointed out on 11 Nov after the screen-by-screen check: the dim layer behind a window, the day spine, and other apps' icons not loading where apps are added. All three are fixed and committed locally. The first two are approved; the icon fix changes five approved pictures, shown here before and after. Not tried in the real app. Nothing has been pushed."
 }
