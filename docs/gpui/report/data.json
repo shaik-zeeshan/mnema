@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 06:00",
- "verdict": "Every screen is built and connected to the real backend, and everything found by your two hands-on rounds, the real-app test and the behaviour audit is fixed. On 11 Nov you approved the last nine screenshots and all seven decisions as recommended, and all seven are now done and committed: the recording clock, the missing-engine check, the CLAUDE.md rule, the log detail and the older failing tests. Auto-start was seen working in the real app when you unlocked the Mac. A signed dev build with all of it was built on 11 Nov at 05:59 and is ready to open (not opened, because you had quit the app). Everything is in local commits; nothing is pushed. Nothing is waiting on you except a second hands-on pass whenever you like.",
+ "updated": "2026-11-11 10:07",
+ "verdict": "Every screen is built and connected to the real backend. On 11 Nov your seven decisions were finished, and your morning hands-on round is fixed too: models are found again (the missing-model error), three more mix-ups of the same kind, copy buttons that now work and say so, new copy buttons in the developer window, and the developer window opening from the status popover. A signed dev build with all of it is ready. Everything is in local commits; nothing is pushed. What needs you: five screenshots to approve and one question about the licensing keys, both on the real-app test page.",
  "metrics": [
   {
    "label": "Overall",
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "1,923",
-   "note": "1,351 shared + 501 GPUI (492 + 6 wiring + 3 engines), all run on 11 Nov with no failures; 71 Tauri from before 10 Nov; the Tauri app compiles"
+   "value": "2,010",
+   "note": "1,353 shared backend + 141 activity-source + 507 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "all approved",
-   "note": "the last nine approved on 11 Nov; baselines recorded in 2df6fe07"
+   "value": "5 pending",
+   "note": "three changed developer-window screens and two new ones, from the copy-button work"
   }
  ],
  "bars": [
@@ -724,14 +724,19 @@
  ],
  "waiting": [
   {
-   "id": "Hands-on",
-   "title": "A second hands-on pass",
-   "detail": "The signed dev build from 11 Nov 05:59 has everything. Not yet used by hand in the real app: the recording clock after an idle pause, a first Whisper transcript, the titlebar fix, the Settings pickers, MCP connectors and the job inspector. I did not reopen the app because you had quit it."
+   "id": "Approve",
+   "title": "Five screenshots",
+   "detail": "Three developer-window screens that changed (issue rows, a job's error box, the Logs toolbar) and two new ones (a log line with its copy button, the status popover with Open developer window). On the real-app test page, first section."
+  },
+  {
+   "id": "Keys",
+   "title": "One question: licensing keys for dev builds",
+   "detail": "The new app's dev build has never loaded the licensing keys, which is why it warns about the licence list at every start. The build script now loads them, but the key file exists only in your main checkout. May the build read it from there?"
   },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
-   "detail": "About 25 patches were merged on tests alone since 10 Nov. A careful review of them before cut-over is recommended; say the word and it starts."
+   "detail": "About 30 patches were merged on tests alone since 10 Nov. A careful review of them before cut-over is recommended; say the word and it starts."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -1774,8 +1779,124 @@
    ]
   }
  ],
- "round3_verdict": "Everything found by the real-app test and the behaviour audit is fixed and committed locally. On 11 Nov you approved the nine screenshots and all seven decisions as recommended; all seven are done. Auto-start is confirmed in the real app: with the Mac locked it waited, and at 05:12 on unlock it began recording by itself. Still not used by hand in the real app: the recording clock after an idle pause, a first Whisper transcript, the titlebar fix, the pickers, MCP and the job inspector. Nothing has been pushed.",
+ "round3_verdict": "Your morning round on 11 Nov is fixed and committed locally: the missing-model error, three more mix-ups of the same kind found by an audit, the copy buttons, and the developer window from the status popover. The model fix is confirmed in the real app's log: no missing-model error, and the Whisper transcriber loaded and was unloaded on quit. Five screenshots need your approval and there is one question about licensing keys. The seven decisions from earlier are done. Nothing has been pushed.",
  "round3": [
+  {
+   "anchor": "r4-approve",
+   "title": "Copy buttons and the developer window button: screenshots to approve",
+   "toc": "To approve",
+   "commit": "eab577a8",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "Five screens need your yes, all rendered from test data. Three changed: the developer window's issue rows and a failed job's error box each gain a small copy icon, and the Logs toolbar gains Copy visible lines next to Follow. Two are new: a log line under the pointer with its copy button, with another line marked \"copied\"; and the status popover ending in Open developer window with its key, shown only when developer options are on.",
+   "rows": [
+    {
+     "heading": "Developer window › Overview › issue rows",
+     "shots": [
+      {
+       "file": "r4-debug-overview-issues-light.jpg",
+       "caption": "Light. Left: before. Right: after."
+      },
+      {
+       "file": "r4-debug-overview-issues-dark.jpg",
+       "caption": "Dark. Left: before. Right: after."
+      }
+     ]
+    },
+    {
+     "heading": "Developer window › a failed job",
+     "shots": [
+      {
+       "file": "r4-debug-job-light.jpg",
+       "caption": "Light. Left: before. Right: after."
+      },
+      {
+       "file": "r4-debug-job-dark.jpg",
+       "caption": "Dark. Left: before. Right: after."
+      }
+     ]
+    },
+    {
+     "heading": "Developer window › Logs toolbar",
+     "shots": [
+      {
+       "file": "r4-debug-logs-light.jpg",
+       "caption": "Light. Left: before. Right: after."
+      },
+      {
+       "file": "r4-debug-logs-dark.jpg",
+       "caption": "Dark. Left: before. Right: after."
+      }
+     ]
+    },
+    {
+     "heading": "New: a log line being copied",
+     "shots": [
+      {
+       "file": "r4-debug-logs-copy-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r4-debug-logs-copy-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    },
+    {
+     "heading": "New: status popover with Open developer window",
+     "shots": [
+      {
+       "file": "r4-shell-recording-developer-light.jpg",
+       "caption": "Light"
+      },
+      {
+       "file": "r4-shell-recording-developer-dark.jpg",
+       "caption": "Dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r4-copy",
+   "title": "Copy buttons that did nothing",
+   "toc": "Copy buttons",
+   "commit": "eab577a8",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "The dead one was most likely Timeline › ⋯ › Copy image: it put a WebP picture on the clipboard, which most apps cannot paste. It now copies a PNG. Six more copied correctly but showed nothing, so they looked dead: About's Copy details and Copy notices, the model folder, the sign-in codes in onboarding and Chat, a clicked log line, and Copy diagnostics. Each now says Copied, as the Tauri app does. Two the Tauri app has were missing and are built: Copy on code blocks inside answers and in the update window's notes. New, as you asked: a copy button on each developer-window log line, Copy visible lines, and a copy icon on every warning and error in the developer window. Every copy button now has a test that clicks it and reads the clipboard. Not checked: pasting a copied frame into another app, and none of this has been clicked in the real app yet. Small leftover: About's button gets narrower while it says Copied; the Tauri app keeps its width.",
+   "rows": []
+  },
+  {
+   "anchor": "r4-popover",
+   "title": "Developer window from the status popover",
+   "toc": "Popover button",
+   "commit": "eab577a8",
+   "state": "built · awaiting your approval",
+   "awaiting": false,
+   "what": "The popover that opens from the recording readout now ends with Open developer window and your shortcut (⌘D by default) when developer options are on, like the Tauri app. Clicking it closes the popover and opens the window. The shortcuts sheet also hides a shortcut you have cleared, where it used to show an empty key box. Tested with a click; not yet clicked in the real app.",
+   "rows": []
+  },
+  {
+   "anchor": "r4-models",
+   "title": "\"Model is not installed\" for every model",
+   "toc": "Missing models",
+   "commit": "6d710352",
+   "state": "fixed · confirmed in the real app's log",
+   "awaiting": false,
+   "what": "Models are saved in the app's support folder, but nine places looked for them in the recordings folder, so every installed transcription, speaker and search model was reported missing. Fixed in the other session and committed here after the full checks; a test now fails if any code looks there again. In the rebuilt app the error did not appear, and the Whisper transcriber loaded and was unloaded on quit. Not checked: a transcript on screen.",
+   "rows": []
+  },
+  {
+   "anchor": "r4-audit",
+   "title": "Three more mix-ups of the same kind",
+   "toc": "Similar issues",
+   "commit": "212fc4f9",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "An audit compared every folder, identity and bundled-file lookup in the old Tauri code with what the shared backend does now. Everything else matched; three did not. 1. Connector sign-in could never finish in the new dev app: the browser was sent back to the Tauri dev app's link, while the new app listens on its own. 2. The new dev app counted its own windows as your activity, because it was missing from the list of Mnema's own apps. 3. The licence-list warning at every start was real: the new app's build scripts never loaded the licensing keys, so the build carried a placeholder key that verifies nothing. The scripts load them now, but see the question under What needs you. Also here: connector log lines no longer contain the label you typed, even inside the error text (decision 7, finished). Not done: a real connector sign-in in the new dev app.",
+   "rows": []
+  },
   {
    "anchor": "r3-approve",
    "title": "Screenshots approved on 11 Nov",
