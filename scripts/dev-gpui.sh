@@ -59,17 +59,6 @@ if settings.get("saveDirectory") != data:
     print(f"dev-gpui: saveDirectory -> {data}")
 PY
 
-# Repo-root .env (gitignored): the licensing build env (MNEMA_LICENSE_*), as
-# dev-app.sh loads it. Without it the build bakes the reject-everything
-# placeholder key, so every fetched CRL (and every sandbox key) fails to verify.
-if [[ -f "$repo/.env" ]]; then
-  set -a
-  # shellcheck source=/dev/null
-  . "$repo/.env"
-  set +a
-  echo "dev-gpui: loaded $repo/.env"
-fi
-
 # Same layout dev-app.sh gives the Tauri sandbox, pointed at the copies.
 export MNEMA_SAVE_DIRECTORY="$data"
 export MNEMA_APP_CONFIG_DIR="$config"
