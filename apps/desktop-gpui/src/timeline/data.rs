@@ -54,16 +54,24 @@ pub trait Source: Send + Sync + 'static {
     fn match_boxes(&self, frame_id: i64, query: &str, by_meaning: bool) -> Res<Vec<MatchBox>>;
     /// The active frame's OCR (`loadOcrForFrame`): `None` = never OCR'd.
     fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>>;
+    /// [`Source::ocr`] with the provider label and, when the frame was never
+    /// OCR'd, the identical earlier frame whose result it reuses.
+    fn ocr_load(&self, frame_id: i64) -> Res<OcrLoad> {
+        Ok(OcrLoad {
+            boxes: self.ocr(frame_id)?,
+            ..Default::default()
+        })
+    }
     /// `drain_pending_broker_open_capture_results` (a Quick Recall hit).
     fn take_landing(&self) -> Option<Landing>;
     /// `reprocess_captured_frame_ocr`, then the new job's result. `source_image`
     /// is the frame's own preview (never another frame's fallback image).
-    fn rerun_ocr(
-        &self,
-        _frame_id: i64,
-        _source_image: Option<PathBuf>,
-    ) -> Res<Option<Vec<OcrBox>>> {
+    fn rerun_ocr(&self, _frame_id: i64, _source_image: Option<PathBuf>) -> Res<OcrLoad> {
         Err("OCR can't be rerun here.".into())
+    }
+    /// `get_earliest_earlier_equivalent_frame`: the frame this one duplicates.
+    fn earlier_equivalent(&self, _frame_id: i64) -> Res<Option<Frame>> {
+        Ok(None)
     }
     /// `open_captured_url`: the backend opens the raw URL behind the guarded
     /// host. `Ok(false)` = the frame has no http(s) URL.
@@ -76,12 +84,73 @@ pub trait Source: Send + Sync + 'static {
     }
 }
 
-/// `followTimelineLive` and the retention window (`retentionPolicy`).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// `followTimelineLive`, the retention window (`retentionPolicy`) and `ocr.enabled`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TimelineSettings {
     pub follow_live: bool,
     /// Frames older than this many days are removed; `None` = kept forever.
     pub keep_days: Option<u32>,
+    /// OCR is on: off, saved OCR still shows but nothing reruns.
+    pub ocr_enabled: bool,
+}
+
+impl Default for TimelineSettings {
+    fn default() -> Self {
+        Self {
+            follow_live: false,
+            keep_days: None,
+            ocr_enabled: true,
+        }
+    }
+}
+
+/// One OCR read (`OcrLoadResult`): `boxes: None` = never OCR'd.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OcrLoad {
+    pub boxes: Option<Vec<OcrBox>>,
+    /// `ocrProviderLabel`: "Apple Vision", "Tesseract · eng", …
+    pub provider: Option<String>,
+    /// The identical earlier frame whose OCR this frame reuses (`ocrSourceFrame`).
+    pub from_frame: Option<i64>,
+}
+
+/// `formatOcrProviderLabel`.
+fn provider_name(p: &str) -> &str {
+    match p {
+        "apple_vision" => "Apple Vision",
+        "tesseract" => "Tesseract",
+        "paddle_ocr" => "PaddleOCR",
+        other => other,
+    }
+}
+
+/// `resolveOcrProviderLabel`: the result's provider (or its provenance), else the
+/// job's, else the processor version's prefix; plus the model id when known.
+pub fn ocr_provider_label(
+    job_payload: Option<&str>,
+    result_payload: Option<&str>,
+    processor_version: Option<&str>,
+) -> Option<String> {
+    let parse = |j: Option<&str>| j.and_then(|j| serde_json::from_str::<serde_json::Value>(j).ok());
+    let (job, result) = (parse(job_payload), parse(result_payload));
+    let field = |v: &Option<serde_json::Value>, k: &str| {
+        let v = v.as_ref()?;
+        v.get(k)
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("provenance")?.get(k)?.as_str())
+            .map(str::to_string)
+    };
+    let provider = field(&result, "provider")
+        .or_else(|| field(&job, "provider"))
+        .or_else(|| processor_version.map(|v| v.split(':').next().unwrap_or(v).to_string()))
+        .filter(|p| !p.is_empty())?;
+    let name = provider_name(&provider).to_string();
+    Some(
+        match field(&result, "modelId").or_else(|| field(&job, "modelId")) {
+            Some(m) => format!("{name} · {m}"),
+            None => name,
+        },
+    )
 }
 
 /// No backend (a shell built without an `AppCore`): an empty timeline.
@@ -236,7 +305,7 @@ impl CoreSource {
     }
 
     /// `loadOcrFromJob`: wait out a queued / running job, then read its result.
-    fn ocr_from_job(&self, mut job: ai::ProcessingJobDto) -> Res<Option<Vec<OcrBox>>> {
+    fn ocr_from_job(&self, mut job: ai::ProcessingJobDto) -> Res<OcrLoad> {
         use ::app_infra::ProcessingJobStatus as S;
         let infra = self.infra()?;
         let started = std::time::Instant::now();
@@ -259,16 +328,23 @@ impl CoreSource {
             .0
             .block_on(ai::get_processing_result(request, &infra))?
             .ok_or("OCR result not available")?;
-        result
-            .structured_payload_json
-            .as_deref()
+        let payload = result.structured_payload_json.as_deref();
+        let boxes = payload
             .and_then(parse_ocr_payload)
-            .map(Some)
-            .ok_or_else(|| "OCR result payload is missing or invalid".to_string())
+            .ok_or_else(|| "OCR result payload is missing or invalid".to_string())?;
+        Ok(OcrLoad {
+            boxes: Some(boxes),
+            provider: ocr_provider_label(
+                job.payload_json.as_deref(),
+                payload,
+                result.processor_version.as_deref(),
+            ),
+            from_frame: None,
+        })
     }
 
     /// `loadOcrForFrame`: the newest completed OCR job, else the newest one.
-    fn ocr_for_frame(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>> {
+    fn ocr_for_frame(&self, frame_id: i64) -> Res<OcrLoad> {
         let infra = self.infra()?;
         let request = ai::ListProcessingJobsRequest {
             subject_type: "frame".into(),
@@ -284,7 +360,7 @@ impl CoreSource {
         });
         match jobs.into_iter().next() {
             Some(job) => self.ocr_from_job(job),
-            None => Ok(None),
+            None => Ok(OcrLoad::default()),
         }
     }
 }
@@ -457,8 +533,13 @@ impl Source for CoreSource {
     }
 
     fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>> {
-        if let Some(boxes) = self.ocr_for_frame(frame_id)? {
-            return Ok(Some(boxes));
+        self.ocr_load(frame_id).map(|l| l.boxes)
+    }
+
+    fn ocr_load(&self, frame_id: i64) -> Res<OcrLoad> {
+        let own = self.ocr_for_frame(frame_id)?;
+        if own.boxes.is_some() {
+            return Ok(own);
         }
         // Never OCR'd: an identical earlier frame carries the text (frame dedupe).
         let request = ai::GetEarliestEarlierEquivalentFrameRequest { frame_id };
@@ -467,12 +548,15 @@ impl Source for CoreSource {
             &self.infra()?,
         ))?;
         match earlier {
-            Some(f) => self.ocr_for_frame(f.id),
-            None => Ok(None),
+            Some(f) => Ok(OcrLoad {
+                from_frame: Some(f.id),
+                ..self.ocr_for_frame(f.id)?
+            }),
+            None => Ok(own),
         }
     }
 
-    fn rerun_ocr(&self, frame_id: i64, source_image: Option<PathBuf>) -> Res<Option<Vec<OcrBox>>> {
+    fn rerun_ocr(&self, frame_id: i64, source_image: Option<PathBuf>) -> Res<OcrLoad> {
         let settings = self
             .0
             .try_state::<app_core::recording_settings::RecordingSettingsState>()
@@ -496,6 +580,17 @@ impl Source for CoreSource {
         self.ocr_from_job(result.job)
     }
 
+    fn earlier_equivalent(&self, frame_id: i64) -> Res<Option<Frame>> {
+        let request = ai::GetEarliestEarlierEquivalentFrameRequest { frame_id };
+        Ok(self
+            .0
+            .block_on(ai::get_earliest_earlier_equivalent_frame(
+                request,
+                &self.infra()?,
+            ))?
+            .map(frame))
+    }
+
     fn open_captured_url(&self, frame_id: i64) -> Res<bool> {
         self.0
             .block_on(ai::open_captured_url(frame_id, &self.0, &self.infra()?))
@@ -511,6 +606,7 @@ impl Source for CoreSource {
         let s = app_core::recording_settings::current_recording_settings(&state);
         TimelineSettings {
             follow_live: s.follow_timeline_live,
+            ocr_enabled: s.ocr.enabled,
             keep_days: match s.retention_policy {
                 RetentionPolicy::Never => None,
                 RetentionPolicy::Days7 => Some(7),

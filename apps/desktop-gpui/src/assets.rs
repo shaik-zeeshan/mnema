@@ -74,6 +74,8 @@ pub const FILL_PAUSE: &str = "icons/mnema-fill-pause.svg";
 pub const FILL_STOP: &str = "icons/mnema-fill-stop.svg";
 pub const FILL_LUCIDE_PAUSE: &str = "icons/mnema-fill-lucide-pause.svg";
 pub const FILL_LUCIDE_PLAY: &str = "icons/mnema-fill-lucide-play.svg";
+/// The empty Timeline's "Start recording" dot (`+page.svelte`: `<circle r="6">`).
+pub const REC_DOT: &str = "icons/mnema-rec-dot.svg";
 
 /// The connector catalog's monochrome brand marks (`mcp-presets.ts` `brandSvg`,
 /// from the mockup): the spec's own drawings, not Lucide.
@@ -81,7 +83,11 @@ pub const BRAND_GITHUB: &str = "icons/mnema-brand-github.svg";
 pub const BRAND_LINEAR: &str = "icons/mnema-brand-linear.svg";
 pub const BRAND_STRIPE: &str = "icons/mnema-brand-stripe.svg";
 pub const BRAND_NOTION: &str = "icons/mnema-brand-notion.svg";
-const FILLED: [(&str, &str); 9] = [
+const FILLED: [(&str, &str); 10] = [
+    (
+        REC_DOT,
+        r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="6"/></svg>"#,
+    ),
     (
         FILL_PLAY,
         r#"<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M7 5.5v13a1 1 0 0 0 1.5.9l10.4-6.5a1 1 0 0 0 0-1.8L8.5 4.6A1 1 0 0 0 7 5.5z"/></svg>"#,

@@ -34,9 +34,7 @@ use app_core::AppCore;
 use capture_types::{Conversation, TurnSnapshot};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::prelude::*;
-use gpui_kit::{
-    div, App, Context, Entity, Pixels, ScrollHandle, Size, Subscription, Task, Window,
-};
+use gpui_kit::{div, App, Context, Entity, Pixels, ScrollHandle, Size, Subscription, Task, Window};
 
 use crate::bridge::events::Core;
 use crate::theme::{self, size};
@@ -54,7 +52,8 @@ pub const COPIED_REVERT: Duration = Duration::from_millis(1600);
 pub const DELETED_TOAST_TTL: Duration = Duration::from_secs(4);
 /// The failed pin/unpin toast with Retry.
 pub const PIN_FAIL_TOAST_TTL: Duration = Duration::from_secs(5);
-pub(crate) const COMPOSER_PLACEHOLDER: &str = "Ask about anything you've seen, heard, or worked on…";
+pub(crate) const COMPOSER_PLACEHOLDER: &str =
+    "Ask about anything you've seen, heard, or worked on…";
 /// Titles are cut at this many chars (`TITLE_MAX`).
 pub const TITLE_MAX: usize = 80;
 /// Within this of the bottom counts as "at the bottom" (the pane follows the stream).
@@ -283,9 +282,8 @@ impl Chat {
         let query = self.search.read(cx).value().trim().to_string();
         self.load_generation += 1;
         let generation = self.load_generation;
-        let task = crate::bridge::tokio::Tokio::spawn(cx, async move {
-            data::load(&core, &query).await
-        });
+        let task =
+            crate::bridge::tokio::Tokio::spawn(cx, async move { data::load(&core, &query).await });
         cx.spawn(async move |this, cx| {
             if let Ok(data) = task.await {
                 let _ = this.update(cx, |this, cx| {
@@ -303,7 +301,10 @@ impl Chat {
     pub fn warm_mcp(&self, cx: &mut Context<Self>) {
         let sources = self.sources.clone();
         cx.background_spawn(async move {
-            if sources.settings().is_some_and(|s| data::mcp_warm_wanted(&s)) {
+            if sources
+                .settings()
+                .is_some_and(|s| data::mcp_warm_wanted(&s))
+            {
                 sources.warm_mcp();
             }
         })
@@ -581,7 +582,7 @@ impl Render for Chat {
             .children(
                 self.peek
                     .clone()
-                    .map(|s| peek::frame_modal(self, &s, &p, cx)),
+                    .map(|s| peek::frame_modal(self, &s, &p, window.viewport_size(), cx)),
             )
             .child(self.toasts.clone())
     }

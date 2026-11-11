@@ -60,6 +60,7 @@ impl Shell {
             self.start_error = None;
             self.model.status.start_error = None;
             self.model.status.loading_start = true;
+            self.timeline.update(cx, |t, _| t.capture.starting = true);
         }
         self.model.status.loading_stop = command == Command::Stop;
         cx.notify();
@@ -89,6 +90,7 @@ impl Shell {
                 this.capture_busy = false;
                 this.model.status.loading_start = false;
                 this.model.status.loading_stop = false;
+                this.timeline.update(cx, |t, _| t.capture.starting = false);
                 if let Ok(Err((title, e))) = &result {
                     if command == Command::Start {
                         this.start_error = Some(e.message.clone());

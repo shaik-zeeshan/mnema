@@ -5,6 +5,7 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     canvas, div, img, px, AnyElement, Bounds, Context, ObjectFit, Pixels, Role, SharedString,
     Window,
@@ -86,7 +87,7 @@ fn empty_state(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
             IconName::Monitor.path(),
             "Screen isn’t being recorded",
             format!("{lead} Open a recent segment to listen or read it."),
-            Vec::new(),
+            vec![audio_only_acts(v, p, cx)],
             p,
         )
         .into_any_element();
@@ -117,11 +118,80 @@ fn empty_state(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
         "Your timeline fills in as Mnema captures your screen, microphone and system audio — all on this Mac.",
         vec![Button::new("timeline-start", "Start recording")
             .primary()
+            .icon(crate::assets::REC_DOT)
+            .disabled(v.capture.starting)
             .on_click(cx.listener(|_, _, _, cx| cx.emit(super::TimelineEvent::StartRecording)))
             .into_any_element()],
         p,
     )
     .into_any_element()
+}
+
+/// The audio-only stage's acts: the four newest segments (each opens its
+/// drawer), then "Record the screen too →" (Settings › Capture).
+fn audio_only_acts(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> AnyElement {
+    use crate::ui::chip::{chip, ChipKind};
+    let o = crate::ui::clock::now(cx).offset();
+    let hover = p.surface_hover;
+    let rows = v.audio.iter().rev().take(4).map(|seg| {
+        let id = seg.id;
+        let mic = seg.source == super::model::AudioSource::Microphone;
+        let (from, to) = (
+            super::bands::time_of_day(seg.start_ms, o),
+            super::bands::time_of_day(seg.end_ms, o),
+        );
+        div()
+            .id(crate::ui::nid("cover-seg", id as u64))
+            .role(Role::Button)
+            .flex()
+            .items_center()
+            .gap(px(6.))
+            .h(size::H_SM)
+            .px(px(8.))
+            .rounded(radius::SM)
+            .cursor_pointer()
+            .hover(move |s| s.bg(hover))
+            .child(chip(
+                if mic { "mic" } else { "system" },
+                if mic {
+                    ChipKind::Mic
+                } else {
+                    ChipKind::SysAudio
+                },
+                p,
+            ))
+            .child(
+                div()
+                    .font_family(FONT_MONO)
+                    .text_size(text::BASE)
+                    .text_color(p.text)
+                    .child(format!("{from} – {to}")),
+            )
+            .on_click(cx.listener(move |this, _, _, cx| this.audio_bar_click(id, cx)))
+            .test_support()
+    });
+    div()
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(space::S3)
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .items_center()
+                .gap(px(2.))
+                .children(rows),
+        )
+        .child(
+            Button::new("timeline-record-screen", "Record the screen too →")
+                .ghost()
+                .sm()
+                .on_click(|_, _, cx| {
+                    cx.defer(|cx| crate::window::open_settings(Some("capture"), cx))
+                }),
+        )
+        .into_any_element()
 }
 
 fn status_note(
@@ -264,12 +334,45 @@ fn dev_overlay(
         ),
         ("velocity", format!("{:.2}px/ms", v.engine.velocity)),
     ]);
+    // Svelte's order: ocr after file, fetch after source, fp after fetch.
+    let at = |rows: &Vec<(&str, String)>, key: &str| {
+        rows.iter()
+            .position(|(k, _)| *k == key)
+            .map_or(rows.len(), |i| i + 1)
+    };
+    let ocr = format!(
+        "{}{}",
+        format!("{:?}", v.ocr.status).to_lowercase(),
+        v.ocr
+            .from_frame
+            .map(|f| format!(" (from #{f})"))
+            .unwrap_or_default()
+    );
+    rows.insert(at(&rows, "file"), ("ocr", ocr));
+    let exact = v
+        .exact_ms
+        .filter(|(id, _)| *id == f.id)
+        .map_or("—".to_string(), |(_, ms)| format!("{ms:.1}ms"));
+    let scrub = if v.engine.scrub_ready(f) {
+        "ready"
+    } else {
+        "none"
+    };
+    rows.insert(
+        at(&rows, "source"),
+        ("fetch", format!("exact {exact} scrub {scrub}")),
+    );
+    if let Some(fp) = f.equivalence_hint.clone() {
+        rows.insert(at(&rows, "fetch"), ("fp", fp));
+    }
     Some(
         div()
             .absolute()
             .top(px(10.))
             .left(px(10.))
-            .max_w(px(360.))
+            // `max-width: min(40%, 360px)`, at its max: the rows truncate inside
+            // (a shrink-to-fit width collapsed every truncating value to 0 px).
+            .w(px((f32::from(v.stage_size.get().width) * 0.4).min(360.)))
             .flex()
             .flex_col()
             .gap(px(2.))
@@ -279,30 +382,53 @@ fn dev_overlay(
             .border_1()
             .border_color(p.overlay_border)
             .bg(p.overlay_bg)
-            .children(rows.into_iter().map(|(k, val)| {
-                div()
-                    .flex()
-                    .gap(px(10.))
-                    .child(
-                        div()
-                            .w(px(64.))
-                            .text_size(text::XS)
-                            .font_weight(theme::W_SEMIBOLD)
-                            .text_color(p.text_subtle)
-                            .child(k.to_uppercase()),
-                    )
-                    .child(
-                        div()
-                            .min_w_0()
-                            .truncate()
-                            .font_family(FONT_MONO)
-                            .text_size(text::XS)
-                            .text_color(p.text)
-                            .child(SharedString::from(val)),
-                    )
+            .children(
+                rows.into_iter()
+                    .map(|(k, val)| row(k, SharedString::from(val).into_any_element(), p)),
+            )
+            .children(v.duplicate_of.as_ref().map(|d| {
+                let id = d.id;
+                row(
+                    "duplicateOf",
+                    div()
+                        .id("dev-duplicate-of")
+                        .cursor_pointer()
+                        .text_color(p.info)
+                        .hover(|s| s.underline())
+                        .child(id.to_string())
+                        // `jumpToFrameWithBanner(duplicateOf)`.
+                        .on_click(cx.listener(move |this, _, _, cx| this.jump(id, cx)))
+                        .test_support()
+                        .into_any_element(),
+                    p,
+                )
             }))
             .into_any_element(),
     )
+}
+
+fn row(k: &str, val: AnyElement, p: &Palette) -> gpui_kit::Div {
+    div()
+        .flex()
+        .gap(px(10.))
+        .child(
+            div()
+                .w(px(64.))
+                .text_size(text::XS)
+                .font_weight(theme::W_SEMIBOLD)
+                .text_color(p.text_subtle)
+                .child(k.to_uppercase()),
+        )
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .truncate()
+                .font_family(FONT_MONO)
+                .text_size(text::XS)
+                .text_color(p.text)
+                .child(val),
+        )
 }
 
 fn ocr_status(v: &TimelineView, p: &Palette) -> Option<AnyElement> {
@@ -310,7 +436,17 @@ fn ocr_status(v: &TimelineView, p: &Palette) -> Option<AnyElement> {
     if !here {
         return None;
     }
-    ocr_overlay::status_note(v.ocr.status, v.ocr.error.as_deref(), p)
+    let o = &v.ocr;
+    let f = v.paging.active_frame()?;
+    let measured = f32::from(v.stage_size.get().width) > 0.;
+    if o.status == super::OcrStatus::Success
+        && !o.boxes.is_empty()
+        && measured
+        && image_rect(v.stage_size.get(), f.width, f.height).is_none()
+    {
+        return Some(ocr_overlay::unpositioned_note(p));
+    }
+    ocr_overlay::status_note_from(o.status, o.error.as_deref(), o.from_frame, p)
 }
 
 pub fn render(

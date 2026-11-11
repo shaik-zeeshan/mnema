@@ -49,6 +49,7 @@ pub struct Button {
     icon_after: bool,
     accent_icon: bool,
     kbd: Option<SharedString>,
+    count: Option<SharedString>,
     variant: Variant,
     size: ButtonSize,
     height: Option<Pixels>,
@@ -89,6 +90,7 @@ impl Button {
             icon_after: false,
             accent_icon: false,
             kbd: None,
+            count: None,
             variant: Variant::Secondary,
             size: ButtonSize::Md,
             height: None,
@@ -151,6 +153,12 @@ impl Button {
         self
     }
     /// Quiet mono shortcut hint after the label (no box).
+    /// An accent count badge after the label (`.timeline__ocr-count`).
+    pub fn count(mut self, n: impl Into<SharedString>) -> Self {
+        self.count = Some(n.into());
+        self
+    }
+
     pub fn kbd(mut self, k: impl Into<SharedString>) -> Self {
         self.kbd = Some(k.into());
         self
@@ -381,6 +389,21 @@ impl RenderOnce for Button {
             .children(before)
             .children(self.label.clone())
             .children(after)
+            .when_some(self.count.clone(), |el, n| {
+                el.child(
+                    div()
+                        .px(px(5.))
+                        .py(px(3.))
+                        .rounded(radius::XS)
+                        .font_family(theme::FONT_MONO)
+                        .text_size(text::XS)
+                        .font_weight(theme::W_MEDIUM)
+                        .line_height(gpui_kit::relative(1.))
+                        .text_color(p.accent)
+                        .bg(p.accent_bg)
+                        .child(n),
+                )
+            })
             .when_some(self.kbd.clone(), |el, k| {
                 el.child(
                     div()

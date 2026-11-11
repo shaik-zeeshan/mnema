@@ -13,7 +13,7 @@ use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use super::data::{Res, Source};
+use super::data::{ocr_provider_label, parse_ocr_payload, OcrLoad, Res, Source, TimelineSettings};
 use super::model::{
     AudioSegment, AudioSource, FocusedWindow, Frame, Landing, OcrBox, Preview, ScrubInterval,
     SourceKind,
@@ -31,13 +31,15 @@ pub enum Call {
     Episodes,
     MatchBoxes(i64),
     Ocr(i64),
+    RerunOcr(i64),
 }
 
 #[derive(Default)]
 pub struct FixtureSource {
     frames: Mutex<Vec<Frame>>,
     preview_kind: Option<(String, SourceKind)>,
-    audio: Vec<AudioSegment>,
+    /// `list_audio_segments` (tests drop rows to mimic a refresh).
+    pub audio: Mutex<Vec<AudioSegment>>,
     episodes: Vec<Activity>,
     boxes: Vec<MatchBox>,
     landing: Mutex<Option<Landing>>,
@@ -47,6 +49,14 @@ pub struct FixtureSource {
     /// Answer scrub availability with one ready still per frame.
     pub scrub_ready: bool,
     icons: Vec<(String, PathBuf)>,
+    /// The OCR read the map's `list_processing_jobs` / `get_processing_result` give.
+    /// `None` = never OCR'd.
+    pub ocr: Mutex<Option<Res<OcrLoad>>>,
+    /// Make `list_audio_segments` fail with this (the map's `{ "__reject": .. }`).
+    pub fail_audio: Mutex<Option<String>>,
+    settings: TimelineSettings,
+    /// `get_earliest_earlier_equivalent_frame` (the dev panel's duplicateOf).
+    equivalent: Option<Frame>,
 }
 
 fn ms(s: &str) -> i64 {
@@ -124,10 +134,54 @@ fn rows<T: for<'de> Deserialize<'de>>(map: &Value, cmd: &str) -> Vec<T> {
     })
 }
 
+/// `loadOcrForFrame` over the map: the newest OCR job, its result's boxes and
+/// provider; a failed job is its error; no OCR job = never OCR'd.
+fn ocr_of(map: &Value) -> Res<OcrLoad> {
+    let job = map
+        .get("list_processing_jobs")
+        .and_then(Value::as_array)
+        .and_then(|jobs| {
+            jobs.iter()
+                .filter(|j| j.get("processor").and_then(Value::as_str) == Some("ocr"))
+                .max_by_key(|j| j.get("id").and_then(Value::as_i64))
+        });
+    let Some(job) = job else {
+        return Ok(OcrLoad::default());
+    };
+    let text = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).map(str::to_string);
+    if text(job, "status").as_deref() == Some("failed") {
+        return Err(text(job, "lastError").unwrap_or_else(|| "OCR job failed".into()));
+    }
+    let result = map
+        .get("get_processing_result")
+        .ok_or("OCR result not available")?;
+    let payload = text(result, "structuredPayloadJson");
+    Ok(OcrLoad {
+        boxes: Some(
+            payload
+                .as_deref()
+                .and_then(parse_ocr_payload)
+                .ok_or("OCR result payload is missing or invalid")?,
+        ),
+        provider: ocr_provider_label(
+            text(job, "payloadJson").as_deref(),
+            payload.as_deref(),
+            text(result, "processorVersion").as_deref(),
+        ),
+        from_frame: None,
+    })
+}
+
 impl FixtureSource {
     pub fn from_map(map: &Value) -> Self {
         let frames: Vec<FrameRow> = rows(map, "list_frames");
-        let audio: Vec<AudioRow> = rows(map, "list_audio_segments");
+        let reject = |cmd: &str| map.get(cmd)?.get("__reject")?.as_str().map(str::to_string);
+        let fail_audio = reject("list_audio_segments");
+        let audio: Vec<AudioRow> = if fail_audio.is_some() {
+            Vec::new()
+        } else {
+            rows(map, "list_audio_segments")
+        };
         let landing: Vec<LandingRow> = rows(map, "drain_pending_broker_open_capture_results");
         let preview_kind = map.get("get_frame_preview").and_then(|p| {
             Some((
@@ -138,20 +192,22 @@ impl FixtureSource {
         Self {
             frames: Mutex::new(frames.into_iter().map(Frame::from).collect()),
             preview_kind,
-            audio: audio
-                .into_iter()
-                .map(|a| AudioSegment {
-                    id: a.id,
-                    source: if a.source_kind == "microphone" {
-                        AudioSource::Microphone
-                    } else {
-                        AudioSource::SystemAudio
-                    },
-                    segment_index: a.segment_index,
-                    start_ms: ms(&a.started_at),
-                    end_ms: ms(&a.ended_at),
-                })
-                .collect(),
+            audio: Mutex::new(
+                audio
+                    .into_iter()
+                    .map(|a| AudioSegment {
+                        id: a.id,
+                        source: if a.source_kind == "microphone" {
+                            AudioSource::Microphone
+                        } else {
+                            AudioSource::SystemAudio
+                        },
+                        segment_index: a.segment_index,
+                        start_ms: ms(&a.started_at),
+                        end_ms: ms(&a.ended_at),
+                    })
+                    .collect(),
+            ),
             episodes: rows(map, "list_user_context_activities"),
             boxes: rows(map, "get_frame_match_boxes"),
             landing: Mutex::new(
@@ -167,6 +223,23 @@ impl FixtureSource {
                         })
                     }),
             ),
+            ocr: Mutex::new(Some(ocr_of(map))),
+            equivalent: map
+                .get("get_earliest_earlier_equivalent_frame")
+                .filter(|v| !v.is_null())
+                .map(|v| {
+                    serde_json::from_value::<FrameRow>(v.clone())
+                        .unwrap_or_else(|e| panic!("fixture equivalent frame: {e}"))
+                        .into()
+                }),
+            fail_audio: Mutex::new(fail_audio),
+            settings: TimelineSettings {
+                ocr_enabled: map
+                    .pointer("/get_recording_settings/ocr/enabled")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
@@ -308,11 +381,20 @@ impl Source for FixtureSource {
 
     fn audio_segments(&self, _: i64, _: i64) -> Res<Vec<AudioSegment>> {
         self.log(Call::Audio);
-        Ok(self.audio.clone())
+        if let Some(e) = self.fail_audio.lock().unwrap().clone() {
+            return Err(e);
+        }
+        Ok(self.audio.lock().unwrap().clone())
     }
 
     fn audio_segment(&self, id: i64) -> Res<Option<AudioSegment>> {
-        Ok(self.audio.iter().find(|a| a.id == id).cloned())
+        Ok(self
+            .audio
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|a| a.id == id)
+            .cloned())
     }
 
     fn episodes(&self, _: i64, _: i64) -> Res<Vec<Activity>> {
@@ -330,8 +412,33 @@ impl Source for FixtureSource {
     }
 
     fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>> {
+        self.ocr_load(frame_id).map(|l| l.boxes)
+    }
+
+    fn ocr_load(&self, frame_id: i64) -> Res<OcrLoad> {
         self.log(Call::Ocr(frame_id));
-        Ok(None)
+        self.ocr
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(OcrLoad::default()))
+    }
+
+    fn rerun_ocr(&self, frame_id: i64, _: Option<PathBuf>) -> Res<OcrLoad> {
+        self.log(Call::RerunOcr(frame_id));
+        self.ocr
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(OcrLoad::default()))
+    }
+
+    fn settings(&self) -> TimelineSettings {
+        self.settings
+    }
+
+    fn earlier_equivalent(&self, _: i64) -> Res<Option<Frame>> {
+        Ok(self.equivalent.clone())
     }
 
     fn take_landing(&self) -> Option<Landing> {

@@ -29,6 +29,17 @@ pub struct State {
     /// List fails on the refresh after the first load.
     stale: bool,
     drawer: Drawer,
+    act: Act,
+}
+
+/// What a shot does after the frame paints.
+#[derive(Clone, Copy, PartialEq)]
+enum Act {
+    None,
+    /// "show OCR" (the fixture's OCR job answers).
+    ShowOcr,
+    /// The ⋯ frame menu, open.
+    Menu,
 }
 
 /// Which AudioDrawer state a shot opens (on the fixture's `get_audio_segment`).
@@ -48,7 +59,7 @@ const SEGMENT_S: f64 = 50.;
 const MAIN: (f32, f32) = (1280., 800.);
 const NARROW: (f32, f32) = (800., 600.);
 
-pub const STATES: [State; 9] = [
+pub const STATES: [State; 13] = [
     State {
         name: "populated",
         parity: "default",
@@ -57,6 +68,7 @@ pub const STATES: [State; 9] = [
         viewport: MAIN,
         stale: false,
         drawer: Drawer::None,
+        act: Act::None,
     },
     State {
         name: "empty",
@@ -66,6 +78,7 @@ pub const STATES: [State; 9] = [
         viewport: MAIN,
         stale: false,
         drawer: Drawer::None,
+        act: Act::None,
     },
     State {
         name: "stale",
@@ -75,6 +88,7 @@ pub const STATES: [State; 9] = [
         viewport: MAIN,
         stale: true,
         drawer: Drawer::None,
+        act: Act::None,
     },
     State {
         name: "matches",
@@ -84,6 +98,7 @@ pub const STATES: [State; 9] = [
         viewport: MAIN,
         stale: false,
         drawer: Drawer::None,
+        act: Act::None,
     },
     State {
         name: "narrow",
@@ -93,6 +108,7 @@ pub const STATES: [State; 9] = [
         viewport: NARROW,
         stale: false,
         drawer: Drawer::None,
+        act: Act::None,
     },
     State {
         name: "drawer-peek",
@@ -102,6 +118,7 @@ pub const STATES: [State; 9] = [
         viewport: MAIN,
         stale: false,
         drawer: Drawer::Peek,
+        act: Act::None,
     },
     State {
         name: "drawer-expanded",
@@ -111,6 +128,7 @@ pub const STATES: [State; 9] = [
         viewport: MAIN,
         stale: false,
         drawer: Drawer::Expanded,
+        act: Act::None,
     },
     State {
         name: "drawer-repair",
@@ -120,6 +138,7 @@ pub const STATES: [State; 9] = [
         viewport: MAIN,
         stale: false,
         drawer: Drawer::Repair,
+        act: Act::None,
     },
     State {
         name: "drawer-no-transcript",
@@ -129,6 +148,48 @@ pub const STATES: [State; 9] = [
         viewport: MAIN,
         stale: false,
         drawer: Drawer::Peek,
+        act: Act::None,
+    },
+    // Flow-parity pass (11 Nov): the looks it built.
+    State {
+        name: "screen-off",
+        parity: "screen-off",
+        fixture: "screen-off",
+        shell: "empty",
+        viewport: MAIN,
+        stale: false,
+        drawer: Drawer::None,
+        act: Act::None,
+    },
+    State {
+        name: "audio-error",
+        parity: "audio-error",
+        fixture: "audio-error",
+        shell: "populated",
+        viewport: MAIN,
+        stale: false,
+        drawer: Drawer::None,
+        act: Act::None,
+    },
+    State {
+        name: "ocr-on",
+        parity: "ocr-on",
+        fixture: "ocr-on",
+        shell: "populated",
+        viewport: MAIN,
+        stale: false,
+        drawer: Drawer::None,
+        act: Act::ShowOcr,
+    },
+    State {
+        name: "menu",
+        parity: "menu",
+        fixture: "menu",
+        shell: "populated",
+        viewport: MAIN,
+        stale: false,
+        drawer: Drawer::None,
+        act: Act::Menu,
     },
 ];
 
@@ -239,6 +300,18 @@ fn shoot_with(
     if state.drawer != Drawer::None {
         open_drawer(cx, window.into(), &timeline, state)?;
     }
+    match state.act {
+        Act::ShowOcr => cx.update(|cx| timeline.update(cx, |t, cx| t.toggle_ocr(cx))),
+        // As the ⋯ click does (the trigger sits clipped for the test observer).
+        Act::Menu => cx.update(|cx| {
+            timeline.update(cx, |t, cx| {
+                t.menu_open = true;
+                cx.notify();
+            })
+        }),
+        Act::None => {}
+    }
+    settle(cx, &timeline);
     // One more pass so the readout and overlays lay out against measured sizes.
     for _ in 0..3 {
         cx.update_window(window.into(), |_, window, _| window.refresh())?;

@@ -27,6 +27,11 @@ pub trait SourceBackend: Send + Sync + 'static {
     fn preview(&self, _id: i64) -> Option<PathBuf> {
         None
     }
+    /// What the peek shows beside the image: the preview's secret-redaction
+    /// count and the frame's app bundle id (for its icon).
+    fn peek_extras(&self, _id: i64) -> (u32, Option<String>) {
+        (0, None)
+    }
     /// `loadOcrForFrame`: `None` = never OCR'd.
     fn ocr(&self, _id: i64) -> Res<Option<Vec<OcrBox>>> {
         Ok(None)
@@ -82,6 +87,25 @@ impl SourceBackend for CoreSources {
     fn preview(&self, id: i64) -> Option<PathBuf> {
         use crate::insights::data::Backend as _;
         crate::insights::data::CoreBackend(self.0.clone()).frame_preview(id)
+    }
+
+    fn peek_extras(&self, id: i64) -> (u32, Option<String>) {
+        use crate::timeline::data::Source as _;
+        let src = crate::timeline::data::CoreSource(self.0.clone());
+        let redactions = src
+            .frame_preview(id)
+            .ok()
+            .flatten()
+            .map_or(0, |p| p.redactions);
+        let bundle = self.0.try_state::<AppInfraState>().and_then(|infra| {
+            use app_core::app_infra::{get_frame, GetFrameRequest};
+            let f = self
+                .0
+                .block_on(get_frame(GetFrameRequest { frame_id: id }, &infra))
+                .ok()??;
+            f.app_bundle_id.filter(|b| !b.trim().is_empty())
+        });
+        (redactions, bundle)
     }
 
     fn ocr(&self, id: i64) -> Res<Option<Vec<OcrBox>>> {

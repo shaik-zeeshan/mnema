@@ -51,6 +51,9 @@ pub struct FixtureSources {
     pub frame_error: Option<String>,
     pub previews: std::collections::HashMap<i64, std::path::PathBuf>,
     pub ocr: std::collections::HashMap<i64, Vec<crate::timeline::model::OcrBox>>,
+    /// `get_frame_preview`'s secret-redaction count and `get_frame`'s app bundle.
+    pub redactions: std::collections::HashMap<i64, u32>,
+    pub bundles: std::collections::HashMap<i64, String>,
     /// The receipt's strip over any span.
     pub strip: Vec<(i64, i64)>,
     /// `resolve_app_icons`: requested name → icon PNG.
@@ -96,6 +99,12 @@ impl super::source_data::SourceBackend for FixtureSources {
     fn preview(&self, id: i64) -> Option<std::path::PathBuf> {
         self.log(format!("preview {id}"));
         self.previews.get(&id).cloned()
+    }
+    fn peek_extras(&self, id: i64) -> (u32, Option<String>) {
+        (
+            self.redactions.get(&id).copied().unwrap_or(0),
+            self.bundles.get(&id).cloned(),
+        )
     }
     fn ocr(&self, id: i64) -> super::source_data::Res<Option<Vec<crate::timeline::model::OcrBox>>> {
         self.log(format!("ocr {id}"));

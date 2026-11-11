@@ -464,3 +464,69 @@ fn the_timeline_block_renders_its_intervals_on_the_rail(cx: &mut TestAppContext)
     })
     .unwrap();
 }
+
+/// `FrameDetailModal`'s "copy image": copying…, then "copy failed" when the
+/// preview can't be read (or "copied"), back to "copy image" after 1.6 s.
+#[gpui_kit::test]
+fn the_peek_copies_its_image_and_says_how_it_went(cx: &mut TestAppContext) {
+    use super::peek::{CopyState, COPY_REVERT};
+    let (w, chat, _, _) = setup(cx, fixture(), SEG);
+    click(cx, w, nid("chat-src-0-f", 0));
+    click(cx, w, "chat-frame-copy".into());
+    assert_eq!(
+        chat.read_with(cx, |c, _| c.peek_data.copy),
+        CopyState::Failed,
+        "the fixture's preview file doesn't exist"
+    );
+    cx.executor()
+        .advance_clock(COPY_REVERT - std::time::Duration::from_millis(1));
+    cx.run_until_parked();
+    assert_eq!(
+        chat.read_with(cx, |c, _| c.peek_data.copy),
+        CopyState::Failed
+    );
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(1));
+    cx.run_until_parked();
+    assert_eq!(chat.read_with(cx, |c, _| c.peek_data.copy), CopyState::Idle);
+}
+
+/// `FrameDetailModal`'s hero badge ("2 redactions applied") and the meta row's
+/// app avatar: the app's icon from `resolve_app_icons`, by the frame's bundle id.
+#[gpui_kit::test]
+fn the_peek_shows_its_redactions_and_the_app_icon(cx: &mut TestAppContext) {
+    let mut f = fixture();
+    f.redactions = [(1, 2)].into();
+    f.bundles = [(1, "com.apple.Safari".to_string())].into();
+    f.icons = [(
+        "com.apple.Safari".to_string(),
+        PathBuf::from("/nonexistent/safari.png"),
+    )]
+    .into();
+    let (w, chat, _, _) = setup(cx, f, SEG);
+    click(cx, w, nid("chat-src-0-f", 0));
+    chat.read_with(cx, |c, _| {
+        assert_eq!(c.peek_data.redactions, 2);
+        assert_eq!(c.peek_data.bundle.as_deref(), Some("com.apple.Safari"));
+        assert_eq!(
+            c.peek_data.icon,
+            Some(PathBuf::from("/nonexistent/safari.png"))
+        );
+    });
+    draw(cx, w, &chat);
+    cx.update_window(w.into(), |_, window, _| {
+        assert!(window.try_find("chat-frame-redactions").is_some());
+        assert!(window.try_find("chat-frame-app").is_some());
+    })
+    .unwrap();
+
+    // A frame with nothing redacted has no badge.
+    chat.update(cx, |c, cx| c.close_peek(cx));
+    click(cx, w, nid("chat-src-0-f", 1));
+    assert_eq!(chat.read_with(cx, |c, _| c.peek_data.redactions), 0);
+    draw(cx, w, &chat);
+    cx.update_window(w.into(), |_, window, _| {
+        assert!(window.try_find("chat-frame-redactions").is_none());
+    })
+    .unwrap();
+}

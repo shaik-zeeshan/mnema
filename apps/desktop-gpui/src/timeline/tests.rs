@@ -25,10 +25,10 @@ use super::scrub_engine::{
 use super::{TimelineView, STATUS_TTL};
 use crate::theme;
 
-const MS: Duration = Duration::from_millis(1);
+pub(super) const MS: Duration = Duration::from_millis(1);
 
 /// `n` frames 2 s apart, newest first, app runs of 10 alternating Slack / Arc.
-fn frames(n: i64) -> Vec<Frame> {
+pub(super) fn frames(n: i64) -> Vec<Frame> {
     let shot = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web/src/assets/shots/desk-code.webp");
     (0..n)
         .map(|i| Frame {
@@ -54,14 +54,14 @@ fn frames(n: i64) -> Vec<Frame> {
         .collect()
 }
 
-fn source(n: i64) -> FixtureSource {
+pub(super) fn source(n: i64) -> FixtureSource {
     FixtureSource::from_map(&json!({
         "get_frame_preview": { "mimeType": "image/webp", "sourceKind": "original_frame" }
     }))
     .with_frames(frames(n))
 }
 
-fn open(
+pub(super) fn open(
     cx: &mut TestAppContext,
     src: FixtureSource,
 ) -> (WindowHandle<Root>, Entity<TimelineView>, Arc<FixtureSource>) {
@@ -87,18 +87,18 @@ fn open(
     (window, view, src)
 }
 
-fn frame(cx: &mut TestAppContext, window: WindowHandle<Root>) {
+pub(super) fn frame(cx: &mut TestAppContext, window: WindowHandle<Root>) {
     cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();
     cx.run_until_parked();
 }
 
-fn advance(cx: &mut TestAppContext, d: Duration) {
+pub(super) fn advance(cx: &mut TestAppContext, d: Duration) {
     cx.executor().advance_clock(d);
     cx.run_until_parked();
 }
 
-fn count(src: &FixtureSource, f: impl Fn(&Call) -> bool) -> usize {
+pub(super) fn count(src: &FixtureSource, f: impl Fn(&Call) -> bool) -> usize {
     src.calls().iter().filter(|c| f(c)).count()
 }
 

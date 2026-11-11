@@ -10,7 +10,9 @@ use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, AnyElement, App, Bounds, Context, Pixels, Role, SharedString};
 
+use super::data::OcrLoad;
 use super::model::OcrBox;
+use super::Ocr;
 use super::{OcrStatus, TimelineView};
 use crate::theme::{radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::notice::inline;
@@ -36,6 +38,17 @@ impl TimelineView {
         cx.notify();
     }
 
+    /// A new active frame drops the last one's OCR and hides the overlay, so a
+    /// stale box never sits on the wrong frame (`+page.svelte`'s reset effect).
+    pub(super) fn reset_ocr_if_moved(&mut self) {
+        let id = self.paging.active_frame().map(|f| f.id);
+        if self.ocr.frame_id.is_some() && self.ocr.frame_id != id {
+            self.ocr = Ocr::default();
+        }
+    }
+
+    /// `loadOcrForActiveFrame`; the overlay's visibility is the caller's (the ⋯
+    /// menu loads quietly so Copy text knows whether there is any).
     pub(super) fn load_ocr(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.paging.active_frame().map(|f| f.id) else {
             return;
@@ -43,35 +56,63 @@ impl TimelineView {
         if self.ocr.frame_id == Some(id) {
             return;
         }
+        self.begin_ocr(id);
+        let src = self.source.clone();
+        self.finish_ocr(id, cx, move || src.ocr_load(id));
+    }
+
+    fn begin_ocr(&mut self, id: i64) {
         self.ocr.frame_id = Some(id);
         self.ocr.status = OcrStatus::Running;
         self.ocr.boxes.clear();
+        self.ocr.error = None;
+        self.ocr.provider = None;
+        self.ocr.from_frame = None;
         self.ocr.hovered = None;
-        let src = self.source.clone();
+    }
+
+    fn finish_ocr(
+        &mut self,
+        id: i64,
+        cx: &mut Context<Self>,
+        f: impl FnOnce() -> super::data::Res<OcrLoad> + Send + 'static,
+    ) {
         cx.spawn(async move |this, cx| {
-            let res = cx
-                .background_executor()
-                .spawn(async move { src.ocr(id) })
-                .await;
+            let res = cx.background_executor().spawn(async move { f() }).await;
             this.update(cx, |view, cx| {
                 if view.ocr.frame_id != Some(id) {
                     return; // the playhead moved on
                 }
-                (view.ocr.status, view.ocr.boxes, view.ocr.error) = outcome(res);
+                view.ocr.rerun_loading = false;
+                let (provider, from_frame) = match &res {
+                    Ok(l) => (l.provider.clone(), l.from_frame),
+                    Err(_) => (None, None),
+                };
+                (view.ocr.status, view.ocr.boxes, view.ocr.error) = outcome(res.map(|l| l.boxes));
+                (view.ocr.provider, view.ocr.from_frame) = (provider, from_frame);
                 cx.notify();
             })
             .ok();
         })
         .detach();
     }
-}
 
-impl TimelineView {
-    /// "rerun OCR": reprocess the active frame, then show the new job's boxes.
+    /// `ocrRerunDisabled`.
+    pub fn rerun_disabled(&self) -> bool {
+        self.paging.active_frame().is_none()
+            || !self.settings.ocr_enabled
+            || self.ocr.rerun_loading
+            || self.ocr.status == OcrStatus::Running
+    }
+
+    /// "run OCR" / "rerun OCR": reprocess the active frame, then show the new job's boxes.
     pub(super) fn rerun_ocr(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.paging.active_frame().map(|f| f.id) else {
             return;
         };
+        if self.rerun_disabled() {
+            return;
+        }
         // Only pixels that belong to this frame: its own artifact or its exact
         // video position, never another frame's fallback image.
         let source_image = self
@@ -87,30 +128,57 @@ impl TimelineView {
                     )
             })
             .map(|d| d.path.to_path_buf());
-        self.ocr.frame_id = Some(id);
+        self.begin_ocr(id);
         self.ocr.visible = true;
-        self.ocr.status = OcrStatus::Running;
-        self.ocr.boxes.clear();
-        self.ocr.error = None;
-        self.ocr.hovered = None;
+        self.ocr.rerun_loading = true;
         cx.notify();
         let src = self.source.clone();
-        cx.spawn(async move |this, cx| {
-            let res = cx
-                .background_executor()
-                .spawn(async move { src.rerun_ocr(id, source_image) })
-                .await;
-            this.update(cx, |view, cx| {
-                if view.ocr.frame_id != Some(id) {
-                    return; // the playhead moved on
-                }
-                (view.ocr.status, view.ocr.boxes, view.ocr.error) = outcome(res);
-                cx.notify();
-            })
-            .ok();
-        })
-        .detach();
+        self.finish_ocr(id, cx, move || src.rerun_ocr(id, source_image));
     }
+}
+
+/// `ocrCountLabel`: the overlay draws at most `MAX_BOXES`.
+pub fn count_label(n: usize) -> String {
+    if n > MAX_BOXES {
+        format!("{MAX_BOXES}+")
+    } else {
+        n.to_string()
+    }
+}
+
+/// `ocrToggleTitle`: what the O button would do, or what the last read found.
+pub fn toggle_tip(v: &TimelineView) -> String {
+    let o = &v.ocr;
+    let reused = |s: &str| match o.from_frame {
+        Some(f) => format!("{s} (reused from frame {f})"),
+        None => s.to_string(),
+    };
+    let body = if !v.settings.ocr_enabled && !o.visible {
+        "OCR is off. Saved OCR text can still be viewed.".to_string()
+    } else if let Some(e) = &o.error {
+        e.clone()
+    } else if o.visible {
+        "Hide OCR data for the active frame".into()
+    } else {
+        match o.status {
+            OcrStatus::Success => {
+                let n = o.boxes.len();
+                let mut t = reused(&format!(
+                    "{} text region{} detected",
+                    count_label(n),
+                    if n == 1 { "" } else { "s" }
+                ));
+                if let Some(p) = &o.provider {
+                    t.push_str(&format!(" · {p}"));
+                }
+                t
+            }
+            OcrStatus::Empty => reused("no text detected"),
+            OcrStatus::Missing => "no OCR data for this frame".into(),
+            _ => "Show OCR data for the active frame".into(),
+        }
+    };
+    format!("{body} (O)")
 }
 
 /// The hover rule: entering `i` lights it; leaving `i` clears it only if it is lit.
@@ -253,6 +321,16 @@ pub fn boxes(
 /// The non-success OCR note (loading, no text, never OCR'd, failed), pinned to
 /// the image's bottom-left (`.timeline__ocr-status` / `.frame-ocr-status`).
 pub fn status_note(status: OcrStatus, error: Option<&str>, p: &Palette) -> Option<AnyElement> {
+    status_note_from(status, error, None, p)
+}
+
+/// [`status_note`]; `reused` names the earlier frame an empty result came from.
+pub fn status_note_from(
+    status: OcrStatus,
+    error: Option<&str>,
+    reused: Option<i64>,
+    p: &Palette,
+) -> Option<AnyElement> {
     let (tone, lead, msg): (Tone, AnyElement, String) = match status {
         OcrStatus::Idle | OcrStatus::Success => return None,
         OcrStatus::Running => (
@@ -263,7 +341,10 @@ pub fn status_note(status: OcrStatus, error: Option<&str>, p: &Palette) -> Optio
         OcrStatus::Empty => (
             Tone::Neutral,
             icon(IconName::ScanText.path(), size::ICON_SM).into_any_element(),
-            "No text detected on this frame".into(),
+            match reused {
+                Some(f) => format!("No text detected (reused from frame {f})"),
+                None => "No text detected on this frame".into(),
+            },
         ),
         OcrStatus::Missing => (
             Tone::Neutral,
@@ -276,23 +357,45 @@ pub fn status_note(status: OcrStatus, error: Option<&str>, p: &Palette) -> Optio
             error.unwrap_or("OCR failed").to_string(),
         ),
     };
-    Some(
-        div()
-            .absolute()
-            .left(space::S3)
-            .bottom(space::S3)
-            .px(px(9.))
-            .py(px(4.))
-            .rounded(radius::SM)
-            .border_1()
-            .border_color(p.overlay_border)
-            .bg(p.overlay_bg_strong)
-            .child(inline(
-                tone,
-                Some(lead),
-                vec![SharedString::from(msg).into_any_element()],
-                p,
-            ))
-            .into_any_element(),
+    Some(note_box(
+        inline(
+            tone,
+            Some(lead),
+            vec![SharedString::from(msg).into_any_element()],
+            p,
+        ),
+        p,
+    ))
+}
+
+/// `ocrSuccessUnpositionable`: text came back but the frame has no size, so
+/// the boxes can't be placed; point at ⋯ → Copy text instead.
+pub fn unpositioned_note(p: &Palette) -> AnyElement {
+    note_box(
+        inline(
+            Tone::Info,
+            Some(icon(IconName::Info.path(), size::ICON_SM).into_any_element()),
+            vec![
+                SharedString::from("Text detected but can’t be positioned — use ⋯ → Copy text")
+                    .into_any_element(),
+            ],
+            p,
+        ),
+        p,
     )
+}
+
+fn note_box(el: impl IntoElement, p: &Palette) -> AnyElement {
+    div()
+        .absolute()
+        .left(space::S3)
+        .bottom(space::S3)
+        .px(px(9.))
+        .py(px(4.))
+        .rounded(radius::SM)
+        .border_1()
+        .border_color(p.overlay_border)
+        .bg(p.overlay_bg_strong)
+        .child(el)
+        .into_any_element()
 }

@@ -361,10 +361,39 @@ pub fn render(
     .absolute()
     .inset_0();
     let n = frames.len();
+    let readout_text = {
+        let f = &frames[active];
+        let t = local(f.captured_at_ms, crate::ui::clock::now(cx).offset());
+        format!(
+            "Frame {} of {n}{} — captured {} {}",
+            active + 1,
+            if v.paging.exhausted { "" } else { "+" },
+            day_label(t),
+            clock_label(t, true)
+        )
+    };
     let rail = div()
         .id("rail")
         .role(Role::Slider)
         .aria_label("Timeline scrubber")
+        .aria_numeric_value((active + 1) as f64)
+        .aria_value(readout_text)
+        // `onTimelineKeyDown`: the focused rail also takes Home / End / Page keys.
+        .track_focus(&v.rail_focus)
+        .on_key_down(cx.listener(move |this, e: &gpui_kit::KeyDownEvent, _, cx| {
+            if e.keystroke.modifiers.modified() {
+                return;
+            }
+            let delta = match e.keystroke.key.as_str() {
+                "pageup" => -10,
+                "pagedown" => 10,
+                "home" => -(n as i64),
+                "end" => n as i64,
+                _ => return,
+            };
+            cx.stop_propagation();
+            this.step(delta, cx);
+        }))
         .relative()
         .w_full()
         .h(px(RAIL_H))
@@ -398,7 +427,9 @@ pub fn render(
         }))
         .on_mouse_down(
             MouseButton::Left,
-            cx.listener(move |this, e: &gpui_kit::MouseDownEvent, _, cx| {
+            cx.listener(move |this, e: &gpui_kit::MouseDownEvent, window, cx| {
+                // Arrow / Home / End scrubbing works next without a Tab back.
+                window.focus(&this.rail_focus, cx);
                 let w = f32::from(this.rail_w.get());
                 let off = ((w / 2. - (f32::from(e.position.x) - this.rail_x.get())) / SLOT_W)
                     .round() as i64;

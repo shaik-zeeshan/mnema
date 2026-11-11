@@ -162,13 +162,17 @@ impl TimelineView {
         });
     }
 
-    /// `open_captured_url` for the active frame; the dashboard shows its own
-    /// status instead of a dialog (`openCapturedUrl(.., { silent: true })`).
+    /// `openCurrentFrameUrl`: the dashboard shows its own status instead of a
+    /// dialog (`openCapturedUrl(.., { silent: true })`); only an opened page
+    /// closes the menu.
     fn open_captured_url(&mut self, cx: &mut Context<Self>) {
         let Some(id) = self.paging.active_frame().map(|f| f.id) else {
             return;
         };
-        self.menu_open = false;
+        if self.opening_url {
+            return;
+        }
+        self.opening_url = true;
         cx.notify();
         let src = self.source.clone();
         cx.spawn(async move |this, cx| {
@@ -176,15 +180,23 @@ impl TimelineView {
                 .background_executor()
                 .spawn(async move { src.open_captured_url(id) })
                 .await;
-            this.update(cx, |view, cx| match res {
-                Ok(true) => {}
-                Ok(false) => view.set_status(
-                    Some("No openable page for this result.".into()),
-                    None,
-                    false,
-                    cx,
-                ),
-                Err(e) => view.set_status(Some("Couldn't open URL".into()), Some(e), true, cx),
+            this.update(cx, |view, cx| {
+                view.opening_url = false;
+                match res {
+                    Ok(true) => {
+                        view.menu_open = false;
+                        cx.notify();
+                    }
+                    Ok(false) => view.set_status(
+                        Some("No openable URL for this frame".into()),
+                        None,
+                        false,
+                        cx,
+                    ),
+                    Err(e) => {
+                        view.set_status(Some(format!("Couldn't open URL: {e}")), None, false, cx)
+                    }
+                }
             })
             .ok();
         })
@@ -223,11 +235,16 @@ fn item(
     label: impl Into<SharedString>,
     meta: Option<&'static str>,
     enabled: bool,
+    focus: &gpui_kit::FocusHandle,
+    window: &Window,
     p: &Palette,
 ) -> impl crate::ui::Control {
     let hover = (p.surface_hover, p.text_strong);
+    let focused = enabled && focus.is_focused(window);
     div()
         .id(id)
+        .when(enabled, |d| d.track_focus(focus))
+        .when(focused, |d| d.bg(hover.0).text_color(hover.1))
         .test_support()
         .role(Role::MenuItem)
         .flex()
@@ -255,10 +272,21 @@ fn item(
         }))
 }
 
+/// Which ⋯ rows can act: copy, download, copy text, open host.
+pub(super) fn live_rows(v: &TimelineView) -> [bool; 4] {
+    let frame = v.paging.active_frame();
+    let ready = frame.is_some_and(|f| v.engine.exact(f.id).is_some()) && v.busy_action.is_none();
+    let here = frame.map(|f| f.id) == v.ocr.frame_id;
+    let has_text = here && v.ocr.status == OcrStatus::Success && !v.ocr.boxes.is_empty();
+    let host = frame.and_then(|f| f.host()).is_some() && !v.opening_url;
+    [ready, ready, has_text, host]
+}
+
 fn menu(
     v: &TimelineView,
     at: popover::Anchor,
     p: &Palette,
+    window: &Window,
     cx: &mut Context<TimelineView>,
 ) -> AnyElement {
     let frame = v.paging.active_frame();
@@ -285,6 +313,7 @@ fn menu(
     let host = frame.and_then(|f| f.host()).map(String::from);
     let pop = popover::surface(p)
         .id("frame-actions-menu")
+        .key_context(super::MENU_CONTEXT)
         .role(Role::Menu)
         .aria_label("Frame actions")
         .absolute()
@@ -306,6 +335,8 @@ fn menu(
                 copy_label,
                 Some("C"),
                 ready,
+                &v.menu_items[0],
+                window,
                 p,
             )
             .when(ready, |d| {
@@ -319,6 +350,8 @@ fn menu(
                 save_label,
                 Some("D"),
                 ready,
+                &v.menu_items[1],
+                window,
                 p,
             )
             .when(ready, |d| {
@@ -332,6 +365,8 @@ fn menu(
                 text_label,
                 None,
                 has_text,
+                &v.menu_items[2],
+                window,
                 p,
             )
             .when(has_text, |d| {
@@ -339,15 +374,24 @@ fn menu(
             }),
         )
         .children(host.map(|h| {
-            item(
-                "action-open-host",
-                IconName::ExternalLink.path(),
-                h,
-                None,
-                true,
-                p,
+            let opening = v.opening_url;
+            crate::ui::with_tip(
+                item(
+                    "action-open-host",
+                    IconName::ExternalLink.path(),
+                    h.clone(),
+                    None,
+                    !opening,
+                    &v.menu_items[3],
+                    window,
+                    p,
+                )
+                .aria_label(SharedString::from(format!("Open {h} in browser")))
+                .when(!opening, |d| {
+                    d.on_click(cx.listener(|this, _, _, cx| this.open_captured_url(cx)))
+                }),
+                SharedString::from(format!("Open {h} in browser")),
             )
-            .on_click(cx.listener(|this, _, _, cx| this.open_captured_url(cx)))
         }));
     popover::float(pop).into_any_element()
 }
@@ -360,6 +404,7 @@ pub fn render(
     cx: &mut Context<TimelineView>,
 ) -> AnyElement {
     let at = popover::Anchor::new("frame-actions-at", window, cx);
+
     let moment = v
         .paging
         .active_frame()
@@ -382,22 +427,34 @@ pub fn render(
             .on_click(cx.listener(|this, _, _, cx| this.play_moment(cx)))
         }))
         .child(
-            at.track(div())
-                .relative()
-                .child(
-                    Button::icon_only("frame-actions", IconName::Ellipsis.path(), "Frame actions")
-                        .pressed(v.menu_open)
-                        .tip("Frame actions (C copy, D download)")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.menu_open = !this.menu_open;
+            popover::esc_closes(at.track(div()), v.menu_open, {
+                let (this, trigger) = (cx.entity().downgrade(), v.menu_trigger.clone());
+                move |window, cx| {
+                    this.update(cx, |t, cx| {
+                        t.menu_open = false;
+                        cx.notify();
+                    })
+                    .ok();
+                    window.focus(&trigger, cx);
+                }
+            })
+            .relative()
+            .child(
+                Button::icon_only("frame-actions", IconName::Ellipsis.path(), "Frame actions")
+                    .focus_handle(&v.menu_trigger)
+                    .pressed(v.menu_open)
+                    .tip("Frame actions (C copy, D download)")
+                    .on_click(cx.listener(|this, e: &gpui_kit::ClickEvent, _, cx| {
+                        this.menu_open = !this.menu_open;
+                        if this.menu_open {
+                            this.menu_focus_first = matches!(e, gpui_kit::ClickEvent::Keyboard(_));
                             // The menu's Copy text needs this frame's OCR.
-                            if this.menu_open {
-                                this.load_ocr(cx);
-                            }
-                            cx.notify();
-                        })),
-                )
-                .when(v.menu_open, |d| d.child(menu(v, at.clone(), p, cx))),
+                            this.load_ocr(cx);
+                        }
+                        cx.notify();
+                    })),
+            )
+            .when(v.menu_open, |d| d.child(menu(v, at.clone(), p, window, cx))),
         )
         .into_any_element()
 }

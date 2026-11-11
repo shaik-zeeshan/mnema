@@ -176,11 +176,26 @@ impl TimelineView {
         let id = landing.frame_id;
         self.match_boxes.clear();
         self.landing = Some(landing);
-        self.jump_to(id, cx);
+        self.jump(id, cx);
     }
 
-    /// Focus the window around `frame_id` (jumper commit, Recall landing).
+    /// A hand-off from elsewhere (Insights, Chat, a deep link, an audio ref)
+    /// lands on `frame_id`: it replaces any Recall landing, which only a Quick
+    /// Recall hit carries (`drainPendingBrokerOpenCaptureResults`).
     pub fn jump_to(&mut self, frame_id: i64, cx: &mut Context<Self>) {
+        if self
+            .landing
+            .as_ref()
+            .is_some_and(|l| l.frame_id != frame_id)
+        {
+            self.landing = None;
+            self.match_boxes.clear();
+        }
+        self.jump(frame_id, cx);
+    }
+
+    /// Focus the window around `frame_id` (jumper commit, a landing).
+    pub(super) fn jump(&mut self, frame_id: i64, cx: &mut Context<Self>) {
         let generation = self.paging.begin_jump();
         self.jumper.jumping = true;
         cx.notify();
@@ -197,6 +212,13 @@ impl TimelineView {
                     }
                     Ok(false) => {}
                     Err(e) if view.jumper.open => view.jumper.error = Some(e),
+                    // A frame retention or a delete removed (`get_frame` → null).
+                    Err(e) if e.to_lowercase().contains("not found") => view.set_status(
+                        Some("That capture is no longer available.".into()),
+                        None,
+                        true,
+                        cx,
+                    ),
                     Err(e) => view.set_status(Some(e), None, true, cx),
                 }
             },
@@ -291,9 +313,6 @@ impl TimelineView {
         }
         self.readout_dir = if self.paging.active > prev { 1. } else { -1. };
         self.after_active(user, cx);
-        if self.ocr.visible {
-            self.load_ocr(cx);
-        }
         if self.paging.needs_newer() {
             self.load_newer(cx);
         } else if self.paging.needs_older() {
@@ -368,6 +387,8 @@ impl TimelineView {
     }
 
     fn after_active(&mut self, user: bool, cx: &mut Context<Self>) {
+        self.reset_ocr_if_moved();
+        self.lookup_duplicate(cx);
         let now = cx.background_executor().now();
         let fx = self
             .engine
@@ -381,8 +402,15 @@ impl TimelineView {
             match effect {
                 Effect::FetchExact(id) => self.fetch(
                     cx,
-                    move |s| s.frame_preview(id),
-                    move |view, res, cx| {
+                    move |s| {
+                        // The developer panel's `fetch exact` (wall time, never in a golden).
+                        let started = std::time::Instant::now();
+                        (s.frame_preview(id), started.elapsed().as_secs_f32() * 1000.)
+                    },
+                    move |view, (res, took), cx| {
+                        if res.is_ok() {
+                            view.exact_ms = Some((id, took));
+                        }
                         let now = cx.background_executor().now();
                         if let (Err(e), Some(f)) = (&res, view.paging.active_frame()) {
                             if f.id == id && !e.to_lowercase().contains("cancelled") {
@@ -488,7 +516,7 @@ impl TimelineView {
                 };
                 (audio, episodes, icons)
             },
-            |view, (audio, episodes, icons), _| {
+            |view, (audio, episodes, icons), cx| {
                 view.audio_loading = false;
                 match audio {
                     Ok(mut segs) => {
@@ -503,6 +531,13 @@ impl TimelineView {
                         segs.sort_by_key(|s| s.start_ms);
                         view.audio = segs;
                         view.audio_error = None;
+                        // A refresh that no longer lists the open segment (and it
+                        // isn't pinned) drops the selection, closing its drawer.
+                        if let Some((id, _)) = view.selected_audio {
+                            if !view.audio.iter().any(|s| s.id == id) {
+                                view.close_drawer(cx);
+                            }
+                        }
                     }
                     Err(e) => view.audio_error = Some(e),
                 }
@@ -536,6 +571,8 @@ impl TimelineView {
     pub(super) fn settle_painted(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(d) = self.engine.display().cloned() else {
             self.painted = None;
+            // No frame on the stage: nothing for the ⋯ menu to act on.
+            self.menu_open = false;
             return;
         };
         if self.painted.as_ref() == Some(&d) {
@@ -621,11 +658,35 @@ impl TimelineView {
                         cx,
                     ),
                     (Some(frame_id), None) => view.jump_to(frame_id, cx),
-                    (None, _) => {}
+                    (None, recall) => {
+                        if recall.is_none() {
+                            view.landing = None;
+                            view.match_boxes.clear();
+                        }
+                    }
                 }
                 cx.notify();
             },
         );
+    }
+
+    /// A lane bar (`onAudioSegmentBarClick`): the open one closes its drawer,
+    /// another switches to it from its start.
+    pub fn audio_bar_click(&mut self, id: i64, cx: &mut Context<Self>) {
+        if self.selected_audio.map(|a| a.0) == Some(id) {
+            return self.close_drawer(cx);
+        }
+        self.pinned_audio = None;
+        self.selected_audio = Some((id, 0));
+        cx.notify();
+    }
+
+    /// The lane's retry (`refreshAudioSegments`).
+    pub fn refresh_audio(&mut self, cx: &mut Context<Self>) {
+        if !self.audio_loading {
+            self.refresh_side_data(cx);
+            cx.notify();
+        }
     }
 
     /// P: open the AudioDrawer (S9) on the segment under the active frame.
@@ -658,8 +719,12 @@ pub fn prettify_preview_error(raw: &str) -> String {
         pick("Couldn't read the recording while generating the frame preview.")
     } else if m.contains("failed to read video sample") {
         pick("Couldn't read a video sample for the frame preview.")
+    } else if m.contains("failed to convert preview sample") && m.contains("cgimage") {
+        pick("Couldn't convert the frame preview into an image.")
     } else if m.contains("failed to join video preview extraction task") {
         pick("Frame preview generation stopped unexpectedly.")
+    } else if m.contains("only supported on macos") {
+        pick("Video fallback previews are only supported on macOS.")
     } else if m.contains("not found") {
         pick("This frame preview is no longer available.")
     } else {

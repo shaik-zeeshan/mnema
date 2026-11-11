@@ -196,7 +196,12 @@ pub fn render(
         body.push(
             card(p)
                 .child(card_title(format!("Sounds like {sname}"), p).children(
-                    g.recognition_confidence.clone().map(|c| chip(c, ChipKind::Neutral, p)),
+                    g.recognition_confidence.clone().map(|c| {
+                        crate::ui::with_tip(
+                            chip(c, ChipKind::Neutral, p).id("repair-recognition"),
+                            "Recognition confidence",
+                        )
+                    }),
                 ))
                 .child(hint(
                     format!(

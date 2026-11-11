@@ -212,10 +212,15 @@ export const SURFACES: Record<string, Surface> = {
       "drawer-expanded": [MIC_BAR, '.audio-drawer button:has-text("expand")'],
       repair: [MIC_BAR, ".audio-drawer .who >> nth=1"],
       "drawer-not-transcribed": [MIC_BAR],
+      // Flow-parity states (fixtures/timeline/<state>.json): OCR shown, the ⋯ menu open.
+      "ocr-on": ['[aria-label="Show OCR data for active frame"]'],
+      menu: ['[aria-label="Frame actions"]'],
     },
     states: {
       // No mockup state of its own: the expanded reader is drawn over `drawer`.
       "drawer-expanded": "state=drawer",
+      "ocr-on": "state=default",
+      menu: "state=default",
       ...q(
       "state",
       `default loading first-run starting load-error stale refreshing not-recording permission permission-helper
@@ -271,9 +276,17 @@ export const SURFACES: Record<string, Surface> = {
     selector: WIN,
     // The S11 parity set (fixtures/chat/<state>.json): history empty / listed, and a chat open
     // mid-stream (served by ask_ai_snapshot), finished, and failed.
-    stateRoute: { "mid-stream": "/chat?c=c-stream", done: "/chat?c=c-done", error: "/chat?c=c-error" },
+    stateRoute: {
+      "mid-stream": "/chat?c=c-stream",
+      done: "/chat?c=c-done",
+      error: "/chat?c=c-error",
+      peek: "/chat?c=c-done",
+    },
+    // The frame peek (FrameDetailModal) on the done chat's first frame chip.
+    stateClick: { peek: [".ch-frame >> nth=0"] },
     states: {
       default: "",
+      peek: "state=thread",
       empty: "state=history-empty",
       list: "",
       "mid-stream": "state=writing",

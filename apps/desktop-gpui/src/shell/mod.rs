@@ -192,6 +192,7 @@ impl Shell {
         let hint = crate::timeline::CaptureHint {
             capturing: s.running,
             screen: s.selected[0],
+            starting: s.loading_start,
         };
         let developer = self.model.developer_options;
         cx.set_global(DeveloperOptions(developer));

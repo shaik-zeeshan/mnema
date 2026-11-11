@@ -7,6 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     div, fill, linear_color_stop, linear_gradient, point, px, size, AnyElement, Bounds, Context,
     Hsla, Pixels, Role, SharedString, Window,
@@ -174,6 +175,7 @@ pub fn audio_lane(
             .child(t)
     };
     let frames = &v.paging.frames;
+    let o = crate::ui::clock::now(cx).offset();
     let bars: Vec<AnyElement> = v
         .audio
         .iter()
@@ -184,11 +186,17 @@ pub fn audio_lane(
             let mic = s.source == AudioSource::Microphone;
             let selected = v.selected_audio.map(|a| a.0) == Some(s.id);
             let id = s.id;
-            let tip = format!("{} #{}", s.source.label(), s.segment_index);
+            let (from, to) = (time_of_day(s.start_ms, o), time_of_day(s.end_ms, o));
+            let tip = format!("{} #{} · {from} – {to}", s.source.label(), s.segment_index);
+            let name = if mic { "microphone" } else { "system audio" };
             let bar = div()
                 .id(nid("audio-bar", id as u64))
                 .role(Role::Button)
-                .aria_label(SharedString::from(format!("Play {}", tip.to_lowercase())))
+                .aria_label(SharedString::from(format!(
+                    "Play {name} segment {} from {from} to {to}",
+                    s.segment_index
+                )))
+                .aria_selected(selected)
                 .absolute()
                 .top(px(if mic { 1. } else { 14. }))
                 .left(px(right - width))
@@ -205,17 +213,16 @@ pub fn audio_lane(
                         this.bar_hover = None;
                     }
                 }))
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.selected_audio = Some((id, 0));
-                    cx.notify();
-                }));
-            with_tip(bar, tip).into_any_element()
+                .on_click(cx.listener(move |this, _, _, cx| this.audio_bar_click(id, cx)));
+            with_tip(bar, tip).test_support().into_any_element()
         })
         .collect();
-    let note = if !bars.is_empty() {
+    let error = (bars.is_empty())
+        .then(|| v.audio_error.clone())
+        .flatten()
+        .map(|e| audio_error(v, e, p, cx));
+    let note = if !bars.is_empty() || error.is_some() {
         None
-    } else if let Some(e) = &v.audio_error {
-        Some((format!("audio unavailable · {e}"), p.danger_text))
     } else if frames.is_empty() {
         None
     } else if v.audio_loading {
@@ -246,6 +253,7 @@ pub fn audio_lane(
                 .h(px(26.))
                 .overflow_hidden()
                 .children(bars)
+                .children(error)
                 .children(note.map(|(t, c)| {
                     div()
                         .absolute()
@@ -257,6 +265,49 @@ pub fn audio_lane(
                         .text_color(c)
                         .child(t)
                 })),
+        )
+        .into_any_element()
+}
+
+/// `formatTimeOfDay`: the clock with seconds.
+pub fn time_of_day(ms: i64, o: time::UtcOffset) -> String {
+    super::model::clock_label(super::model::local(ms, o), true)
+}
+
+/// `.timeline-rail__audio-lane-error`: "audio unavailable" (the reason on
+/// hover) and a retry.
+fn audio_error(
+    v: &TimelineView,
+    e: String,
+    p: &Palette,
+    cx: &mut Context<TimelineView>,
+) -> AnyElement {
+    let busy = v.audio_loading;
+    div()
+        .id("audio-lane-error")
+        .role(Role::Alert)
+        .absolute()
+        .inset_0()
+        .flex()
+        .items_center()
+        .justify_center()
+        .gap(px(10.))
+        .child(with_tip(
+            div()
+                .id("audio-lane-error-label")
+                .text_size(text::SM)
+                .text_color(p.danger_text)
+                .child("audio unavailable"),
+            e.clone(),
+        ))
+        .child(
+            crate::ui::Button::new("audio-lane-retry", if busy { "retrying…" } else { "retry" })
+                .ghost()
+                .sm()
+                .h(px(22.))
+                .disabled(busy)
+                .tip(format!("Retry loading audio · {e}"))
+                .on_click(cx.listener(|this, _, _, cx| this.refresh_audio(cx))),
         )
         .into_any_element()
 }

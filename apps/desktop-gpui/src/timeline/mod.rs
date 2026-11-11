@@ -14,6 +14,7 @@ pub mod data;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 mod frame_actions;
+pub use frame_actions::as_png;
 pub mod image_cache;
 mod jumper;
 mod match_overlay;
@@ -71,6 +72,9 @@ pub struct Status {
     pub error: bool,
 }
 
+/// The developer panel's duplicate lookup waits for the playhead to rest.
+pub const DUPLICATE_LOOKUP: std::time::Duration = std::time::Duration::from_millis(200);
+
 /// `STATUS_TTL`: how long a neutral stage note stays (`scheduleFrameActionStatusDismiss`).
 pub const STATUS_TTL: std::time::Duration = std::time::Duration::from_millis(2200);
 
@@ -93,6 +97,12 @@ pub struct Ocr {
     pub boxes: Vec<OcrBox>,
     pub error: Option<String>,
     pub hovered: Option<usize>,
+    /// `ocrProviderLabel`.
+    pub provider: Option<String>,
+    /// The identical earlier frame whose OCR is shown (`ocrUsingEarlierFrame`).
+    pub from_frame: Option<i64>,
+    /// `ocrRerunLoading`.
+    pub rerun_loading: bool,
 }
 
 /// What the empty stage says depends on capture (set by the shell).
@@ -100,6 +110,8 @@ pub struct Ocr {
 pub struct CaptureHint {
     pub capturing: bool,
     pub screen: bool,
+    /// A start is in flight: "Start recording" waits (`loadingStart`).
+    pub starting: bool,
 }
 
 /// What the Timeline asks of the shell.
@@ -134,9 +146,23 @@ pub struct TimelineView {
     pub ocr: Ocr,
     pub menu_open: bool,
     pub busy_action: Option<&'static str>,
+    /// `openingCurrentFrameUrl`: the menu's host row waits on the backend.
+    pub opening_url: bool,
+    /// The ⋯ trigger, and one Tab stop per menu row: a keyboard open focuses
+    /// the first live row, Esc hands focus back to the trigger.
+    pub(crate) menu_trigger: gpui_kit::FocusHandle,
+    pub(crate) menu_items: [gpui_kit::FocusHandle; 4],
+    pub(crate) menu_focus_first: bool,
+    /// Developer panel: how long the active frame's exact preview took (ms),
+    /// and the earlier identical frame it duplicates (`timelineActiveDuplicateOf`).
+    pub(crate) exact_ms: Option<(i64, f32)>,
+    pub duplicate_of: Option<model::Frame>,
+    dup_task: Option<Task<()>>,
     pub jumper: jumper::JumperState,
     /// The jumper's day grid: one Tab stop, arrow keys move its cursor.
     pub jumper_grid: gpui_kit::FocusHandle,
+    /// The rail: a click focuses it so Home / End / Page keys scrub.
+    pub rail_focus: gpui_kit::FocusHandle,
     /// The jumper trigger, so a press on it toggles instead of closing + reopening.
     pub jumper_at: crate::ui::popover::Anchor,
     pub status: Option<Status>,
@@ -188,8 +214,16 @@ impl TimelineView {
             ocr: Ocr::default(),
             menu_open: false,
             busy_action: None,
+            opening_url: false,
+            menu_trigger: cx.focus_handle().tab_stop(true),
+            menu_items: std::array::from_fn(|_| cx.focus_handle().tab_stop(true)),
+            menu_focus_first: false,
+            exact_ms: None,
+            duplicate_of: None,
+            dup_task: None,
             jumper: jumper::JumperState::default(),
             jumper_grid: cx.focus_handle().tab_stop(true),
+            rail_focus: cx.focus_handle().tab_stop(true),
             jumper_at: crate::ui::popover::Anchor::owned(cx),
             status: None,
             capture: CaptureHint::default(),
@@ -214,35 +248,88 @@ impl TimelineView {
         view
     }
 
-    /// The help sheet's Timeline group (only while frames are loaded).
-    pub fn help_group(&self, b: &crate::keymap::Bindings) -> Option<HelpGroup> {
-        if self.paging.frames.is_empty() {
-            return None;
+    /// The help sheet's groups (`+page.svelte`'s `setKeyboardHelpGroups`):
+    /// Timeline, Frame, and Audio Drawer while one is open; rows that can't
+    /// act right now are left out.
+    pub fn help_groups(&self, b: &crate::keymap::Bindings, cx: &gpui_kit::App) -> Vec<HelpGroup> {
+        use crate::keymap::display;
+        let row = |label: &str, keys: String| HelpRow {
+            label: label.into(),
+            keys,
+        };
+        let p = &self.paging;
+        let busy = p.loading || p.loading_more;
+        let mut timeline = Vec::new();
+        if !p.frames.is_empty() {
+            timeline.extend([
+                row("Older frame", "←".into()),
+                row("Newer frame", "→".into()),
+                row("10 frames older", "⇧←".into()),
+                row("10 frames newer", "⇧→".into()),
+            ]);
         }
-        let row = |label: &str, keys: &str| HelpRow {
-            label: label.into(),
-            keys: keys.into(),
-        };
-        let user = |label: &str, ix: usize| HelpRow {
-            label: label.into(),
-            keys: crate::keymap::display(&b.timeline[ix]),
-        };
-        Some(HelpGroup {
-            title: "Timeline",
-            rows: vec![
-                row("Older frame", "←"),
-                row("Newer frame", "→"),
-                row("10 frames older", "⇧←"),
-                row("10 frames newer", "⇧→"),
-                user("Open jump picker", 0),
-                user("Jump to latest", 1),
-                user("Toggle OCR panel", 2),
-                user("Refresh timeline", 3),
-                user("Copy active frame image", 4),
-                user("Download active frame image", 5),
-                row("Play audio at this moment", "P"),
-            ],
-        })
+        if !self.jumper.open {
+            timeline.push(row("Open jump picker", display(&b.timeline[0])));
+        }
+        if jumper::show_latest(self) && !busy && !self.jumper.jumping {
+            timeline.push(row("Jump to latest", display(&b.timeline[1])));
+        }
+        if !busy && !self.audio_loading {
+            timeline.push(row("Refresh timeline", display(&b.timeline[3])));
+        }
+        timeline.push(row("Close the top open surface", "Esc".into()));
+        let mut frame = Vec::new();
+        if let Some(f) = p.active_frame() {
+            let label = if self.ocr.visible {
+                "Hide OCR panel"
+            } else {
+                "Show OCR panel"
+            };
+            frame.push(row(label, display(&b.timeline[2])));
+            if self.painted.is_some() {
+                frame.push(row("Copy active frame image", display(&b.timeline[4])));
+                frame.push(row("Download active frame image", display(&b.timeline[5])));
+            }
+            if model::audio_moment(&self.audio, f.captured_at_ms).is_some() {
+                frame.push(row("Play audio at this moment", "P".into()));
+            }
+        }
+        let mut groups = vec![
+            HelpGroup {
+                title: "Timeline",
+                rows: timeline,
+            },
+            HelpGroup {
+                title: "Frame",
+                rows: frame,
+            },
+        ];
+        if let Some(d) = &self.drawer {
+            let playable = d.read(cx).transport.playable();
+            let labels = [
+                "Play or pause",
+                "Seek back 5 seconds",
+                "Seek forward 5 seconds",
+                "Seek back 30 seconds",
+                "Seek forward 30 seconds",
+            ];
+            let mut rows: Vec<HelpRow> = if playable {
+                labels
+                    .iter()
+                    .zip(&b.audio_drawer)
+                    .map(|(l, k)| row(l, display(k)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            rows.push(row("Close speaker actions or audio drawer", "Esc".into()));
+            rows.push(row("Move through audio drawer controls", "Tab".into()));
+            groups.push(HelpGroup {
+                title: "Audio Drawer",
+                rows,
+            });
+        }
+        groups
     }
 
     pub fn set_status(
@@ -282,6 +369,36 @@ impl TimelineView {
     /// The frame the stage has painted (goldens wait for it).
     pub fn painted_frame(&self) -> Option<i64> {
         self.painted.as_ref().map(|d| d.frame_id)
+    }
+
+    /// `timelineActiveDuplicateOf`: 200 ms after the playhead rests, and only
+    /// with developer options on, look up the frame the active one duplicates.
+    pub(crate) fn lookup_duplicate(&mut self, cx: &mut Context<Self>) {
+        self.duplicate_of = None;
+        self.dup_task = None;
+        let Some(id) = self
+            .paging
+            .active_frame()
+            .map(|f| f.id)
+            .filter(|_| self.developer)
+        else {
+            return;
+        };
+        let src = self.source.clone();
+        self.dup_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(DUPLICATE_LOOKUP).await;
+            let found = cx
+                .background_executor()
+                .spawn(async move { src.earlier_equivalent(id).ok().flatten() })
+                .await;
+            this.update(cx, |view, cx| {
+                if view.paging.active_frame().map(|f| f.id) == Some(id) {
+                    view.duplicate_of = found;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
     }
 
     pub(crate) fn hold_status(&mut self) {
@@ -379,11 +496,25 @@ pub fn register_actions(
         on(|t, _, cx| t.step(10, cx)),
         on(|t, _, cx| t.step(-10, cx)),
         on(|t, _, cx| t.open_jumper(cx)),
-        on(|t, _, cx| t.jump_latest(cx)),
+        // L only does something while the "latest" button shows.
+        on(|t, _, cx| {
+            if jumper::show_latest(t) {
+                t.jump_latest(cx)
+            }
+        }),
         on(|t, _, cx| t.toggle_ocr(cx)),
         on(|t, _, cx| t.refresh(cx)),
-        on(|t, w, cx| t.copy_image(w, cx)),
-        on(|t, w, cx| t.download_image(w, cx)),
+        // C / D need a frame on the stage (`activePreviewPath`).
+        on(|t, w, cx| {
+            if t.painted.is_some() {
+                t.copy_image(w, cx)
+            }
+        }),
+        on(|t, w, cx| {
+            if t.painted.is_some() {
+                t.download_image(w, cx)
+            }
+        }),
         on(|t, _, cx| t.play_moment(cx)),
     );
     el.on_action(move |_: &OlderFrame, w, cx| a(w, cx))
@@ -399,13 +530,18 @@ pub fn register_actions(
         .on_action(move |_: &PlayMoment, w, cx| k(w, cx))
 }
 
-/// The Timeline's bindings: unmodified keys, suppressed in inputs and buttons.
-/// `keymap::bind` installs them.
+/// Where the Timeline's keys apply: the app's context minus the audio drawer
+/// and the jump picker (`isTimelineShortcutSuppressedTarget`).
+pub const KEY_CONTEXT: &str =
+    "Shell && !Input && !MxButton && !AudioDrawer && !TimelineJumper && !TimelineMenu";
+pub const MENU_CONTEXT: &str = "TimelineMenu";
+pub const JUMPER_CONTEXT: &str = "TimelineJumper";
+
 /// The fixed Timeline keys; the six rebindable ones (`dashboardShortcuts`)
 /// are bound from the user's settings in `keymap::bind`.
 pub fn key_bindings() -> [gpui_kit::KeyBinding; 5] {
     use gpui_kit::KeyBinding;
-    let ctx = Some(crate::keymap::APP_CONTEXT);
+    let ctx = Some(KEY_CONTEXT);
     [
         KeyBinding::new("left", OlderFrame, ctx),
         KeyBinding::new("right", NewerFrame, ctx),
@@ -420,6 +556,13 @@ impl Render for TimelineView {
         let p = theme::tokens(cx);
         self.settle_painted(window, cx);
         self.sync_drawer(window, cx);
+        // A keyboard open of ⋯ moves focus to its first row that can act
+        // (Svelte's `getFocusableElements(menu)[0]`).
+        if std::mem::take(&mut self.menu_focus_first) && self.menu_open {
+            if let Some(i) = frame_actions::live_rows(self).iter().position(|on| *on) {
+                window.focus(&self.menu_items[i], cx);
+            }
+        }
         if std::mem::take(&mut self.jumper.focus_grid) && self.jumper.open {
             window.focus(&self.jumper_grid, cx); // opening moves focus inside the picker
         }
@@ -447,5 +590,9 @@ impl Render for TimelineView {
     }
 }
 
+#[cfg(all(test, feature = "fixtures"))]
+mod flow_tests;
+#[cfg(all(test, feature = "fixtures"))]
+mod flow_tests2;
 #[cfg(all(test, feature = "fixtures"))]
 mod tests;

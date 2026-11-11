@@ -472,6 +472,11 @@ impl ScrubEngine {
         })
     }
 
+    /// `activeScrubPreviewReady`: a cached still covers this frame.
+    pub fn scrub_ready(&self, frame: &Frame) -> bool {
+        self.interval_for(frame).is_some()
+    }
+
     /// `scrubPreviewIntervalForFrame`: the latest-starting ready interval covering it.
     fn interval_for(&self, frame: &Frame) -> Option<&ScrubInterval> {
         let at = frame.captured_at_ms;

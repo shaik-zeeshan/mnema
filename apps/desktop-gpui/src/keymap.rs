@@ -323,12 +323,12 @@ pub fn bind(bindings: &Bindings, cx: &mut App) {
         };
         let [jump, latest, ocr, refresh, copy, download] = &bindings.timeline;
         [
-            user_binding(jump, OpenJumper, APP_CONTEXT, cx),
-            user_binding(latest, JumpLatest, APP_CONTEXT, cx),
-            user_binding(ocr, ToggleOcr, APP_CONTEXT, cx),
-            user_binding(refresh, Refresh, APP_CONTEXT, cx),
-            user_binding(copy, CopyFrame, APP_CONTEXT, cx),
-            user_binding(download, DownloadFrame, APP_CONTEXT, cx),
+            user_binding(jump, OpenJumper, crate::timeline::KEY_CONTEXT, cx),
+            user_binding(latest, JumpLatest, crate::timeline::KEY_CONTEXT, cx),
+            user_binding(ocr, ToggleOcr, crate::timeline::KEY_CONTEXT, cx),
+            user_binding(refresh, Refresh, crate::timeline::KEY_CONTEXT, cx),
+            user_binding(copy, CopyFrame, crate::timeline::KEY_CONTEXT, cx),
+            user_binding(download, DownloadFrame, crate::timeline::KEY_CONTEXT, cx),
         ]
     };
     let drawer = {

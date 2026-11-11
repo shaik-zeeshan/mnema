@@ -1,0 +1,931 @@
+{
+  "system_uses_24_hour_time": false,
+  "get_keyboard_bindings_settings": {
+    "schemaVersion": 1,
+    "globalShortcuts": {
+      "enabled": true,
+      "bindings": {
+        "toggleRecording": "CommandOrControl+Alt+R",
+        "pauseResumeRecording": "CommandOrControl+Alt+P",
+        "toggleMainWindow": "CommandOrControl+Alt+M",
+        "quickRecall": "CommandOrControl+Alt+Space"
+      }
+    },
+    "appShortcuts": {
+      "openSettings": "CommandOrControl+,",
+      "openDebug": "CommandOrControl+D",
+      "toggleSourceScreen": "1",
+      "toggleSourceMicrophone": "2",
+      "toggleSourceSystemAudio": "3",
+      "toggleShortcutsHelp": "/"
+    },
+    "dashboardShortcuts": {
+      "openJumpPicker": "J",
+      "jumpLatest": "L",
+      "toggleOcr": "O",
+      "refreshTimeline": "R",
+      "copyFrame": "C",
+      "downloadFrame": "D"
+    },
+    "audioDrawerShortcuts": {
+      "playPause": "Space",
+      "seekBack": "ArrowLeft",
+      "seekForward": "ArrowRight",
+      "seekBackFast": "Shift+ArrowLeft",
+      "seekForwardFast": "Shift+ArrowRight"
+    }
+  },
+  "get_license_status": {
+    "kind": "licensed",
+    "updateThroughMs": 1819702920000.0,
+    "inWindow": true,
+    "email": "ana@example.com",
+    "name": "Ana",
+    "activation": {
+      "state": "activated"
+    }
+  },
+  "take_pending_license_deep_link": null,
+  "user_context_stamp_local_offset": null,
+  "get_storage_usage": {
+    "screenBytes": 980000000,
+    "microphoneBytes": 140000000,
+    "systemAudioBytes": 80000000,
+    "indexBytes": 60000000,
+    "modelsBytes": 1100000000,
+    "captureDays": 9,
+    "freeBytes": 312000000000
+  },
+  "get_recording_settings": {
+    "captureScreen": true,
+    "captureMicrophone": true,
+    "captureSystemAudio": true,
+    "segmentDurationSeconds": 300,
+    "screenFrameRate": 1.0,
+    "screenResolution": {
+      "mode": "preset",
+      "preset": "original"
+    },
+    "videoBitrate": {
+      "mode": "preset",
+      "preset": "medium",
+      "customMbps": null
+    },
+    "saveDirectory": "/Users/ana/.mnema",
+    "autoStart": true,
+    "developerOptionsEnabled": false,
+    "previewCacheTtlSeconds": 3600,
+    "followTimelineLive": false,
+    "retentionPolicy": "never",
+    "appearance": "system",
+    "timeFormat": "system",
+    "ocr": {
+      "enabled": true,
+      "provider": "apple_vision",
+      "modelId": null,
+      "language": null,
+      "recognitionMode": "fast",
+      "languageCorrection": false,
+      "tesseractPageSegmentationMode": "single_block",
+      "tesseractPreprocessMode": "grayscale",
+      "tesseractUpscaleFactor": 1,
+      "tesseractCharWhitelist": null
+    },
+    "transcription": {
+      "enabled": true,
+      "microphoneEnabled": true,
+      "systemAudioEnabled": false,
+      "provider": "local_whisper",
+      "modelId": "base",
+      "language": "auto",
+      "memoryMode": "balanced",
+      "idleUnloadSeconds": 300,
+      "chunkSeconds": 30
+    },
+    "speakerAnalysis": {
+      "separateSpeakers": false,
+      "recognizeSavedPeople": false,
+      "autoLabelOwner": true,
+      "provider": "speakrs",
+      "modelId": "pyannote-community-1-wespeaker",
+      "timeoutSeconds": 600
+    },
+    "audioSpeechDetection": {
+      "detector": "silero"
+    },
+    "metadata": {
+      "enabled": true,
+      "browserUrlMode": "sanitized"
+    },
+    "privacy": {
+      "excludedApps": [],
+      "filterSystemAudio": true
+    },
+    "access": {
+      "askAiEnabled": true,
+      "askAiMaxToolCalls": 12,
+      "askAiWebFetchEnabled": false,
+      "askAiModel": null,
+      "askAiModelProvider": null,
+      "quickRecallAutoAnswer": "localOnly"
+    },
+    "aiRuntime": {
+      "enabled": true,
+      "providers": [
+        {
+          "id": "anthropic",
+          "kind": "anthropic",
+          "label": "",
+          "baseUrl": ""
+        }
+      ],
+      "defaultModel": {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5"
+      },
+      "mcpServers": [],
+      "favoriteModels": [],
+      "recentModels": []
+    },
+    "userContext": {
+      "enabled": false,
+      "derivationBudgetTier": "balanced",
+      "backfillWindowDays": 30,
+      "backfillGoDeeper": false
+    },
+    "semanticSearch": {
+      "enabled": true,
+      "provider": "local",
+      "modelId": "nomic-embed-text-v1.5"
+    },
+    "pauseCaptureOnInactivity": true,
+    "idleTimeoutSeconds": 10,
+    "microphoneActivitySensitivity": 50,
+    "systemAudioActivitySensitivity": 50,
+    "activityMode": "system_input_or_screen"
+  },
+  "get_capture_permissions": {
+    "permissions": {
+      "screen": "granted",
+      "microphone": "granted",
+      "systemAudio": "assumed_working"
+    },
+    "session": {
+      "isRunning": true,
+      "requestedSources": {
+        "screen": true,
+        "microphone": true,
+        "systemAudio": true
+      },
+      "outputFiles": null,
+      "recordingStartedAtUnixMs": 1793776973000,
+      "sourceSessions": {
+        "screen": {
+          "sessionId": "sess-1104",
+          "startedAtUnixMs": 1793776973000
+        },
+        "microphone": {
+          "sessionId": "sess-1104",
+          "startedAtUnixMs": 1793776973000
+        },
+        "systemAudio": {
+          "sessionId": "sess-1104",
+          "startedAtUnixMs": 1793776973000
+        }
+      },
+      "isInactivityPaused": false,
+      "isUserPaused": false,
+      "isLowDiskSuspended": false
+    }
+  },
+  "get_app_notifications": [
+    {
+      "id": "n-transcription",
+      "severity": "warning",
+      "title": "Transcription is behind",
+      "message": "12 audio segments are waiting to be transcribed.",
+      "createdAtUnixMs": 1793781720000,
+      "action": {
+        "type": "open_settings_tab",
+        "tab": "transcription"
+      }
+    }
+  ],
+  "get_ai_runtime_status": {
+    "enabled": true,
+    "hasProviders": true,
+    "configured": true,
+    "available": true,
+    "defaultModel": null,
+    "defaultProviderKind": null,
+    "reason": null
+  },
+  "get_usage_charts": {
+    "rangeStartMs": 1793730600000,
+    "rangeEndMs": 1793782920000,
+    "timePerApp": [
+      {
+        "app": "Zed",
+        "appBundleId": "dev.zed.Zed",
+        "activeMs": 7920000,
+        "frameCount": 1584
+      },
+      {
+        "app": "Slack",
+        "appBundleId": "com.tinyspeck.slackmacgap",
+        "activeMs": 4860000,
+        "frameCount": 972
+      },
+      {
+        "app": "Arc",
+        "appBundleId": "company.thebrowser.Browser",
+        "activeMs": 4080000,
+        "frameCount": 816
+      }
+    ],
+    "timePerSite": [],
+    "appTransitions": [],
+    "activityHeatmap": []
+  },
+  "list_frames": [
+    {
+      "id": 4824,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:56.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:56.000Z",
+      "updatedAt": "2026-11-04T09:01:56.000Z"
+    },
+    {
+      "id": 4823,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:51.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:51.000Z",
+      "updatedAt": "2026-11-04T09:01:51.000Z"
+    },
+    {
+      "id": 4822,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:46.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:46.000Z",
+      "updatedAt": "2026-11-04T09:01:46.000Z"
+    },
+    {
+      "id": 4821,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:41.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:41.000Z",
+      "updatedAt": "2026-11-04T09:01:41.000Z"
+    },
+    {
+      "id": 4820,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:36.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:36.000Z",
+      "updatedAt": "2026-11-04T09:01:36.000Z"
+    },
+    {
+      "id": 4819,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:31.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:31.000Z",
+      "updatedAt": "2026-11-04T09:01:31.000Z"
+    },
+    {
+      "id": 4818,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:26.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:26.000Z",
+      "updatedAt": "2026-11-04T09:01:26.000Z"
+    },
+    {
+      "id": 4817,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:21.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:21.000Z",
+      "updatedAt": "2026-11-04T09:01:21.000Z"
+    },
+    {
+      "id": 4816,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:16.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:16.000Z",
+      "updatedAt": "2026-11-04T09:01:16.000Z"
+    },
+    {
+      "id": 4815,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:11.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:11.000Z",
+      "updatedAt": "2026-11-04T09:01:11.000Z"
+    },
+    {
+      "id": 4814,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:06.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:06.000Z",
+      "updatedAt": "2026-11-04T09:01:06.000Z"
+    },
+    {
+      "id": 4813,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:01:01.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "com.tinyspeck.slackmacgap",
+      "appName": "Slack",
+      "windowTitle": "mnema-dev",
+      "url": null,
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:01:01.000Z",
+      "updatedAt": "2026-11-04T09:01:01.000Z"
+    },
+    {
+      "id": 4812,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:56.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:56.000Z",
+      "updatedAt": "2026-11-04T09:00:56.000Z"
+    },
+    {
+      "id": 4811,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:51.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:51.000Z",
+      "updatedAt": "2026-11-04T09:00:51.000Z"
+    },
+    {
+      "id": 4810,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:46.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:46.000Z",
+      "updatedAt": "2026-11-04T09:00:46.000Z"
+    },
+    {
+      "id": 4809,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:41.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:41.000Z",
+      "updatedAt": "2026-11-04T09:00:41.000Z"
+    },
+    {
+      "id": 4808,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:36.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:36.000Z",
+      "updatedAt": "2026-11-04T09:00:36.000Z"
+    },
+    {
+      "id": 4807,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:31.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:31.000Z",
+      "updatedAt": "2026-11-04T09:00:31.000Z"
+    },
+    {
+      "id": 4806,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:26.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:26.000Z",
+      "updatedAt": "2026-11-04T09:00:26.000Z"
+    },
+    {
+      "id": 4805,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:21.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:21.000Z",
+      "updatedAt": "2026-11-04T09:00:21.000Z"
+    },
+    {
+      "id": 4804,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:16.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:16.000Z",
+      "updatedAt": "2026-11-04T09:00:16.000Z"
+    },
+    {
+      "id": 4803,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:11.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:11.000Z",
+      "updatedAt": "2026-11-04T09:00:11.000Z"
+    },
+    {
+      "id": 4802,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:06.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:06.000Z",
+      "updatedAt": "2026-11-04T09:00:06.000Z"
+    },
+    {
+      "id": 4801,
+      "sessionId": "sess-1104",
+      "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+      "capturedAt": "2026-11-04T09:00:01.000Z",
+      "width": 2880,
+      "height": 1800,
+      "appBundleId": "company.thebrowser.Browser",
+      "appName": "Arc",
+      "windowTitle": "Pricing — Mnema",
+      "url": "https://mnema.day/pricing",
+      "ocrText": null,
+      "processorVersion": null,
+      "equivalenceHint": null,
+      "createdAt": "2026-11-04T09:00:01.000Z",
+      "updatedAt": "2026-11-04T09:00:01.000Z"
+    }
+  ],
+  "get_capture_health": {
+    "recording": true,
+    "startedAtMs": 1793776973000,
+    "screen": {
+      "requested": true,
+      "state": "recording",
+      "reason": null,
+      "levelDb": null,
+      "idleMs": 0,
+      "deviceName": null
+    },
+    "microphone": {
+      "requested": true,
+      "state": "recording",
+      "reason": null,
+      "levelDb": -32,
+      "idleMs": 0,
+      "deviceName": null
+    },
+    "systemAudio": {
+      "requested": true,
+      "state": "recording",
+      "reason": null,
+      "levelDb": -41,
+      "idleMs": 0,
+      "deviceName": null
+    },
+    "suspension": null,
+    "systemAudioTap": {
+      "rebuildsToday": 0,
+      "lastReason": null,
+      "lastRebuildAtMs": null,
+      "lastDetail": null,
+      "nextSilenceCheckInMs": 30000,
+      "watchdogDelayMs": 30000,
+      "sampleRateHz": 48000
+    },
+    "disk": {
+      "freeBytes": 312000000000,
+      "reserveFloorBytes": 5000000000,
+      "pauseThresholdBytes": 10000000000,
+      "resumeThresholdBytes": 15000000000
+    }
+  },
+  "get_idle_debug": {
+    "runtimeSources": {
+      "screen": {
+        "requested": true,
+        "paused": false,
+        "sessionActive": true,
+        "writerActive": true,
+        "outputPath": null,
+        "reason": null
+      },
+      "microphone": {
+        "requested": true,
+        "paused": false,
+        "sessionActive": true,
+        "writerActive": true,
+        "outputPath": null,
+        "reason": null
+      },
+      "systemAudio": {
+        "requested": true,
+        "paused": false,
+        "sessionActive": true,
+        "writerActive": true,
+        "outputPath": null,
+        "reason": null
+      }
+    }
+  },
+  "get_frame_preview": {
+    "mimeType": "image/webp",
+    "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+    "sourceKind": "original_frame",
+    "hasSecretRedactions": true,
+    "secretRedactionCount": 2
+  },
+  "ask_ai_availability": {
+    "available": true,
+    "reason": null
+  },
+  "list_conversations": [
+    {
+      "conversationId": "c-stream",
+      "title": "Summarize my calls this week",
+      "origin": "chat",
+      "createdAtMs": 1793782860000,
+      "updatedAtMs": 1793782860000,
+      "turnCount": 1,
+      "preview": "Summarize my calls this week",
+      "pinned": false
+    },
+    {
+      "conversationId": "c-done",
+      "title": "What did I ship last week?",
+      "origin": "chat",
+      "createdAtMs": 1793781300000,
+      "updatedAtMs": 1793781300000,
+      "turnCount": 1,
+      "preview": "What did I ship last week?",
+      "pinned": false
+    },
+    {
+      "conversationId": "c-error",
+      "title": "Find the PR link I saw Tuesday",
+      "origin": "chat",
+      "createdAtMs": 1793707800000,
+      "updatedAtMs": 1793707800000,
+      "turnCount": 1,
+      "preview": "Find the PR link I saw Tuesday",
+      "pinned": false
+    },
+    {
+      "conversationId": "c-standup",
+      "title": "Standup notes",
+      "origin": "chat",
+      "createdAtMs": 1793677200000,
+      "updatedAtMs": 1793677200000,
+      "turnCount": 2,
+      "preview": "Draft my standup from today",
+      "pinned": true
+    },
+    {
+      "conversationId": "c-reading",
+      "title": "Reading list from the conference",
+      "origin": "chat",
+      "createdAtMs": 1793339100000,
+      "updatedAtMs": 1793339100000,
+      "turnCount": 3,
+      "preview": "What was I reading at the conference?",
+      "pinned": false
+    },
+    {
+      "conversationId": "c-k8s",
+      "title": "Kubernetes upgrade notes",
+      "origin": "chat",
+      "createdAtMs": 1790073000000,
+      "updatedAtMs": 1790073000000,
+      "turnCount": 4,
+      "preview": "What changed in the cluster upgrade?",
+      "pinned": false
+    }
+  ],
+  "get_conversation": {
+    "conversationId": "c-done",
+    "title": "What did I ship last week?",
+    "origin": "chat",
+    "createdAtMs": 1793781300000,
+    "updatedAtMs": 1793781300000,
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-5",
+    "pinned": false,
+    "turns": [
+      {
+        "turnIndex": 0,
+        "question": "What did I ship last week?",
+        "answer": "Last week you shipped **three things**:\n\n1. The **Chat surface** for the native app, with streaming answers.\n2. A fix that keeps the digest read to two short sentences.\n3. Favorites-first ordering in the model picker.\n\nMost of the time went to the chat surface.",
+        "reasoning": null,
+        "blocks": [
+          {
+            "kind": "prose",
+            "markdown": "Last week you shipped **three things**:\n\n1. The **Chat surface** for the native app, with streaming answers.\n2. A fix that keeps the digest read to two short sentences.\n3. Favorites-first ordering in the model picker.\n\nMost of the time went to the chat surface."
+          },
+          {
+            "kind": "bars",
+            "title": "Time by project",
+            "items": [
+              {
+                "label": "mnema-gpui",
+                "value": 12.5,
+                "sublabel": "12h 30m"
+              },
+              {
+                "label": "digest",
+                "value": 4.25,
+                "sublabel": "4h 15m"
+              },
+              {
+                "label": "model picker",
+                "value": 2.0,
+                "sublabel": "2h 0m"
+              }
+            ]
+          },
+          {
+            "kind": "prose",
+            "markdown": "Want me to draft the release notes from these?"
+          }
+        ],
+        "toolActivities": [
+          {
+            "kind": "search",
+            "label": "Searched your captures"
+          },
+          {
+            "kind": "timeline",
+            "label": "Scanned timeline"
+          },
+          {
+            "kind": "show_text",
+            "label": "Read a capture"
+          }
+        ],
+        "sources": [
+          {
+            "kind": "frame",
+            "frameId": 101,
+            "audioSegmentId": null,
+            "appName": "Zed",
+            "windowTitle": "chat/mod.rs — mnema",
+            "url": null,
+            "startedAt": "2026-10-29T10:14:00+05:30",
+            "endedAt": "2026-10-29T10:14:05+05:30",
+            "sourceKind": null
+          },
+          {
+            "kind": "frame",
+            "frameId": 102,
+            "audioSegmentId": null,
+            "appName": "Arc",
+            "windowTitle": "Pull request #270",
+            "url": "github.com/shaik-zeeshan/mnema/pull/270",
+            "startedAt": "2026-10-30T16:02:00+05:30",
+            "endedAt": "2026-10-30T16:02:05+05:30",
+            "sourceKind": null
+          },
+          {
+            "kind": "audio",
+            "frameId": null,
+            "audioSegmentId": 7,
+            "appName": "Zoom",
+            "windowTitle": null,
+            "url": null,
+            "startedAt": "2026-10-31T09:30:00+05:30",
+            "endedAt": "2026-10-31T09:52:00+05:30",
+            "sourceKind": "system"
+          }
+        ],
+        "phase": "done",
+        "errorMessage": null,
+        "errorKind": null,
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-5",
+        "createdAtMs": 1793781300000,
+        "updatedAtMs": 1793781300000
+      }
+    ]
+  },
+  "get_frame": {
+    "id": 101,
+    "sessionId": "sess-1029",
+    "filePath": "$REPO/apps/web/src/assets/shots/desk-code.webp",
+    "capturedAt": "2026-10-29T04:44:00.000Z",
+    "width": 2880,
+    "height": 1800,
+    "appBundleId": "dev.zed.Zed",
+    "appName": "Zed",
+    "windowTitle": "chat/mod.rs — mnema",
+    "url": null,
+    "equivalenceHint": null,
+    "createdAt": "2026-10-29T04:44:00.000Z",
+    "updatedAt": "2026-10-29T04:44:00.000Z"
+  },
+  "resolve_app_icons": [
+    {
+      "bundleId": "dev.zed.Zed",
+      "iconPath": null
+    }
+  ]
+}

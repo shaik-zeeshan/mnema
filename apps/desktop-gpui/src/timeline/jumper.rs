@@ -174,7 +174,7 @@ impl TimelineView {
                 .spawn(async move { src.latest_in_range(start, end) })
                 .await;
             this.update(cx, |view, cx| match frame {
-                Ok(Some(f)) => view.jump_to(f.id, cx),
+                Ok(Some(f)) => view.jump(f.id, cx),
                 Ok(None) => {
                     view.jumper.jumping = false;
                     view.jumper.error = Some("No frames in that hour".into());
@@ -198,7 +198,7 @@ pub fn trigger(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
     let at = v.paging.active_frame().map(|f| local(f.captured_at_ms, o));
     let day = match at {
         Some(t) => day_label(t),
-        None if v.paging.loading => "Loading…".into(),
+        None if v.paging.loading || v.paging.loading_more => "Loading…".into(),
         None => "No frames".into(),
     };
     let today = crate::ui::clock::now(cx).date();
@@ -231,8 +231,11 @@ pub fn trigger(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
         .border_color(border)
         .bg(p.surface_raised)
         .text_color(p.text_strong)
-        .cursor_pointer()
-        .hover(move |s| s.bg(hover))
+        // Inert until there is a frame (`disabled={!activeFrame}`; the kit's
+        // date button doesn't dim when disabled, so neither does this).
+        .when(at.is_some(), |d| {
+            d.cursor_pointer().hover(move |s| s.bg(hover))
+        })
         .child(
             div()
                 .text_color(p.text_subtle)
@@ -514,6 +517,7 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
         );
     let pop = popover::surface(p)
         .id("jumper-pop")
+        .key_context(super::JUMPER_CONTEXT)
         .role(Role::Dialog)
         .aria_label("Jump to date and time")
         .absolute()
