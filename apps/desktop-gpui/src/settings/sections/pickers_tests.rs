@@ -241,9 +241,9 @@ fn the_picker_lists_the_catalog_from_the_backend(cx: &mut TestAppContext) {
 }
 
 /// Answers every confirm with `answer` and records the titles asked.
-struct ConfirmHost {
+pub(super) struct ConfirmHost {
     answer: bool,
-    asked: Mutex<Vec<String>>,
+    pub(super) asked: Mutex<Vec<String>>,
 }
 
 impl Host for ConfirmHost {
@@ -267,7 +267,10 @@ impl Host for ConfirmHost {
 }
 
 /// A bare core whose only job is `Host::confirm` (no states, no data on disk).
-fn confirm_core(cx: &mut TestAppContext, answer: bool) -> (Arc<ConfirmHost>, tempfile::TempDir) {
+pub(super) fn confirm_core(
+    cx: &mut TestAppContext,
+    answer: bool,
+) -> (Arc<ConfirmHost>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
     let host = Arc::new(ConfirmHost {
         answer,

@@ -207,9 +207,9 @@ pub fn wipe_user_context(core: &Arc<AppCore>) -> Outcome {
     core.block_on(app_core::user_context::commands::wipe_user_context(
         core, &infra,
     ))?;
-    Ok(Some(
-        "User Context wiped. AI features are off until you turn them back on.".into(),
-    ))
+    // Svelte says nothing on success: the emptied rows and the switched-off
+    // master switch are the answer.
+    Ok(None)
 }
 
 fn plural(n: i64, one: &str) -> String {
@@ -302,7 +302,7 @@ pub fn speaker_model_delete(core: &Arc<AppCore>, provider: String, model_id: Str
     Ok(Some("Speaker model files deleted.".into()))
 }
 
-/// `ai_runtime_test_connection`: one tiny round trip on the default model.
+/// `ai_runtime_test_connection` for the Developer window's Test AI.
 pub fn test_connection(core: &Arc<AppCore>) -> Outcome {
     let r = to_json(core.block_on(app_core::ai_runtime::ai_runtime_test_connection(core))?);
     let line = format!(

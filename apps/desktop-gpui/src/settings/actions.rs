@@ -3,7 +3,7 @@
 //! thread, then re-reads or adopts the answer.
 
 use capture_types::RecordingSettings;
-use gpui_kit::{AppContext as _, Context, Window};
+use gpui_kit::{AppContext as _, Context};
 
 use super::{Reach, Settings};
 
@@ -86,67 +86,11 @@ impl Settings {
             crate::chat::data::list_models(&core).await
         });
         cx.spawn(async move |this, cx| {
-            let pool = task.await.map(|(m, _)| m).unwrap_or_default();
+            let (pool, failures) = task.await.unwrap_or_default();
             let _ = this.update(cx, |s, cx| {
                 s.pool = pool;
+                s.ui.pv.failures = failures;
                 s.pool_loading = false;
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Save key: read the masked field once, clear it, vault the key by
-    /// instance id, then show its last 4.
-    pub fn save_provider_key(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        let input = self.inputs.provider_key.clone();
-        let key = input.read(cx).value().trim().to_string();
-        if key.is_empty() {
-            return;
-        }
-        input.update(cx, |s, cx| s.set_value("", window, cx));
-        let backend = self.backend.clone();
-        let vid = id.clone();
-        let job = cx.background_spawn(async move { backend.save_key(&vid, &key) });
-        cx.spawn(async move |this, cx| {
-            let result = job.await;
-            let _ = this.update(cx, |s, cx| {
-                match result {
-                    Ok(ending) => {
-                        s.data.keys_saved.insert(id.clone());
-                        match ending {
-                            Some(e) => s.data.key_endings.insert(id, e),
-                            None => s.data.key_endings.remove(&id),
-                        };
-                        s.ui.key_error = None;
-                    }
-                    Err(e) => {
-                        log::warn!("settings: couldn't store the {id} key in the vault");
-                        s.ui.key_error = Some(e);
-                    }
-                }
-                cx.notify();
-            });
-        })
-        .detach();
-    }
-
-    /// Clear: revoke the instance's credential (key or ChatGPT token set).
-    pub fn clear_provider_key(&mut self, id: String, cx: &mut Context<Self>) {
-        let backend = self.backend.clone();
-        let vid = id.clone();
-        let job = cx.background_spawn(async move { backend.clear_key(&vid) });
-        cx.spawn(async move |this, cx| {
-            let result = job.await;
-            let _ = this.update(cx, |s, cx| {
-                match result {
-                    Ok(()) => {
-                        s.data.keys_saved.remove(&id);
-                        s.data.key_endings.remove(&id);
-                        s.ui.key_error = None;
-                    }
-                    Err(e) => s.ui.key_error = Some(e),
-                }
                 cx.notify();
             });
         })

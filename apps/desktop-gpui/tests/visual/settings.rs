@@ -11,7 +11,8 @@ use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
 use gpui_kit::{AppContext, Context, VisualTestAppContext, Window};
 use mnema_gpui::settings::fixture::{
-    open_mcp_state, settings_data, FixtureBackend, MCP_STATES, STATES,
+    open_mcp_state, open_provider_state, settings_data, FixtureBackend, MCP_STATES,
+    PROVIDER_STATES, STATES,
 };
 use mnema_gpui::settings::privacy_prompt::{PromptData, Recommended};
 use mnema_gpui::settings::Settings;
@@ -55,7 +56,7 @@ fn mcp_modal(state: &str) -> Option<&'static str> {
 }
 
 fn tab_for(state: &str) -> anyhow::Result<&'static str> {
-    if mcp_modal(state).is_some() {
+    if mcp_modal(state).is_some() || PROVIDER_STATES.contains(&state) {
         return Ok("intelligence");
     }
     STATES
@@ -78,6 +79,7 @@ pub fn render(
         data.privacy_prompt = Some(prompt_catalog());
     }
     let modal = mcp_modal(state);
+    let provider = PROVIDER_STATES.iter().find(|s| **s == state).copied();
     render_open(
         cx,
         shell_model,
@@ -88,6 +90,9 @@ pub fn render(
         move |s, window, cx| {
             if let Some(which) = modal {
                 open_mcp_state(s, which, window, cx)
+            }
+            if let Some(which) = provider {
+                open_provider_state(s, which, window, cx)
             }
         },
     )
@@ -164,11 +169,13 @@ pub fn goldens(
     shell_model: &ShellModel,
 ) -> anyhow::Result<Vec<String>> {
     let mut failures = Vec::new();
-    for (state, _) in STATES
+    let states = STATES
         .iter()
         .chain(PROMPT_STATES.iter())
         .chain(MCP_STATES.iter())
-    {
+        .map(|(s, _)| *s)
+        .chain(PROVIDER_STATES);
+    for state in states {
         for (theme_name, setting) in themes {
             let name = format!("settings-{state}-{theme_name}");
             if !filters.is_empty() && !filters.iter().any(|f| name.contains(f.as_str())) {

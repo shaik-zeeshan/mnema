@@ -130,6 +130,18 @@ const SETTINGS_SETS: [string, string, string][] = [
   ["about", "license", "s-license"],
 ];
 
+/** Provider-row states over Intelligence: `[state, Tauri clicks, keys, mockup query]` (mirrors
+ *  `settings::fixture::PROVIDER_STATES`). The device-code step needs a sign-in the stub can't
+ *  answer, so its Tauri side stops at the fresh ChatGPT row. */
+const pvManage = (label: string) => `.setting-row:has(.setting-row__label:text-is("${label}")) button:has-text("Manage")`;
+const pvAddChatgpt = ['button:has-text("Add provider")', '[role="menuitem"]:has-text("ChatGPT")'];
+const PROVIDER_SETS: [string, string[], string[], string][] = [
+  ["provider-manage-local", [pvManage("Ollama")], [], ""],
+  ["provider-manage-key", [pvManage("Anthropic"), "#ai-provider-key-anthropic"], ["s", "k", "a", "b"], "state=key-saving"],
+  ["provider-chatgpt", pvAddChatgpt, [], "state=chatgpt-signin"],
+  ["provider-chatgpt-code", pvAddChatgpt, [], "state=chatgpt-signin"],
+];
+
 export const SURFACES: Record<string, Surface> = {
   // Shared controls (S6): the GPUI gallery bin vs the kit gallery's left (current-theme) panes.
   gallery: {
@@ -257,11 +269,20 @@ export const SURFACES: Record<string, Surface> = {
     viewport: MAIN,
     page: "settings.html",
     selector: WIN,
-    stateRoute: Object.fromEntries(SETTINGS_SETS.map(([state, tab]) => [state, `/settings?tab=${tab}`])),
-    stateHash: Object.fromEntries(SETTINGS_SETS.map(([state, , anchor]) => [state, anchor])),
+    stateRoute: Object.fromEntries([
+      ...SETTINGS_SETS.map(([state, tab]) => [state, `/settings?tab=${tab}`]),
+      ...PROVIDER_SETS.map(([state]) => [state, "/settings?tab=intelligence"]),
+    ]),
+    stateHash: Object.fromEntries([
+      ...SETTINGS_SETS.map(([state, , anchor]) => [state, anchor]),
+      ...PROVIDER_SETS.map(([state]) => [state, "s-providers"]),
+    ]),
+    stateClick: Object.fromEntries(PROVIDER_SETS.map(([state, clicks]) => [state, clicks])),
+    stateKeys: Object.fromEntries(PROVIDER_SETS.filter(([, , keys]) => keys.length).map(([state, , keys]) => [state, keys])),
     states: {
       default: "",
       ...Object.fromEntries(SETTINGS_SETS.map(([state]) => [state, ""])),
+      ...Object.fromEntries(PROVIDER_SETS.map(([state, , , query]) => [state, query])),
       ...q(
         "state",
         `save-failed validation shortcuts-loading shortcut-listening shortcut-conflict capture-loading

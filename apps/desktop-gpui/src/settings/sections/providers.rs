@@ -3,22 +3,22 @@
 //! default model (the picker Chat shares) and Test connection.
 
 use capture_types::{AiEngineRef, AiProviderConfig, AiProviderKind};
+use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, AnyElement, ClickEvent, Context, SharedString, Window};
+use gpui_kit::{div, px, AnyElement, Context, SharedString, Window};
 
-use crate::chat::format::{kind_label, provider_instance_label, provider_label_by_id, url_host};
+use crate::chat::format::{kind_label, provider_label_by_id};
 use crate::settings::model::Json;
-use crate::settings::row::{line, row, section, state_word};
-use crate::settings::{click, icons, on, Reach, Settings};
-use crate::theme::{space, Palette};
-use crate::ui::chip::{chip, ChipKind};
+use crate::settings::row::{line, row, section};
+use crate::settings::{click, icons, on, Settings};
+use crate::theme::{radius, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::menu::menu_item;
 use crate::ui::model_picker::{EngineRef, ModelPicker, Spec, Trigger};
 use crate::ui::popover::Anchor;
 use crate::ui::switch::Switch;
-use crate::ui::{float, popover, Button, Force, Tone};
+use crate::ui::{float, notice, popover, with_tip, Button, Force, Tone};
 
 const KINDS: [AiProviderKind; 6] = [
     AiProviderKind::Anthropic,
@@ -29,7 +29,7 @@ const KINDS: [AiProviderKind; 6] = [
     AiProviderKind::Llamafile,
 ];
 
-fn cloud(kind: AiProviderKind) -> bool {
+pub(crate) fn cloud(kind: AiProviderKind) -> bool {
     !kind.is_local()
 }
 
@@ -41,61 +41,21 @@ pub(crate) fn local_default(kind: AiProviderKind) -> &'static str {
     }
 }
 
-/// `providerRowState`: the state word and its tone. `reach` is the row's own
-/// live verify verdict (`None` while unchecked or checking).
-fn row_state(
-    pv: &AiProviderConfig,
-    key_saved: bool,
-    reason: &str,
-    reach: Option<&Reach>,
-) -> (&'static str, Option<Tone>) {
-    let id = pv.id.to_lowercase();
-    let reason = reason.to_lowercase();
-    if reason == format!("needs_reconnect:{id}") {
-        return ("needs reconnect", Some(Tone::Danger));
-    }
-    if reason == format!("provider_unreachable:{id}") {
-        return ("unreachable", Some(Tone::Warn));
-    }
-    if pv.kind == AiProviderKind::OpenaiCompatible && pv.base_url.trim().is_empty() {
-        return ("needs base URL", Some(Tone::Warn));
-    }
-    if pv.kind == AiProviderKind::Chatgpt {
-        return if key_saved {
-            ("connected", Some(Tone::Ok))
-        } else {
-            ("not connected", None)
-        };
-    }
-    match (cloud(pv.kind), key_saved, reach) {
-        (true, false, _) => ("no key", None),
-        (_, _, Some(Reach::Failed(_))) => ("not reachable", Some(Tone::Warn)),
-        (_, _, Some(Reach::Reachable)) => ("reachable", Some(Tone::Ok)),
-        (true, true, _) => ("key saved", Some(Tone::Ok)),
-        _ => ("on this Mac", None),
-    }
-}
-
-/// The failed verify's line under the row (`reachabilityFailureText`).
-fn reach_line(pv: &AiProviderConfig, why: &str, p: &Palette) -> gpui_kit::Div {
-    let rejected = why.eq_ignore_ascii_case("authentication failed");
-    let text = if !cloud(pv.kind) && why.eq_ignore_ascii_case("unreachable") {
-        format!(
-            "The local endpoint could not be reached. Start {}, then test again.",
-            kind_label(pv.kind)
-        )
-    } else {
-        let short = match why.to_lowercase().as_str() {
-            "authentication failed" => "rejected this key".to_string(),
-            "unreachable" => "couldn\u{2019}t reach it".to_string(),
-            r => r.to_string(),
-        };
-        format!("Not reachable \u{2014} {short}.")
-    };
-    if rejected {
-        line(Tone::Danger, icons::ALERT, text, p)
-    } else {
-        line(Tone::Warn, icons::CLOUD_OFF, text, p)
+/// `aiProviderKindDescription`: the Add menu's tip per kind.
+fn kind_description(kind: AiProviderKind) -> &'static str {
+    match kind {
+        AiProviderKind::Anthropic => "Claude models \u{2014} your own API key",
+        AiProviderKind::Openai => "GPT models \u{2014} your own API key",
+        AiProviderKind::Chatgpt => {
+            "Your ChatGPT Plus/Pro subscription \u{2014} sign in, no API key"
+        }
+        AiProviderKind::OpenaiCompatible => {
+            "Fireworks, OpenRouter, Together \u{2014} custom base URL + key"
+        }
+        AiProviderKind::Ollama => "Local runtime, default endpoint http://localhost:11434",
+        AiProviderKind::Llamafile => {
+            "Local OpenAI-compatible server, default http://localhost:8080"
+        }
     }
 }
 
@@ -114,156 +74,6 @@ pub(crate) fn new_id(kind: AiProviderKind, providers: &[AiProviderConfig]) -> St
         .unwrap_or(base)
 }
 
-fn provider_row(
-    s: &Settings,
-    pv: &AiProviderConfig,
-    reason: &str,
-    p: &Palette,
-    cx: &mut Context<Settings>,
-) -> AnyElement {
-    let key_saved = s.data.keys_saved.contains(&pv.id);
-    let is_cloud = cloud(pv.kind);
-    let key_kind = is_cloud && pv.kind != AiProviderKind::Chatgpt;
-    let open = s.ui.provider_open.as_deref() == Some(pv.id.as_str());
-    let host = url_host(if pv.base_url.is_empty() {
-        local_default(pv.kind)
-    } else {
-        &pv.base_url
-    })
-    .to_string();
-    let desc = if open {
-        key_kind.then(|| {
-            if key_saved {
-                "A key is saved \u{2014} paste a new one to replace it. It goes to the encrypted vault, never a config file.".to_string()
-            } else {
-                "Paste an API key. It goes to the encrypted vault, never a config file.".to_string()
-            }
-        })
-    } else if pv.kind == AiProviderKind::Chatgpt {
-        None
-    } else if key_kind {
-        let ending = s
-            .data
-            .key_endings
-            .get(&pv.id)
-            .filter(|_| key_saved)
-            .map(|e| format!("\u{2026}{e}"));
-        let parts: Vec<String> = [
-            Some(if key_saved {
-                "Key in the encrypted vault".to_string()
-            } else {
-                "No key yet".into()
-            }),
-            ending,
-            (!host.is_empty()).then(|| host.clone()),
-        ]
-        .into_iter()
-        .flatten()
-        .collect();
-        Some(parts.join(" \u{b7} "))
-    } else {
-        Some(format!("{host} \u{b7} no key, nothing leaves this Mac"))
-    };
-    let reach = s.ui.reach.get(&pv.id);
-    let checking = reach == Some(&Reach::Checking);
-    let verdict = reach.filter(|_| !checking);
-    let (word, tone) = row_state(pv, key_saved, reason, verdict);
-    let failed_line = match verdict {
-        Some(Reach::Failed(why)) if word == "not reachable" => Some(reach_line(pv, why, p)),
-        _ => None,
-    };
-    let id = pv.id.clone();
-    let test_id = pv.id.clone();
-    let ctl = div()
-        .flex()
-        .items_center()
-        .gap(space::S2)
-        .child(state_word(word, tone, p))
-        .when(
-            pv.kind != AiProviderKind::Chatgpt && (key_saved || !is_cloud),
-            |d| {
-                d.child(
-                    Button::new(
-                        SharedString::from(format!("pv-test-{}", pv.id)),
-                        if checking {
-                            "Testing\u{2026}"
-                        } else {
-                            "Test again"
-                        },
-                    )
-                    .ghost()
-                    .busy(checking)
-                    .spinner(checking)
-                    .on_click(click(cx, move |s, cx| s.test_provider(test_id.clone(), cx))),
-                )
-            },
-        )
-        .child(
-            Button::new(
-                SharedString::from(format!("pv-manage-{}", pv.id)),
-                if open { "Done" } else { "Manage" },
-            )
-            .on_click(click(cx, move |s, cx| {
-                s.ui.provider_open = if s.ui.provider_open.as_deref() == Some(id.as_str()) {
-                    None
-                } else {
-                    Some(id.clone())
-                };
-                cx.notify();
-            })),
-        );
-    let label = provider_instance_label(pv);
-    let r = row(label).desc_opt(desc).extra(chip(
-        if is_cloud { "cloud" } else { "local" },
-        ChipKind::Neutral,
-        p,
-    ));
-    let r = if open {
-        let (save_id, clear_id) = (pv.id.clone(), pv.id.clone());
-        let fields = div()
-            .flex()
-            .flex_col()
-            .gap(space::S2)
-            .w_full()
-            .when(key_kind, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .gap(space::S2)
-                        .child(div().flex_1().child(crate::ui::input::TextInput::new(
-                            "pv-key",
-                            "API key",
-                            &s.inputs.provider_key,
-                        )))
-                        .child(Button::new("pv-save-key", "Save key").on_click(cx.listener(
-                            move |s, _: &ClickEvent, window, cx| {
-                                s.save_provider_key(save_id.clone(), window, cx)
-                            },
-                        )))
-                        .child(
-                            Button::new("pv-clear-key", "Clear")
-                                .ghost()
-                                .disabled(!key_saved)
-                                .on_click(click(cx, move |s, cx| {
-                                    s.clear_provider_key(clear_id.clone(), cx)
-                                })),
-                        ),
-                )
-            })
-            .when_some(s.ui.key_error.clone(), |d, e| {
-                d.child(line(Tone::Danger, icons::ALERT, e, p))
-            });
-        r.full().aside(ctl).control(fields)
-    } else {
-        r.control(ctl)
-    };
-    let r = match failed_line {
-        Some(l) => r.below(l),
-        None => r,
-    };
-    r.build(p).into_any_element()
-}
-
 pub fn render(
     s: &Settings,
     p: &Palette,
@@ -272,13 +82,62 @@ pub fn render(
 ) -> AnyElement {
     let d = s.d();
     let ai = &d.ai_runtime;
-    let status = s.data.ai_status.clone().unwrap_or_default();
-    let reason = status.str_at(&["reason"]).unwrap_or_default().to_string();
-    let mut rows = vec![row("Enable AI features")
-        .desc("The master switch for everything AI in Mnema. While off, nothing is sent to any AI model.")
-        .control(Switch::new("ai-enabled", "Enable AI features", ai.enabled).on_toggle(on(cx, |s, v: bool, cx| s.edit(|d| d.ai_runtime.enabled = v, cx))))
-        .build(p)
-        .into_any_element()];
+    let status = s.data.ai_status.clone();
+    let reason = status
+        .as_ref()
+        .and_then(|v| v.str_at(&["reason"]))
+        .unwrap_or_default()
+        .to_string();
+    let label_of = |r: &str| crate::insights::model::reason_label(r, Some(&d));
+    let mut rows: Vec<AnyElement> = Vec::new();
+    // "Nothing is ready yet" = setup is incomplete; a set-up provider that
+    // fails speaks on its own row instead.
+    let not_ready = ai.enabled
+        && status.as_ref().is_some_and(|v| !v.bool_at(&["available"]))
+        && [
+            "no_providers",
+            "no_default_model",
+            "provider_not_connected",
+            "no_provider_key",
+        ]
+        .iter()
+        .any(|c| reason.to_lowercase().starts_with(c));
+    if not_ready {
+        rows.push(
+            div()
+                .py(space::S3)
+                .border_b_1()
+                .border_color(p.hairline)
+                .child(notice::notice(
+                    Tone::Warn,
+                    icons::INFO,
+                    "AI features are on, but nothing is ready yet",
+                    Some(
+                        format!(
+                            "{} Connect a provider and choose a default model below.",
+                            label_of(&reason)
+                        )
+                        .into(),
+                    ),
+                    Vec::new(),
+                    p,
+                ))
+                .into_any_element(),
+        );
+    }
+    rows.push(
+        row("Enable AI features")
+            .desc("The master switch for everything AI in Mnema. While off, nothing is sent to any AI model.")
+            .control(Switch::new("ai-enabled", "Enable AI features", ai.enabled).on_toggle(on(cx, |s, v: bool, cx| {
+                // A "Connection succeeded" line never sits beside a switched-off master.
+                if !v {
+                    s.reset_test();
+                }
+                s.edit(|d| d.ai_runtime.enabled = v, cx)
+            })))
+            .build(p)
+            .into_any_element(),
+    );
     // One anchor: only one of the two triggers (empty state / row) renders.
     let at = Anchor::new("pv-add-at", window, cx);
     let add_menu = |s: &Settings, small: bool, cx: &mut Context<Settings>| {
@@ -289,6 +148,7 @@ pub fn render(
         )
         .icon(icons::PLUS)
         .when(small, |b| b.sm())
+        .disabled(s.ui.pv.removing)
         .on_click(click(cx, |s, cx| {
             s.ui.add_provider_open = !s.ui.add_provider_open;
             cx.notify();
@@ -297,27 +157,18 @@ pub fn render(
             .iter()
             .map(|k| {
                 let k = *k;
-                menu_item(
-                    SharedString::from(format!("pv-kind-{}", kind_label(k))),
-                    kind_label(k),
-                    Some(if cloud(k) { "cloud" } else { "local" }.into()),
-                    Force::None,
-                    click(cx, move |s, cx| {
-                        s.ui.add_provider_open = false;
-                        s.edit(
-                            |d| {
-                                let id = new_id(k, &d.ai_runtime.providers);
-                                d.ai_runtime.providers.push(AiProviderConfig {
-                                    id,
-                                    kind: k,
-                                    label: String::new(),
-                                    base_url: String::new(),
-                                });
-                            },
-                            cx,
-                        );
-                    }),
-                    p,
+                with_tip(
+                    div()
+                        .id(SharedString::from(format!("pv-kind-tip-{}", kind_label(k))))
+                        .child(menu_item(
+                            SharedString::from(format!("pv-kind-{}", kind_label(k))),
+                            kind_label(k),
+                            Some(if cloud(k) { "cloud" } else { "local" }.into()),
+                            Force::None,
+                            click(cx, move |s, cx| s.add_provider(k, cx)),
+                            p,
+                        )),
+                    kind_description(k),
                 )
                 .into_any_element()
             })
@@ -347,6 +198,8 @@ pub fn render(
         rows.push(
             div()
                 .py(space::S3)
+                .border_b_1()
+                .border_color(p.hairline)
                 .child(empty(
                     EmptyLayout::Compact,
                     Tone::Neutral,
@@ -360,7 +213,17 @@ pub fn render(
         );
     } else {
         for pv in &ai.providers {
-            rows.push(provider_row(s, pv, &reason, p, cx));
+            rows.push(super::provider_row::render(s, pv, &reason, p, cx));
+        }
+        if let Some(e) = &s.ui.pv.removal_error {
+            rows.push(
+                div()
+                    .py(space::S3)
+                    .border_b_1()
+                    .border_color(p.hairline)
+                    .child(line(Tone::Danger, icons::ALERT, e.clone(), p))
+                    .into_any_element(),
+            );
         }
         let kinds = KINDS
             .iter()
@@ -401,6 +264,7 @@ pub fn render(
             .collect(),
         pool: s.pool.clone(),
         loading: s.pool_loading,
+        failures: s.ui.pv.failures.clone(),
         selected: ai
             .default_model
             .as_ref()
@@ -410,20 +274,26 @@ pub fn render(
         ..Default::default()
     };
     let picker = ModelPicker::new("default-model", spec)
+        .disabled(ai.providers.is_empty())
         .on_open({
             let this = cx.entity().downgrade();
             move |_, cx| {
                 let _ = this.update(cx, |s, cx| s.load_pool(cx));
             }
         })
+        .on_favorite(on(cx, |s, engine: EngineRef, cx| {
+            s.toggle_favorite(engine, cx)
+        }))
         .trigger(Trigger::Block {
             label: label
                 .clone()
                 .unwrap_or_else(|| "Choose a default model".into()),
-            placeholder: label.is_none(),
+            placeholder: ai.default_model.is_none(),
         })
         .on_select(on(cx, |s, pick: Option<EngineRef>, cx| {
             if let Some((provider, model)) = pick {
+                // The last test line named the previous default.
+                s.reset_test();
                 s.edit(
                     |d| d.ai_runtime.default_model = Some(AiEngineRef { provider, model }),
                     cx,
@@ -433,54 +303,19 @@ pub fn render(
     rows.push(
         row("Global default model")
             .desc("Used by every AI feature unless it sets its own override.")
-            .control(div().w(px(300.)).child(picker))
+            .control(div().w(px(280.)).child(picker))
+            .when(!s.ui.pv.failures.is_empty(), |r| {
+                r.below(line(
+                    Tone::Warn,
+                    icons::INFO,
+                    "Couldn\u{2019}t list every provider\u{2019}s models \u{2014} you can still type any model id.",
+                    p,
+                ))
+            })
             .build(p)
             .into_any_element(),
     );
-    let runtime_line = if status.bool_at(&["available"]) {
-        let m = status.at(&["defaultModel"]);
-        let which = match (m.str_at(&["provider"]), m.str_at(&["model"])) {
-            (Some(pv), Some(model)) => {
-                format!("{} \u{b7} {model}", provider_label_by_id(&ai.providers, pv))
-            }
-            _ => "(none)".into(),
-        };
-        Some(line(
-            Tone::Ok,
-            icons::CHECK,
-            format!("Default model {which} is configured and reachable."),
-            p,
-        ))
-    } else if !reason.is_empty() {
-        Some(line(
-            Tone::Warn,
-            icons::INFO,
-            format!(
-                "Isn\u{2019}t ready \u{2014} {}",
-                crate::insights::model::reason_label(&reason, Some(&d))
-            ),
-            p,
-        ))
-    } else {
-        None
-    };
-    rows.push(
-        row("AI runtime")
-            .control(
-                Button::new("ai-test", "Test connection")
-                    .disabled(ai.default_model.is_none() || s.ui.busy.contains("Test connection"))
-                    .on_click(crate::settings::click(cx, |s, cx| {
-                        s.run_command(
-                            "Test connection",
-                            cx,
-                            crate::settings::live::test_connection,
-                        )
-                    })),
-            )
-            .when(runtime_line.is_some(), |r| r.below(runtime_line.unwrap()))
-            .build(p)
-            .into_any_element(),
-    );
+    rows.push(runtime_row(s, status.as_ref(), &d, p, cx));
     section(
         "Providers",
         Some("One global default model; every AI feature inherits it."),
@@ -490,4 +325,196 @@ pub fn render(
         p,
     )
     .into_any_element()
+}
+
+/// `runtimeReasonTone`.
+fn reason_tone(reason: &str) -> Tone {
+    let code = reason.to_lowercase();
+    let danger = [
+        "needs_reconnect",
+        "no_provider_key",
+        "base_url_host_mismatch",
+        "invalid_base_url",
+        "vault_denied",
+    ];
+    if danger.iter().any(|c| code.starts_with(c)) {
+        Tone::Danger
+    } else {
+        Tone::Warn
+    }
+}
+
+/// `aiRuntimeReasonLabel` for a command rejection: a known code reads as its
+/// label, anything else (an HTTP error's words) as itself.
+fn rejection_label(e: &str, d: &capture_types::RecordingSettings) -> String {
+    let l = crate::insights::model::reason_label(e, Some(d));
+    if l == crate::insights::model::reason_label("\u{0}", None) {
+        e.to_string()
+    } else {
+        l
+    }
+}
+
+/// The "AI runtime" row: Test connection and what the runtime says.
+fn runtime_row(
+    s: &Settings,
+    status: Option<&serde_json::Value>,
+    d: &capture_types::RecordingSettings,
+    p: &Palette,
+    cx: &mut Context<Settings>,
+) -> AnyElement {
+    let ai = &d.ai_runtime;
+    let test = &s.ui.pv.test;
+    let label = |id: &str| provider_label_by_id(&ai.providers, id);
+    let mut lines: Vec<AnyElement> = Vec::new();
+    if test.running {
+        lines.push(spin_line("Testing the default model\u{2026}", p));
+    } else if let Some(Err(e)) = &test.result {
+        lines.push(
+            line(
+                Tone::Danger,
+                icons::ALERT,
+                format!("Test connection failed \u{2014} {}", rejection_label(e, d)),
+                p,
+            )
+            .into_any_element(),
+        );
+    } else if let Some(Ok(r)) = &test.result {
+        let ok = r.bool_at(&["ok"]);
+        let message = r
+            .str_at(&["message"])
+            .filter(|m| !m.is_empty())
+            .unwrap_or("Connection succeeded.");
+        let model = r
+            .str_at(&["model"])
+            .filter(|m| !m.is_empty())
+            .unwrap_or("(none)");
+        let text = format!(
+            "{message} {} \u{b7} {model}",
+            label(r.str_at(&["provider"]).unwrap_or_default())
+        );
+        lines.push(if ok {
+            line(Tone::Ok, icons::CHECK, text, p).into_any_element()
+        } else {
+            line(Tone::Danger, icons::ALERT, text, p).into_any_element()
+        });
+        if let Some(raw) = r.str_at(&["rawJson"]).filter(|r| !r.is_empty()) {
+            lines.push(raw_response(raw.to_string(), test.raw_open, p, cx));
+        }
+    } else if let Some(v) = status {
+        if v.bool_at(&["available"]) {
+            let m = v.at(&["defaultModel"]);
+            let which = match (m.str_at(&["provider"]), m.str_at(&["model"])) {
+                (Some(pv), Some(model)) => format!("{} \u{b7} {model}", label(pv)),
+                _ => "(none)".into(),
+            };
+            lines.push(
+                line(
+                    Tone::Ok,
+                    icons::CHECK,
+                    format!("Default model {which} is configured and reachable."),
+                    p,
+                )
+                .into_any_element(),
+            );
+        } else {
+            let reason = v.str_at(&["reason"]).unwrap_or_default();
+            let tone = reason_tone(reason);
+            let icon = if tone == Tone::Danger {
+                icons::ALERT
+            } else {
+                icons::INFO
+            };
+            let text = if reason.is_empty() {
+                "Unavailable".to_string()
+            } else {
+                crate::insights::model::reason_label(reason, Some(d))
+            };
+            lines.push(
+                line(tone, icon, format!("Isn\u{2019}t ready \u{2014} {text}"), p)
+                    .into_any_element(),
+            );
+        }
+    } else if !s.data.complete {
+        lines.push(spin_line("Checking providers\u{2026}", p));
+    }
+    let mut r = row("AI runtime").control(
+        Button::new(
+            "ai-test",
+            if test.running {
+                "Testing\u{2026}"
+            } else {
+                "Test connection"
+            },
+        )
+        .disabled(test.running || ai.default_model.is_none())
+        .busy(test.running)
+        .spinner(test.running)
+        .on_click(click(cx, |s, cx| s.run_test_connection(cx))),
+    );
+    for l in lines {
+        r = r.below(l);
+    }
+    r.build(p).into_any_element()
+}
+
+fn spin_line(t: &'static str, p: &Palette) -> AnyElement {
+    crate::ui::notice::inline(
+        Tone::Neutral,
+        Some(crate::ui::progress::spinner(crate::theme::size::SPIN_SM).into_any_element()),
+        vec![t.into_any_element()],
+        p,
+    )
+    .into_any_element()
+}
+
+/// `<details class="pv-raw">`: "Raw response" over the reply, mono.
+fn raw_response(raw: String, open: bool, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(6.))
+        .w_full()
+        .child(
+            div()
+                .id("ai-test-raw")
+                .test_support()
+                .role(gpui_kit::Role::Button)
+                .aria_expanded(open)
+                .cursor_pointer()
+                .text_size(text::SM)
+                .text_color(p.text_subtle)
+                .flex()
+                .items_center()
+                .gap(px(4.))
+                .child(crate::ui::icon(
+                    if open {
+                        IconName::ChevronDown.path()
+                    } else {
+                        IconName::ChevronRight.path()
+                    },
+                    px(12.),
+                ))
+                .child("Raw response")
+                .on_click(click(cx, |s, cx| {
+                    s.ui.pv.test.raw_open = !s.ui.pv.test.raw_open;
+                    cx.notify();
+                })),
+        )
+        .when(open, |d| {
+            d.child(
+                div()
+                    .id("ai-test-raw-body")
+                    .max_h(px(160.))
+                    .overflow_y_scroll()
+                    .px(space::S3)
+                    .py(space::S2)
+                    .rounded(radius::MD)
+                    .bg(p.surface_subtle)
+                    .font_family(FONT_MONO)
+                    .text_size(text::SM)
+                    .child(SharedString::from(raw)),
+            )
+        })
+        .into_any_element()
 }

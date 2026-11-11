@@ -81,8 +81,8 @@ pub struct Ui {
     /// The provider whose Manage fields are open.
     pub provider_open: Option<String>,
     pub add_provider_open: bool,
-    /// The last provider key save / clear failure, in words.
-    pub key_error: Option<String>,
+    /// Per-provider fields, key / sign-in / removal state and the runtime test.
+    pub(crate) pv: sections::provider_row::PvUi,
     pub mcp_picker_open: bool,
     pub delete_window: usize,
     /// The shortcut row listening for keys.
@@ -128,7 +128,6 @@ pub struct Inputs {
     pub idle_unload: Entity<InputState>,
     pub chunk: Entity<InputState>,
     pub whitelist: Entity<InputState>,
-    pub provider_key: Entity<InputState>,
     pub mcp_secret: Entity<InputState>,
     pub deepgram_key: Entity<InputState>,
     pub license_key: Entity<InputState>,
@@ -268,11 +267,6 @@ impl Settings {
             idle_unload: input(window, cx, ""),
             chunk: input(window, cx, ""),
             whitelist: input(window, cx, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"),
-            provider_key: cx.new(|cx| {
-                InputState::new(window, cx)
-                    .masked(true)
-                    .placeholder("Paste your provider API key")
-            }),
             mcp_secret: cx.new(|cx| {
                 InputState::new(window, cx)
                     .masked(true)
@@ -752,8 +746,7 @@ pub fn on<A: 'static>(
     }
 }
 
-/// The native confirm (`Host::confirm`), then `then` on OK. Without an
-/// `AppCore` (tests, goldens) nothing is asked and nothing runs.
+/// The native confirm with a "Cancel" button ([`confirm_as`]).
 pub fn confirm(
     cx: &mut Context<Settings>,
     title: &str,
@@ -761,22 +754,7 @@ pub fn confirm(
     ok_label: &str,
     then: impl FnOnce(&mut Settings, &mut Context<Settings>) + 'static,
 ) {
-    let Some(core) = crate::chat::core(cx) else {
-        return;
-    };
-    let answer = core.host().confirm(app_core::ConfirmDialog {
-        title: Some(title.into()),
-        message: message.into(),
-        kind: app_core::DialogKind::Warning,
-        ok_label: ok_label.into(),
-        cancel_label: "Cancel".into(),
-    });
-    cx.spawn(async move |this, cx| {
-        if answer.await == Ok(true) {
-            let _ = this.update(cx, |s, cx| then(s, cx));
-        }
-    })
-    .detach();
+    commands::confirm_as(cx, title, message, ok_label, "Cancel", then);
 }
 
 /// The same for a button's `on_click`.

@@ -312,16 +312,18 @@ impl ModelPicker {
             .aria_expanded(is_open)
             .flex()
             .items_center()
-            .cursor_pointer()
-            .on_click(move |_, window, cx| {
-                if st.read(cx).open {
-                    close(&st, cx);
-                } else {
-                    open(&st, &spec, window, cx);
-                    if let Some(f) = &on_open {
-                        f(window, cx);
+            .when(self.disabled, |el| el.opacity(theme::DISABLED_OPACITY))
+            .when(!self.disabled, |el| {
+                el.cursor_pointer().on_click(move |_, window, cx| {
+                    if st.read(cx).open {
+                        close(&st, cx);
+                    } else {
+                        open(&st, &spec, window, cx);
+                        if let Some(f) = &on_open {
+                            f(window, cx);
+                        }
                     }
-                }
+                })
             });
         match &self.trigger {
             Trigger::Inline {

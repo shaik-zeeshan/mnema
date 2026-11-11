@@ -220,6 +220,11 @@ impl Settings {
 /// The last command's outcome, above the sections, until dismissed.
 pub fn note(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Option<AnyElement> {
     let (ok, what, body) = s.ui.note.clone()?;
+    // These speak inline in their own rows (User Context).
+    use super::sections::user_context::{DERIVE, WIPE};
+    if what == DERIVE || (what == WIPE && !ok) {
+        return None;
+    }
     let (tone, icon) = if ok {
         (Tone::Ok, icons::CHECK)
     } else {
@@ -428,6 +433,10 @@ impl Settings {
             E::SpeakerAnalysisModelDownloadProgress(p) => serde_json::to_value(p).ok(),
             E::OcrModelDownloadProgress(p) => serde_json::to_value(p).ok(),
             E::SemanticSearchModelDownloadProgress(p) => serde_json::to_value(p).ok(),
+            E::ChatgptLoginUpdate(v) => {
+                self.on_chatgpt_update(v, cx);
+                return;
+            }
             E::UserContextChanged
             | E::McpAuthorizationChanged(_)
             | E::MicrophoneControllerChanged(_)
@@ -516,6 +525,57 @@ fn merge_value(
 }
 
 /// Route a core event to the open Settings page (main's shell owns it).
+/// The native confirm (`Host::confirm`), then `then` on OK. Without an
+/// `AppCore` (tests, goldens) nothing is asked and nothing runs.
+pub fn confirm_as(
+    cx: &mut Context<Settings>,
+    title: &str,
+    message: &str,
+    ok_label: &str,
+    cancel_label: &str,
+    then: impl FnOnce(&mut Settings, &mut Context<Settings>) + 'static,
+) {
+    confirm_then(
+        cx,
+        title,
+        message,
+        ok_label,
+        cancel_label,
+        move |s, ok, cx| {
+            if ok {
+                then(s, cx)
+            }
+        },
+    );
+}
+
+/// [`confirm_as`], with the answer either way (`false` also when the dialog
+/// itself failed: a failed dialog never deletes anything).
+pub fn confirm_then(
+    cx: &mut Context<Settings>,
+    title: &str,
+    message: &str,
+    ok_label: &str,
+    cancel_label: &str,
+    then: impl FnOnce(&mut Settings, bool, &mut Context<Settings>) + 'static,
+) {
+    let Some(core) = crate::chat::core(cx) else {
+        return;
+    };
+    let answer = core.host().confirm(app_core::ConfirmDialog {
+        title: Some(title.into()),
+        message: message.into(),
+        kind: app_core::DialogKind::Warning,
+        ok_label: ok_label.into(),
+        cancel_label: cancel_label.into(),
+    });
+    cx.spawn(async move |this, cx| {
+        let ok = answer.await == Ok(true);
+        let _ = this.update(cx, |s, cx| then(s, ok, cx));
+    })
+    .detach();
+}
+
 pub fn on_event(event: &app_core::CoreEvent, cx: &mut gpui_kit::App) {
     if let Some(shell) = crate::window::shell(cx) {
         let settings = shell.read(cx).settings.clone();

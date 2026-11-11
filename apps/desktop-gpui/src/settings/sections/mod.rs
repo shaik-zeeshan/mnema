@@ -18,6 +18,10 @@ mod ocr;
 #[cfg(test)]
 mod pickers_tests;
 mod privacy;
+mod provider_actions;
+pub(crate) mod provider_row;
+#[cfg(test)]
+mod provider_tests;
 pub(crate) mod providers;
 mod semantic_search;
 mod shortcuts;
@@ -27,7 +31,7 @@ mod startup;
 mod storage;
 mod transcription;
 mod updates;
-mod user_context;
+pub(crate) mod user_context;
 mod video;
 mod voice;
 mod voice_take;

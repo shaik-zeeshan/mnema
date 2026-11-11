@@ -37,6 +37,24 @@ pub const MCP_STATES: [(&str, &str); 3] = [
     ("mcp-oauth-idle", "oauth"),
 ];
 
+/// Provider-row golden states over Intelligence (`ProviderRow.svelte` opened).
+pub const PROVIDER_STATES: [&str; 4] = [
+    "provider-manage-local",
+    "provider-manage-key",
+    "provider-chatgpt",
+    "provider-chatgpt-code",
+];
+
+/// Open one [`PROVIDER_STATES`] row the way a click would.
+pub fn open_provider_state(
+    s: &mut super::Settings,
+    which: &str,
+    window: &mut gpui_kit::Window,
+    cx: &mut gpui_kit::Context<super::Settings>,
+) {
+    super::sections::provider_row::fixture_state(s, which, window, cx);
+}
+
 /// Open one [`MCP_STATES`] modal (`which`) over the page.
 pub fn open_mcp_state(
     s: &mut super::Settings,
@@ -117,6 +135,9 @@ pub enum Call {
     /// A provider key went to the vault (the key itself is never recorded).
     SaveKey(String),
     ClearKey(String),
+    ChatgptBegin(String),
+    ChatgptCancel(String),
+    TestConnection,
     /// A one-time prompt record write.
     Prompt(super::privacy_prompt::Mark),
     /// Window focus re-read the permissions.
@@ -159,6 +180,10 @@ pub struct FixtureBackend {
     /// When set, `mcp_tools` / `mcp_set_secret` / `mcp_oauth_begin` fail with it.
     pub mcp_error: Mutex<Option<String>>,
 }
+
+/// The fixture's ChatGPT device code and verify page.
+pub const CHATGPT_CODE: &str = "ABCD-1234";
+pub const CHATGPT_URL: &str = "https://auth.openai.com/codex/device";
 
 /// The fake recorder's clip path.
 pub const CLIP_PATH: &str = "/tmp/mnema-fixture-voice-take.m4a";
@@ -242,6 +267,24 @@ impl Backend for FixtureBackend {
     }
     fn clear_key(&self, provider: &str) -> Result<(), String> {
         self.record(Call::ClearKey(provider.into()))
+    }
+    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
+        self.record(Call::ChatgptBegin(provider.into()))?;
+        Ok((CHATGPT_CODE.into(), CHATGPT_URL.into()))
+    }
+    fn chatgpt_cancel(&self, provider: &str) {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(Call::ChatgptCancel(provider.into()));
+    }
+    /// The default model answers (`ai_runtime_test_connection`'s shape).
+    fn test_connection(&self) -> Result<Value, String> {
+        self.record(Call::TestConnection)?;
+        Ok(serde_json::json!({
+            "ok": true, "provider": "anthropic", "model": "claude-sonnet-4-5",
+            "message": "Connection succeeded.", "rawJson": "{\"text\":\"OK\"}"
+        }))
     }
     /// The parity map's `list_semantic_search_supported_models`.
     fn semantic_catalog(&self) -> Result<Vec<Value>, String> {

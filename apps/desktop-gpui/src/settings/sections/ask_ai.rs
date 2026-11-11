@@ -39,7 +39,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         Some(v) => crate::insights::model::ask_ai_reason_label(v.str_at(&["reason"]), Some(&d)),
     };
     let mut rows: Vec<AnyElement> = Vec::new();
-    if avail.is_some() && !available {
+    // Readiness is only worth saying while Ask AI is on and a check landed.
+    if enabled && avail.is_some() && !available {
         rows.push(
             div()
                 .py(space::S3)
@@ -64,7 +65,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         row("Enable Ask AI")
             .desc("Allow Quick Recall and Chat to answer questions over your redacted capture history.")
             .control(Switch::new("askai-enabled", "Enable Ask AI", enabled).on_toggle(on(cx, |s, v: bool, cx| s.edit(|d| d.access.ask_ai_enabled = v, cx))))
-            .when(available, |r| r.below(line(Tone::Ok, icons::CHECK, detail.clone(), p)))
+            .when(enabled && available, |r| r.below(line(Tone::Ok, icons::CHECK, detail.clone(), p)))
+            .when(avail.is_none() && s.data.complete, |r| r.below(line(Tone::Danger, icons::ALERT, detail.clone(), p)))
             .build(p)
             .into_any_element(),
     );
@@ -108,6 +110,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         providers: ai.providers.clone(),
         pool: s.pool.clone(),
         loading: s.pool_loading,
+        failures: s.ui.pv.failures.clone(),
         favorites: ai
             .favorite_models
             .iter()
@@ -140,6 +143,10 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             label,
             placeholder: false,
         })
+        .disabled(!enabled)
+        .on_favorite(on(cx, |s, engine: (String, String), cx| {
+            s.toggle_favorite(engine, cx)
+        }))
         .on_open({
             let this = cx.entity().downgrade();
             move |_, cx| {
@@ -159,7 +166,15 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     rows.push(
         row("Model override")
             .desc("Optional override for Quick Recall and Chat. A pinned chat thread still wins.")
-            .control(div().w(px(300.)).child(picker))
+            .control(div().w(px(280.)).child(picker))
+            .when(!s.ui.pv.failures.is_empty(), |r| {
+                r.below(line(
+                    Tone::Warn,
+                    icons::INFO,
+                    "Couldn\u{2019}t list models \u{2014} you can still type any model id.",
+                    p,
+                ))
+            })
             .build(p)
             .into_any_element(),
     );
@@ -178,8 +193,11 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 Switch::new("askai-limit", "Limit tool calls per question", limited)
                     .disabled(!enabled)
                     .on_toggle(on(cx, |s, v: bool, cx| {
+                        // Back on, the cap is the one the stepper last held.
+                        let last = s.inputs.tool_calls.read(cx).value().trim().parse::<u32>();
+                        let cap = last.ok().filter(|n| *n > 0).unwrap_or(12);
                         s.edit(
-                            |d| d.access.ask_ai_max_tool_calls = if v { 12 } else { 0 },
+                            |d| d.access.ask_ai_max_tool_calls = if v { cap } else { 0 },
                             cx,
                         )
                     })),

@@ -191,6 +191,7 @@ pub(crate) fn handle(msg: HostMsg, shell: &WeakEntity<Shell>, cx: &mut App) {
                 let chat = shell.read(cx).chat.clone();
                 chat.update(cx, |chat, cx| chat.on_chatgpt_update(v, cx));
             }
+            crate::settings::on_event(&event, cx);
             crate::onboarding::on_event(&event, cx);
         }
         // Onboarding takes download progress.

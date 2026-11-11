@@ -101,6 +101,8 @@ pub struct ModelPicker {
     /// Open upward (the composer docked at the window bottom).
     pub(crate) up: bool,
     pub(crate) force_open: bool,
+    /// Svelte's `disabled`: the trigger neither opens nor looks live.
+    pub(crate) disabled: bool,
     pub(crate) on_select: Option<OnSelect>,
     pub(crate) on_favorite: Option<OnEngine>,
     pub(crate) on_open: Option<OnOpen>,
@@ -117,6 +119,7 @@ impl ModelPicker {
             },
             up: false,
             force_open: false,
+            disabled: false,
             on_select: None,
             on_favorite: None,
             on_open: None,
@@ -133,6 +136,10 @@ impl ModelPicker {
     /// Goldens / the gallery: render open.
     pub fn force_open(mut self) -> Self {
         self.force_open = true;
+        self
+    }
+    pub fn disabled(mut self, on: bool) -> Self {
+        self.disabled = on;
         self
     }
     pub fn on_select(

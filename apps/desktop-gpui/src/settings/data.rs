@@ -345,6 +345,20 @@ pub trait Backend: Send + Sync + 'static {
         let _ = provider;
         Err("no app core".into())
     }
+    /// `ai_runtime_chatgpt_begin_login`: `(user code, verify URL)`. The outcome
+    /// arrives later as `CoreEvent::ChatgptLoginUpdate`.
+    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
+        let _ = provider;
+        Err("no app core".into())
+    }
+    /// `ai_runtime_chatgpt_cancel_login` (best effort).
+    fn chatgpt_cancel(&self, provider: &str) {
+        let _ = provider;
+    }
+    /// `ai_runtime_test_connection`: the `AiRuntimeTestResult` JSON.
+    fn test_connection(&self) -> Result<Value, String> {
+        Err("no app core".into())
+    }
     /// `list_semantic_search_supported_models`: the whole embedding catalog (DTO JSON).
     fn semantic_catalog(&self) -> Result<Vec<Value>, String> {
         Err("no app core".into())
@@ -492,6 +506,34 @@ impl Backend for CoreBackend {
             serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
         self.0
             .block_on(app_core::ai_runtime::ai_runtime_clear_provider_key(request))
+    }
+
+    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
+        let request =
+            serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
+        let p = self
+            .0
+            .block_on(app_core::ai_runtime::ai_runtime_chatgpt_begin_login(
+                &self.0, request,
+            ))?;
+        Ok((p.user_code, p.verify_url))
+    }
+
+    fn chatgpt_cancel(&self, provider: &str) {
+        if let Ok(request) = serde_json::from_value(json!({ "provider": provider })) {
+            let _ = self
+                .0
+                .block_on(app_core::ai_runtime::ai_runtime_chatgpt_cancel_login(
+                    request,
+                ));
+        }
+    }
+
+    fn test_connection(&self) -> Result<Value, String> {
+        let r = self
+            .0
+            .block_on(app_core::ai_runtime::ai_runtime_test_connection(&self.0))?;
+        serde_json::to_value(r).map_err(|e| e.to_string())
     }
 
     fn semantic_catalog(&self) -> Result<Vec<Value>, String> {

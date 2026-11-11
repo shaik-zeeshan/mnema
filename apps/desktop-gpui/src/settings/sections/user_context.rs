@@ -6,14 +6,46 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, AnyElement, Context};
 
 use super::ix;
-use crate::chat::format::provider_is_local;
 use crate::settings::model::{short_datetime, Json};
 use crate::settings::row::{line, row, section};
 use crate::settings::{click, confirm, icons, on, reload, Settings};
 use crate::theme::{space, Palette};
 use crate::ui::segmented::Segmented;
 use crate::ui::switch::Switch;
-use crate::ui::{Button, Tone};
+use crate::ui::{notice, progress, Button, Tone};
+
+/// `distillationWithheldLine`: what the last distillation pass held back.
+fn withheld_line(summary: &serde_json::Value) -> Option<String> {
+    let n = |k: &str| summary.num_at(&[k]).unwrap_or(0.) as i64;
+    let parts = [
+        (n("guardrailSuppressed"), "by the privacy guardrail"),
+        (n("belowFormationBar"), "needing more evidence"),
+        (n("resurfaceBlocked"), "honoring a dismissal"),
+        (n("ungrounded"), "without grounding"),
+    ];
+    let reasons: Vec<String> = parts
+        .iter()
+        .filter(|(c, _)| *c > 0)
+        .map(|(c, why)| format!("{c} {why}"))
+        .collect();
+    if reasons.is_empty() {
+        return None;
+    }
+    let total: i64 = parts.iter().map(|(c, _)| c).sum();
+    Some(format!(
+        "Last distillation held back {total} draft {}: {}.",
+        if total == 1 {
+            "conclusion"
+        } else {
+            "conclusions"
+        },
+        reasons.join(", ")
+    ))
+}
+
+/// The one-shot commands this section runs (`run_command` names).
+pub(crate) const DERIVE: &str = "Derive latest now";
+pub(crate) const WIPE: &str = "Wipe User Context";
 
 const TIERS: [DerivationBudgetTier; 3] = [
     DerivationBudgetTier::Light,
@@ -34,6 +66,11 @@ fn compact(n: f64) -> String {
     };
     let s = format!("{v:.1}");
     format!("{}{suffix}", s.trim_end_matches(".0"))
+}
+
+/// `.mx-inline` with no icon or tone.
+fn plain(t: String, p: &Palette) -> gpui_kit::Div {
+    notice::inline(Tone::Neutral, None, vec![t.into_any_element()], p)
 }
 
 pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
@@ -70,6 +107,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     let paused = st.is_some() && !engine && !backfilling;
     let up_to_date =
         engine && !backfilling && st.and_then(|v| v.num_at(&["activityCount"])).unwrap_or(0.) > 0.;
+    let deriving = s.ui.busy.contains(DERIVE);
     let actions = div()
         .flex()
         .items_center()
@@ -83,41 +121,97 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             cx,
         ))
         .child(
-            Button::new("uc-derive", "Derive latest now")
-                .disabled(!engine || s.ui.busy.contains("Derive latest now"))
-                .on_click(click(cx, |s, cx| {
-                    s.run_command("Derive latest now", cx, crate::settings::live::derive_now)
-                })),
+            Button::new(
+                "uc-derive",
+                if deriving {
+                    "Deriving\u{2026}"
+                } else {
+                    "Derive latest now"
+                },
+            )
+            .disabled(!engine || deriving)
+            .busy(deriving)
+            .spinner(deriving)
+            .on_click(click(cx, |s, cx| {
+                s.run_command(DERIVE, cx, crate::settings::live::derive_now)
+            })),
         );
-    let status = row(if paused {
-        "Derivation paused"
+    let withheld = st
+        .and_then(|v| v.get("lastDistillation"))
+        .and_then(withheld_line);
+    // Derive now's answer and a failed wipe speak here, not in the page notice.
+    let run_note =
+        s.ui.note
+            .as_ref()
+            .filter(|n| n.1 == DERIVE)
+            .map(|n| n.2.clone());
+    let wipe_error =
+        s.ui.note
+            .as_ref()
+            .filter(|n| n.1 == WIPE && !n.0)
+            .map(|n| n.2.clone());
+    let status = if backfilling {
+        let so_far = st.and_then(|v| v.num_at(&["activityCount"])).unwrap_or(0.) as i64;
+        row("Deriving activities")
+            .desc("Building your understanding \u{2014} deriving from your history in the background, newest first.")
+            .full()
+            .aside(actions)
+            .control(
+                div()
+                    .w_full()
+                    .flex()
+                    .flex_col()
+                    .child(progress::progress_meta("Backfilling", format!("{so_far} activities so far"), p))
+                    .child(progress::progress(None, p)),
+            )
     } else {
-        "Deriving activities"
-    })
-    .desc(counts)
-    .control(actions)
-    .when(paused, |r| {
-        // `aiRuntimeReasonLabel`: "Unavailable" with no reason, never a raw code.
-        let reason = st.and_then(|v| v.str_at(&["reason"])).map_or_else(
-            || "Unavailable".to_string(),
-            |r| crate::insights::model::reason_label(r, Some(&d)),
-        );
-        r.below(line(Tone::Warn, icons::INFO, reason, p))
-    })
-    .when(up_to_date, |r| {
-        r.below(line(
-            Tone::Ok,
-            icons::CHECK,
-            "Up to date for the covered window.",
-            p,
-        ))
-    });
+        row(if paused {
+            "Derivation paused"
+        } else {
+            "Deriving activities"
+        })
+        .desc(counts)
+        .control(actions)
+    };
+    let status = status
+        .when(paused, |r| {
+            // `aiRuntimeReasonLabel`: "Unavailable" with no reason, never a raw code.
+            let reason = st.and_then(|v| v.str_at(&["reason"])).map_or_else(
+                || "Unavailable".to_string(),
+                |r| crate::insights::model::reason_label(r, Some(&d)),
+            );
+            r.below(line(Tone::Warn, icons::INFO, reason, p))
+        })
+        .when(up_to_date, |r| {
+            r.below(line(
+                Tone::Ok,
+                icons::CHECK,
+                "Up to date for the covered window.",
+                p,
+            ))
+        })
+        .when(withheld.is_some(), |r| {
+            r.below(plain(withheld.clone().unwrap_or_default(), p))
+        })
+        .when(run_note.is_some(), |r| {
+            r.below(plain(run_note.clone().unwrap_or_default(), p))
+        })
+        .when(wipe_error.is_some(), |r| {
+            r.below(line(
+                Tone::Danger,
+                icons::ALERT,
+                wipe_error.clone().unwrap_or_default(),
+                p,
+            ))
+        });
 
     let ai = &d.ai_runtime;
-    let default_local = ai
-        .default_model
-        .as_ref()
-        .map(|m| provider_is_local(ai.providers.iter().find(|pv| pv.id == m.provider)));
+    // `isCloudAiProviderInstance`: by kind; a default whose provider is gone is not cloud.
+    let default_local = ai.default_model.as_ref().map(|m| {
+        !ai.providers
+            .iter()
+            .any(|pv| pv.id == m.provider && !pv.kind.is_local())
+    });
     let cloud_default = default_local == Some(false);
     let gate = match default_local {
         Some(false) => None,
@@ -142,6 +236,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             if r == 1 { "day" } else { "days" }
         )
     };
+    let wiping = s.ui.busy.contains(WIPE);
     let rows = vec![
         row("Derive context continuously")
             .desc("Builds a quiet picture of your projects and people from captured activity.")
@@ -170,13 +265,13 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .into_any_element(),
         row("Wipe User Context")
             .desc("Permanently clears everything derived about you \u{2014} it outlives capture retention. Captures are untouched. Asks first.")
-            .control(Button::new("uc-wipe", "Wipe\u{2026}").danger().on_click(click(cx, |_, cx| {
+            .control(Button::new("uc-wipe", if wiping { "Wiping\u{2026}" } else { "Wipe\u{2026}" }).danger().disabled(wiping).busy(wiping).spinner(wiping).on_click(click(cx, |_, cx| {
                 confirm(
                     cx,
                     "Wipe User Context?",
                     "This permanently clears everything Mnema has derived about you \u{2014} all Activities, Conclusions, and your Dismissal corrections. Your raw recordings and settings are kept. AI features will be turned off; turning them back on starts learning from scratch.",
                     "Wipe",
-                    |s, cx| s.run_command("Wipe User Context", cx, crate::settings::live::wipe_user_context),
+                    |s, cx| s.run_command(WIPE, cx, crate::settings::live::wipe_user_context),
                 );
             })))
             .build(p)
