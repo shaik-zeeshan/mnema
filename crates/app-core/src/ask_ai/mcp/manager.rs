@@ -154,8 +154,14 @@ async fn connect_and_list(cfg: &McpServerConfig) -> Result<Established, String> 
 /// the first `": "`, which is where every wrapped transport error starts.
 /// rmcp's reqwest errors quote the connector URL, and a URL can carry a token;
 /// the error itself is not reachable as a `reqwest::Error` to strip it.
-fn connect_failure_log_head(error: &str) -> &str {
-    error.split_once(": ").map_or(error, |(head, _)| head)
+/// Our sentences quote the user-typed label (right in the UI, not in the log),
+/// so it becomes the id first; a label holding `": "` can't then split early.
+fn connect_failure_log_head(error: &str, cfg: &McpServerConfig) -> String {
+    let error = error.replace(&format!("\"{}\"", cfg.label), &format!("\"{}\"", cfg.id));
+    error
+        .split_once(": ")
+        .map_or(error.as_str(), |(head, _)| head)
+        .to_string()
 }
 
 /// Project rmcp's `Tool` onto our trimmed [`ToolInfo`] (name, description,
@@ -214,7 +220,7 @@ fn assemble_turn_tools(
                 log::warn!(
                     "Ask AI MCP connector \"{}\" unavailable this turn: {}",
                     cfg.id,
-                    connect_failure_log_head(&error)
+                    connect_failure_log_head(&error, &cfg)
                 );
                 continue;
             }
@@ -394,7 +400,7 @@ impl McpManager {
                     log::warn!(
                         "Ask AI MCP warm connect for \"{}\" failed (will retry on use): {}",
                         cfg.id,
-                        connect_failure_log_head(&error)
+                        connect_failure_log_head(&error, &cfg)
                     );
                 }
             });

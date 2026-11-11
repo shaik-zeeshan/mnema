@@ -129,6 +129,16 @@ unset RUSTUP_TOOLCHAIN # rust-toolchain.toml pins the toolchain
 # shellcheck source=/dev/null
 . "$repo/scripts/openblas-build-env.sh"
 if [[ "$mode" == dev ]]; then
+  # Repo-root .env (gitignored): the licensing build env (MNEMA_LICENSE_*), as
+  # dev-app.sh loads it. Without it the build bakes the reject-everything
+  # placeholder key, so every fetched CRL (and every sandbox key) fails to verify.
+  if [[ -f "$repo/.env" ]]; then
+    set -a
+    # shellcheck source=/dev/null
+    . "$repo/.env"
+    set +a
+    echo "bundle-gpui-app: loaded $repo/.env"
+  fi
   # Debug: MNEMA_DEV_MASTER_KEY_FILE is compiled out of release builds.
   cargo build -p mnema-gpui --bin mnema-gpui
 else

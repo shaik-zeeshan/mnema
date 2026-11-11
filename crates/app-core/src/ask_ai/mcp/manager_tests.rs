@@ -2,17 +2,18 @@ use super::*;
 use capture_types::McpTransport;
 
 #[test]
-fn connect_failure_log_head_drops_the_transport_error() {
+fn connect_failure_log_head_drops_the_transport_error_and_the_label() {
+    let cfg = stdio_cfg("mcp-1", "Ana's: Linear", "true", Vec::new());
+    let head = |error: &str| connect_failure_log_head(error, &cfg);
     assert_eq!(
-        connect_failure_log_head(
-            "failed to connect to \"Linear\": error sending request for url (https://x.test/mcp?token=s3cret)"
-        ),
-        "failed to connect to \"Linear\""
+        head("failed to connect to \"Ana's: Linear\": error sending request for url (https://x.test/mcp?token=s3cret)"),
+        "failed to connect to \"mcp-1\""
     );
     assert_eq!(
-        connect_failure_log_head("timed out connecting to \"Linear\" after 10s"),
-        "timed out connecting to \"Linear\" after 10s"
+        head("timed out connecting to \"Ana's: Linear\" after 10s"),
+        "timed out connecting to \"mcp-1\" after 10s"
     );
+    assert!(!head("stdio connector \"Ana's: Linear\" has no command").contains("Linear"));
 }
 
 /// A stdio server config for tests: enabled, no env/secret/curation.

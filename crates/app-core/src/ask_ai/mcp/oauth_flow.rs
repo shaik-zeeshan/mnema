@@ -36,14 +36,22 @@ const OAUTH_CLIENT_NAME: &str = "Mnema";
 pub const MCP_AUTHORIZATION_CHANGED_EVENT: &str = "mcp_authorization_changed";
 
 /// The registered OAuth redirect URI, keyed off the active build's deep-link
-/// scheme (prod `mnema`, dev `mnema-dev`).
-// ponytail: cfg!(debug_assertions) tracks the dev build, whose tauri.dev.conf.json
-// registers the `mnema-dev` scheme — one branch, no config plumbing.
+/// scheme (prod `mnema`, Tauri dev `mnema-dev`, GPUI dev bundle `mnema-gpui-dev`).
 fn oauth_redirect_uri() -> &'static str {
-    if cfg!(debug_assertions) {
-        "mnema-dev://oauth/callback"
-    } else {
-        "mnema://oauth/callback"
+    redirect_uri_for(
+        crate::updates::MainBundle::read().identifier.as_deref(),
+        cfg!(debug_assertions),
+    )
+}
+
+// ponytail: cfg!(debug_assertions) tracks the Tauri dev build (tauri.dev.conf.json
+// registers `mnema-dev`); the GPUI dev bundle registers its own scheme
+// (`scripts/bundle-gpui-app.sh --dev`), and `mnema-dev://` would wake the Tauri app.
+fn redirect_uri_for(bundle_id: Option<&str>, debug: bool) -> &'static str {
+    match bundle_id {
+        Some("day.mnema.gpui-dev") => "mnema-gpui-dev://oauth/callback",
+        _ if debug => "mnema-dev://oauth/callback",
+        _ => "mnema://oauth/callback",
     }
 }
 

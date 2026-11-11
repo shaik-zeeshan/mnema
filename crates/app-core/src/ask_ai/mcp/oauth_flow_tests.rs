@@ -424,3 +424,23 @@ fn a_stale_warm_write_after_a_newer_authorize_is_dropped() {
         "disconnect must invalidate in-flight warm writes"
     );
 }
+
+/// The redirect must use the scheme the RUNNING bundle registered: the GPUI dev
+/// bundle's `mnema-dev://` redirect would land in the Tauri dev app, which holds
+/// no pending flow, so the sign-in never completed (2026-11-11).
+#[test]
+fn the_oauth_redirect_follows_the_running_bundle_scheme() {
+    assert_eq!(
+        redirect_uri_for(Some("day.mnema.gpui-dev"), true),
+        "mnema-gpui-dev://oauth/callback"
+    );
+    assert_eq!(
+        redirect_uri_for(Some("day.mnema.dev"), true),
+        "mnema-dev://oauth/callback"
+    );
+    assert_eq!(redirect_uri_for(None, true), "mnema-dev://oauth/callback");
+    assert_eq!(
+        redirect_uri_for(Some("day.mnema"), false),
+        "mnema://oauth/callback"
+    );
+}

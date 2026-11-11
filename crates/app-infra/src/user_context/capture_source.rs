@@ -341,6 +341,7 @@ fn parse_snapshot(
 const SELF_APP_BUNDLE_IDS: &[&str] = &[
     "day.mnema",
     "day.mnema.dev",
+    "day.mnema.gpui-dev",
     "com.shaikzeeshan.mnema",
     "com.shaikzeeshan.mnema.dev",
 ];
@@ -1075,6 +1076,7 @@ mod tests {
         // Bundle-id-only variants (no app name), current and pre-rename legacy.
         assert!(is_self_capture(&snap(None, Some("day.mnema"))));
         assert!(is_self_capture(&snap(None, Some("day.mnema.dev"))));
+        assert!(is_self_capture(&snap(None, Some("day.mnema.gpui-dev"))));
         assert!(is_self_capture(&snap(None, Some("com.shaikzeeshan.mnema"))));
         assert!(is_self_capture(&snap(
             None,
