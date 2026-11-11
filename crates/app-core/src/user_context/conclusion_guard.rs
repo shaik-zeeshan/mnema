@@ -70,7 +70,7 @@ impl DuplicateGuard {
     /// Resolve (but do not load) the embedding model for this pass.
     pub(crate) fn new(core: &crate::AppCore) -> Self {
         let settings = effective_semantic_search_settings(core);
-        let model = Some(core.paths().data.clone()).and_then(|dir| {
+        let model = Some(core.paths().config.clone()).and_then(|dir| {
             if !selected_model_available(&dir, &settings) {
                 return None;
             }

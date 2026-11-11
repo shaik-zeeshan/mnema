@@ -194,7 +194,7 @@ pub(crate) fn transcription_admission_for_app_handle(
         return ::app_infra::AudioSegmentTranscriptionAdmission::disabled();
     }
 
-    let app_data_dir = core.paths().data.clone();
+    let app_data_dir = core.paths().config.clone();
     let available = crate::audio_transcription_models::selected_audio_transcription_model_available(
         &app_data_dir,
         &transcription_settings,
@@ -272,7 +272,7 @@ pub(crate) fn system_audio_speech_admission_for_app_handle(
     }
 
     let transcription_admission = {
-        let app_data_dir = core.paths().data.clone();
+        let app_data_dir = core.paths().config.clone();
         let available =
             crate::audio_transcription_models::selected_audio_transcription_model_available(
                 &app_data_dir,
@@ -349,7 +349,7 @@ pub(crate) fn speaker_analysis_admission_for_app_handle(
     if !speaker_settings.separate_speakers {
         return ::app_infra::AudioSegmentSpeakerAnalysisAdmission::disabled();
     }
-    let app_data_dir = core.paths().data.clone();
+    let app_data_dir = core.paths().config.clone();
     let models_dir = speaker_analysis::speaker_analysis_models_dir(&app_data_dir);
     let manifest = speaker_analysis::builtin_model_manifest();
     let Some(descriptor) = speaker_analysis::find_model_descriptor(

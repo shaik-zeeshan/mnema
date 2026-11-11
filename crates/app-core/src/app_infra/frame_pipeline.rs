@@ -349,7 +349,7 @@ pub fn system_audio_speech_admission_for_current_settings(
         return ::app_infra::SystemAudioSpeechActivityAdmission::unavailable();
     }
 
-    let app_data_dir = core.paths().data.clone();
+    let app_data_dir = core.paths().config.clone();
 
     let transcription_admission =
         crate::audio_transcription_backfill::audio_transcription_admission_for_settings(

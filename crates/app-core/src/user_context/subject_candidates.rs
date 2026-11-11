@@ -66,7 +66,7 @@ pub(crate) async fn select_semantic_subject_candidates(
     }
 
     let settings = effective_semantic_search_settings(core);
-    let app_data_dir = core.paths().data.clone();
+    let app_data_dir = core.paths().config.clone();
 
     // Model-gate → Mode 1 vs Mode 2: a silent no-op (empty set) when no model is
     // installed / the selection is disabled / unknown, so the caller falls back to

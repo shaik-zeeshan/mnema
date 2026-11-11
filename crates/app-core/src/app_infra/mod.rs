@@ -182,7 +182,7 @@ fn desktop_processing_registry(
     core: &AppCore,
     deepgram_auth_status: audio_transcription::providers::DeepgramAuthStatus,
 ) -> Result<::app_infra::ProcessorRegistry, String> {
-    let app_data_dir = core.paths().data.clone();
+    let app_data_dir = core.paths().config.clone();
     let models_dir = audio_transcription::audio_transcription_models_dir(&app_data_dir);
     let speaker_models_dir = speaker_analysis::speaker_analysis_models_dir(&app_data_dir);
 

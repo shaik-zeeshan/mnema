@@ -241,7 +241,7 @@ pub async fn run_sweep_pass(
 ) -> SweepPass {
     let settings = effective_semantic_search_settings(core);
 
-    let app_data_dir = core.paths().data.clone();
+    let app_data_dir = core.paths().config.clone();
 
     // Model-gating: silent no-op when no model is installed (matches the search
     // backfill). Drop any cached embedder and reset the load latch so a fresh

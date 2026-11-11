@@ -112,4 +112,34 @@ mod tests {
             PathBuf::from("/Users/ana/Library/Caches/day.mnema")
         );
     }
+
+    /// Models install under `config`; a lookup under `data` (the capture root)
+    /// reports every installed model as missing (2026-11-11). Nothing in this
+    /// crate needs the default capture root at runtime, so no source may read it.
+    #[test]
+    fn no_source_file_reads_the_capture_root_from_paths() {
+        fn scan(dir: &Path, needle: &str, hits: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read src dir").flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    scan(&path, needle, hits);
+                } else if path.extension().is_some_and(|ext| ext == "rs")
+                    && std::fs::read_to_string(&path).is_ok_and(|text| text.contains(needle))
+                {
+                    hits.push(path);
+                }
+            }
+        }
+        let needle = concat!("paths()", ".data"); // split so this file does not match
+        let mut hits = Vec::new();
+        scan(
+            &Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            needle,
+            &mut hits,
+        );
+        assert!(
+            hits.is_empty(),
+            "model lookups belong under `config`: {hits:?}"
+        );
+    }
 }

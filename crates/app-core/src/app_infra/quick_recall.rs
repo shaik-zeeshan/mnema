@@ -120,7 +120,7 @@ pub async fn get_quick_recall_index_status(
         .map_err(|error| format!("failed to read the indexing backlog: {error}"))?;
     let settings = crate::semantic_search_worker::effective_semantic_search_settings(core);
     let meaning_on =
-        crate::semantic_search_worker::selected_model_available(&core.paths().data, &settings);
+        crate::semantic_search_worker::selected_model_available(&core.paths().config, &settings);
     let semantic_indexed_percent = if meaning_on {
         let store = state.semantic_search();
         let indexed = store
