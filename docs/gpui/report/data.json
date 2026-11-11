@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 10:07",
- "verdict": "Every screen is built and connected to the real backend. On 11 Nov your seven decisions were finished, and your morning hands-on round is fixed too: models are found again (the missing-model error), three more mix-ups of the same kind, copy buttons that now work and say so, new copy buttons in the developer window, and the developer window opening from the status popover. A signed dev build with all of it is ready. Everything is in local commits; nothing is pushed. What needs you: five screenshots to approve and one question about the licensing keys, both on the real-app test page.",
+ "updated": "2026-11-11 10:28",
+ "verdict": "Every screen is built and connected to the real backend. On 11 Nov your seven decisions were finished, and your morning hands-on round is fixed too: models are found again (the missing-model error), three more mix-ups of the same kind, copy buttons that now work and say so, new copy buttons in the developer window, and the developer window opening from the status popover. A signed dev build with all of it is ready. Everything is in local commits; nothing is pushed. What needs you: five screenshots to approve, on the real-app test page.",
  "metrics": [
   {
    "label": "Overall",
@@ -727,11 +727,6 @@
    "id": "Approve",
    "title": "Five screenshots",
    "detail": "Three developer-window screens that changed (issue rows, a job's error box, the Logs toolbar) and two new ones (a log line with its copy button, the status popover with Open developer window). On the real-app test page, first section."
-  },
-  {
-   "id": "Keys",
-   "title": "One question: licensing keys for dev builds",
-   "detail": "The new app's dev build has never loaded the licensing keys, which is why it warns about the licence list at every start. The build script now loads them, but the key file exists only in your main checkout. May the build read it from there?"
   },
   {
    "id": "Review",
@@ -1779,7 +1774,7 @@
    ]
   }
  ],
- "round3_verdict": "Your morning round on 11 Nov is fixed and committed locally: the missing-model error, three more mix-ups of the same kind found by an audit, the copy buttons, and the developer window from the status popover. The model fix is confirmed in the real app's log: no missing-model error, and the Whisper transcriber loaded and was unloaded on quit. Five screenshots need your approval and there is one question about licensing keys. The seven decisions from earlier are done. Nothing has been pushed.",
+ "round3_verdict": "Your morning round on 11 Nov is fixed and committed locally: the missing-model error, three more mix-ups of the same kind found by an audit, the copy buttons, and the developer window from the status popover. The model fix is confirmed in the real app's log: no missing-model error, and the Whisper transcriber loaded and was unloaded on quit. Five screenshots need your approval. The seven decisions from earlier are done. Nothing has been pushed.",
  "round3": [
   {
    "anchor": "r4-approve",
@@ -1889,12 +1884,12 @@
   },
   {
    "anchor": "r4-audit",
-   "title": "Three more mix-ups of the same kind",
+   "title": "Two more mix-ups of the same kind, and one left as it is",
    "toc": "Similar issues",
    "commit": "212fc4f9",
    "state": "fixed · committed",
    "awaiting": false,
-   "what": "An audit compared every folder, identity and bundled-file lookup in the old Tauri code with what the shared backend does now. Everything else matched; three did not. 1. Connector sign-in could never finish in the new dev app: the browser was sent back to the Tauri dev app's link, while the new app listens on its own. 2. The new dev app counted its own windows as your activity, because it was missing from the list of Mnema's own apps. 3. The licence-list warning at every start was real: the new app's build scripts never loaded the licensing keys, so the build carried a placeholder key that verifies nothing. The scripts load them now, but see the question under What needs you. Also here: connector log lines no longer contain the label you typed, even inside the error text (decision 7, finished). Not done: a real connector sign-in in the new dev app.",
+   "what": "An audit compared every folder, identity and bundled-file lookup in the old Tauri code with what the shared backend does now. Everything else matched. Fixed: 1. Connector sign-in could never finish in the new dev app: the browser was sent back to the Tauri dev app's link, while the new app listens on its own. 2. The new dev app counted its own windows as your activity, because it was missing from the list of Mnema's own apps. Left as it is, by your ruling on 11 Nov: the new app's dev build does not read the licence-checking settings from the .env file, so it carries a placeholder and warns about the licence list at every start. That warning is harmless in a dev build, which skips the licence check anyway. The change that made the build scripts read that file was taken out again. Also here: connector log lines no longer contain the label you typed, even inside the error text (decision 7, finished). Not done: a real connector sign-in in the new dev app.",
    "rows": []
   },
   {
