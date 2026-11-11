@@ -82,13 +82,23 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                 })
                 .child({
                     let me = cx.entity().downgrade();
-                    Button::new("dv-test-ai", "Test connection")
-                        .sm()
-                        .icon("icons/plug.svg")
-                        .disabled(w.acting.is_some())
-                        .on_click(move |_, _, cx| {
-                            let _ = me.update(cx, |w, cx| w.act(super::data::Action::TestAi, cx));
-                        })
+                    let testing = w.acting == Some(super::data::Action::TestAi);
+                    Button::new(
+                        "dv-test-ai",
+                        if testing {
+                            "Testing\u{2026}"
+                        } else {
+                            "Test connection"
+                        },
+                    )
+                    .sm()
+                    .icon("icons/plug.svg")
+                    .spinner(testing)
+                    .busy(testing)
+                    .disabled(w.acting.is_some())
+                    .on_click(move |_, _, cx| {
+                        let _ = me.update(cx, |w, cx| w.act(super::data::Action::TestAi, cx));
+                    })
                 })
         }
         None => div().child(dot(Tone::Off, px(7.), p)).child(
@@ -370,16 +380,28 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
         sec(p)
             .child(h("User Context", uc_line, p).child(div().flex_1()).child({
                 let me = cx.entity().downgrade();
-                Button::new("dv-derive", "Derive latest now")
-                    .ghost()
-                    .sm()
-                    .icon("icons/refresh-cw.svg")
-                    .disabled(w.acting.is_some())
-                    .on_click(move |_, _, cx| {
-                        let _ = me.update(cx, |w, cx| w.act(super::data::Action::Derive, cx));
-                    })
+                let deriving = w.acting == Some(super::data::Action::Derive);
+                Button::new(
+                    "dv-derive",
+                    if deriving {
+                        "Deriving\u{2026}"
+                    } else {
+                        "Derive latest now"
+                    },
+                )
+                .ghost()
+                .sm()
+                .icon("icons/refresh-cw.svg")
+                .spinner(deriving)
+                .busy(deriving)
+                .disabled(w.acting.is_some())
+                .on_click(move |_, _, cx| {
+                    let _ = me.update(cx, |w, cx| w.act(super::data::Action::Derive, cx));
+                })
             }))
-            .child(if runs.is_empty() {
+            .child(if w.data.runs_error.is_some() {
+                compact_empty("Couldn\u{2019}t load recent runs", true, p)
+            } else if runs.is_empty() {
                 compact_empty("No User Context runs yet", false, p)
             } else {
                 list(p).children(runs).into_any_element()
@@ -394,7 +416,9 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                 )),
                 p,
             ))
-            .child(if cli.is_empty() {
+            .child(if w.data.cli_error.is_some() {
+                compact_empty("Couldn\u{2019}t read CLI requests", true, p)
+            } else if cli.is_empty() {
                 compact_empty("No CLI requests yet", false, p)
             } else {
                 list(p).children(cli).into_any_element()

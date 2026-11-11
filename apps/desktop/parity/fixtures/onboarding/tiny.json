@@ -1383,5 +1383,145 @@
   "shouldShowExistingUserPrompt": false,
   "browserDisclosures": []
  },
- "get_account_owner_person_id": null
+ "get_account_owner_person_id": null,
+ "add_privacy_excluded_app": {
+  "domain": "privacy",
+  "settings": {
+   "captureScreen": true,
+   "captureMicrophone": true,
+   "captureSystemAudio": true,
+   "segmentDurationSeconds": 300,
+   "screenFrameRate": 0.5,
+   "screenResolution": {
+    "mode": "preset",
+    "preset": "720p"
+   },
+   "videoBitrate": {
+    "mode": "preset",
+    "preset": "medium",
+    "customMbps": null
+   },
+   "saveDirectory": "",
+   "autoStart": true,
+   "developerOptionsEnabled": false,
+   "previewCacheTtlSeconds": 3600,
+   "followTimelineLive": false,
+   "retentionPolicy": "never",
+   "appearance": "system",
+   "timeFormat": "system",
+   "ocr": {
+    "enabled": true,
+    "provider": "apple_vision",
+    "modelId": null,
+    "language": null,
+    "recognitionMode": "fast",
+    "languageCorrection": false,
+    "tesseractPageSegmentationMode": "single_block",
+    "tesseractPreprocessMode": "grayscale",
+    "tesseractUpscaleFactor": 1,
+    "tesseractCharWhitelist": null
+   },
+   "transcription": {
+    "enabled": true,
+    "microphoneEnabled": true,
+    "systemAudioEnabled": false,
+    "provider": "local_whisper",
+    "modelId": "base",
+    "language": "auto",
+    "memoryMode": "balanced",
+    "idleUnloadSeconds": 300,
+    "chunkSeconds": 30
+   },
+   "speakerAnalysis": {
+    "separateSpeakers": true,
+    "recognizeSavedPeople": false,
+    "autoLabelOwner": true,
+    "provider": "speakrs",
+    "modelId": "pyannote-community-1-wespeaker",
+    "timeoutSeconds": 600
+   },
+   "audioSpeechDetection": {
+    "detector": "silero"
+   },
+   "metadata": {
+    "enabled": true,
+    "browserUrlMode": "sanitized"
+   },
+   "privacy": {
+    "excludedApps": [
+     {
+      "id": "app-1",
+      "enabled": true,
+      "bundleId": "com.apple.Passwords",
+      "displayName": "Apple Passwords"
+     },
+     {
+      "id": "app-2",
+      "enabled": true,
+      "bundleId": "com.apple.keychainaccess",
+      "displayName": "Keychain Access"
+     },
+     {
+      "id": "app-3",
+      "enabled": true,
+      "bundleId": "com.1password.1password",
+      "displayName": "1Password"
+     },
+     {
+      "id": "app-4",
+      "enabled": true,
+      "bundleId": "com.bitwarden.desktop",
+      "displayName": "Bitwarden"
+     }
+    ],
+    "filterSystemAudio": true
+   },
+   "access": {
+    "askAiEnabled": true,
+    "askAiMaxToolCalls": 12,
+    "askAiWebFetchEnabled": false,
+    "askAiModel": null,
+    "askAiModelProvider": null,
+    "quickRecallAutoAnswer": "localOnly"
+   },
+   "aiRuntime": {
+    "enabled": false,
+    "providers": [],
+    "defaultModel": null,
+    "mcpServers": [
+     {
+      "id": "github",
+      "label": "GitHub",
+      "enabled": true,
+      "transport": "http",
+      "authMode": "bearer",
+      "command": null,
+      "args": [],
+      "env": [],
+      "url": "https://api.githubcopilot.com/mcp/",
+      "secretEnvName": null,
+      "enabledTools": null
+     }
+    ],
+    "favoriteModels": [],
+    "recentModels": []
+   },
+   "userContext": {
+    "enabled": true,
+    "derivationBudgetTier": "balanced",
+    "backfillWindowDays": 30,
+    "backfillGoDeeper": false
+   },
+   "semanticSearch": {
+    "enabled": true,
+    "provider": "local",
+    "modelId": "nomic-embed-text-v1.5"
+   },
+   "pauseCaptureOnInactivity": true,
+   "idleTimeoutSeconds": 10,
+   "microphoneActivitySensitivity": 50,
+   "systemAudioActivitySensitivity": 50,
+   "activityMode": "system_input_or_screen"
+  }
+ }
 }

@@ -92,12 +92,15 @@ impl CommandField {
         window.blur(cx);
     }
 
-    fn submit(&mut self, cmd: bool, _window: &mut Window, cx: &mut Context<Self>) {
+    fn submit(&mut self, cmd: bool, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.query(cx).trim().to_string();
         if cmd || self.mode == Mode::Ask {
             cx.emit(CommandFieldEvent::Ask(text));
         } else if !text.is_empty() {
             cx.emit(CommandFieldEvent::Recall(text));
+            // The Quick Recall window has the text now (`recallInQuickRecall`).
+            self.input.update(cx, |i, cx| i.set_value("", window, cx));
+            window.blur(cx);
         }
     }
 }

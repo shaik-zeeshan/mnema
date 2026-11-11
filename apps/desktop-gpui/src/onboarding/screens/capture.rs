@@ -4,24 +4,47 @@
 //! (with a "continue held" chip) while `capture_block` names one.
 
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, Context, FontWeight, Hsla, Window};
+use gpui_kit::TestSupportExt as _;
+use gpui_kit::{div, px, relative, AnyElement, Context, Hsla, Window};
 
 use super::{back, button, on_ix, primary};
 use crate::onboarding::parts::{self, display, fine, head};
 use crate::onboarding::storage::{self, Seg, Tone as VTone};
 use crate::onboarding::Onboarding;
-use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::segmented::Segmented;
 use crate::ui::{kicker, mix, Tone};
 
 const LABEL_W: f32 = 136.;
-const APP_COLORS: usize = 4;
+
+/// The hint after the note reads one step stronger (`.note .hint`).
+fn note_hint(
+    text_: &str,
+    hint: &str,
+    color: gpui_kit::Hsla,
+) -> Vec<(std::ops::Range<usize>, gpui_kit::HighlightStyle)> {
+    let start = if text_.is_empty() { 0 } else { text_.len() + 1 };
+    vec![(
+        start..start + hint.len(),
+        gpui_kit::HighlightStyle {
+            color: Some(color),
+            ..Default::default()
+        },
+    )]
+}
 
 fn row(label: &'static str, ctl: impl IntoElement, p: &Palette) -> AnyElement {
+    row_aligned(label, ctl, false, p)
+}
+
+/// `top`: the label centres on the control's first line, the chip row
+/// (`.ob-row`'s grid puts the note in a second row under the control).
+fn row_aligned(label: &'static str, ctl: impl IntoElement, top: bool, p: &Palette) -> AnyElement {
     div()
         .flex()
-        .items_center()
+        .when(!top, |d| d.items_center())
+        .when(top, |d| d.items_start())
         .gap(space::S4)
         .min_h(px(52.))
         .py(px(9.))
@@ -29,6 +52,7 @@ fn row(label: &'static str, ctl: impl IntoElement, p: &Palette) -> AnyElement {
             div()
                 .flex_none()
                 .w(px(LABEL_W))
+                .when(top, |d| d.h(size::H_SM).flex().items_center())
                 .font_weight(theme::W_MEDIUM)
                 .text_size(text::MD)
                 .text_color(p.text_muted)
@@ -47,17 +71,23 @@ fn row(label: &'static str, ctl: impl IntoElement, p: &Palette) -> AnyElement {
 }
 
 /// The verdict's runs: figures and the verdict clause in strong.
-fn runs(segs: &[(Seg, String)], verdict_color: Hsla, p: &Palette) -> gpui_kit::StyledText {
-    let style = |s: Seg| -> Option<(FontWeight, Hsla)> {
-        match s {
-            Seg::Text => None,
-            Seg::Fig => Some((theme::W_MEDIUM, p.text_strong)),
-            Seg::Verdict => Some((theme::W_SEMIBOLD, verdict_color)),
-        }
-    };
-    let owned: Vec<(&str, Option<(FontWeight, Hsla)>)> =
-        segs.iter().map(|(k, t)| (t.as_str(), style(*k))).collect();
-    crate::chat::inline_runs(&owned)
+/// The verdict panel's runs: figures in the mono face (`b.fig`), the verdict
+/// phrase bold in its tone, the rest plain in `base`.
+fn runs(
+    segs: &[(Seg, String)],
+    verdict_color: Hsla,
+    base: Hsla,
+    p: &Palette,
+) -> gpui_kit::StyledText {
+    let parts: Vec<_> = segs
+        .iter()
+        .map(|(k, t)| match k {
+            Seg::Text => (t.as_str(), FONT_UI, theme::W_REGULAR, base),
+            Seg::Fig => (t.as_str(), FONT_MONO, theme::W_MEDIUM, p.text_strong),
+            Seg::Verdict => (t.as_str(), FONT_UI, theme::W_SEMIBOLD, verdict_color),
+        })
+        .collect();
+    crate::ui::face_runs(&parts)
 }
 
 impl Onboarding {
@@ -147,72 +177,91 @@ impl Onboarding {
                 .icon("icons/folder.svg"),
             );
 
-        let cats = [
-            p.cat_research,
-            p.cat_organizing,
-            p.cat_communication,
-            p.cat_learning,
-        ];
+        self.request_app_icons(cx);
         let add = self.app_add(cx);
         let apps = div()
             .flex()
             .flex_wrap()
             .items_center()
             .gap(px(6.))
-            .children(
-                self.draft
-                    .privacy
-                    .excluded_apps
-                    .iter()
-                    .enumerate()
-                    .map(|(i, a)| {
-                        let id = a.id.clone();
-                        let c = cats[i % APP_COLORS];
-                        let on = a.enabled;
-                        let glyph = div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .justify_center()
-                            .size(px(18.))
+            .children(self.draft.privacy.excluded_apps.iter().map(|a| {
+                let id = a.id.clone();
+                let on = a.enabled;
+                let (raised, border_strong, text_strong) =
+                    (p.surface_raised, p.border_strong, p.text_strong);
+                // Not installed yet: no icon to draw, so the dashed slot IS the signal.
+                let pending = super::capture_apps::is_pending(a);
+                // `.ob-app`: the app's icon, else its letter on a raised tile.
+                let tile = move || {
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(18.))
+                        .rounded(px(5.))
+                        .font_weight(theme::W_SEMIBOLD)
+                        .text_size(text::XS)
+                        .text_color(text_strong)
+                        .bg(raised)
+                        .shadow(vec![crate::ui::inset(border_strong, px(1.))])
+                };
+                let glyph = div()
+                    .flex_none()
+                    .size(px(18.))
+                    .when(!on, |d| d.opacity(0.45))
+                    .map(|d| match pending {
+                        true => d
                             .rounded(px(5.))
-                            .font_weight(theme::W_SEMIBOLD)
-                            .text_size(text::XS)
-                            .text_color(p.text_strong)
-                            .bg(mix(c, p.surface_raised, 0.24))
-                            .when(!on, |d| d.opacity(0.45))
-                            .child(a.display_name.chars().next().unwrap_or('?').to_string());
-                        div()
-                            .id(gpui_kit::ElementId::Name(format!("ob-app-{id}").into()))
-                            .role(gpui_kit::Role::Button)
-                            .aria_label(gpui_kit::SharedString::from(format!(
-                                "{} \u{2014} {}",
-                                a.display_name,
-                                if on {
-                                    "never recorded, activate to record it"
-                                } else {
-                                    "recorded, activate to hide it again"
-                                }
-                            )))
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .h(size::H_SM)
-                            .pl(px(4.))
-                            .pr(space::S2)
-                            .rounded(radius::SM)
                             .border_1()
-                            .border_color(p.border)
-                            .bg(p.surface_raised)
-                            .cursor_pointer()
-                            .text_size(text::BASE)
-                            .text_color(if on { p.text_strong } else { p.text_subtle })
-                            .when(!on, |d| d.line_through())
-                            .child(glyph)
-                            .child(a.display_name.clone())
-                            .on_click(cx.listener(move |this, _, _, cx| this.toggle_app(&id, cx)))
-                    }),
-            )
+                            .border_dashed()
+                            .border_color(p.warn),
+                        false => d.child(crate::ui::app_icon::icon_or_initial(
+                            self.app_pick.icons.get(a.bundle_id.trim()).cloned(),
+                            &a.display_name,
+                            18.,
+                            tile,
+                        )),
+                    });
+                div()
+                    .id(gpui_kit::ElementId::Name(format!("ob-app-{id}").into()))
+                    .role(gpui_kit::Role::Button)
+                    .aria_label(gpui_kit::SharedString::from(format!(
+                        "{}{} \u{2014} {}",
+                        a.display_name,
+                        if pending { ", not installed yet" } else { "" },
+                        if on {
+                            "never recorded, activate to record it"
+                        } else {
+                            "recorded, activate to hide it again"
+                        }
+                    )))
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .h(size::H_SM)
+                    .pl(px(4.))
+                    .pr(space::S2)
+                    .rounded(radius::SM)
+                    .border_1()
+                    .border_color(p.border)
+                    .bg(p.surface_raised)
+                    .cursor_pointer()
+                    .text_size(text::BASE)
+                    .text_color(if on { p.text_strong } else { p.text_subtle })
+                    .when(!on, |d| d.line_through())
+                    .child(glyph)
+                    .child(a.display_name.clone())
+                    .when(pending, |d| {
+                        d.child(
+                            div()
+                                .text_size(text::SM)
+                                .text_color(p.text_subtle)
+                                .child("\u{b7} when installed"),
+                        )
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_app(&id, cx)))
+            }))
             .child(add);
 
         let tone = match v.tone {
@@ -228,13 +277,18 @@ impl Onboarding {
         } else {
             p.text_strong
         };
+        // `{Phrase} ·` leads the plan in plain text, never inside its first figure.
         let mut plan = v.plan.clone();
-        if let Some((_, first)) = plan.first_mut() {
-            *first = format!(
-                "{} \u{b7} {first}",
-                capitalize(&storage::interval_phrase(interval))
-            );
-        }
+        plan.insert(
+            0,
+            (
+                Seg::Text,
+                format!(
+                    "{} \u{b7} ",
+                    capitalize(&storage::interval_phrase(interval))
+                ),
+            ),
+        );
         let repairs: Vec<AnyElement> = v
             .repairs
             .iter()
@@ -276,7 +330,7 @@ impl Onboarding {
                     .text_size(text::BASE)
                     .line_height(relative(1.4))
                     .text_color(p.text_subtle)
-                    .child(runs(&plan, p.text_strong, &p)),
+                    .child(runs(&plan, p.text_strong, p.text_subtle, &p)),
             )
             .child(
                 div()
@@ -287,10 +341,11 @@ impl Onboarding {
                         runs(
                             &[(Seg::Text, "Checking that folder\u{2026}".into())],
                             p.text,
+                            p.text,
                             &p,
                         )
                     } else {
-                        runs(&v.text, verdict_color, &p)
+                        runs(&v.text, verdict_color, p.text, &p)
                     }),
             )
             .when(!repairs.is_empty(), |d| {
@@ -310,7 +365,36 @@ impl Onboarding {
             ),
             row("Keep", keep, &p),
             row("Saves to", folder, &p),
-            row("Never recorded", apps, &p),
+            row_aligned(
+                "Never recorded",
+                {
+                    let (text_, hint) =
+                        super::capture_apps::excluded_note(&self.draft.privacy.excluded_apps);
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .gap(space::S2)
+                        .child(apps)
+                        .child(
+                            div()
+                                .id("ob-apps-note")
+                                .test_support()
+                                .text_size(text::BASE)
+                                .line_height(relative(parts::FINE_LH))
+                                .text_color(p.text_subtle)
+                                .child(
+                                    gpui_kit::StyledText::new(
+                                        format!("{text_} {hint}").trim().to_string(),
+                                    )
+                                    .with_highlights(note_hint(&text_, hint, p.text_muted)),
+                                ),
+                        )
+                },
+                true,
+                &p,
+            ),
         ];
         let col = vec![
             head(vec![

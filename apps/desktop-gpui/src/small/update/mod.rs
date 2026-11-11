@@ -11,7 +11,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, AnyElement, App, AppContext, Context, Global, Render, Window};
 use serde_json::Value;
 
-use super::parts::{b, frame, h2, inset_panel, note, para, spec_row};
+use super::parts::{frame, h2, inset_panel, note, spec_row};
 use crate::settings::model::{format_bytes, Json};
 use crate::theme::{self, space, text, Palette, FONT_MONO};
 use crate::ui::app_icon::{app_icon, Src};
@@ -43,12 +43,28 @@ pub fn last_status(cx: &App) -> Option<&app_core::updates::AppUpdateStatus> {
     cx.try_global::<LastTyped>().map(|s| &s.0)
 }
 
+/// What Refresh license or Renew last did (`renewNote`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenewNote {
+    Checkout,
+    Checked,
+}
+
+/// `refresh_license_now`, then the status it left. Tests pass a fake, so they
+/// never reach real licensing.
+pub type LicenseRefresh =
+    std::sync::Arc<dyn Fn() -> Result<Option<LicenseStatus>, String> + Send + Sync>;
+
 pub struct UpdateWindow {
     pub status: Option<Value>,
     pub license: Option<LicenseStatus>,
     pub action_error: Option<String>,
     pub acting: bool,
     pub notes_open: bool,
+    /// Refresh license is in flight.
+    pub refreshing: bool,
+    pub renew_note: Option<RenewNote>,
+    pub refresh_license: Option<LicenseRefresh>,
 }
 
 impl UpdateWindow {
@@ -59,7 +75,62 @@ impl UpdateWindow {
             action_error: None,
             acting: false,
             notes_open: false,
+            refreshing: false,
+            renew_note: None,
+            refresh_license: None,
         }
+    }
+
+    /// The Manual Receipt Refresh. A renewal that lands republishes the licence
+    /// and re-runs the update check; until then the line says what it found.
+    pub fn refresh_license(&mut self, cx: &mut Context<Self>) {
+        let Some(refresh) = self.refresh_license.clone().filter(|_| !self.refreshing) else {
+            return;
+        };
+        self.refreshing = true;
+        self.action_error = None;
+        let job = cx.background_spawn(async move { refresh() });
+        cx.spawn(async move |this, cx| {
+            let result = job.await;
+            let _ = this.update(cx, |w, cx| {
+                w.refreshing = false;
+                match result {
+                    Ok(status) => {
+                        w.license = status.or(w.license.take());
+                        w.renew_note = Some(RenewNote::Checked);
+                    }
+                    Err(e) => w.action_error = Some(e),
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    /// The out-of-window line after Renew or Refresh license (`renewLine`).
+    pub fn renew_line(&self, cx: &App) -> Option<String> {
+        Some(match self.renew_note? {
+            RenewNote::Checkout => {
+                "Checkout opened in your browser. Come back here when you\u{2019}re done.".into()
+            }
+            RenewNote::Checked
+                if matches!(
+                    self.license,
+                    Some(LicenseStatus::Licensed {
+                        in_window: true,
+                        ..
+                    })
+                ) =>
+            {
+                "Renewal found \u{2014} checking for the update now.".into()
+            }
+            RenewNote::Checked => format!(
+                "Checked just now \u{2014} your window still ends {}.",
+                self.license_terms(cx)
+                    .map_or("as before".to_string(), |(_, end)| end)
+            ),
+        })
     }
 
     pub fn set_status(&mut self, status: Value, cx: &mut Context<Self>) {
@@ -78,7 +149,10 @@ impl UpdateWindow {
     fn primary(&mut self, cx: &mut Context<Self>) {
         self.action_error = None;
         match model::key(self.status.as_ref()) {
-            Key::Expired => cx.open_url(RENEWAL_CHECKOUT_URL),
+            Key::Expired => {
+                cx.open_url(RENEWAL_CHECKOUT_URL);
+                self.renew_note = Some(RenewNote::Checkout);
+            }
             Key::Ready => {
                 let Some(core) = crate::chat::core(cx) else {
                     return;
@@ -139,7 +213,7 @@ impl UpdateWindow {
                 let tail = match k {
                     Key::Expired => self
                         .license_terms(cx)
-                        .map(|(_, end)| format!(" \u{b7} updates covered through {end}")),
+                        .map(|_| " \u{b7} updates covered through".to_string()),
                     Key::UpToDate => {
                         model::checked_clock(last_checked(s), crate::ui::clock::now(cx))
                             .map(|t| format!(" \u{b7} checked {t}"))
@@ -167,7 +241,14 @@ impl UpdateWindow {
                                     .text_color(p.text_strong)
                                     .child(c.to_string()),
                             )
-                            .children(tail.map(|t| t.trim_start().to_string())),
+                            .children(tail.map(|t| t.trim_start().to_string()))
+                            // `<span class="num">{license.windowEnd}</span>`.
+                            .children(
+                                (k == Key::Expired)
+                                    .then(|| self.license_terms(cx))
+                                    .flatten()
+                                    .map(|(_, end)| div().font_family(FONT_MONO).child(end)),
+                            ),
                     )
             }
             _ => ver,
@@ -248,26 +329,42 @@ impl UpdateWindow {
             band = band.child(note(
                 Tone::Ok,
                 "icons/shield-check.svg",
-                para(
-                    &[
-                        ("Nothing stops working. ", b(p)),
-                        (&format!("Mnema {current} is yours to keep \u{2014} capture, search, Ask AI and every recording stay as they are. Renewing only brings newer builds."), None),
-                    ],
-                    text::BASE,
-                    p.text_muted,
-                ),
+                div()
+                    .text_size(text::BASE)
+                    .line_height(relative(1.45))
+                    .text_color(p.text_muted)
+                    .child(mono_para(
+                        &[
+                            ("Nothing stops working. ", Ink::Bold),
+                            ("Mnema ", Ink::Plain),
+                            (&current, Ink::Mono),
+                            (" is yours to keep \u{2014} capture, search, Ask AI and every recording stay as they are. Renewing only brings newer builds.", Ink::Plain),
+                        ],
+                        p,
+                    )),
                 p,
             ));
             if let Some((who, end)) = self.license_terms(cx) {
-                let rows = [
-                    ("Licensed to", who),
-                    ("Update window", format!("ended {end}")),
-                    ("Renewal", "another year of updates, same key".into()),
+                let ended = div()
+                    .flex()
+                    .gap(px(4.))
+                    .child("ended")
+                    .child(div().font_family(FONT_MONO).child(end));
+                let rows: [(&str, AnyElement); 3] = [
+                    ("Licensed to", div().child(who).into_any_element()),
+                    ("Update window", ended.into_any_element()),
+                    (
+                        "Renewal",
+                        div()
+                            .child("another year of updates, same key")
+                            .into_any_element(),
+                    ),
                 ];
+                // `.mx-spec dt, dd { padding: 10px 0 }`.
                 band =
                     band.child(inset_panel(p).px(space::S4).py(px(2.)).children(
                         rows.into_iter().enumerate().map(|(i, (l, v))| {
-                            spec_row(i == 0, l, div().child(v), None, px(110.), p)
+                            spec_row(i == 0, l, v, None, px(110.), p).py(px(10.))
                         }),
                     ));
             }
@@ -388,9 +485,11 @@ impl UpdateWindow {
                 .children(lead.map(|l| div().flex_none().mt(px(2.)).child(l)))
                 .child(div().flex_1().min_w_0().child(text_))
         };
-        let lines = model::lines(s)
-            .into_iter()
-            .map(|l| line_el(l.tone, l.icon, l.text).into_any_element());
+        let renew = (k == Key::Expired).then(|| self.renew_line(cx)).flatten();
+        let lines = model::lines(s).into_iter().map(|l| {
+            let text_ = renew.clone().unwrap_or(l.text);
+            line_el(l.tone, l.icon, text_).into_any_element()
+        });
         let err = self
             .action_error
             .clone()
@@ -444,19 +543,9 @@ impl UpdateWindow {
                         .ghost()
                         .sm()
                         .icon("icons/rotate-cw.svg")
-                        // `refresh_license_now`: the new status arrives as LicenseStatus.
-                        .on_click(|_, _, cx| {
-                            if let Some(core) = crate::chat::core(cx) {
-                                let task_core = core.clone();
-                                core.spawn(async move {
-                                    if let Err(e) =
-                                        app_core::licensing::refresh_license_now(task_core).await
-                                    {
-                                        log::warn!("update: license refresh failed: {e}");
-                                    }
-                                });
-                            }
-                        }),
+                        .busy(self.refreshing)
+                        .disabled(self.refreshing)
+                        .on_click(cx.listener(|w, _, _, cx| w.refresh_license(cx))),
                 )
             })
             .child(div().flex_1())
@@ -484,6 +573,26 @@ impl UpdateWindow {
             .child(actions)
             .into_any_element()
     }
+}
+
+#[derive(Clone, Copy)]
+enum Ink {
+    Plain,
+    Bold,
+    /// `.num`: the mono face.
+    Mono,
+}
+
+fn mono_para(parts: &[(&str, Ink)], p: &Palette) -> gpui_kit::StyledText {
+    let runs: Vec<_> = parts
+        .iter()
+        .map(|(s, ink)| match ink {
+            Ink::Plain => (*s, theme::FONT_UI, theme::W_REGULAR, p.text_muted),
+            Ink::Bold => (*s, theme::FONT_UI, theme::W_SEMIBOLD, p.text_strong),
+            Ink::Mono => (*s, FONT_MONO, theme::W_REGULAR, p.text_muted),
+        })
+        .collect();
+    crate::ui::face_runs(&runs)
 }
 
 /// `.up-notes`: muted body, strong 13 px headings, links in body ink.
@@ -664,10 +773,21 @@ pub fn open(cx: &mut App) {
             .and_then(|core| app_core::updates::current_status(core))
             .and_then(|s| serde_json::to_value(s).ok())
     });
+    let refresh = core.map(|core| -> LicenseRefresh {
+        std::sync::Arc::new(move || {
+            core.block_on(app_core::licensing::refresh_license_now(core.clone()))?;
+            Ok(app_core::licensing::cached_status(&core))
+        })
+    });
     super::open_or_focus::<UpdateWindow>(
         super::Kind::Update,
         cx,
-        |_, cx| cx.new(|_| UpdateWindow::new(status, license)),
+        |_, cx| {
+            cx.new(|_| UpdateWindow {
+                refresh_license: refresh,
+                ..UpdateWindow::new(status, license)
+            })
+        },
         |_, _, _| {},
     );
 }

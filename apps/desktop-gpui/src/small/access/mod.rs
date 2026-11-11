@@ -77,6 +77,9 @@ pub struct FixtureAccess {
     pub request: Option<Value>,
     /// Approve / block fail with this message.
     pub fail: Option<String>,
+    /// Served instead of `request` once an approve / block has failed (another
+    /// tool's request took the slot).
+    pub successor: Option<Value>,
     pub(crate) calls: Mutex<Vec<Call>>,
 }
 
@@ -97,8 +100,16 @@ impl FixtureAccess {
 
 impl AccessBackend for FixtureAccess {
     fn pending(&self) -> Result<Option<Value>, String> {
+        let answered = self.fail.is_some()
+            && self
+                .calls()
+                .iter()
+                .any(|c| matches!(c, Call::Approve(..) | Call::Block(_)));
         self.record(Call::Pending);
-        Ok(self.request.clone())
+        match (&self.successor, answered) {
+            (Some(next), true) => Ok(Some(next.clone())),
+            _ => Ok(self.request.clone()),
+        }
     }
     fn approve(&self, request_id: &str, scope: Scope) -> Result<(), String> {
         self.record(Call::Approve(request_id.into(), scope));
@@ -321,6 +332,11 @@ impl AccessRequest {
                         this.gone = model::is_gone(&e);
                         this.error = Some(model::action_error(&e));
                         this.deny_focus.focus(window, cx);
+                        // The tool stopped waiting, or another tool's request took
+                        // the slot since this one rendered: show that one instead.
+                        if e.contains("no pending CLI Access request") {
+                            this.show_successor(window, cx);
+                        }
                     }
                 }
                 cx.notify();
@@ -328,6 +344,31 @@ impl AccessRequest {
         })
         .detach();
         cx.notify();
+    }
+
+    /// `showSuccessorIfAnyIsWaiting`: a different request in the slot replaces
+    /// the dead one (its own narrowest scope, no error, answerable again).
+    fn show_successor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let backend = self.backend.clone();
+        let job = cx.background_spawn(async move { backend.pending() });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Some(v)) = job.await else { return };
+            let _ = this.update_in(cx, |this, window, cx| {
+                let Some(next) = Request::from_json(&v) else {
+                    return;
+                };
+                if this.request().is_none_or(|r| r.id == next.id) {
+                    return;
+                }
+                this.selected = next.minimum;
+                this.phase = Phase::Request(next);
+                this.error = None;
+                this.gone = false;
+                this.deny_focus.focus(window, cx);
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     /// Esc denies (never while an answer is in flight); on a receipt it just closes.

@@ -7,6 +7,7 @@ fn live(requested: bool, paused: bool) -> RuntimeSource {
         paused,
         live: requested && !paused,
         privacy_failed: false,
+        restart_required: false,
     }
 }
 
@@ -218,6 +219,7 @@ const ALL_ON: RuntimeSources = [RuntimeSource {
     paused: false,
     live: true,
     privacy_failed: false,
+    restart_required: false,
 }; 3];
 
 #[test]
@@ -302,9 +304,11 @@ fn flag_privacy_beats_low_disk_beats_disk_soon() {
     assert_eq!(
         status_flag(&m),
         Some(StatusFlag {
+            kind: FlagKind::DiskSoon,
             tone: Tone::Info,
-            text: "disk almost full ·",
-            action: "6.1 GB left".into()
+            text: "disk almost full ·".into(),
+            action: "6.1 GB left".into(),
+            tip: None,
         })
     );
     // Already suspended → the low-disk flag, never both.
@@ -356,4 +360,37 @@ fn stopped_reason_is_history_after_a_newer_session() {
         Some("disk full")
     );
     assert_eq!(stopped_reason_from(&[row], Some(100)), None);
+}
+
+#[test]
+fn privacy_flags_name_the_stopped_sources_like_status_bar_ts() {
+    let mut rt = ALL_ON;
+    rt[0].privacy_failed = true;
+    rt[2].privacy_failed = true;
+    let m = recording(rt, health());
+    let retry = status_flag(&m).unwrap();
+    assert_eq!(retry.kind, FlagKind::PrivacyRetry);
+    assert_eq!(
+        retry.tip.as_deref(),
+        Some("Mnema stopped screen and system audio because the privacy filter could not be applied. It is retrying recovery. Microphone can keep recording.")
+    );
+    rt[2].restart_required = true;
+    let restart = status_flag(&recording(rt, health())).unwrap();
+    assert_eq!(restart.kind, FlagKind::PrivacyRestart);
+    assert_eq!(restart.tone, Tone::Danger);
+    assert_eq!(restart.text, "restart to resume screen and system audio ·");
+    assert_eq!(restart.action, "Restart");
+    // The mic never carries the filter: a failed mic alone raises no flag.
+    let mut mic = ALL_ON;
+    mic[1].privacy_failed = true;
+    assert_eq!(status_flag(&recording(mic, health())), None);
+    // The start failure's message is the flag's tooltip.
+    let failed = StatusBarModel {
+        start_error: Some("Screen Recording is off".into()),
+        ..Default::default()
+    };
+    assert_eq!(
+        status_flag(&failed).unwrap().tip.as_deref(),
+        Some("Screen Recording is off")
+    );
 }

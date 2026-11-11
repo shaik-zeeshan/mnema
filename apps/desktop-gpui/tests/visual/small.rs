@@ -25,7 +25,7 @@ use mnema_gpui::theme;
 use super::compare;
 
 /// `(surface, state, fixture file)` for every golden; the fixture defaults like `shoot.ts`.
-pub const STATES: [(&str, &str, &str); 24] = [
+pub const STATES: [(&str, &str, &str); 25] = [
     ("access", "request", "request"),
     ("access", "widen", "widen"),
     ("access", "no-request", "no-request"),
@@ -37,6 +37,8 @@ pub const STATES: [(&str, &str, &str); 24] = [
     ("update", "downloading", "downloading"),
     ("update", "install-failed", "install-failed"),
     ("update", "ready", "ready"),
+    // Out of the licence's update window: Renew, Refresh license.
+    ("update", "expired", "expired"),
     ("permission-helper", "waiting", "waiting"),
     ("permission-helper", "granted", "granted"),
     ("debug", "overview-issues", "default"),
@@ -122,7 +124,8 @@ pub fn render(
             }
             "update" => {
                 let status = map["get_app_update_status"].clone();
-                let v = cx.new(|_| UpdateWindow::new(Some(status), None));
+                let license = serde_json::from_value(map["get_license_status"].clone()).ok();
+                let v = cx.new(|_| UpdateWindow::new(Some(status), license));
                 root(v.into(), window, cx)
             }
             "permission-helper" => {

@@ -60,7 +60,11 @@ pub struct DebugData {
     pub ai_status: Option<Value>,
     pub usage: Option<Value>,
     pub runs: Vec<Value>,
+    /// `list_user_context_derivation_runs` failed ("Couldn't load recent runs").
+    pub runs_error: Option<String>,
     pub cli_history: Vec<Value>,
+    /// `list_cli_access_history` failed ("Couldn't read CLI requests").
+    pub cli_error: Option<String>,
     pub grants: Vec<Value>,
     pub uc_status: Option<Value>,
     /// `tail_app_log`.
@@ -107,8 +111,15 @@ impl DebugData {
             Section::Ai => {
                 self.ai_status = from.ai_status.or(self.ai_status.take());
                 self.usage = from.usage;
-                self.runs = from.runs;
-                self.cli_history = from.cli_history;
+                // A failed read keeps the last list behind its error line.
+                if from.runs_error.is_none() {
+                    self.runs = from.runs;
+                }
+                self.runs_error = from.runs_error;
+                if from.cli_error.is_none() {
+                    self.cli_history = from.cli_history;
+                }
+                self.cli_error = from.cli_error;
                 self.grants = from.grants;
                 self.uc_status = from.uc_status;
             }
@@ -287,12 +298,14 @@ impl DebugBackend for CoreDebug {
                     .ok()
                     .and_then(json);
                 d.usage = app_core::ask_ai::get_ask_ai_last_turn_usage().and_then(json);
-                d.cli_history = core
-                    .block_on(app_core::cli_access::list_cli_access_history(core))
-                    .ok()
-                    .and_then(json)
-                    .and_then(|v| v["events"].as_array().cloned())
-                    .unwrap_or_default();
+                match core.block_on(app_core::cli_access::list_cli_access_history(core)) {
+                    Ok(h) => {
+                        d.cli_history = json(h)
+                            .and_then(|v| v["events"].as_array().cloned())
+                            .unwrap_or_default()
+                    }
+                    Err(e) => d.cli_error = Some(e.to_string()),
+                }
                 d.grants = core
                     .block_on(app_core::cli_access::list_cli_access_grants(core))
                     .ok()
@@ -300,13 +313,13 @@ impl DebugBackend for CoreDebug {
                     .and_then(|v| v["grants"].as_array().cloned())
                     .unwrap_or_default();
                 if let Some(infra) = infra {
-                    d.runs = core
-                        .block_on(app_core::debug_status::list_user_context_derivation_runs(
-                            &infra,
-                            Some(5),
-                        ))
-                        .map(list)
-                        .unwrap_or_default();
+                    match core.block_on(app_core::debug_status::list_user_context_derivation_runs(
+                        &infra,
+                        Some(5),
+                    )) {
+                        Ok(runs) => d.runs = list(runs),
+                        Err(e) => d.runs_error = Some(e.to_string()),
+                    }
                     d.uc_status = core
                         .block_on(app_core::user_context::commands::get_user_context_status(
                             core, &infra,
@@ -497,6 +510,9 @@ impl DebugBackend for FixtureDebug {
                 d.ai_status = v("get_ai_runtime_status");
                 d.usage = v("get_ask_ai_last_turn_usage");
                 d.runs = arr("list_user_context_derivation_runs");
+                let reject = |key: &str| m[key]["__reject"].as_str().map(String::from);
+                d.runs_error = reject("list_user_context_derivation_runs");
+                d.cli_error = reject("list_cli_access_history");
                 d.cli_history = m["list_cli_access_history"]["events"]
                     .as_array()
                     .cloned()

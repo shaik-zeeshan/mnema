@@ -96,7 +96,7 @@ fn developer(map: &mut serde_json::Value) {
     map["get_recording_settings"]["developerOptionsEnabled"] = true.into();
 }
 
-const SHELL_STATES: [State; 8] = [
+const SHELL_STATES: [State; 11] = [
     State {
         name: "populated",
         fixture: FixtureId::Populated,
@@ -153,6 +153,28 @@ const SHELL_STATES: [State; 8] = [
         viewport: MAIN,
         patch: Some(capture_health),
     },
+    // The status bar's flags, each from its own parity fixture (shared with the Tauri side).
+    State {
+        name: "privacy-restart",
+        fixture: FixtureId::Populated,
+        overlay: None,
+        viewport: MAIN,
+        patch: Some(|map| *map = fixture::load("shell", "privacy-restart").expect("fixture")),
+    },
+    State {
+        name: "low-disk",
+        fixture: FixtureId::Populated,
+        overlay: None,
+        viewport: MAIN,
+        patch: Some(|map| *map = fixture::load("shell", "low-disk").expect("fixture")),
+    },
+    State {
+        name: "start-failed",
+        fixture: FixtureId::Empty,
+        overlay: None,
+        viewport: MAIN,
+        patch: Some(|map| *map = fixture::load("shell", "start-failed").expect("fixture")),
+    },
 ];
 
 /// The state's model: the fixture's, or its parity map patched.
@@ -165,7 +187,12 @@ fn state_model(
     };
     let mut map = fixture::load("shell", state.fixture.name())?;
     patch(&mut map);
-    fixture::shell_model(&map)
+    let mut model = fixture::shell_model(&map)?;
+    // A refused Record (the Tauri side presses it against this stub): its message.
+    if let Some(e) = map["start_native_capture"]["__reject"].as_str() {
+        model.status.start_error = Some(e.into());
+    }
+    Ok(model)
 }
 
 const THEMES: [(&str, AppearanceSetting); 2] = [

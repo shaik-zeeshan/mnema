@@ -172,6 +172,9 @@ fn running(cx: &mut TestAppContext, shell: &Entity<Shell>) -> bool {
     cx.read(|cx| shell.read(cx).model.status.running)
 }
 
+#[path = "live_tests_chrome.rs"]
+mod chrome;
+
 // ── Timeline ────────────────────────────────────────────────────────────────
 
 #[test]

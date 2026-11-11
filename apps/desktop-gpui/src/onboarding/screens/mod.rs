@@ -3,7 +3,7 @@
 
 mod ai;
 mod capture;
-mod capture_apps;
+pub(super) mod capture_apps;
 mod change;
 mod finale;
 mod models;

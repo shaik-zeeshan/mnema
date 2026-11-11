@@ -14,7 +14,7 @@ use super::flow::WorkItem;
 use super::storage::Probe;
 
 /// Golden / parity states: `(state, fixture file)`.
-pub const STATES: [(&str, &str); 19] = [
+pub const STATES: [(&str, &str); 20] = [
     ("welcome", "default"),
     ("permissions", "default"),
     ("permissions-granted", "granted"),
@@ -25,6 +25,8 @@ pub const STATES: [(&str, &str); 19] = [
     ("change", "granted"),
     // Change settings › Models over the full eight-model embedding catalog.
     ("change-models", "granted"),
+    // Change settings › Engines: recommended tag, prices, the cloud note's link.
+    ("change-engines", "granted"),
     ("setup", "granted"),
     ("setup-done", "granted"),
     ("voice", "installed"),
@@ -151,6 +153,23 @@ impl Backend for FixtureBackend {
     fn request_accessibility(&self) -> Option<(bool, Vec<String>)> {
         self.log("request_accessibility");
         self.accessibility()
+    }
+
+    fn app_icons(&self, bundle_ids: &[String]) -> Vec<(String, std::path::PathBuf)> {
+        self.log("app_icons");
+        self.map["resolve_app_icons"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|r| {
+                let id = r["bundleId"].as_str()?;
+                let path = r["iconPath"].as_str()?;
+                bundle_ids
+                    .iter()
+                    .any(|b| b == id)
+                    .then(|| (id.to_string(), path.into()))
+            })
+            .collect()
     }
 
     fn app_candidates(&self) -> Vec<(String, String)> {

@@ -301,6 +301,32 @@ impl Tone {
 /// Corner radius used by every `.mx-input`-family box.
 pub const FIELD_RADIUS: Pixels = radius::MD;
 
+/// One paragraph of runs that may switch face, weight and colour (`<b>`,
+/// `.num` mono), which highlights can't: `(text, family, weight, colour)`.
+pub fn face_runs(
+    parts: &[(&str, &'static str, gpui_kit::FontWeight, gpui_kit::Hsla)],
+) -> gpui_kit::StyledText {
+    let mut text = String::new();
+    let runs = parts
+        .iter()
+        .map(|(s, family, weight, color)| {
+            text.push_str(s);
+            gpui_kit::TextRun {
+                len: s.len(),
+                font: gpui_kit::Font {
+                    weight: *weight,
+                    ..gpui_kit::font(*family)
+                },
+                color: *color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            }
+        })
+        .collect();
+    gpui_kit::StyledText::new(text).with_runs(runs)
+}
+
 /// Rendered width of one line of text (controls that size themselves to their
 /// labels, like the segmented thumb).
 pub fn text_width(

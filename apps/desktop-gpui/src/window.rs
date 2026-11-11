@@ -92,6 +92,15 @@ pub fn ensure_main(cx: &mut App) -> Option<AnyWindowHandle> {
     show_main(cx)
 }
 
+/// Tests: treat `shell`'s window as main, so a flow that opens Settings lands on it.
+#[cfg(test)]
+pub fn adopt_main(handle: AnyWindowHandle, shell: &Entity<Shell>, cx: &mut App) {
+    cx.set_global(Main {
+        handle,
+        shell: shell.downgrade(),
+    });
+}
+
 pub fn shell(cx: &App) -> Option<Entity<Shell>> {
     cx.try_global::<Main>().and_then(|m| m.shell.upgrade())
 }

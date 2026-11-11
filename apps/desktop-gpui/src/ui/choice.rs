@@ -21,6 +21,8 @@ pub struct ChoiceOption {
     pub tag: Option<SharedString>,
     pub icon: Option<SharedString>,
     pub disabled: bool,
+    /// Drawn under the description (onboarding's engine meters).
+    pub below: Option<Rc<dyn Fn(&Palette) -> gpui_kit::AnyElement>>,
 }
 
 impl ChoiceOption {
@@ -31,7 +33,12 @@ impl ChoiceOption {
             tag: None,
             icon: None,
             disabled: false,
+            below: None,
         }
+    }
+    pub fn below(mut self, f: impl Fn(&Palette) -> gpui_kit::AnyElement + 'static) -> Self {
+        self.below = Some(Rc::new(f));
+        self
     }
     pub fn desc(mut self, d: impl Into<SharedString>) -> Self {
         self.description = Some(d.into());
@@ -196,7 +203,8 @@ impl RenderOnce for Choice {
                 .when(list, |d| d.flex_1())
                 .min_w_0()
                 .child(title)
-                .children(desc);
+                .children(desc)
+                .children(o.below.as_ref().map(|f| f(&p)));
             let (on_change, opts) = (self.on_change.clone(), all.clone());
             let key_change = self.on_change.clone();
             let hover_border = p.border_hover;

@@ -9,8 +9,8 @@ use std::time::Duration;
 use app_core::AppCore;
 use gpui_kit::{AppContext as _, Context};
 
-use super::model::{RowAction, StatusFlag, Tone};
-use super::{data, model, Overlay, Shell};
+use super::model::{FlagKind, RowAction, StatusFlag};
+use super::{data, Overlay, Shell};
 use crate::bridge::tokio::Tokio;
 use crate::native::{self, CaptureResult};
 
@@ -63,6 +63,7 @@ impl Shell {
             self.timeline.update(cx, |t, _| t.capture.starting = true);
         }
         self.model.status.loading_stop = command == Command::Stop;
+        self.model.status.loading_pause = command == Command::Pause;
         cx.notify();
         let (tx, rx) = async_channel::bounded::<CaptureResult>(1);
         let worker = core.clone();
@@ -90,7 +91,9 @@ impl Shell {
                 this.capture_busy = false;
                 this.model.status.loading_start = false;
                 this.model.status.loading_stop = false;
+                this.model.status.loading_pause = false;
                 this.timeline.update(cx, |t, _| t.capture.starting = false);
+                let failed = matches!(&result, Ok(Err(_)) | Err(_));
                 if let Ok(Err((title, e))) = &result {
                     if command == Command::Start {
                         this.start_error = Some(e.message.clone());
@@ -98,6 +101,19 @@ impl Shell {
                     }
                     // Never silent: a bell row, and the "Recording error" dialog.
                     native::report_capture_error(&core, title, e, true);
+                }
+                if let Some(id) = this.reminder_start.take() {
+                    if command == Command::Start && !failed {
+                        this.overlay = None;
+                        this.clear_notifications(Some(id), cx);
+                    }
+                }
+                // The privacy Restart: once the stop lands, start again.
+                if this.restarting && command == Command::Stop && !failed {
+                    this.model.status.running = false;
+                    this.run(Command::Start, cx);
+                } else if this.restarting && command != Command::Pause {
+                    this.restarting = false;
                 }
                 cx.notify();
                 // The session event reloads too; this covers a failure, which emits none.
@@ -107,11 +123,27 @@ impl Shell {
         .detach();
     }
 
+    /// `restartForPrivacy`: stop, then start again, so the privacy filter re-applies.
+    pub(super) fn restart_for_privacy(&mut self, cx: &mut Context<Self>) {
+        let s = &self.model.status;
+        if s.loading_start || s.loading_stop || self.restarting || !s.running {
+            return;
+        }
+        self.restarting = true;
+        self.run(Command::Stop, cx);
+        if !self.capture_busy {
+            // No app core: nothing ran.
+            self.restarting = false;
+        }
+        cx.notify();
+    }
+
     /// `setSourceSelected`: save one source for the next recording.
     pub(crate) fn save_source(&mut self, i: usize, selected: bool, cx: &mut Context<Self>) {
         let Some(core) = crate::chat::core(cx) else {
             return;
         };
+        self.saving_source[i] = true;
         let mut request = capture_types::UpdateCaptureSourceSettingsRequest::default();
         *[
             &mut request.capture_screen,
@@ -128,7 +160,12 @@ impl Shell {
             }
         });
         cx.spawn(async move |this, cx| {
-            let Ok(Err(e)) = task.await else { return };
+            let result = task.await;
+            let _ = this.update(cx, |this, cx| {
+                this.saving_source[i] = false;
+                cx.notify();
+            });
+            let Ok(Err(e)) = result else { return };
             // Locked (a start is reading them): the saved settings stand, so the
             // reload below reverts the toggle. Anything else is reported.
             if e.code != "capture_sources_locked" {
@@ -141,32 +178,25 @@ impl Shell {
 
     /// The status flag's click (`runFlag`).
     pub(super) fn run_flag(&mut self, flag: &StatusFlag, cx: &mut Context<Self>) {
-        let m = &self.model.status;
-        if m.running {
-            // "disk almost full" (the only info flag) opens the popover; the
-            // others ("retrying" / "resumes on its own") are status only.
-            if flag.tone == Tone::Info {
-                self.toggle_overlay(Overlay::Status, cx);
+        match flag.kind {
+            FlagKind::PrivacyRestart => self.restart_for_privacy(cx),
+            FlagKind::StartFailed => self.start_recording(cx),
+            FlagKind::LowDisk | FlagKind::Stopped => {
+                cx.defer(|cx| crate::window::open_settings(Some("storage"), cx))
             }
-            return;
-        }
-        if m.start_error.is_some() {
-            self.start_recording(cx);
-        } else if m.read_only {
-            cx.defer(|cx| crate::window::open_settings(Some("license"), cx));
-        } else if m.stopped_reason.as_deref() == Some("disk full") {
-            cx.defer(|cx| crate::window::open_settings(Some("storage"), cx));
-        } else if model::screen_permission_missing(m) {
+            FlagKind::ReadOnly => cx.defer(|cx| crate::window::open_settings(Some("license"), cx)),
             // macOS won't re-prompt once denied: open the pane + float the helper.
-            let Some(core) = crate::chat::core(cx) else {
-                return;
-            };
-            let _ = core
-                .host()
-                .open_window(app_core::WindowRequest::PermissionHelper {
-                    kind: "screen".into(),
-                });
-            let _ = flag;
+            FlagKind::Permission => {
+                if let Some(core) = crate::chat::core(cx) {
+                    let _ = core
+                        .host()
+                        .open_window(app_core::WindowRequest::PermissionHelper {
+                            kind: "screen".into(),
+                        });
+                }
+            }
+            FlagKind::DiskSoon => self.toggle_overlay(Overlay::Status, cx),
+            FlagKind::PrivacyRetry | FlagKind::WaitingForDisplay => {}
         }
     }
 
@@ -177,10 +207,12 @@ impl Shell {
         };
         match &row.kind {
             RowAction::None => {}
+            // `runAction`: open the tab, then the row is done.
             RowAction::OpenSettings(tab) => {
-                let tab = tab.clone();
+                let (tab, id) = (tab.clone(), row.id.clone());
                 self.overlay = None;
                 cx.defer(move |cx| crate::window::open_settings(Some(&tab), cx));
+                self.clear_notifications(Some(id), cx);
             }
             // `snooze_not_recording_reminder` until the next local midnight.
             RowAction::Reminder if snooze => {
@@ -193,8 +225,14 @@ impl Shell {
                 );
             }
             // `startFromReminder`: the shared start, which reports its own failure;
-            // the lifecycle withdraws the reminder once recording runs.
-            RowAction::Reminder => self.start_recording(cx),
+            // once it runs the row goes and the popover closes.
+            RowAction::Reminder => {
+                self.reminder_start = Some(row.id.clone());
+                self.start_recording(cx);
+                if !self.capture_busy {
+                    self.reminder_start = None;
+                }
+            }
         }
         cx.notify();
     }

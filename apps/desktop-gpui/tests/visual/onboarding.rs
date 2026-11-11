@@ -176,6 +176,12 @@ pub fn render(
                 cx.notify();
             })
         }),
+        "change-engines" => cx.update(|cx| {
+            o.update(cx, |o, cx| {
+                o.tab = 1;
+                cx.notify();
+            })
+        }),
         // The first frame and its OCR land on the evidence poll.
         "finale" => cx.advance_clock(onboarding::EVIDENCE_POLL),
         _ => {}

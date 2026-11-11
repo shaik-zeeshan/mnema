@@ -118,18 +118,26 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
         CaptureGroup::Starting => {
             Some(group("Capture", p).child(div().text_color(p.text_subtle).child("Starting…")))
         }
-        CaptureGroup::Stopped => Some(
-            group("Capture", p).child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(px(4.))
-                    .text_color(p.text_subtle)
-                    .child("Not recording. Press Record or")
-                    .child(kbd(keymap::display(&shell.bindings.toggle_recording), p))
-                    .child("."),
-            ),
-        ),
+        CaptureGroup::Stopped => {
+            // A cleared shortcut leaves "Press Record." with no key.
+            let key = keymap::display(&shell.bindings.toggle_recording);
+            Some(
+                group("Capture", p).child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(4.))
+                        .text_color(p.text_subtle)
+                        .map(|d| match key.is_empty() {
+                            true => d.child("Not recording. Press Record."),
+                            false => d
+                                .child("Not recording. Press Record or")
+                                .child(kbd(key, p))
+                                .child("."),
+                        }),
+                ),
+            )
+        }
     };
     let catching = pop_rows::catching_up(m, shell.model.backlog.as_ref()).map(|c| match c {
         CatchingUp::CaughtUp => group("Catching up", p).child(

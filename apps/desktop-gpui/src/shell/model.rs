@@ -135,6 +135,8 @@ pub struct StatusBarModel {
     pub loading_start: bool,
     /// A stop is in flight (`captureControls.loadingStop`).
     pub loading_stop: bool,
+    /// A pause or resume is in flight (`captureControls.loadingPause`).
+    pub loading_pause: bool,
     pub user_paused: bool,
     pub inactivity_paused: bool,
     pub low_disk: bool,
@@ -169,6 +171,8 @@ pub struct RuntimeSource {
     pub paused: bool,
     pub live: bool,
     pub privacy_failed: bool,
+    /// `privacy_recovery_restart_required`: only a stop and start resumes it.
+    pub restart_required: bool,
 }
 
 pub type RuntimeSources = [RuntimeSource; 3];
@@ -182,6 +186,7 @@ pub fn runtime_sources(status: &RuntimeSourcesStatus) -> RuntimeSources {
             s.reason.as_deref(),
             Some("privacy_filter_apply_failed" | "privacy_recovery_restart_required")
         ),
+        restart_required: s.reason.as_deref() == Some("privacy_recovery_restart_required"),
     })
 }
 
@@ -286,6 +291,33 @@ pub fn live_lanes(m: &StatusBarModel) -> [(LaneMod, Option<&'static str>); 3] {
     })
 }
 
+/// A live lane's tooltip word (`laneTip`): "recording", "waiting · display asleep".
+pub fn lane_tip(kind: LaneMod, small: Option<&str>) -> String {
+    match (kind, small) {
+        (LaneMod::Waiting, Some("reconnecting")) => "reconnecting".into(),
+        (LaneMod::Waiting, Some(s)) => format!("waiting \u{b7} {s}"),
+        (LaneMod::Waiting, None) => "waiting".into(),
+        (LaneMod::On, _) => "recording".into(),
+        (LaneMod::Paused, _) => "paused".into(),
+        (LaneMod::Starting, _) => "starting\u{2026}".into(),
+        (LaneMod::Off, _) => "off".into(),
+        (LaneMod::Error, _) => "stopped \u{2014} privacy filter".into(),
+    }
+}
+
+/// The pause button's name and tooltip (`pauseTitle`).
+pub fn pause_title(m: &StatusBarModel) -> &'static str {
+    if m.user_paused {
+        "Resume recording"
+    } else if m.low_disk {
+        "Resumes on its own once space frees up"
+    } else if m.inactivity_paused {
+        "Pause the whole session"
+    } else {
+        "Pause recording"
+    }
+}
+
 pub fn screen_permission_missing(m: &StatusBarModel) -> bool {
     !m.running && m.selected[0] && m.screen_permission == Some(CapturePermissionState::Denied)
 }
@@ -297,31 +329,97 @@ pub enum Tone {
     Danger,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct StatusFlag {
-    pub tone: Tone,
-    pub text: &'static str,
-    pub action: String,
+/// What a flag's click does (`FlagKind` in status-bar.ts).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlagKind {
+    PrivacyRestart,
+    /// Status only: not a button.
+    PrivacyRetry,
+    LowDisk,
+    DiskSoon,
+    StartFailed,
+    WaitingForDisplay,
+    ReadOnly,
+    Stopped,
+    Permission,
 }
 
-/// At most one flag. Recording: privacy > low disk > disk soon. Stopped: start
-/// failure > read-only > stopped by the system > permission.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StatusFlag {
+    pub kind: FlagKind,
+    pub tone: Tone,
+    /// Plain lead text (may be empty); `action` renders bold after it.
+    pub text: String,
+    pub action: String,
+    pub tip: Option<String>,
+}
+
+/// "screen", "screen and system audio" (`joinList`).
+fn join_list(items: &[&str]) -> String {
+    match items {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
+/// At most one flag. Recording: privacy restart > privacy retry > low disk >
+/// disk soon. Stopped: start failure > read-only > stopped by the system > permission.
 pub fn status_flag(m: &StatusBarModel) -> Option<StatusFlag> {
-    let flag = |tone, text, action: &str| {
+    let flag = |kind, tone, text: &str, action: &str, tip: Option<String>| {
         Some(StatusFlag {
+            kind,
             tone,
-            text,
+            text: text.into(),
             action: action.into(),
+            tip,
         })
     };
     if m.running {
-        if m.runtime
-            .is_some_and(|rt| rt.iter().any(|s| s.requested && s.privacy_failed))
-        {
-            return flag(Tone::Warn, "privacy filter failed ·", "retrying");
+        // Screen and system audio carry the privacy filter; the mic never does.
+        let privacy: Vec<(usize, &str)> = m
+            .runtime
+            .iter()
+            .flat_map(|rt| [(0, "screen"), (2, "system audio")].map(|(i, n)| (i, n, rt[i])))
+            .filter(|(_, _, s)| s.requested && s.privacy_failed)
+            .map(|(i, n, _)| (i, n))
+            .collect();
+        if let (Some(rt), false) = (m.runtime, privacy.is_empty()) {
+            let names = join_list(&privacy.iter().map(|(_, n)| *n).collect::<Vec<_>>());
+            let mic = if rt[1].requested {
+                " Microphone can keep recording."
+            } else {
+                ""
+            };
+            let restart = [0, 2]
+                .iter()
+                .any(|i| rt[*i].requested && rt[*i].restart_required);
+            return if restart {
+                flag(
+                    FlagKind::PrivacyRestart,
+                    Tone::Danger,
+                    &format!("restart to resume {names} \u{b7}"),
+                    "Restart",
+                    Some(format!("Privacy filter recovery failed. Stop and start recording to resume {names}.{mic}")),
+                )
+            } else {
+                flag(
+                    FlagKind::PrivacyRetry,
+                    Tone::Warn,
+                    "privacy filter failed \u{b7}",
+                    "retrying",
+                    Some(format!("Mnema stopped {names} because the privacy filter could not be applied. It is retrying recovery.{mic}")),
+                )
+            };
         }
         if m.low_disk {
-            return flag(Tone::Warn, "free up space ·", "resumes on its own");
+            return flag(
+                FlagKind::LowDisk,
+                Tone::Warn,
+                "free up space \u{b7}",
+                "resumes on its own",
+                None,
+            );
         }
         if health::disk_soon(m.health.as_ref(), m.running, m.low_disk) {
             let free = m.health.as_ref().and_then(|h| h.disk.free_bytes);
@@ -329,24 +427,54 @@ pub fn status_flag(m: &StatusBarModel) -> Option<StatusFlag> {
                 "{} GB left",
                 crate::small::debug::readouts::gb(free.unwrap_or(0) as f64)
             );
-            return flag(Tone::Info, "disk almost full ·", &left);
+            return flag(
+                FlagKind::DiskSoon,
+                Tone::Info,
+                "disk almost full \u{b7}",
+                &left,
+                None,
+            );
         }
         return None;
     }
-    if m.start_error.is_some() {
-        return flag(Tone::Danger, "couldn't start ·", "Retry");
+    if let Some(e) = &m.start_error {
+        return flag(
+            FlagKind::StartFailed,
+            Tone::Danger,
+            "couldn't start \u{b7}",
+            "Retry",
+            Some(e.clone()),
+        );
     }
     if m.waiting_for_display {
-        return flag(Tone::Info, "no display yet ·", "starts when it wakes");
+        return flag(
+            FlagKind::WaitingForDisplay,
+            Tone::Info,
+            "no display yet \u{b7}",
+            "starts when it wakes",
+            None,
+        );
     }
     if m.read_only {
-        return flag(Tone::Danger, "read-only ·", "buy a license");
+        return flag(
+            FlagKind::ReadOnly,
+            Tone::Danger,
+            "read-only \u{b7}",
+            "buy a license",
+            None,
+        );
     }
     if m.stopped_reason.as_deref() == Some("disk full") {
-        return flag(Tone::Danger, "", "Open Storage");
+        return flag(FlagKind::Stopped, Tone::Danger, "", "Open Storage", None);
     }
     if screen_permission_missing(m) {
-        return flag(Tone::Warn, "Screen Recording off ·", "Open System Settings");
+        return flag(
+            FlagKind::Permission,
+            Tone::Warn,
+            "Screen Recording off \u{b7}",
+            "Open System Settings",
+            None,
+        );
     }
     None
 }

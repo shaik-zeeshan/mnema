@@ -20,6 +20,9 @@ const FIELD_W: f32 = 190.;
 
 #[derive(Default)]
 pub struct AppPick {
+    /// Resolved icons by bundle id (`resolve_app_icons`); a miss stays a letter.
+    pub(in crate::onboarding) icons: std::collections::HashMap<String, std::path::PathBuf>,
+    icons_asked: std::collections::HashSet<String>,
     /// The open field; `None` = the "+" shows.
     pub(in crate::onboarding) query: Option<Entity<InputState>>,
     /// Installed apps `(bundle id, name)`, loaded on the first open.
@@ -28,21 +31,111 @@ pub struct AppPick {
     sub: Option<Subscription>,
 }
 
+/// `resolveTypedApp`: the installed app with exactly this name, else the first
+/// whose name starts with it (case-insensitive).
+pub fn resolve_typed<'a>(
+    typed: &str,
+    candidates: impl Iterator<Item = &'a (String, String)> + Clone,
+) -> Option<(String, String)> {
+    let needle = typed.trim().to_lowercase();
+    if needle.is_empty() {
+        return None;
+    }
+    let name = |c: &&(String, String)| c.1.trim().to_lowercase();
+    candidates
+        .clone()
+        .find(|c| name(c) == needle)
+        .or_else(|| candidates.clone().find(|c| name(c).starts_with(&needle)))
+        .cloned()
+}
+
+/// A rule with no bundle id waits for the app to be installed (`isPendingExclusion`).
+pub fn is_pending(a: &capture_types::ExcludedAppEntry) -> bool {
+    a.bundle_id.trim().is_empty() && !a.display_name.trim().is_empty()
+}
+
+/// The line under the apps (`excludedNote`): what the rules do, then a hint.
+pub fn excluded_note(entries: &[capture_types::ExcludedAppEntry]) -> (String, &'static str) {
+    if entries.is_empty() {
+        return (
+            "Nothing is hidden. Everything on your screen is recorded.".into(),
+            "Add an app it should never see.",
+        );
+    }
+    if !entries.iter().any(|e| e.enabled) {
+        return (String::new(), "Click a crossed-out name to hide it again.");
+    }
+    let waiting = entries
+        .iter()
+        .filter(|e| e.enabled && is_pending(e))
+        .count();
+    let mut parts = Vec::new();
+    if entries
+        .iter()
+        .any(|e| e.enabled && !e.bundle_id.trim().is_empty())
+    {
+        parts.push(
+            "Nothing from them is recorded \u{2014} not the screen, and not system audio while that filter is on."
+                .to_string(),
+        );
+    }
+    match waiting {
+        0 => {}
+        1 => parts.push("One of them isn\u{2019}t installed yet \u{2014} the rule waits.".into()),
+        n => parts.push(format!(
+            "{n} of them aren\u{2019}t installed yet \u{2014} the rule waits."
+        )),
+    }
+    (parts.join(" "), "Click a name to record it after all.")
+}
+
 impl Onboarding {
+    /// Ask once, off the main thread, for the icons of the listed apps that
+    /// have a bundle id (a rule waiting for its app has none to draw).
+    pub(super) fn request_app_icons(&mut self, cx: &mut Context<Self>) {
+        let ask: Vec<String> = self
+            .draft
+            .privacy
+            .excluded_apps
+            .iter()
+            .map(|a| a.bundle_id.trim().to_string())
+            .filter(|b| !b.is_empty() && self.app_pick.icons_asked.insert(b.clone()))
+            .collect();
+        if ask.is_empty() {
+            return;
+        }
+        self.run(
+            cx,
+            move |b| b.app_icons(&ask),
+            |s, got, cx| {
+                s.app_pick.icons.extend(got);
+                cx.notify();
+            },
+        );
+    }
+
     pub fn open_app_pick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let query = cx.new(|cx| InputState::new(window, cx).placeholder("Type any app name"));
         query.update(cx, |s, cx| s.focus(window, cx));
-        self.app_pick.sub = Some(
-            cx.subscribe_in(&query, window, |o, _, e: &InputEvent, _, cx| match e {
-                // The first match, as the datalist's Enter would complete it.
-                InputEvent::PressEnter { .. } => match o.app_matches(cx).first().cloned() {
-                    Some((bundle, name)) => o.add_app(&bundle, &name, cx),
-                    None => o.close_app_pick(cx),
-                },
-                InputEvent::Change => cx.notify(),
-                _ => {}
-            }),
-        );
+        self.app_pick.sub =
+            Some(
+                cx.subscribe_in(&query, window, |o, field, e: &InputEvent, _, cx| match e {
+                    // `commitAdd`: an installed app by name, else a rule that waits for it.
+                    InputEvent::PressEnter { .. } => {
+                        let typed = field.read(cx).value().trim().to_string();
+                        if typed.is_empty() {
+                            return o.close_app_pick(cx);
+                        }
+                        let found = resolve_typed(&typed, o.app_pick.candidates.iter().flatten());
+                        match found {
+                            Some((bundle, name)) => o.add_app(&bundle, &name, cx),
+                            None => o.add_app("", &typed, cx),
+                        }
+                    }
+                    InputEvent::Change => cx.notify(),
+                    _ => {}
+                }),
+            );
         self.app_pick.query = Some(query);
         if self.app_pick.candidates.is_none() {
             self.run(

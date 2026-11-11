@@ -12,6 +12,7 @@ pub mod ai;
 pub mod budget;
 pub mod data;
 pub mod downloads;
+pub mod engines;
 #[cfg(feature = "fixtures")]
 pub mod fixture;
 pub mod flow;
@@ -24,6 +25,8 @@ mod screens;
 pub use actions::EVIDENCE_POLL;
 #[cfg(test)]
 mod ai_tests;
+#[cfg(test)]
+mod screen_tests;
 #[cfg(test)]
 mod tests;
 
@@ -130,6 +133,8 @@ pub struct Onboarding {
     pub app_pick: screens::AppPick,
     // Change settings
     pub tab: usize,
+    /// Engines' "Where's the cloud option?" is open.
+    pub cloud_open: bool,
     pub ai: ai::AiSetup,
     pub undo: Option<(Features, String)>,
     // Setup
@@ -199,6 +204,7 @@ impl Onboarding {
             inset: gpui_kit::px(0.),
             app_pick: Default::default(),
             tab: 0,
+            cloud_open: false,
             ai: ai::AiSetup::default(),
             undo: None,
             dl: Downloads::default(),

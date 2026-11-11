@@ -8,7 +8,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, Context, Div, Hsla, MouseButton, Role, SharedString, Window};
 
-use super::model::{self, Lane, LaneMod, RecMod, Tone};
+use super::model::{self, FlagKind, Lane, LaneMod, RecMod, Tone};
 use super::{Overlay, Shell};
 use crate::theme::{self, breakpoint, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::{clock, icon, icon_button, sep, with_tip};
@@ -130,33 +130,48 @@ fn record_controls(
     cx: &mut Context<Shell>,
 ) -> Vec<gpui_kit::AnyElement> {
     let m = &shell.model.status;
+    let mut out = Vec::new();
     if m.running {
-        let pause_label = if m.user_paused {
-            "Resume recording"
-        } else {
-            "Pause recording"
-        };
-        let glyph = if m.user_paused {
+        // Pause is a whole-session control (it stays on through an idle pause);
+        // Resume shows for a user pause or low disk, which resumes on its own.
+        let show_resume = m.user_paused || m.low_disk;
+        let off = m.loading_pause || (m.low_disk && !m.user_paused);
+        let title = model::pause_title(m);
+        let glyph = if show_resume {
             crate::assets::FILL_PLAY
         } else {
             crate::assets::FILL_PAUSE
         };
-        return vec![
+        out.push(
             with_tip(
-                icon_button("status-pause", pause_label, size::H_MINI, false, p),
-                pause_label,
+                icon_button("status-pause", title, size::H_MINI, false, p),
+                title,
             )
             .child(icon(glyph, size::ICON_XS))
-            .on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx)))
+            .when(off, |b| b.opacity(theme::DISABLED_OPACITY).cursor_default())
+            .when(!off, |b| {
+                b.on_click(cx.listener(|this, _, _, cx| this.toggle_pause(cx)))
+            })
             .into_any_element(),
+        );
+    }
+    let key = crate::keymap::display(&shell.bindings.toggle_recording);
+    if m.running || m.loading_start {
+        // Shown (disabled) while starting, so the bar doesn't jump when it lands.
+        let off = !m.running || m.loading_stop;
+        out.push(
             with_tip(
                 icon_button("status-stop", "Stop recording", size::H_MINI, false, p),
-                "Stop recording",
+                format!("Stop recording  {key}"),
             )
             .child(icon(crate::assets::FILL_STOP, size::ICON_XS))
-            .on_click(cx.listener(|this, _, _, cx| this.stop_recording(cx)))
+            .when(off, |b| b.opacity(theme::DISABLED_OPACITY).cursor_default())
+            .when(!off, |b| {
+                b.on_click(cx.listener(|this, _, _, cx| this.stop_recording(cx)))
+            })
             .into_any_element(),
-        ];
+        );
+        return out;
     }
     let off = m.read_only;
     let record = div()
@@ -187,24 +202,27 @@ fn record_controls(
         .child("Record")
         .on_click(cx.listener(|this, _, _, cx| this.start_recording(cx)))
         .test_support();
-    vec![with_tip(
-        record,
-        format!(
-            "Start recording  {}",
-            crate::keymap::display(&shell.bindings.toggle_recording)
-        ),
-    )
-    .into_any_element()]
+    out.push(with_tip(record, format!("Start recording  {key}")).into_any_element());
+    out
 }
 
 fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyElement {
     let m = &shell.model.status;
     if m.running || m.loading_start {
         let live = model::live_lanes(m);
+        let open = shell.overlay == Some(Overlay::Status);
+        let aria = Lane::ALL
+            .iter()
+            .zip(live)
+            .map(|(l, (kind, small))| format!("{}: {}", l.name(), model::lane_tip(kind, small)))
+            .collect::<Vec<_>>()
+            .join(", ");
         return div()
             .id("status-lanes")
             .role(Role::Button)
-            .aria_label("What Mnema is doing")
+            .aria_label(SharedString::from(format!(
+                "What Mnema is doing \u{2014} {aria}"
+            )))
             .aria_expanded(shell.overlay == Some(Overlay::Status))
             .flex()
             .items_center()
@@ -222,7 +240,19 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
                 Lane::ALL
                     .iter()
                     .zip(live)
-                    .map(|(l, (kind, small))| lane(*l, kind, small, p)),
+                    .enumerate()
+                    .map(|(i, (l, (kind, small)))| {
+                        let el = div()
+                            .id(("status-live-lane", i))
+                            .child(lane(*l, kind, small, p));
+                        // The popover says it all while open (`use:tip={statusPop.open ? null : …}`).
+                        if open {
+                            el.into_any_element()
+                        } else {
+                            let tip = format!("{}: {}", l.name(), model::lane_tip(kind, small));
+                            with_tip(el, tip).into_any_element()
+                        }
+                    }),
             )
             .child(
                 div()
@@ -238,17 +268,23 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
     for (i, l) in Lane::ALL.into_iter().enumerate() {
         let on = m.selected[i];
         let kind = if on { LaneMod::On } else { LaneMod::Off };
-        let small = (i == 0 && blocked).then_some("no permission");
-        let tip = format!(
-            "{}: {} ({})",
-            l.name(),
-            if on {
-                "on — click to skip on next recording"
-            } else {
-                "off — click to include in next recording"
-            },
-            i + 1
-        );
+        let screen_blocked = i == 0 && blocked;
+        let small = screen_blocked.then_some("no permission");
+        let tip = if screen_blocked {
+            "Screen Recording is off for Mnema in System Settings".to_string()
+        } else {
+            format!(
+                "{}: {} ({})",
+                l.name(),
+                if on {
+                    "on \u{2014} click to skip on next recording"
+                } else {
+                    "off \u{2014} click to include in next recording"
+                },
+                crate::keymap::display(&shell.bindings.sources[i])
+            )
+        };
+        let off = m.read_only || m.loading_start || shell.saving_source[i];
         let button = div()
             .id(("status-lane", i))
             .test_support()
@@ -267,7 +303,7 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
             .rounded(radius::XS)
             .cursor_pointer()
             .hover(|s| s.bg(p.wash_strong))
-            .when(m.read_only, |el| el.opacity(theme::DISABLED_OPACITY))
+            .when(off, |el| el.opacity(theme::DISABLED_OPACITY))
             .child(lane(l, kind, small, p))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_source(i, cx)));
         row = row.child(with_tip(button, tip));
@@ -302,7 +338,16 @@ fn pill(
         .text_color(fg)
         .cursor_pointer()
         .hover(|s| s.border_color(p.border_hover))
-        .child(div().size(px(6.)).rounded_full().bg(dot))
+        // `.mx-flag[data-tone]::before`: a 3 px halo of the tone at 18%.
+        .child(
+            div()
+                .size(px(6.))
+                .rounded_full()
+                .bg(dot)
+                .when(tone.is_some(), |d| {
+                    d.shadow(vec![crate::ui::ring(crate::ui::alpha(dot, 0.18))])
+                }),
+        )
         .when(!lead.is_empty(), |el| el.child(lead.to_string()))
         .child(div().text_color(strong).child(bold))
 }
@@ -322,10 +367,34 @@ pub fn render(
             Tone::Warn => (p.warn, p.warn_border),
             Tone::Danger => (p.danger, p.danger_border),
         };
-        let flag = f.clone();
-        pill("status-flag", f.text, f.action, Some(tone), p)
+        let restart = f.kind == FlagKind::PrivacyRestart;
+        let action = if restart && shell.restarting {
+            "Restarting\u{2026}".to_string()
+        } else {
+            f.action.clone()
+        };
+        let el = pill("status-flag", &f.text, action, Some(tone), p);
+        let tip = f.tip.clone();
+        // "retrying" is status, not a button (`<span role="status">`).
+        let el = if f.kind == FlagKind::PrivacyRetry {
+            el.role(Role::Status).cursor_default()
+        } else if restart && (shell.restarting || m.loading_stop) {
+            el.opacity(theme::BUSY_OPACITY).cursor_default()
+        } else {
+            let flag = f.clone();
+            el.when(f.kind == FlagKind::DiskSoon, |el| {
+                el.aria_expanded(shell.overlay == Some(Overlay::Status))
+            })
             .on_click(cx.listener(move |this, _, _, cx| this.run_flag(&flag, cx)))
-            .into_any_element()
+        }
+        .aria_label(SharedString::from(
+            format!("{} {}", f.text, f.action).trim().to_string(),
+        ))
+        .test_support();
+        match tip {
+            Some(tip) => with_tip(el, tip).into_any_element(),
+            None => el.into_any_element(),
+        }
     });
     let resting = (flag.is_none() && rec.kind == RecMod::Paused && rec.clock.is_none())
         .then(|| div().child("resumes when you’re back").into_any_element());

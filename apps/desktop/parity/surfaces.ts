@@ -99,6 +99,7 @@ const OB_SET: [string, string, string[]][] = [
   ["capture-blocked", "tiny", OB_TO_CAPTURE],
   ["settings", "granted", [...OB_TO_CAPTURE, obBtn("Your settings")]],
   ["change", "granted", [...OB_TO_CAPTURE, obBtn("Your settings"), obBtn("Change settings")]],
+  ["change-engines", "granted", [...OB_TO_CAPTURE, obBtn("Your settings"), obBtn("Change settings"), '.tabs button:has-text("Engines")']],
   ["setup", "granted", OB_TO_SETUP],
   ["setup-done", "installed", OB_TO_SETUP],
   ["voice", "installed", [...OB_TO_SETUP, obBtn("Continue")]],
@@ -187,7 +188,21 @@ export const SURFACES: Record<string, Surface> = {
     viewport: MAIN,
     page: "timeline.html",
     selector: WIN,
-    states: { populated: "", empty: "state=first-run" },
+    // notifications: the bell over populated; the status-bar flag states have their
+    // own fixtures; start-failed presses Record against a stub that refuses it.
+    stateFixture: { notifications: "populated" },
+    stateClick: {
+      notifications: ['button[aria-label^="Notifications"]'],
+      "start-failed": ['.mx-statusbar button.mx-btn--sm'],
+    },
+    states: {
+      populated: "",
+      empty: "state=first-run",
+      notifications: "",
+      "privacy-restart": "",
+      "low-disk": "",
+      "start-failed": "state=first-run",
+    },
   },
   // StatusPop (status-bar popover) states; the Tauri side shows the shell, the popover needs a click.
   status: {
@@ -398,6 +413,7 @@ export const SURFACES: Record<string, Surface> = {
       "ai-choose": "state=ai-held",
       "ai-key": "state=ai-verifying",
       "ai-chatgpt": "state=ai-held",
+      "change-engines": "step=change",
       "permissions-granted": "step=permissions&perm=sysaudio",
       "permissions-denied": "state=perm-denied",
       "capture-blocked": "step=capture&folder=tiny",

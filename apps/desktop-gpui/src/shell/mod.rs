@@ -70,6 +70,12 @@ pub struct Shell {
     start_error: Option<String>,
     /// A capture command is in flight (`loadingStart/Stop/Pause`).
     capture_busy: bool,
+    /// The privacy flag's Restart: a stop, then a start.
+    pub restarting: bool,
+    /// A lane's save is in flight (`sourceSelection.isSaving`).
+    pub saving_source: [bool; 3],
+    /// The bell row whose Start is in flight (`startFromReminder`).
+    reminder_start: Option<String>,
     /// The 2 s live feed while recording or while the status popover is open.
     live: Option<Task<()>>,
     /// The 60 s beat: Insights' tracked time, and every 5th the bar's "today".
@@ -156,6 +162,9 @@ impl Shell {
             tick: None,
             start_error: None,
             capture_busy: false,
+            restarting: false,
+            saving_source: [false; 3],
+            reminder_start: None,
             live: None,
             _beat: Self::start_beat(cx),
             beat_reads: (0, 0),
@@ -175,6 +184,7 @@ impl Shell {
         }
         model.status.loading_start |= self.model.status.loading_start && self.capture_busy;
         model.status.loading_stop |= self.model.status.loading_stop && self.capture_busy;
+        model.status.loading_pause |= self.model.status.loading_pause && self.capture_busy;
         // The 2 s feed isn't part of a reload, and a failed read keeps the last
         // good value (status-live.svelte.ts): keep the readings until the next poll.
         if model.status.health.is_none() {
@@ -297,8 +307,13 @@ impl Shell {
         HelpState {
             capturing: s.running,
             user_paused: s.user_paused,
-            can_toggle_recording: !s.read_only,
-            can_toggle_sources: !s.running && !s.read_only,
+            // `canToggleRecordingByShortcut` / `canToggleSourcesByShortcut`.
+            can_toggle_recording: if s.running {
+                !s.loading_stop
+            } else {
+                !s.loading_start
+            },
+            can_toggle_sources: self.source_keys_live(),
             developer_options: self.model.developer_options,
         }
     }
@@ -365,9 +380,22 @@ impl Shell {
             .update(cx, |field, cx| field.focus_mode(mode, window, cx));
     }
 
+    /// The 1 / 2 / 3 keys work on the Timeline only, while nothing records
+    /// (`+layout.svelte`: `isMainRoute && !isCapturing`).
+    fn source_keys_live(&self) -> bool {
+        let s = &self.model.status;
+        self.surface == Surface::Timeline && !s.running && !s.loading_start
+    }
+
+    fn toggle_source_key(&mut self, i: usize, cx: &mut Context<Self>) {
+        if self.source_keys_live() {
+            self.toggle_source(i, cx);
+        }
+    }
+
     fn toggle_source(&mut self, i: usize, cx: &mut Context<Self>) {
         let s = &mut self.model.status;
-        if s.running || s.read_only {
+        if s.running || s.read_only || s.loading_start || self.saving_source[i] {
             return;
         }
         s.selected[i] = !s.selected[i];
@@ -444,16 +472,18 @@ impl Shell {
             }
         }))
         .on_action(
-            cx.listener(|this, _: &keymap::ToggleSourceScreen, _, cx| this.toggle_source(0, cx)),
+            cx.listener(|this, _: &keymap::ToggleSourceScreen, _, cx| {
+                this.toggle_source_key(0, cx)
+            }),
         )
         .on_action(
             cx.listener(|this, _: &keymap::ToggleSourceMicrophone, _, cx| {
-                this.toggle_source(1, cx)
+                this.toggle_source_key(1, cx)
             }),
         )
         .on_action(
             cx.listener(|this, _: &keymap::ToggleSourceSystemAudio, _, cx| {
-                this.toggle_source(2, cx)
+                this.toggle_source_key(2, cx)
             }),
         )
         .on_action(cx.listener(|this, _: &keymap::OpenDebug, _, cx| this.open_debug(cx)))
@@ -530,3 +560,7 @@ impl Render for Shell {
 #[cfg(test)]
 #[path = "shell_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "flow_tests.rs"]
+mod flow_tests;

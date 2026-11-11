@@ -6,6 +6,7 @@
 
 use capture_types::AudioTranscriptionProvider;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, relative, AnyElement, Context, Hsla, Window};
 
 use super::{button, on_ix, primary};
@@ -27,6 +28,55 @@ const SECTIONS: [(&str, &str); 4] = [
     ("Models", "Sizes come from the model manifests \u{2014} nothing here is a pasted constant."),
     ("AI features", "Nothing here is sent anywhere until you pick a provider."),
 ];
+/// `.ob-met`: a mono label and its figure, over a 3 px track. Memory is
+/// measured, never published, so its fill is dashed ("about").
+fn meter(label: &'static str, value: String, frac: f32, dashed: bool, p: &Palette) -> AnyElement {
+    let fill = div().h_full().w(gpui_kit::relative(frac.clamp(0., 1.)));
+    let fill = if dashed {
+        // `repeating-linear-gradient(90deg, grey 0 3px, transparent 3px 5px)`.
+        fill.flex()
+            .gap(px(2.))
+            .overflow_hidden()
+            .children((0..120).map(|_| div().flex_none().w(px(3.)).h_full().bg(p.chart_grey_4)))
+    } else {
+        fill.bg(p.chart_grey_4)
+    };
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .mt(px(4.))
+        .child(
+            div()
+                .flex()
+                .justify_between()
+                .font_family(FONT_MONO)
+                .text_size(text::SM)
+                .line_height(relative(1.))
+                .text_color(p.text_subtle)
+                .child(label)
+                .child(
+                    div()
+                        .font_weight(theme::W_MEDIUM)
+                        .text_color(p.text)
+                        .child(value),
+                ),
+        )
+        .child(
+            div()
+                .w_full()
+                .h(px(3.))
+                .rounded(px(2.))
+                .bg(p.surface_hover)
+                .overflow_hidden()
+                .child(fill),
+        )
+        .into_any_element()
+}
+
+const CLOUD_LEAD: &str = "Deepgram is real, and it is left out of setup on purpose.";
+const CLOUD_NOTE: &str = "Deepgram is real, and it is left out of setup on purpose. Choosing it uploads your microphone and system-audio recordings to your own Deepgram account \u{2014} so it is switched on in Settings \u{2192} Transcription, behind a consent step, and never here.";
+
 /// `feature-cost.ts` anchor shares (MB/day at the 3 s anchor).
 const SHARE_OCR: f64 = 47.;
 const SHARE_AUDIO: f64 = 23.;
@@ -161,13 +211,8 @@ impl Onboarding {
             serde_json::from_value::<AudioTranscriptionProvider>(serde_json::json!(e.provider))
         {
             self.draft.transcription.provider = p;
-            // Whisper's recommended build is Base; other engines start at their first.
-            self.draft.transcription.model_id = e
-                .models
-                .iter()
-                .find(|m| m.0.as_deref() == Some("base"))
-                .or(e.models.first())
-                .and_then(|m| m.0.clone());
+            self.draft.transcription.model_id =
+                crate::onboarding::engines::default_model(&e).and_then(|m| m.0.clone());
             self.refresh_facts();
             cx.notify();
         }
@@ -442,34 +487,150 @@ impl Onboarding {
     }
 
     fn engines_pane(&self, cx: &mut Context<Self>, p: &Palette) -> Vec<AnyElement> {
+        use crate::onboarding::engines::{self, RECOMMENDED};
         let id = provider_id(self.draft.transcription.provider);
-        let opts: Vec<ChoiceOption> = self
-            .engines
+        let cards = engines::cards(&self.engines);
+        let max_bytes = cards.iter().filter_map(|c| c.bytes).max().unwrap_or(0);
+        let max_ram = cards.iter().filter_map(|c| c.ram).max().unwrap_or(0);
+        let opts: Vec<ChoiceOption> = cards
             .iter()
-            .map(|e| {
-                let bytes = e.models.iter().find(|m| m.0.as_deref() == Some("base")).or(e.models.first()).map_or(0, |m| m.2);
-                let o = ChoiceOption::new(e.name.replace(" (on-device)", ""))
-                    .tag(if bytes > 0 { format!("download {}", format_bytes(bytes as f64)) } else { "nothing to download".into() })
-                    ;
-                if e.provider == "local_whisper" { o.desc("Balanced speed, size and quality \u{2014} the manifest\u{2019}s reason for Base.") } else { o }
+            .map(|c| {
+                let o = ChoiceOption::new(c.name.clone()).desc(c.line.clone());
+                let o = match c.icon {
+                    Some(icon) => o.icon(icon),
+                    None => o,
+                };
+                let o = if c.provider == RECOMMENDED {
+                    o.tag("recommended")
+                } else {
+                    o
+                };
+                // `.foot` then the two `.ob-met` meters.
+                let (foot, download, memory) =
+                    (c.foot.clone(), c.download.clone(), c.memory.clone());
+                let (dl, mem) = (
+                    engines::track(c.bytes, max_bytes),
+                    engines::track(c.ram, max_ram),
+                );
+                o.below(move |p| {
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(6.))
+                        .children(foot.clone().map(|f| {
+                            div()
+                                .text_size(text::SM)
+                                .line_height(relative(parts::FINE_LH))
+                                .text_color(p.text_subtle)
+                                .child(f)
+                        }))
+                        .child(meter("download", download.clone(), dl, false, p))
+                        .child(meter("memory", memory.clone(), mem, true, p))
+                        .into_any_element()
+                })
             })
             .collect();
-        let selected = self
-            .engines
-            .iter()
-            .position(|e| e.provider == id)
-            .unwrap_or(0);
-        vec![
+        let selected = cards.iter().position(|c| c.provider == id).unwrap_or(0);
+        let (delta, up) = engines::delta(&cards, id);
+        let recommended_ix = cards.iter().position(|c| c.provider == RECOMMENDED);
+        let acts = div()
+            .flex()
+            .items_center()
+            .gap(space::S3)
+            .child(
+                div()
+                    .ml(space::S2)
+                    .text_size(text::BASE)
+                    .text_color(if up { p.warn } else { p.text_subtle })
+                    .child(delta),
+            )
+            .when_some(recommended_ix.filter(|_| id != RECOMMENDED), |d, ix| {
+                d.child(
+                    button(
+                        "ob-engine-recommended",
+                        "Use recommended",
+                        cx,
+                        move |this, _, cx| this.set_engine(ix, cx),
+                    )
+                    .sm(),
+                )
+            });
+        let open = self.cloud_open;
+        let cloud = div()
+            .flex()
+            .flex_col()
+            .gap(space::S2)
+            .text_size(text::SM)
+            .line_height(relative(1.5))
+            .text_color(p.text_subtle)
+            .child(
+                div()
+                    .id("ob-engine-cloud")
+                    .role(gpui_kit::Role::Button)
+                    .aria_expanded(open)
+                    .cursor_pointer()
+                    .hover(|s| s.text_color(p.text))
+                    .flex()
+                    .items_center()
+                    .gap(px(4.))
+                    .child(crate::ui::icon(
+                        if open {
+                            "icons/chevron-down.svg"
+                        } else {
+                            "icons/chevron-right.svg"
+                        },
+                        px(10.),
+                    ))
+                    .child("Where\u{2019}s the cloud option?")
+                    .on_click(cx.listener(|this, _, _, cx| {
+                        this.cloud_open = !this.cloud_open;
+                        cx.notify();
+                    }))
+                    .test_support(),
+            )
+            .when(open, |d| {
+                d.child(div().max_w(px(380.)).child(
+                    gpui_kit::StyledText::new(CLOUD_NOTE).with_highlights(vec![(
+                        0..CLOUD_LEAD.len(),
+                        gpui_kit::HighlightStyle {
+                            color: Some(p.text),
+                            font_weight: Some(theme::W_SEMIBOLD),
+                            ..Default::default()
+                        },
+                    )]),
+                ))
+            });
+        // `.ob-pane { gap: var(--s-4) }`: one block, so its parts sit 16 px apart.
+        vec![div()
+            .flex()
+            .flex_col()
+            .gap(space::S4)
+            .children([
             head(vec![
                 parts::display("Your voice never leaves this Mac.", p).text_size(text::XL).into_any_element(),
-                fine("Every engine below transcribes on this machine. Once its model is on disk, it keeps working with the network off.", p).into_any_element(),
+                fine("Every engine below transcribes on this machine. Once an engine\u{2019}s model is on disk, it keeps working with the network off.", p).into_any_element(),
             ])
             .into_any_element(),
+            // `.ob-pane__head` sits 8 px over the tiles (its −8 px margin on the pane's gap).
             div()
-                .w_full()
-                .child(Choice::new("ob-engines", "Transcription engine", opts, selected).on_change(on_ix(cx, |this, ix, cx| this.set_engine(ix, cx))))
+                .flex()
+                .flex_col()
+                .gap(space::S2)
+                .child(kicker_note("Turning speech into text", fine("one is picked for you", p), p, cx))
+                .child(
+                    div()
+                        .w_full()
+                        .child(Choice::new("ob-engines", "Transcription engine", opts, selected).on_change(on_ix(cx, |this, ix, cx| this.set_engine(ix, cx)))),
+                )
                 .into_any_element(),
-        ]
+            acts.into_any_element(),
+            fine("Memory figures are measured on a running app, not published in any manifest \u{2014} they always read \u{201c}about\u{201d}. The one ordering the manifest states is memory: Parakeet uses the most.", p)
+                .text_size(text::SM)
+                .max_w(px(380.))
+                .into_any_element(),
+            cloud.into_any_element(),
+            ])
+            .into_any_element()]
     }
 
     pub(in crate::onboarding) fn change(

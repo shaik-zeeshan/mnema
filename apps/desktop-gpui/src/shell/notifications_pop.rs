@@ -4,12 +4,25 @@
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, relative, Context, Role};
 
 use super::model::{NotificationRow, RowAction, Severity};
 use super::Shell;
-use crate::theme::{self, leading, radius, size, space, text, Palette, FONT_MONO};
-use crate::ui::{clock, icon, kicker, pop_in, popover};
+use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
+use crate::ui::{clock, icon, kicker, pop_in, popover, with_tip};
+
+/// The row time's tooltip (`toLocaleString`): "11/4/2026, 2:31:56 PM".
+pub fn stamp(created_ms: i64, offset: time::UtcOffset) -> String {
+    let t = crate::timeline::model::local(created_ms, offset);
+    format!(
+        "{}/{}/{}, {}",
+        t.month() as u8,
+        t.day(),
+        t.year(),
+        crate::timeline::model::clock_label(t, true)
+    )
+}
 
 /// "just now" · "12m ago" · "3h ago" · "2d ago".
 pub fn age(now_ms: i64, created_ms: i64) -> String {
@@ -53,6 +66,7 @@ fn row(
     i: usize,
     n: &NotificationRow,
     now_ms: i64,
+    offset: time::UtcOffset,
     p: &Palette,
     cx: &mut Context<Shell>,
 ) -> impl IntoElement {
@@ -86,7 +100,8 @@ fn row(
                     .child(label.clone())
                     .on_click(
                         cx.listener(move |this, _, _, cx| this.run_notification(i, false, cx)),
-                    ),
+                    )
+                    .test_support(),
             )
             .when(n.kind == RowAction::Reminder, |acts| {
                 acts.child(
@@ -96,19 +111,19 @@ fn row(
                 )
             })
     });
-    // `clear_app_notification`: shown on row hover, out of the row's flow.
+    // `clear_app_notification`: on row hover it takes the time's place (`.mx-notif__x`).
     let id = n.id.clone();
     let dismiss = div()
         .id(("notif-dismiss", i))
         .role(Role::Button)
         .aria_label("Dismiss notification")
         .absolute()
-        .right(px(6.))
-        .bottom(px(6.))
+        .right_0()
+        .top_0()
         .flex()
         .items_center()
         .justify_center()
-        .size(size::H_SM)
+        .size(size::H_MINI)
         .rounded(radius::BTN_SM)
         .text_color(p.text_muted)
         .cursor_pointer()
@@ -116,9 +131,18 @@ fn row(
         .group_hover("notif-row", |s| s.visible())
         .hover(|s| s.bg(p.wash_strong).text_color(p.text_strong))
         .child(icon(IconName::X.path(), px(13.)))
-        .on_click(
-            cx.listener(move |this, _, _, cx| this.clear_notifications(Some(id.clone()), cx)),
-        );
+        .on_click(cx.listener(move |this, _, _, cx| this.clear_notifications(Some(id.clone()), cx)))
+        .test_support();
+    let time = with_tip(
+        div()
+            .id(("notif-time", i))
+            .font_family(FONT_MONO)
+            .text_size(text::XS)
+            .text_color(p.text_subtle)
+            .group_hover("notif-row", |s| s.opacity(0.))
+            .child(age(now_ms, n.created_at_ms)),
+        stamp(n.created_at_ms, offset),
+    );
     div()
         .id(("notif", i))
         .group("notif-row")
@@ -133,7 +157,8 @@ fn row(
         .hover(|s| s.bg(p.wash))
         .child(
             div()
-                .mt(px(6.))
+                // Centred on the 22 px first row (`.mx-notif::before { align-self: center }`).
+                .mt(px(8.))
                 .flex_none()
                 .size(px(6.))
                 .rounded_full()
@@ -150,7 +175,9 @@ fn row(
                     div()
                         .text_size(text::MD)
                         .font_weight(theme::W_SEMIBOLD)
-                        .line_height(relative(leading::SNUG))
+                        // The first grid row is the × button's 22 px (`--_h: 22px`).
+                        .min_h(size::H_MINI)
+                        .line_height(relative(1.35))
                         .text_color(p.text_strong)
                         .child(n.title.clone()),
                 )
@@ -165,19 +192,20 @@ fn row(
         )
         .child(
             div()
+                .relative()
                 .flex_none()
-                .mt(px(3.))
-                .font_family(FONT_MONO)
-                .text_size(text::XS)
-                .text_color(p.text_subtle)
-                .child(age(now_ms, n.created_at_ms)),
+                .flex()
+                .items_center()
+                .h(size::H_MINI)
+                .child(time)
+                .child(dismiss),
         )
-        .child(dismiss)
 }
 
 pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoElement {
     let rows = &shell.model.notifications;
     let now_ms = clock::now_ms(cx);
+    let offset = clock::now(cx).offset();
     let head = div()
         .flex()
         .items_center()
@@ -235,12 +263,23 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
                     .child("Capture, model and update warnings land here."),
             )
     } else {
-        div().flex().flex_col().gap(px(1.)).p(space::S1).children(
-            rows.iter()
-                .enumerate()
-                .map(|(i, n)| row(i, n, now_ms, p, cx))
-                .collect::<Vec<_>>(),
-        )
+        // `.mx-notifs__list`: 380 px tall at most, then it scrolls.
+        div().child(crate::ui::scroll::area(
+            div()
+                .id("notifications-list")
+                .flex()
+                .flex_col()
+                .gap(px(1.))
+                .p(space::S1)
+                .max_h(px(380.))
+                .overflow_y_scroll()
+                .children(
+                    rows.iter()
+                        .enumerate()
+                        .map(|(i, n)| row(i, n, now_ms, offset, p, cx))
+                        .collect::<Vec<_>>(),
+                ),
+        ))
     };
     // Right edge on the bell's: titlebar right padding + gear + the 2px gap.
     let right = space::S2 + size::H_SM + px(2.);
@@ -250,14 +289,15 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
             .w(size::POP_NOTIFS_W)
             .child(head)
             .child(body),
-        size::TITLEBAR + size::POP_GAP,
+        // `.mx-pop { top: calc(100% + 8px) }` under the bell button, centred in the bar.
+        (size::TITLEBAR + size::H_SM) / 2. + size::POP_GAP,
         false,
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::age;
+    use super::{age, stamp};
 
     #[test]
     fn ages_round_like_the_svelte_popover() {
@@ -267,5 +307,14 @@ mod tests {
         assert_eq!(age(now, now - 20 * 60_000), "20m ago");
         assert_eq!(age(now, now - 90 * 60_000), "2h ago");
         assert_eq!(age(now, now - 36 * 3_600_000), "2d ago");
+    }
+
+    #[test]
+    fn stamp_is_the_local_date_and_time() {
+        // 2024-11-14 01:46:40 UTC.
+        assert_eq!(
+            stamp(1_731_548_800_000, time::UtcOffset::UTC),
+            "11/14/2024, 1:46:40 AM"
+        );
     }
 }

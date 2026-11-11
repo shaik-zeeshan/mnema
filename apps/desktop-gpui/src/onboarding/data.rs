@@ -67,6 +67,10 @@ pub trait Backend: Send + Sync + 'static {
     fn app_candidates(&self) -> Vec<(String, String)> {
         Vec::new()
     }
+    /// `resolve_app_icons`: `(bundle id, icon file)` for each one that has an icon.
+    fn app_icons(&self, _bundle_ids: &[String]) -> Vec<(String, std::path::PathBuf)> {
+        Vec::new()
+    }
     fn start_download(&self, item: &WorkItem) -> Result<(), String>;
     fn cancel_download(&self, item: &WorkItem);
     fn mic_level(&self) -> Option<f32> {
@@ -367,6 +371,11 @@ impl Backend for CoreBackend {
                 log::warn!("onboarding: couldn't list apps to exclude: {e}");
                 Vec::new()
             })
+    }
+
+    fn app_icons(&self, bundle_ids: &[String]) -> Vec<(String, std::path::PathBuf)> {
+        use crate::timeline::data::Source as _;
+        crate::timeline::data::CoreSource(self.0.clone()).app_icons(bundle_ids)
     }
 
     fn start_download(&self, item: &WorkItem) -> Result<(), String> {

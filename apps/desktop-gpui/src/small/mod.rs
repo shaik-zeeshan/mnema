@@ -13,6 +13,8 @@ pub mod update;
 #[cfg(test)]
 mod copy_tests;
 #[cfg(test)]
+mod flow_tests;
+#[cfg(test)]
 mod tests;
 
 use std::collections::HashMap;
