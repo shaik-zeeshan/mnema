@@ -67,6 +67,16 @@ def h2(n, title, anchor=None, toc=None):
     return f'<h2{attrs}><span class="pp-n">{n:02d}</span>{E(title)}</h2>'
 
 
+def page_chip(d, key):
+    """A page's status from its own sections, so the index never says "awaiting" when nothing is."""
+    secs = d.get(key, [])
+    if any(s.get("awaiting") for s in secs):
+        return chip("awaiting your approval", "strong")
+    if any("in progress" in s.get("state", "") for s in secs):
+        return chip("in progress", "strong")
+    return chip("nothing waiting")
+
+
 def chip(text, tone=None):
     tone_attr = f' data-tone="{tone}"' if tone else ""
     return f'<span class="pp-chip"{tone_attr}>{E(text)}</span>'
@@ -179,11 +189,11 @@ def index_page(d, drafts):
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
     rows = ([(link(drafts, "round4", "11 Nov hands-on round: fixes"), "11 Nov · menus drawn under the page, copy buttons, missing models, the developer window from the status popover",
-              chip("awaiting your approval" if any(s.get("awaiting") for s in d["round4"]) else "done", "strong"))] if d.get("round4") else []) + ([(link(drafts, "round3", "Real-app test and behaviour audit"), "10 Nov night · what works when actually used, what is broken, what the old app does that the new one doesn't",
-              chip("fixes in progress", "strong"))] if d.get("round3") else []) + ([(link(drafts, "round2", "Second hands-on round: fixes"), "10 Nov evening · search, text cursor, developer logs, links, scroll bars",
-              chip("in progress", "strong"))] if d.get("round2") else []) + ([(link(drafts, "receipts", "Licence receipts: the final design"), "your pick on every licence receipt, with the three original directions below",
-              chip("awaiting your approval", "strong"))] if d.get("receipts") else []) + [(link(drafts, "approve", "Waiting for your approval"), "screenshots that need your yes before they become references",
-             chip("awaiting your approval", "strong")),
+              page_chip(d, "round4"))] if d.get("round4") else []) + ([(link(drafts, "round3", "Real-app test and behaviour audit"), "10 Nov night · what works when actually used, what is broken, what the old app does that the new one doesn't",
+              page_chip(d, "round3"))] if d.get("round3") else []) + ([(link(drafts, "round2", "Second hands-on round: fixes"), "10 Nov evening · search, text cursor, developer logs, links, scroll bars",
+              page_chip(d, "round2"))] if d.get("round2") else []) + ([(link(drafts, "receipts", "Licence receipts: the final design"), "your pick on every licence receipt, with the three original directions below",
+              page_chip(d, "receipts"))] if d.get("receipts") else []) + [(link(drafts, "approve", "Earlier approvals"), "screenshots you approved on 10 Nov before they became references",
+             page_chip(d, "approve")),
             (link(drafts, "fixes", "Today’s fixes: before and after"), "10 Nov · before and after pictures of each fix",
              chip("built"))]
     rows += [(link(drafts, slug(g), g["title"].split(" — ")[0]), g["note"],
@@ -248,10 +258,10 @@ def main():
 
     # sub-pages first, so the index links to their (possibly new) URLs; they link back to the index
     emit("fixes", "fixes.html", "Today’s fixes", fixes_page(d, drafts), "Mnema GPUI — today's fixes, before and after")
-    emit("approve", "approve.html", "Waiting for your approval",
-         fixes_page(d, drafts, "approve", "Waiting for your approval",
-                    "Every screenshot that needs your yes before it becomes a reference, in one place."),
-         "Mnema GPUI — screenshots waiting for approval")
+    emit("approve", "approve.html", "Earlier approvals",
+         fixes_page(d, drafts, "approve", "Earlier approvals",
+                    "Screenshots you approved on 10 Nov before they became references. Nothing here is waiting."),
+         "Mnema GPUI — earlier approvals")
     if d.get("round4"):
         emit("round4", "round4.html", "11 Nov hands-on round",
              fixes_page(d, drafts, "round4", "11 Nov hands-on round: fixes",

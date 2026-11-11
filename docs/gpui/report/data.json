@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-11 12:45",
+ "updated": "2026-11-11 12:52",
  "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click are often thinner than the Tauri app's: a provider's Manage panel opened to nothing, and Add a connector looked different. A screen-by-screen check of every control and flow against the Tauri app is now running, two parts at a time. Fixed and committed the same day: the menu drawn under the page and seven related faults (approved), copy buttons, the missing-model error, and the developer window from the status popover. Everything is in local commits; nothing is pushed. Nothing is waiting on you right now; pictures from the sweep will come for approval as each part lands.",
  "metrics": [
   {
@@ -279,7 +279,7 @@
   {
    "id": "Fix 2",
    "title": "Onboarding: model list fits, text lines up",
-   "what": "The Semantic Search model row no longer runs off the window (English / Multilingual, then that group's models, as in the Tauri app). Mixed-size text now sits on one baseline on Welcome, Change settings and Setup. Built; screenshots await sign-off; not driven.",
+   "what": "The Semantic Search model row no longer runs off the window (English / Multilingual, then that group's models, as in the Tauri app). Mixed-size text now sits on one baseline on Welcome, Change settings and Setup. Built; screenshots approved on 10 Nov; not driven.",
    "commit": "e82d4847"
   },
   {
@@ -369,7 +369,7 @@
   {
    "id": "Fix 11",
    "title": "Whisper and the text readers are in the build",
-   "what": "The new app now compiles in the Whisper transcriber and the Tesseract and PaddleOCR text readers, like the Tauri app. Built; a real transcript not yet seen.",
+   "what": "The new app now compiles in the Whisper transcriber and the Tesseract and PaddleOCR text readers, like the Tauri app. Built; on 11 Nov the real app's log showed Whisper loading its model and unloading it on quit; a transcript has not been looked at on screen.",
    "commit": "09b98b3e"
   },
   {
@@ -381,13 +381,13 @@
   {
    "id": "Fix 13",
    "title": "Auto-start, quit, Settings sync, live numbers, audio links, second launch",
-   "what": "Behaviours the old app had or both apps got wrong. Two are shared-backend fixes that change the Tauri app too. Built; the Tauri app still compiles; auto-start seen waiting correctly in the real log.",
+   "what": "Behaviours the old app had or both apps got wrong. Two are shared-backend fixes that change the Tauri app too. Built; the Tauri app still compiles; auto-start confirmed in the real app on 11 Nov: it waited while the Mac was locked and began recording on unlock.",
    "commit": "5cf4af62"
   },
   {
    "id": "Fix 14",
    "title": "Developer window, licence line, raw codes, microphone list, Settings rail",
-   "what": "Smaller findings from the real-app run. Built; two screenshots await approval.",
+   "what": "Smaller findings from the real-app run. Built; its screenshots were approved on 11 Nov.",
    "commit": "50cdc2d7"
   },
   {
@@ -423,8 +423,50 @@
   {
    "id": "Gap 9",
    "title": "Small parity batch",
-   "what": "Selectors hug their options everywhere; onboarding's Models tab has the per-model strip and budget bar; the six Timeline keys are rebindable; Chat and Quick Recall warm up connectors; nine text fields take their real height. Built; two approved screenshots change and await approval.",
+   "what": "Selectors hug their options everywhere; onboarding's Models tab has the per-model strip and budget bar; the six Timeline keys are rebindable; Chat and Quick Recall warm up connectors; nine text fields take their real height. Built; the two changed screenshots were approved on 11 Nov.",
    "commit": "b81defc6"
+  },
+  {
+   "id": "Decide 1",
+   "title": "Recording clock reads a real session start",
+   "what": "The REC timer and every \"recording since\" line, in both apps, read a start time that is set once and never moves. Built and wired; not yet watched across an idle pause in the real app.",
+   "commit": "dff00a04"
+  },
+  {
+   "id": "Decide 2",
+   "title": "Recording refuses to start without its transcriber; connector logs name the id",
+   "what": "A build missing the chosen transcription engine now says so and queues nothing. Connector log lines no longer contain the label you typed. Built; the refusal has only been seen in tests.",
+   "commit": "b9e04fed, 212fc4f9"
+  },
+  {
+   "id": "Test 2",
+   "title": "Six tests no longer depend on the Mac being unlocked",
+   "what": "They asked the real Mac whether it was locked or asleep, so they failed in overnight runs. Tests only; the product code was right.",
+   "commit": "80b2031e"
+  },
+  {
+   "id": "Fix 16",
+   "title": "Installed models are found again",
+   "what": "Nine lookups read the recordings folder instead of the app's support folder, so every installed model was reported missing. Confirmed fixed in the real app's log.",
+   "commit": "6d710352"
+  },
+  {
+   "id": "Fix 17",
+   "title": "Two more mix-ups of the same kind",
+   "what": "Connector sign-in could never finish in the new dev app, and the new dev app counted its own windows as your activity. Found by comparing every folder and identity lookup with the Tauri code. Built; a real connector sign-in has not been driven.",
+   "commit": "212fc4f9"
+  },
+  {
+   "id": "Fix 18",
+   "title": "Copy buttons work and say so; the developer window opens from the status popover",
+   "what": "Copy image now copies a PNG other apps can paste; six silent copy buttons say Copied; the developer window gets copy buttons on log lines and warnings. Built, each with a click test; screenshots approved on 11 Nov; not clicked in the real app.",
+   "commit": "eab577a8"
+  },
+  {
+   "id": "Fix 19",
+   "title": "Menus and lists are drawn above the page",
+   "what": "The Add provider menu was painted under the rows below it. Fixed along with seven related faults found by checking every menu and list: reopening on click, Escape leaving Settings, lists running off the window, clicks falling through toasts. Built; screenshots approved on 11 Nov; in the 12:28 dev build.",
+   "commit": "44031552"
   }
  ],
  "next": [
@@ -733,7 +775,7 @@
    "title": "Window size: small windows cut off, large windows not using the space",
    "state": "built · screenshots approved",
    "commit": "a5cd99ce",
-   "note": "Small windows: the missing width rules from the Tauri app are ported, so nothing is cut off. Large windows: you ruled that Settings and onboarding are centred (Tauri pins them left); that change is being built. Not driven.",
+   "note": "Small windows: the missing width rules from the Tauri app are ported, so nothing is cut off. Large windows: you ruled that Settings and onboarding are centred (Tauri pins them left); that is built and you approved it on 10 Nov (e0b3e9f9). Not driven.",
    "awaiting": false,
    "anchor": "fix-resize"
   }
