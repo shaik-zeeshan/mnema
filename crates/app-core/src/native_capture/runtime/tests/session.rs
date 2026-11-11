@@ -131,6 +131,7 @@ fn mark_runtime_session_stopped_preserves_session_metadata() {
             }),
             system_audio: None,
         }),
+        recording_started_at_unix_ms: None,
     };
 
     mark_runtime_session_stopped(&mut runtime);
@@ -246,6 +247,7 @@ fn stopped_session_from_runtime_preserves_finalized_metadata() {
                 started_at_unix_ms: 123,
             }),
         }),
+        recording_started_at_unix_ms: None,
     };
 
     let session = stopped_session_from_runtime(&runtime);
@@ -609,4 +611,29 @@ fn segment_planner_date_refresh_updates_all_runtime_planners() {
         Some(refreshed.as_str())
     );
     assert_eq!(refreshed.split('/').count(), 3);
+}
+
+#[test]
+fn recording_start_is_reported_while_running_and_cleared_on_stop() {
+    let mut runtime = NativeCaptureRuntime {
+        is_running: true,
+        recording_started_at_unix_ms: Some(123),
+        ..Default::default()
+    };
+    assert_eq!(
+        session_from_runtime(&runtime).recording_started_at_unix_ms,
+        Some(123)
+    );
+
+    mark_runtime_session_stopped(&mut runtime);
+
+    assert_eq!(runtime.recording_started_at_unix_ms, None);
+    assert_eq!(
+        session_from_runtime(&runtime).recording_started_at_unix_ms,
+        None
+    );
+    assert_eq!(
+        stopped_session_from_runtime(&runtime).recording_started_at_unix_ms,
+        None
+    );
 }

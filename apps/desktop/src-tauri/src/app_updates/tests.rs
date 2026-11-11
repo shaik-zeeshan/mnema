@@ -10,6 +10,7 @@ fn stopped_session() -> NativeCaptureSession {
         requested_sources: None,
         output_files: None,
         source_sessions: None,
+        recording_started_at_unix_ms: None,
     }
 }
 

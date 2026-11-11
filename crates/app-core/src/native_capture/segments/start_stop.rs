@@ -242,6 +242,7 @@ pub(crate) fn start_capture_runtime(
             runtime.inactivity = initial_inactivity;
             runtime.microphone_vad = initial_microphone_vad;
             runtime.source_sessions = Some(source_sessions);
+            runtime.recording_started_at_unix_ms = Some(started);
             runtime.requested_sources = Some(sources.clone());
             runtime.current_segment_sources = Some(sources);
             runtime.output_files = Some(output_files);

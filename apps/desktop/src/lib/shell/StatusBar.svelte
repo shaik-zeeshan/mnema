@@ -62,11 +62,7 @@
   };
 
   // ── Session clocks ────────────────────────────────────────────────────
-  const sessionStartMs = $derived.by<number | null>(() => {
-    const s = captureSession.value?.sourceSessions;
-    const starts = [s?.screen, s?.microphone, s?.systemAudio].flatMap((m) => (m ? [m.startedAtUnixMs] : []));
-    return starts.length ? Math.min(...starts) : null;
-  });
+  const sessionStartMs = $derived<number | null>(captureSession.value?.recordingStartedAtUnixMs ?? null);
   // Kept after the session ends: a "Recording stopped — …" notification older
   // than the last session we saw is history, not the current state.
   let lastSessionStartMs = $state<number | null>(null);

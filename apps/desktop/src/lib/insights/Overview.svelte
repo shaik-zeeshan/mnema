@@ -617,14 +617,10 @@
       !engineError &&
       rangeActivities.length === 0,
   );
-  // "Recording since": earliest source start, clamped to the start of today.
+  // "Recording since": the session's start, clamped to the start of today.
   const recordingSince = $derived.by<number | null>(() => {
-    const sessions = captureSession.value?.sourceSessions;
-    const starts = [sessions?.screen, sessions?.microphone, sessions?.systemAudio]
-      .map((s) => s?.startedAtUnixMs)
-      .filter((ms): ms is number => typeof ms === "number" && ms > 0);
-    if (starts.length === 0) return null;
-    return Math.max(Math.min(...starts), startOfDay(Date.now()));
+    const started = captureSession.value?.recordingStartedAtUnixMs;
+    return started ? Math.max(started, startOfDay(Date.now())) : null;
   });
   // 4b: summarizing keeps failing.
   const failingState = $derived<OverviewState | null>(

@@ -178,6 +178,7 @@ mod tests {
                 system_audio_files: vec![],
             }),
             source_sessions: None,
+            recording_started_at_unix_ms: None,
         }
     }
 
@@ -236,6 +237,7 @@ mod tests {
             requested_sources: None,
             output_files: None,
             source_sessions: None,
+            recording_started_at_unix_ms: None,
         };
         let status = session_status_json(&session);
         assert_eq!(status["sources"]["screen"], serde_json::json!(false));

@@ -47,6 +47,7 @@ fn native_capture_session_includes_source_sessions_field() {
             }),
             system_audio: None,
         }),
+        recording_started_at_unix_ms: None,
     };
     let json = serde_json::to_value(&session).expect("serialize");
     assert_eq!(json["sourceSessions"]["screen"]["sessionId"], "scr-1");

@@ -431,6 +431,54 @@ fn audio_segment_start_uses_reanchored_session_timing_for_contiguous_late_segmen
 
 #[cfg(target_os = "macos")]
 #[test]
+fn reanchoring_moves_the_schedule_anchor_but_not_the_recording_start() {
+    let started = 1_700_000_000_000;
+    let mut runtime = NativeCaptureRuntime {
+        current_segment_index: 5,
+        capture_clock: Some(CaptureClock::start_now()),
+        segment_schedule: Some(SegmentSchedule::new(std::time::Duration::from_secs(60))),
+        source_sessions: Some(SourceSessions {
+            screen: Some(SourceSessionMeta {
+                session_id: "screen-source".to_string(),
+                started_at_unix_ms: started,
+            }),
+            microphone: None,
+            system_audio: None,
+        }),
+        recording_started_at_unix_ms: Some(started),
+        ..Default::default()
+    };
+
+    // The re-anchor a screen resume after an inactivity pause performs.
+    reanchor_active_segment_timing(&mut runtime, "resuming screen from inactivity")
+        .expect("active segment timing should reanchor");
+
+    let anchor = runtime
+        .source_sessions
+        .as_ref()
+        .unwrap()
+        .screen
+        .as_ref()
+        .unwrap();
+    assert_ne!(
+        anchor.started_at_unix_ms, started,
+        "the schedule anchor moves"
+    );
+    assert_eq!(runtime.recording_started_at_unix_ms, Some(started));
+    assert_eq!(
+        crate::native_capture::runtime::session_from_runtime(&runtime).recording_started_at_unix_ms,
+        Some(started)
+    );
+    assert_eq!(
+        crate::native_capture::capture_health::read_locked(&runtime)
+            .dto
+            .started_at_ms,
+        Some(started)
+    );
+}
+
+#[cfg(target_os = "macos")]
+#[test]
 fn fresh_start_inactivity_empty_audio_outputs_leave_no_output_or_db_payloads() {
     let output_files = CaptureOutputFiles {
         screen_file: None,

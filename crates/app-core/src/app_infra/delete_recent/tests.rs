@@ -53,6 +53,7 @@ fn delete_recent_capture_boundary_does_not_resume_when_inactivity_paused() {
         requested_sources: None,
         output_files: None,
         source_sessions: None,
+        recording_started_at_unix_ms: None,
     };
 
     assert!(!should_resume_delete_recent_capture_boundary(&session));
@@ -68,6 +69,7 @@ fn delete_recent_capture_boundary_does_not_resume_when_user_paused() {
         requested_sources: None,
         output_files: None,
         source_sessions: None,
+        recording_started_at_unix_ms: None,
     };
 
     assert!(!should_resume_delete_recent_capture_boundary(&session));

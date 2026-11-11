@@ -18,15 +18,9 @@
 
   const v = $derived(healthVerdict(health.entries, health.error));
 
-  // Earliest per-source start = when this recording began. Ticks with the
-  // health poll, so it stops counting while paused (the right side says so).
-  const startedAtMs = $derived.by(() => {
-    const sessions = capture.session?.sourceSessions;
-    const starts = [sessions?.screen, sessions?.microphone, sessions?.systemAudio]
-      .map((s) => s?.startedAtUnixMs)
-      .filter((ms): ms is number => ms != null);
-    return starts.length > 0 ? Math.min(...starts) : null;
-  });
+  // When this recording began. Ticks with the health poll, so it stops
+  // counting while paused (the right side says so).
+  const startedAtMs = $derived(capture.session?.recordingStartedAtUnixMs ?? null);
 
   const right = $derived.by(() => {
     if (controller.pausedAtMs != null) return `paused at ${formatClock(controller.pausedAtMs, { seconds: true })}`;

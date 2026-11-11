@@ -173,6 +173,9 @@ pub struct NativeCaptureRuntime {
     pub microphone_vad: MicrophoneVadRuntime,
     /// Per-source session metadata. Populated when a recording starts, cleared on reset.
     pub source_sessions: Option<SourceSessions>,
+    /// Wall-clock start of this recording session, for "recording since".
+    /// Set once at start, cleared on stop; re-anchoring never touches it.
+    pub recording_started_at_unix_ms: Option<u64>,
     #[cfg(target_os = "macos")]
     pub recording_file: Option<String>,
     #[cfg(target_os = "macos")]
@@ -345,6 +348,7 @@ pub fn session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCaptureSess
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
+        recording_started_at_unix_ms: runtime.recording_started_at_unix_ms,
     }
 }
 
@@ -389,6 +393,7 @@ pub fn stopped_session_from_runtime(runtime: &NativeCaptureRuntime) -> NativeCap
         requested_sources: runtime.requested_sources.clone(),
         output_files: runtime.output_files.clone(),
         source_sessions: runtime.source_sessions.clone(),
+        recording_started_at_unix_ms: None,
     }
 }
 
@@ -426,6 +431,7 @@ pub fn validate_start_request(
 
 pub fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.is_running = false;
+    runtime.recording_started_at_unix_ms = None;
     runtime.inactivity = InactivityState::default();
     runtime.user_capture_paused = false;
     runtime.microphone_away_hold = false;
@@ -587,6 +593,7 @@ pub fn reset_runtime_after_start_error(runtime: &mut NativeCaptureRuntime) {
     runtime.frame_artifact_tx = None;
     runtime.inactivity = InactivityState::default();
     runtime.source_sessions = None;
+    runtime.recording_started_at_unix_ms = None;
     #[cfg(target_os = "macos")]
     {
         runtime.recording_file = None;

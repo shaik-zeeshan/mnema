@@ -178,6 +178,7 @@
         "systemAudio": true
       },
       "outputFiles": null,
+      "recordingStartedAtUnixMs": 1793776973000,
       "sourceSessions": {
         "screen": {
           "sessionId": "sess-1104",

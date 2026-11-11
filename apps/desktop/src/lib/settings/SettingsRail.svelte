@@ -156,11 +156,7 @@
   });
   const rec = $derived(recView(recInput));
   const lanes = $derived(liveLanes(recInput, rec));
-  const sessionStartMs = $derived.by<number | null>(() => {
-    const s = captureSession.value?.sourceSessions;
-    const starts = [s?.screen, s?.microphone, s?.systemAudio].flatMap((m) => (m ? [m.startedAtUnixMs] : []));
-    return starts.length ? Math.min(...starts) : null;
-  });
+  const sessionStartMs = $derived<number | null>(captureSession.value?.recordingStartedAtUnixMs ?? null);
   let now = $state(Date.now());
   $effect(() => {
     if (rec.clock !== "elapsed") return;

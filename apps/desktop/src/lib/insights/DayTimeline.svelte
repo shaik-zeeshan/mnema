@@ -120,11 +120,8 @@
   const userPaused = $derived(captureControls.isRunning && captureControls.isUserPaused);
   const recordingLive = $derived(atLatest && captureControls.isRunning && !userPaused);
   const recordingSince = $derived.by<number | null>(() => {
-    const sessions = captureSession.value?.sourceSessions;
-    const starts = [sessions?.screen, sessions?.microphone, sessions?.systemAudio]
-      .map((s) => s?.startedAtUnixMs)
-      .filter((ms): ms is number => typeof ms === "number" && ms > 0);
-    return starts.length ? Math.max(Math.min(...starts), range.startMs) : null;
+    const started = captureSession.value?.recordingStartedAtUnixMs;
+    return started ? Math.max(started, range.startMs) : null;
   });
   // Recording today with nothing summarized yet: the first-stretch slot shows
   // even before the first frame lands (JR-04/05).

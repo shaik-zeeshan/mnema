@@ -66,6 +66,8 @@ export interface CaptureSession {
 	isInactivityPaused: boolean;
 	isUserPaused: boolean;
 	isLowDiskSuspended: boolean;
+	/** When this recording began; null once stopped. Not the per-source `startedAtUnixMs`, which re-anchoring moves. */
+	recordingStartedAtUnixMs: number | null;
 }
 
 export interface GetPermissionsResponse {

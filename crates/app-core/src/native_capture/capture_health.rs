@@ -218,17 +218,7 @@ pub fn read_locked(runtime: &NativeCaptureRuntime) -> Locked {
     let requested = |pick: fn(&capture_types::CaptureSources) -> bool| sources.is_some_and(pick);
     let user_paused = runtime.user_capture_paused;
 
-    let started_at_ms = runtime.source_sessions.as_ref().and_then(|sessions| {
-        [
-            &sessions.screen,
-            &sessions.microphone,
-            &sessions.system_audio,
-        ]
-        .into_iter()
-        .flatten()
-        .map(|session| session.started_at_unix_ms)
-        .min()
-    });
+    let started_at_ms = runtime.recording_started_at_unix_ms;
 
     #[cfg(target_os = "macos")]
     let (suspended, suspension) = match runtime.capture_suspension.as_ref() {

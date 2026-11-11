@@ -43,12 +43,23 @@ pub struct Inputs {
 }
 
 fn session_start_ms(session: Option<&NativeCaptureSession>) -> Option<i64> {
-    let s = session?.source_sessions.as_ref()?;
-    [&s.screen, &s.microphone, &s.system_audio]
-        .into_iter()
-        .flatten()
-        .map(|m| m.started_at_unix_ms as i64)
-        .min()
+    session?.recording_started_at_unix_ms.map(|ms| ms as i64)
+}
+
+/// The last session's start, for hiding an older session's "stopped" notice.
+/// The real start is cleared on stop, so a stopped session falls back to the
+/// per-source schedule anchor, which stop keeps.
+// shortcut: the anchor can sit earlier than the real start after re-anchoring, so an
+// older notice can still show; keep the last real start in shell state if that bites.
+fn last_session_start_ms(session: Option<&NativeCaptureSession>) -> Option<i64> {
+    session_start_ms(session).or_else(|| {
+        let s = session?.source_sessions.as_ref()?;
+        [&s.screen, &s.microphone, &s.system_audio]
+            .into_iter()
+            .flatten()
+            .map(|m| m.started_at_unix_ms as i64)
+            .min()
+    })
 }
 
 /// The session's part of the status bar (also the 2 s live refresh).
@@ -100,7 +111,8 @@ pub fn build(i: Inputs) -> ShellModel {
         ..Default::default()
     };
     apply_session(&mut status, i.session.as_ref(), i.runtime.as_ref());
-    status.stopped_reason = model::stopped_reason_from(&i.notifications, status.session_start_ms);
+    status.stopped_reason =
+        model::stopped_reason_from(&i.notifications, last_session_start_ms(i.session.as_ref()));
     ShellModel {
         status,
         notifications: i.notifications,

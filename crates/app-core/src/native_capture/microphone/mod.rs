@@ -267,6 +267,7 @@ mod tests {
             microphone_lent_out: false,
             microphone_vad: Default::default(),
             source_sessions: None,
+            recording_started_at_unix_ms: None,
         };
         let state = MicrophoneControllerState {
             devices: vec![capture_types::MicrophoneDevice {
@@ -345,6 +346,7 @@ mod tests {
             microphone_lent_out: false,
             microphone_vad: Default::default(),
             source_sessions: None,
+            recording_started_at_unix_ms: None,
         };
         let state = MicrophoneControllerState {
             devices: vec![],
@@ -459,6 +461,7 @@ mod tests {
             microphone_lent_out: false,
             microphone_vad: Default::default(),
             source_sessions: None,
+            recording_started_at_unix_ms: None,
         };
 
         let path = next_microphone_output_file_for_runtime(&runtime)

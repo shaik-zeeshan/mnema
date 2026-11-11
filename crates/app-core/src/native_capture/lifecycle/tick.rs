@@ -28,13 +28,8 @@ impl RecordingLifecycle {
         // load thereafter.
         let session_age_ms = self
             .runtime
-            .source_sessions
-            .as_ref()
-            .and_then(|sessions| sessions.system_audio.as_ref())
-            .map(|session| {
-                crate::native_capture::runtime::now_unix_ms()
-                    .saturating_sub(session.started_at_unix_ms)
-            })
+            .recording_started_at_unix_ms
+            .map(|started| crate::native_capture::runtime::now_unix_ms().saturating_sub(started))
             .unwrap_or(0);
         crate::native_capture::system_audio::note_permission_evidence(core, session_age_ms);
 

@@ -80,6 +80,11 @@ pub struct NativeCaptureSession {
     pub requested_sources: Option<CaptureSources>,
     pub output_files: Option<CaptureOutputFiles>,
     pub source_sessions: Option<SourceSessions>,
+    /// When this recording session began (unix ms): what "recording since"
+    /// and the REC timer show. Unlike `SourceSessionMeta::started_at_unix_ms`,
+    /// a segment-schedule anchor that re-anchoring rewrites, it never moves
+    /// while the session runs. `None` once stopped.
+    pub recording_started_at_unix_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
