@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-11 12:24",
- "verdict": "Every screen is built and connected to the real backend. On 11 Nov your seven decisions were finished and your hands-on rounds that day are fixed: models are found again, three mix-ups of the same kind, copy buttons, the developer window from the status popover, and now the menu that was drawn under the page, with seven related faults found by checking every menu and list in the app. Everything is in local commits; nothing is pushed. What needs you: five screenshots to approve on the 11 Nov hands-on round page, and a word on when the open dev app may be restarted with the new build.",
+ "updated": "2026-11-11 12:45",
+ "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click are often thinner than the Tauri app's: a provider's Manage panel opened to nothing, and Add a connector looked different. A screen-by-screen check of every control and flow against the Tauri app is now running, two parts at a time. Fixed and committed the same day: the menu drawn under the page and seven related faults (approved), copy buttons, the missing-model error, and the developer window from the status popover. Everything is in local commits; nothing is pushed. Nothing is waiting on you right now; pictures from the sweep will come for approval as each part lands.",
  "metrics": [
   {
    "label": "Overall",
-   "value": "built, being wired",
-   "note": "all screens built; hands-on rounds, real-app bugs, behaviour gaps and the seven decisions done; 20 marked shortcuts left, mostly small drawing approximations"
+   "value": "built, flows being checked",
+   "note": "all screens built and wired; a screen-by-screen check of every flow against the Tauri app is in progress after hands-on use found thin spots"
   },
   {
    "label": "Backend moved",
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "5 pending",
-   "note": "four new pictures of open menus and lists, and the changed gallery dropdown page"
+   "value": "all approved",
+   "note": "the five menu and list screens approved on 11 Nov; baselines recorded in 69da0b5c; more will come from the sweep"
   }
  ],
  "bars": [
@@ -54,7 +54,23 @@
    "pct": 0
   }
  ],
- "now": [],
+ "now": [
+  {
+   "id": "Sweep 1",
+   "title": "Settings › Intelligence: providers, Ask AI, User Context",
+   "detail": "Checking every control and flow against the Tauri app and building what is missing, starting with the empty Manage panel. With an agent now."
+  },
+  {
+   "id": "Sweep 2",
+   "title": "Settings › Intelligence: connectors and local models",
+   "detail": "Same check, starting with the Add a connector window's look. With an agent now."
+  },
+  {
+   "id": "Queued",
+   "title": "Five more parts of the app, and the Insights calendar",
+   "detail": "Settings' other groups, Timeline, Chat and Quick Recall, Insights, then the main window chrome, onboarding and small windows. Two at a time."
+  }
+ ],
  "done": [
   {
    "id": "T0",
@@ -723,16 +739,6 @@
   }
  ],
  "waiting": [
-  {
-   "id": "Approve",
-   "title": "Five screenshots",
-   "detail": "Four new pictures of menus and lists open over the page, and the control gallery's dropdown page, which changed. On the 11 Nov hands-on round page, first section."
-  },
-  {
-   "id": "Restart",
-   "title": "Say when I may restart the dev app",
-   "detail": "The fix for the menus is committed and a new build is prepared, but the app you have open is the 10:08 build. Swapping it in means closing the app for about a minute."
-  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -2019,13 +2025,23 @@
  ],
  "round4": [
   {
+   "anchor": "r6-sweep",
+   "title": "Screen-by-screen check against the Tauri app",
+   "toc": "Full sweep",
+   "commit": "—",
+   "state": "in progress",
+   "awaiting": false,
+   "what": "You found that Manage on a provider opens to nothing for Ollama and ChatGPT, and that Add a connector does not look like the Tauri app's. Both are confirmed: the new app's Manage panel only draws an API-key field for key-based cloud providers, where the Tauri app also has a label, the address, the ChatGPT sign-in block and Remove provider. The cause is general: screens were built to match screenshots, so what only appears after a click was often left out. Every part of the app is now being checked the same way: list every control, message and click-through flow in the Tauri app's code, find each in the new app, build what is missing with the Tauri wording and behaviour, and add a test that clicks through it. Order, two agents at a time: 1. Settings › Intelligence: providers, Ask AI, User Context (running). 2. Settings › Intelligence: connectors, transcription, speakers, text reading, search models (running). 3. Settings › General, Capture, Data, About. 4. Timeline, audio drawer, frame detail. 5. Chat and Quick Recall. 6. Insights. 7. Main window chrome, onboarding and the small windows. Also queued from you: in the Insights calendar a selected week or month is drawn as a square-cornered block; the Tauri app draws a week as one rounded row with its week number and has a separate month grid, and the new app has neither yet.",
+   "rows": []
+  },
+  {
    "anchor": "r5-approve",
-   "title": "Menus drawn under the page: screenshots to approve",
-   "toc": "To approve",
-   "commit": "44031552",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "Five screens need your yes, all rendered from test data. Four are new, each showing a list open over the content that used to cover it or cut it off: the Add provider menu, the Add connector picker, the Pause capture when idle list near the bottom of the window, and Chat's scope calendar. One changed: in the control gallery the two open search lists now open upward, because they have 252 px below them and the Tauri app's rule opens a list upward below 260. If you would rather keep that gallery picture as it was, the gallery row can be given more room instead.",
+   "title": "Menus drawn under the page: approved on 11 Nov",
+   "toc": "Approved (menus)",
+   "commit": "44031552, baselines 69da0b5c",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these five screens on 11 Nov, including the control gallery's lists opening upward; their baselines are recorded from the run these pictures were made from. On the scope calendar's size: it is the same size as in the Tauri app, about 422 by 500 points; it looks large here because the test window is only 1280 by 800 points and its height comes from the ten shortcuts. Four are new, each showing a list open over the content that used to cover it or cut it off: the Add provider menu, the Add connector picker, the Pause capture when idle list near the bottom of the window, and Chat's scope calendar. One changed: in the control gallery the two open search lists now open upward, because they have 252 px below them and the Tauri app's rule opens a list upward below 260. If you would rather keep that gallery picture as it was, the gallery row can be given more room instead.",
    "rows": [
     {
      "heading": "Settings › Intelligence › Add provider (your screenshot)",
@@ -2241,5 +2257,5 @@
    "rows": []
   }
  ],
- "round4_verdict": "What you found using the real dev build on 11 Nov is fixed and committed locally: the menu drawn under the page and seven related faults, the copy buttons, the missing-model error and two more mix-ups of the same kind, and the developer window from the status popover. Five screenshots from the menu fix need your approval. The fixes before the menu one are in the 10:08 dev build you have open; the menu fix needs a restart of the app. Nothing has been pushed."
+ "round4_verdict": "What you found using the real dev build on 11 Nov: the menu drawn under the page and seven related faults, the copy buttons, the missing-model error and two more mix-ups of the same kind, and the developer window from the status popover are fixed, committed and approved. Still open from the same day: the empty Manage panel, the Add a connector look and the Insights calendar's square range, which started a check of every screen and flow against the Tauri app. Nothing has been pushed."
 }
