@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 10:28",
- "verdict": "Every screen is built and connected to the real backend. On 11 Nov your seven decisions were finished, and your morning hands-on round is fixed too: models are found again (the missing-model error), three more mix-ups of the same kind, copy buttons that now work and say so, new copy buttons in the developer window, and the developer window opening from the status popover. A signed dev build with all of it is ready. Everything is in local commits; nothing is pushed. What needs you: five screenshots to approve, on the real-app test page.",
+ "updated": "2026-11-11 10:47",
+ "verdict": "Every screen is built and connected to the real backend. On 11 Nov your seven decisions were finished, and your morning hands-on round is fixed too: models are found again (the missing-model error), three more mix-ups of the same kind, copy buttons that now work and say so, new copy buttons in the developer window, and the developer window opening from the status popover. A signed dev build with all of it is ready. Everything is in local commits; nothing is pushed. You approved the five copy-button screenshots on 11 Nov and their baselines are recorded, so no screenshot is waiting. What is left for you: a hands-on pass whenever you like, and your call on a deep review before cut-over.",
  "metrics": [
   {
    "label": "Overall",
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "5 pending",
-   "note": "three changed developer-window screens and two new ones, from the copy-button work"
+   "value": "all approved",
+   "note": "the last five (copy buttons, popover button) approved on 11 Nov; baselines recorded in f65a2487"
   }
  ],
  "bars": [
@@ -723,11 +723,6 @@
   }
  ],
  "waiting": [
-  {
-   "id": "Approve",
-   "title": "Five screenshots",
-   "detail": "Three developer-window screens that changed (issue rows, a job's error box, the Logs toolbar) and two new ones (a log line with its copy button, the status popover with Open developer window). On the real-app test page, first section."
-  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -1774,16 +1769,16 @@
    ]
   }
  ],
- "round3_verdict": "Your morning round on 11 Nov is fixed and committed locally: the missing-model error, three more mix-ups of the same kind found by an audit, the copy buttons, and the developer window from the status popover. The model fix is confirmed in the real app's log: no missing-model error, and the Whisper transcriber loaded and was unloaded on quit. Five screenshots need your approval. The seven decisions from earlier are done. Nothing has been pushed.",
+ "round3_verdict": "Your morning round on 11 Nov is fixed and committed locally: the missing-model error, three more mix-ups of the same kind found by an audit, the copy buttons, and the developer window from the status popover. The model fix is confirmed in the real app's log: no missing-model error, and the Whisper transcriber loaded and was unloaded on quit. You approved the five screenshots and their baselines are recorded; the full screenshot suite passes. The seven decisions from earlier are done. Nothing has been pushed.",
  "round3": [
   {
    "anchor": "r4-approve",
-   "title": "Copy buttons and the developer window button: screenshots to approve",
-   "toc": "To approve",
-   "commit": "eab577a8",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "Five screens need your yes, all rendered from test data. Three changed: the developer window's issue rows and a failed job's error box each gain a small copy icon, and the Logs toolbar gains Copy visible lines next to Follow. Two are new: a log line under the pointer with its copy button, with another line marked \"copied\"; and the status popover ending in Open developer window with its key, shown only when developer options are on.",
+   "title": "Copy buttons and the developer window button: approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "eab577a8, baselines f65a2487",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these five screens on 11 Nov; their baselines are recorded from a run that matches these pictures. All are rendered from test data. Three changed: the developer window's issue rows and a failed job's error box each gain a small copy icon, and the Logs toolbar gains Copy visible lines next to Follow. Two are new: a log line under the pointer with its copy button, with another line marked \"copied\"; and the status popover ending in Open developer window with its key, shown only when developer options are on.",
    "rows": [
     {
      "heading": "Developer window › Overview › issue rows",
@@ -1867,7 +1862,7 @@
    "title": "Developer window from the status popover",
    "toc": "Popover button",
    "commit": "eab577a8",
-   "state": "built · awaiting your approval",
+   "state": "built · approved",
    "awaiting": false,
    "what": "The popover that opens from the recording readout now ends with Open developer window and your shortcut (⌘D by default) when developer options are on, like the Tauri app. Clicking it closes the popover and opens the window. The shortcuts sheet also hides a shortcut you have cleared, where it used to show an empty key box. Tested with a click; not yet clicked in the real app.",
    "rows": []
