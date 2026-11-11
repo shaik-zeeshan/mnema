@@ -88,14 +88,25 @@ fn pause_screen_for_inactivity_is_idempotent() {
     assert!(runtime.inactivity.is_screen_paused());
 }
 
+/// `resume_screen_from_inactivity` without its live display check: with every
+/// display asleep it returns `Ok(())` before validating, so the
+/// `requires_*` tests below would pass or fail with the Mac's display state.
+#[cfg(target_os = "macos")]
+fn resume_screen_validating(
+    runtime: &mut NativeCaptureRuntime,
+) -> Result<(), CaptureErrorResponse> {
+    resume_screen_from_inactivity_with_start_segment(runtime, None, |_, _, _, _, _, _, _, _, _| {
+        unreachable!("validation fails before a segment starts")
+    })
+}
+
 #[cfg(target_os = "macos")]
 #[test]
 fn resume_screen_from_inactivity_requires_requested_sources() {
     let mut runtime = screen_paused_runtime_fixture();
     runtime.requested_sources = None;
 
-    let error =
-        resume_screen_from_inactivity(&mut runtime, None).expect_err("missing sources should fail");
+    let error = resume_screen_validating(&mut runtime).expect_err("missing sources should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }
@@ -222,8 +233,7 @@ fn resume_screen_from_inactivity_requires_segment_planner() {
     let mut runtime = screen_paused_runtime_fixture();
     runtime.segment_planner = None;
 
-    let error =
-        resume_screen_from_inactivity(&mut runtime, None).expect_err("missing planner should fail");
+    let error = resume_screen_validating(&mut runtime).expect_err("missing planner should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }
@@ -234,8 +244,7 @@ fn resume_screen_from_inactivity_requires_segment_schedule() {
     let mut runtime = screen_paused_runtime_fixture();
     runtime.segment_schedule = None;
 
-    let error = resume_screen_from_inactivity(&mut runtime, None)
-        .expect_err("missing schedule should fail");
+    let error = resume_screen_validating(&mut runtime).expect_err("missing schedule should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }
@@ -246,8 +255,7 @@ fn resume_screen_from_inactivity_requires_capture_clock() {
     let mut runtime = screen_paused_runtime_fixture();
     runtime.capture_clock = None;
 
-    let error =
-        resume_screen_from_inactivity(&mut runtime, None).expect_err("missing clock should fail");
+    let error = resume_screen_validating(&mut runtime).expect_err("missing clock should fail");
 
     assert_eq!(error.code, "invalid_runtime_state");
 }

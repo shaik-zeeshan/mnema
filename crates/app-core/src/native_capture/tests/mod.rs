@@ -469,6 +469,8 @@ fn audio_paused_runtime_fixture() -> NativeCaptureRuntime {
         active_screen_session: None, // screen still conceptually active
         active_microphone_session: None,
         active_system_audio_session: None,
+        // Pinned "here": the live lock/display state would turn a locked Mac's run red.
+        away_probe: Some(|| false),
         runtime_controller,
         runtime_state,
         inactivity: InactivityState {
