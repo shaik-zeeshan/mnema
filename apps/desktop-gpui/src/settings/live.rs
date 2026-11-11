@@ -451,3 +451,19 @@ pub fn delete_person(core: &Arc<AppCore>, person_id: i64) -> Outcome {
     core.block_on(app_core::app_infra::delete_person_profile(request, &infra))?;
     Ok(Some("Voiceprint deleted.".into()))
 }
+
+/// `delete_speaker_analysis_model` (Speakers › Delete).
+pub fn delete_speaker_model(core: &Arc<AppCore>, provider: String, model_id: String) -> Outcome {
+    let infra = infra(core)?;
+    core.block_on(
+        app_core::speaker_analysis_models::delete_speaker_analysis_model(
+            core,
+            app_core::speaker_analysis_models::SpeakerAnalysisModelDownloadRequestDto {
+                provider,
+                model_id,
+            },
+            &infra,
+        ),
+    )?;
+    Ok(None)
+}

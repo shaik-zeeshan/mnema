@@ -17,15 +17,15 @@ use crate::settings::fixture::{Call, FixtureBackend};
 use crate::settings::tests::{frame, open_at};
 use crate::settings::Settings;
 
-const SECRET: &str = "sk-fixture-never-saved";
+pub(super) const SECRET: &str = "sk-fixture-never-saved";
 
-type Open = (WindowHandle<Root>, Entity<Settings>, Arc<FixtureBackend>);
+pub(super) type Open = (WindowHandle<Root>, Entity<Settings>, Arc<FixtureBackend>);
 
-fn open(cx: &mut TestAppContext) -> Open {
+pub(super) fn open(cx: &mut TestAppContext) -> Open {
     open_at(cx, false, (1280., 800.))
 }
 
-fn with<R>(
+pub(super) fn with<R>(
     cx: &mut TestAppContext,
     (w, v, _): &Open,
     f: impl FnOnce(&mut Settings, &mut gpui_kit::Window, &mut gpui_kit::Context<Settings>) -> R,
@@ -40,7 +40,7 @@ fn with<R>(
     r
 }
 
-fn click(cx: &mut TestAppContext, w: WindowHandle<Root>, id: &'static str) {
+pub(super) fn click(cx: &mut TestAppContext, w: WindowHandle<Root>, id: &'static str) {
     frame(cx, w);
     cx.update_window(w.into(), |_, window, cx| window.click(id, cx))
         .unwrap();
@@ -63,11 +63,14 @@ fn type_into(
     });
 }
 
-fn servers(cx: &mut TestAppContext, v: &Entity<Settings>) -> Vec<capture_types::McpServerConfig> {
+pub(super) fn servers(
+    cx: &mut TestAppContext,
+    v: &Entity<Settings>,
+) -> Vec<capture_types::McpServerConfig> {
     v.read_with(cx, |s, _| s.d().ai_runtime.mcp_servers)
 }
 
-fn mcp_calls(b: &FixtureBackend) -> Vec<Call> {
+pub(super) fn mcp_calls(b: &FixtureBackend) -> Vec<Call> {
     b.calls()
         .into_iter()
         .filter(|c| !matches!(c, Call::McpCheckNode))

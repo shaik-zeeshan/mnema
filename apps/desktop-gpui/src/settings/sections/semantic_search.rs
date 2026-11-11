@@ -5,21 +5,51 @@
 //! the backend). Switching away from a model rebuilds the index, so it asks first.
 
 use gpui_kit::prelude::*;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, AnyElement, Context, Entity, Window};
 use serde_json::Value;
 
-use super::model_row::ModelRow;
+use super::model_row::{no_status_row, ModelRow};
+use crate::settings::data::Family;
 use crate::settings::model::{format_bytes, Json};
-use crate::settings::row::{row, section};
-use crate::settings::{on, reload, Settings};
+use crate::settings::row::{hint, line, row, section};
+use crate::settings::{icons, on, reload, Settings};
 use crate::theme::Palette;
 use crate::ui::chip::ChipKind;
 use crate::ui::combobox::Combobox;
 use crate::ui::switch::Switch;
 use crate::ui::Button;
+use crate::ui::Tone;
 
-/// The busy / note name for a model switch or delete.
+/// The busy / note name for a model switch.
 const BUSY: &str = "Search model";
+/// The busy name of an unused model's delete.
+const DELETING: &str = "Search model delete";
+
+/// `deleteSemanticSearchModel`: asks, deletes; a failure stays on the row.
+fn delete(id: String, name: String, cx: &mut Context<Settings>) {
+    crate::settings::confirm(
+        cx,
+        "Delete semantic search model",
+        &format!("Delete {name}?"),
+        "Delete",
+        move |s, cx| {
+            s.ui.model_notes.remove(&Family::Semantic);
+            s.run_command_with(
+                DELETING,
+                cx,
+                move |core| crate::settings::live::semantic_delete(core, id).map(|_| None),
+                |s, outcome| {
+                    if let Err(e) = outcome {
+                        let words = format!("Download failed: {e}");
+                        s.ui.model_notes.insert(Family::Semantic, (false, words));
+                    }
+                    true
+                },
+            );
+        },
+    );
+}
 
 fn tier_label(tier: &str) -> &'static str {
     match tier {
@@ -179,11 +209,12 @@ pub(super) fn choose(s: &mut Settings, id: String, name: String, cx: &mut Contex
     if current.is_none() {
         return switch(s, id, true, cx);
     }
-    crate::settings::confirm(
+    crate::settings::commands::confirm_as(
         cx,
         "Re-index for new search model?",
         &format!("Switching to \u{201c}{name}\u{201d} re-indexes every recording: all existing meaning vectors are cleared and re-derived under the new model in the background. Your captures are not changed."),
         "Switch & Re-index",
+        "Keep Current Model",
         move |s, cx| switch(s, id, false, cx),
     );
 }
@@ -192,6 +223,8 @@ fn switch(s: &mut Settings, id: String, first: bool, cx: &mut Context<Settings>)
     if !s.ui.busy.insert(BUSY) {
         return;
     }
+    s.ui.model_notes.remove(&Family::Semantic);
+    s.ui.reindex = None;
     let backend = s.backend.clone();
     let model = id.clone();
     let job = cx.background_spawn(async move { backend.select_semantic_model(&model) });
@@ -215,12 +248,13 @@ fn switch(s: &mut Settings, id: String, first: bool, cx: &mut Context<Settings>)
                         } else {
                             "Re-index started in the background.".into()
                         };
-                        s.ui.note = Some((true, BUSY, text));
+                        s.ui.reindex = Some(text);
                     }
                 }
                 Err(e) => {
                     log::warn!("settings: the search model switch failed: {e}");
-                    s.ui.note = Some((false, BUSY, e));
+                    let words = format!("Model status failed: {e}");
+                    s.ui.model_notes.insert(Family::Semantic, (false, words));
                 }
             }
             cx.notify();
@@ -246,10 +280,33 @@ pub fn render(
     let picked = picked_id
         .as_deref()
         .and_then(|id| picked(status, supported.map_or(&[][..], Vec::as_slice), id));
-    let catalog_warning = match &loaded {
-        Some(Err(e)) => Some(format!("Custom model list failed: {e}")),
-        _ => None,
+    // `notes`: the system-language hint, then the catalog's failure or load.
+    let notes = |p: &Palette| -> Vec<AnyElement> {
+        let mut out = Vec::new();
+        let locale = &s.data.os_locale;
+        if !locale.is_empty() && !locale.to_lowercase().starts_with("en") {
+            out.push(line(Tone::Info, icons::INFO, format!("Your system language ({locale}) isn\u{2019}t English \u{2014} the Multilingual tier is recommended."), p).into_any_element());
+        }
+        match &loaded {
+            Some(Err(e)) => out.push(
+                line(
+                    Tone::Warn,
+                    icons::ALERT,
+                    format!("Custom model list failed: {e}"),
+                    p,
+                )
+                .into_any_element(),
+            ),
+            None => out.push(hint("Loading supported models\u{2026}", p).into_any_element()),
+            _ => {}
+        }
+        out
     };
+    let row_error =
+        s.ui.model_notes
+            .get(&Family::Semantic)
+            .filter(|(ok, _)| !ok)
+            .map(|(_, w)| w.clone());
     let ids: Vec<String> = opts.iter().map(|(i, _)| i.clone()).collect();
     let sel = picked_id
         .as_ref()
@@ -272,25 +329,60 @@ pub fn render(
         )
         .into_any_element();
     let busy = s.ui.busy.contains(BUSY);
+    let folder = status
+        .and_then(|v| v["modelsDirectory"].as_str())
+        .map(str::to_string);
+    let selected = |m: &Picked| ss.model_id.as_deref() == Some(m.id.as_str());
     let model = match &picked {
+        _ if status.is_none() => no_status_row(
+            s,
+            Family::Semantic,
+            "Model",
+            "Model status failed: ",
+            "Checking installed search models\u{2026}",
+            "No search model status is available.",
+        )
+        .build("ss-model-row", s, p, cx),
         None => ModelRow {
             label: "Model",
-            desc: status
-                .map(|_| "Recommended tiers first. Nothing downloads until you choose one.".into()),
-            warning: if status.is_some() {
-                catalog_warning
-            } else {
-                Some("No search model status is available.".into())
-            },
-            controls: if status.is_some() {
-                vec![picker]
-            } else {
-                Vec::new()
-            },
+            desc: Some("Recommended tiers first. Nothing downloads until you choose one.".into()),
+            error: row_error,
+            controls: vec![picker],
+            notes: notes(p),
             ..Default::default()
-        },
+        }
+        .build("ss-model-row", s, p, cx),
+        // `reindexing`: the active model after a confirmed switch.
+        Some(m) if selected(m) && (busy || s.ui.reindex.is_some()) => {
+            row("Model")
+                .extra(crate::ui::chip::chip("active", ChipKind::Accent, p))
+                .desc(s.ui.reindex.clone().unwrap_or_else(|| {
+                    "Re-indexing \u{2014} clearing existing vectors\u{2026}".into()
+                }))
+                .full()
+                .aside(picker)
+                .control(
+                    div()
+                        .id("ss-reindexing")
+                        .role(gpui_kit::Role::ProgressIndicator)
+                        .aria_label("Re-indexing")
+                        .flex()
+                        .flex_col()
+                        .gap(crate::theme::space::S2)
+                        .w_full()
+                        .child(crate::ui::progress::progress_meta(
+                            "Re-indexing",
+                            "catching up",
+                            p,
+                        ))
+                        .child(crate::ui::progress::progress(None, p))
+                        .test_support(),
+                )
+                .build(p)
+                .into_any_element()
+        }
         Some(m) => {
-            let selected = ss.model_id.as_deref() == Some(m.id.as_str());
+            let selected = selected(m);
             let step = if !m.available && !m.failed {
                 " Step 1: download \u{b7} Step 2: use this model."
             } else {
@@ -309,6 +401,7 @@ pub fn render(
                             "Use this model"
                         },
                     )
+                    .spinner(busy)
                     .disabled(busy)
                     .on_click(crate::settings::click(cx, move |s, cx| {
                         choose(s, id.clone(), name.clone(), cx)
@@ -316,51 +409,52 @@ pub fn render(
                     .into_any_element(),
                 );
                 // Installed but not active = unused: its disk can be reclaimed.
-                let del = m.id.clone();
+                let deleting = s.ui.busy.contains(DELETING);
+                let (del, name) = (m.id.clone(), m.name.clone());
                 controls.push(
-                    Button::new("ss-delete", "Delete files")
+                    Button::new("ss-delete", if deleting { "Deleting" } else { "Delete" })
                         .ghost()
+                        .spinner(deleting)
+                        .disabled(deleting)
                         .on_click(crate::settings::click(cx, move |_, cx| {
-                            let id = del.clone();
-                            crate::settings::confirm(
-                                cx,
-                                "Delete search model files?",
-                                "The downloaded model files are removed from this Mac. You can download them again.",
-                                "Delete",
-                                move |s, cx| {
-                                    s.run_command(BUSY, cx, move |core| {
-                                        crate::settings::live::semantic_delete(core, id)
-                                    })
-                                },
-                            );
+                            delete(del.clone(), name.clone(), cx)
                         }))
                         .into_any_element(),
                 );
             }
             ModelRow {
                 label: "Model",
-                chip: Some(match (m.available, m.failed, selected) {
-                    (false, true, _) => ("failed".into(), ChipKind::Danger),
-                    (false, false, _) => ("not installed".into(), ChipKind::Neutral),
-                    (true, _, true) => ("active".into(), ChipKind::Accent),
-                    _ => ("installed".into(), ChipKind::Neutral),
-                }),
+                chip: Some(
+                    match (
+                        m.available,
+                        m.failed
+                            || row_error
+                                .as_deref()
+                                .is_some_and(|e| e.starts_with("Download failed")),
+                        selected,
+                    ) {
+                        (false, true, _) => ("failed".into(), ChipKind::Danger),
+                        (false, false, _) => ("not installed".into(), ChipKind::Neutral),
+                        (true, _, true) => ("active".into(), ChipKind::Accent),
+                        _ => ("installed".into(), ChipKind::Neutral),
+                    },
+                ),
                 desc: Some(format!("{}.{step}", m.meta)),
-                warning: catalog_warning,
+                error: row_error,
                 controls,
+                notes: notes(p),
                 download: (!m.available).then_some((m.bytes.map(|b| b as u64), m.failed)),
-                start: m.provider.clone().map(|provider| {
-                    (
-                        crate::settings::data::Family::Semantic,
-                        provider,
-                        m.id.clone(),
-                    )
-                }),
-                folder: status
-                    .and_then(|v| v["modelsDirectory"].as_str())
-                    .map(str::to_string),
+                start: m
+                    .provider
+                    .clone()
+                    .map(|provider| (Family::Semantic, provider, m.id.clone())),
+                folder: folder.clone(),
+                name: Some(m.name.clone()),
+                running_desc: Some(m.name.clone()),
+                cancel_label: Some("Cancel"),
                 ..Default::default()
             }
+            .build("ss-model-row", s, p, cx)
         }
     };
     let rows = vec![
@@ -372,7 +466,7 @@ pub fn render(
             )
             .build(p)
             .into_any_element(),
-        model.build("ss-model-row", s, p, cx),
+        model,
     ];
     section(
         "Semantic Search",
@@ -381,7 +475,7 @@ pub fn render(
             s,
             "reload-ss",
             "Refresh semantic search model status",
-            false,
+            s.ui.models_loading,
             |s, cx| s.reload_all(cx),
             cx,
         )],

@@ -31,10 +31,11 @@ pub const STATES: [(&str, &str); 12] = [
 ];
 
 /// MCP golden states over Intelligence: `(state, the modal to open)`.
-pub const MCP_STATES: [(&str, &str); 3] = [
+pub const MCP_STATES: [(&str, &str); 4] = [
     ("mcp-custom-form", "form"),
     ("mcp-tool-list", "tools"),
     ("mcp-oauth-idle", "oauth"),
+    ("mcp-preset-connect", "connect"),
 ];
 
 /// Provider-row golden states over Intelligence (`ProviderRow.svelte` opened).
@@ -53,6 +54,77 @@ pub fn open_provider_state(
     cx: &mut gpui_kit::Context<super::Settings>,
 ) {
     super::sections::provider_row::fixture_state(s, which, window, cx);
+}
+
+/// Model-section golden states: `(state, ?tab=, what to set up)`.
+pub const MODEL_STATES: [(&str, &str, &str); 7] = [
+    ("models-unreadable", "ocr", "unreadable"),
+    ("models-checking", "speakers", "checking"),
+    ("speakers-installed", "speakers", "installed"),
+    ("transcription-downloading", "transcription", "downloading"),
+    ("semantic-reindexing", "semantic-search", "reindexing"),
+    ("semantic-language", "semantic-search", "language"),
+    ("mcp-authorizing", "intelligence", "authorizing"),
+];
+
+/// Set one [`MODEL_STATES`] state up on the loaded page.
+pub fn open_model_state(
+    s: &mut super::Settings,
+    which: &str,
+    cx: &mut gpui_kit::Context<super::Settings>,
+) {
+    use super::data::Family;
+    match which {
+        "unreadable" => {
+            s.data.ocr_models = None;
+            s.data.transcription_models = None;
+            for f in [Family::Ocr, Family::Transcription] {
+                s.data.model_errors.insert(
+                    f,
+                    "failed to inspect models: manifest.json: expected value at line 1 column 1"
+                        .into(),
+                );
+            }
+        }
+        "checking" => {
+            s.data.speaker_models = None;
+            s.data.voice_checked = false;
+            s.ui.models_loading = true;
+        }
+        "installed" => {
+            if let Some(m) = s.data.speaker_models.as_mut() {
+                let m = &mut m["providers"][0]["models"][0];
+                m["available"] = Value::Bool(true);
+                m["status"] = Value::String("installed".into());
+            }
+        }
+        "downloading" => {
+            s.ui.downloads.insert(
+                "local_whisper:base".into(),
+                (61_000_000, Some(148_000_000), "downloading".into()),
+            );
+        }
+        "reindexing" => {
+            s.ui.reindex = Some("Cleared 1,204 vectors; re-indexing in the background.".into());
+        }
+        "language" => {
+            s.data.os_locale = "de-DE".into();
+            s.edit(|d| d.semantic_search.model_id = None, cx);
+        }
+        "authorizing" => {
+            s.edit(
+                |d| {
+                    if let Some(m) = d.ai_runtime.mcp_servers.first_mut() {
+                        m.auth_mode = capture_types::McpAuthMode::OAuth;
+                    }
+                },
+                cx,
+            );
+            s.data.mcp_oauth = vec![serde_json::json!({ "id": "github", "state": "authorizing" })];
+        }
+        _ => {}
+    }
+    cx.notify();
 }
 
 /// Open one [`MCP_STATES`] modal (`which`) over the page.
@@ -98,6 +170,7 @@ pub fn settings_data() -> anyhow::Result<SettingsData> {
         update: v("get_app_update_status"),
         log_status: v("get_general_app_log_status"),
         notices: v("get_third_party_notices"),
+        voice_checked: true,
         ..Default::default()
     };
     // The stub answers the per-id key / secret probes the same for every id.

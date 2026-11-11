@@ -40,6 +40,16 @@ pub struct SettingsData {
     /// `get_account_owner_person_id` → that person's name (None = no voiceprint).
     pub voice_owner: Option<String>,
     pub voice_owner_id: Option<i64>,
+    /// `list_person_profiles().length`: the speaker preset-switch warning
+    /// only asks when people are saved (a failed read is 0, never blocking).
+    pub person_count: usize,
+    /// The saved-voiceprint read has answered (`voice.loading` ends).
+    pub voice_checked: bool,
+    /// Why a family's model status couldn't be read (the backend's words:
+    /// manifest / file errors and paths, never captured content).
+    pub model_errors: HashMap<super::data::Family, String>,
+    /// `navigator.language`'s source: the first preferred macOS language.
+    pub os_locale: String,
     /// `get_system_audio_access_hint().shouldShow` (ADR 0052's inferred "possibly blocked").
     pub system_audio_blocked: bool,
     /// `get_browser_url_accessibility_status` (Firefox / Zen URL capture).
@@ -99,6 +109,8 @@ pub struct ModelView {
     pub license: Option<String>,
     pub source: Option<String>,
     pub missing: Vec<String>,
+    /// Apple Speech's `availabilityStatus` (its permission state).
+    pub availability: Option<String>,
 }
 
 impl ModelView {
@@ -115,6 +127,7 @@ impl ModelView {
             failure: v.str_at(&["failureMessage"]).map(Into::into),
             runtime_message: v.str_at(&["runtimeMessage"]).map(Into::into),
             install_path: v.str_at(&["installPath"]).map(Into::into),
+            availability: v.str_at(&["availabilityStatus"]).map(Into::into),
             license: v.str_at(&["licenseLabel"]).map(Into::into),
             source: v.str_at(&["sourceUrl"]).map(Into::into),
             missing: v.at(&["missingFiles"]).as_array().map_or(Vec::new(), |a| {

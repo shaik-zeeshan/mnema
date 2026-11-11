@@ -24,6 +24,18 @@ impl Settings {
         cx: &mut Context<Self>,
         job: impl FnOnce(&Arc<AppCore>) -> Outcome + Send + 'static,
     ) {
+        self.run_command_with(what, cx, job, |_, _| false)
+    }
+
+    /// `run_command` whose outcome a row shows itself: `inline` takes it and
+    /// answers true when it did (then no page note); the re-read still runs.
+    pub fn run_command_with(
+        &mut self,
+        what: &'static str,
+        cx: &mut Context<Self>,
+        job: impl FnOnce(&Arc<AppCore>) -> Outcome + Send + 'static,
+        inline: impl FnOnce(&mut Self, &Outcome) -> bool + 'static,
+    ) {
         let Some(core) = crate::chat::core(cx) else {
             return;
         };
@@ -35,6 +47,14 @@ impl Settings {
             let outcome = work.await;
             let _ = this.update(cx, |s, cx| {
                 s.ui.busy.remove(what);
+                if inline(s, &outcome) {
+                    if let Err(e) = &outcome {
+                        log::warn!("settings: {what} failed: {e}");
+                    }
+                    s.refresh(cx);
+                    cx.notify();
+                    return;
+                }
                 match outcome {
                     Ok(Some(text)) => s.ui.note = Some((true, what, text)),
                     Ok(None) => {}
@@ -66,11 +86,21 @@ impl Settings {
         let Some(core) = crate::chat::core(cx) else {
             return;
         };
+        // A core with no recording settings (a bare test core) has nothing to read.
+        if core
+            .try_state::<app_core::recording_settings::RecordingSettingsState>()
+            .is_none()
+        {
+            return;
+        }
         let c = core.clone();
+        self.ui.models_loading = true;
+        cx.notify();
         let local = Tokio::spawn(cx, async move { super::data::load_local(&c) });
         cx.spawn(async move |this, cx| {
             let Ok(local) = local.await else { return };
             let Ok(rest) = this.update(cx, |s, cx| {
+                s.ui.models_loading = false;
                 let first = local.clone();
                 if reset {
                     s.set_data(first, cx);
@@ -143,10 +173,22 @@ impl Settings {
     /// `update_semantic_search_settings { enabled }`: saved at once, reverted
     /// with the backend's reason when it fails.
     pub fn set_semantic_enabled(&mut self, on: bool, cx: &mut Context<Self>) {
+        // `setSemanticSearchEnabled`: a refusal flips the switch back and says why on the row.
         self.adopt(|d| d.semantic_search.enabled = on);
-        self.run_command("Semantic search", cx, move |core| {
-            live::set_semantic_enabled(core, on).map(|_| None)
-        });
+        self.ui.model_notes.remove(&super::data::Family::Semantic);
+        self.run_command_with(
+            "Semantic search",
+            cx,
+            move |core| live::set_semantic_enabled(core, on).map(|_| None),
+            move |s, outcome| {
+                let Err(e) = outcome else { return false };
+                s.adopt(|d| d.semantic_search.enabled = !on);
+                let words = format!("Model status failed: {e}");
+                s.ui.model_notes
+                    .insert(super::data::Family::Semantic, (false, words));
+                true
+            },
+        );
     }
 
     /// Window focus (`+page.svelte`'s and the privacy picker's focus handlers):
@@ -427,12 +469,19 @@ impl Settings {
     /// Events the page follows live: model download progress, and the changes
     /// that make its loaded answers stale.
     pub fn on_event(&mut self, event: &app_core::CoreEvent, cx: &mut Context<Self>) {
+        use super::data::Family;
         use app_core::CoreEvent as E;
-        let progress = match event {
-            E::AudioTranscriptionModelDownloadProgress(p) => serde_json::to_value(p).ok(),
-            E::SpeakerAnalysisModelDownloadProgress(p) => serde_json::to_value(p).ok(),
-            E::OcrModelDownloadProgress(p) => serde_json::to_value(p).ok(),
-            E::SemanticSearchModelDownloadProgress(p) => serde_json::to_value(p).ok(),
+        let (family, progress) = match event {
+            E::AudioTranscriptionModelDownloadProgress(p) => {
+                (Family::Transcription, serde_json::to_value(p).ok())
+            }
+            E::SpeakerAnalysisModelDownloadProgress(p) => {
+                (Family::Speaker, serde_json::to_value(p).ok())
+            }
+            E::OcrModelDownloadProgress(p) => (Family::Ocr, serde_json::to_value(p).ok()),
+            E::SemanticSearchModelDownloadProgress(p) => {
+                (Family::Semantic, serde_json::to_value(p).ok())
+            }
             E::ChatgptLoginUpdate(v) => {
                 self.on_chatgpt_update(v, cx);
                 return;
@@ -458,15 +507,14 @@ impl Settings {
             "completed" | "failed" | "cancelled" => {
                 self.ui.downloads.remove(&key);
                 if status == "failed" {
-                    let why = p["message"]
-                        .as_str()
-                        .unwrap_or("the download failed")
-                        .to_string();
-                    self.ui.note = Some((false, "Model download", why));
+                    let why = p["message"].as_str().unwrap_or("Download failed.");
+                    let words = format!("{}{why}", super::sections::model_row_failure(family));
+                    self.ui.model_notes.insert(family, (false, words));
                 }
                 self.refresh(cx);
             }
             _ => {
+                self.ui.model_notes.remove(&family);
                 let done = p["downloadedBytes"].as_u64().unwrap_or(0);
                 self.ui
                     .downloads

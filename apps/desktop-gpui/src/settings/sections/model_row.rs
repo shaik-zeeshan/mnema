@@ -30,6 +30,70 @@ pub struct ModelRow {
     pub folder: Option<String>,
     /// The "Model files" disclosure: `(term, value)` rows.
     pub files: Vec<(&'static str, String)>,
+    /// What the row says while its download runs (`None` = no description).
+    pub running_desc: Option<String>,
+    /// The running download's Cancel (`None` = "Cancel download").
+    pub cancel_label: Option<&'static str>,
+    /// The model's name for "Downloading <name>".
+    pub name: Option<String>,
+    /// Extra lines under the copy (`ModelDownloadRow`'s `note`).
+    pub notes: Vec<AnyElement>,
+}
+
+/// `downloadMeta`: the progress line's title and detail, and the bar's value.
+pub fn download_meta(
+    name: &str,
+    status: &str,
+    done: u64,
+    total: Option<u64>,
+) -> (String, String, Option<f32>) {
+    let title = match status {
+        "installing" => format!("Installing {name}"),
+        "starting" => "Starting download".to_string(),
+        _ => format!("Downloading {name}"),
+    };
+    match total.filter(|t| *t > 0) {
+        None => (
+            title,
+            if done > 0 {
+                format_bytes(done as f64)
+            } else {
+                String::new()
+            },
+            None,
+        ),
+        Some(t) => {
+            let pct = ((done as f64 / t as f64) * 100.).round().min(100.);
+            (
+                title,
+                format!(
+                    "{} of {} \u{b7} {pct}%",
+                    format_bytes(done as f64),
+                    format_bytes(t as f64)
+                ),
+                Some((pct / 100.) as f32),
+            )
+        }
+    }
+}
+
+/// The busy name while a family's download is being started.
+fn starting_name(family: Family) -> &'static str {
+    match family {
+        Family::Ocr => "Starting OCR download",
+        Family::Transcription => "Starting transcription download",
+        Family::Speaker => "Starting speaker download",
+        Family::Semantic => "Starting search model download",
+    }
+}
+
+/// The words a failed download or model action leaves on its row.
+pub fn failure_prefix(family: Family) -> &'static str {
+    match family {
+        Family::Ocr => "",
+        Family::Speaker => "Speaker model action failed: ",
+        Family::Transcription | Family::Semantic => "Download failed: ",
+    }
 }
 
 /// `ModelDownloadRow`'s `info`: install path, licence, source, missing files.
@@ -58,6 +122,52 @@ impl ModelRow {
         p: &Palette,
         cx: &mut Context<Settings>,
     ) -> AnyElement {
+        let key = self
+            .start
+            .as_ref()
+            .map(|(_, provider, model)| format!("{provider}:{model}"));
+        let running = key.as_ref().and_then(|k| s.ui.downloads.get(k)).cloned();
+        if let (Some((done, total, status)), Some((family, _, _))) = (&running, self.start.clone())
+        {
+            // The running layout (`ModelDownloadRow`'s `progress`): no chip, no
+            // controls, just the progress and its Cancel.
+            let r = row(self.label).desc_opt(self.running_desc).full();
+            let name = self.name.unwrap_or_else(|| self.label.to_lowercase());
+            let (title, detail, value) = download_meta(&name, status, *done, *total);
+            let cancelling = s.ui.busy.contains("Cancel download");
+            return r
+                .control(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(space::S2)
+                        .w_full()
+                        .child(crate::ui::progress::progress_meta(title, detail, p))
+                        .child(crate::ui::progress::progress(value, p))
+                        .child(
+                            div().flex().child(
+                                Button::new(
+                                    SharedString::from(format!("{id}-cancel")),
+                                    if cancelling {
+                                        "Cancelling"
+                                    } else {
+                                        self.cancel_label.unwrap_or("Cancel download")
+                                    },
+                                )
+                                .sm()
+                                .spinner(cancelling)
+                                .disabled(cancelling)
+                                .on_click(crate::settings::click(cx, move |s, cx| {
+                                    s.run_command("Cancel download", cx, move |core| {
+                                        data::cancel_download(core, family).map(|_| None)
+                                    })
+                                })),
+                            ),
+                        ),
+                )
+                .build(p)
+                .into_any_element();
+        }
         let mut r = row(self.label).desc_opt(self.desc);
         if let Some((text_, kind)) = self.chip {
             r = r.extra(chip(text_, kind, p));
@@ -68,85 +178,78 @@ impl ModelRow {
         for c in self.controls {
             r = r.control(c);
         }
-        let key = self
-            .start
-            .as_ref()
-            .map(|(_, provider, model)| format!("{provider}:{model}"));
-        let running = key.as_ref().and_then(|k| s.ui.downloads.get(k)).cloned();
-        if let (Some((done, total, status)), Some((family, _, _))) = (&running, self.start.clone())
-        {
-            let numbers = match total {
-                Some(t) => format!(
-                    "{} of {}",
-                    format_bytes(*done as f64),
-                    format_bytes(*t as f64)
-                ),
-                None => format_bytes(*done as f64),
-            };
-            let value = total.filter(|t| *t > 0).map(|t| *done as f32 / t as f32);
-            r = r
-                .control(
-                    Button::new(SharedString::from(format!("{id}-cancel")), "Cancel")
-                        .ghost()
-                        .on_click(crate::settings::click(cx, move |s, cx| {
-                            s.run_command("Cancel download", cx, move |core| {
-                                data::cancel_download(core, family).map(|_| None)
-                            })
-                        })),
-                )
-                .below(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(space::S1)
-                        .w_full()
-                        .child(crate::ui::progress::progress_meta(
-                            status.clone(),
-                            numbers,
-                            p,
-                        ))
-                        .child(crate::ui::progress::progress(value, p)),
-                );
-        } else if let Some((bytes, failed)) = self.download {
+        let family = self.start.as_ref().map(|(f, _, _)| *f);
+        if let Some((bytes, failed)) = self.download {
             let label = match bytes {
                 Some(b) => format!("Download ({})", format_bytes(b as f64)),
                 None => "Download".into(),
             };
             let start = self.start.clone();
+            let starting = family.is_some_and(|f| s.ui.busy.contains(starting_name(f)));
             r = r.control(
-                Button::new(SharedString::from(format!("{id}-download")), label)
-                    .icon(if failed {
+                Button::new(
+                    SharedString::from(format!("{id}-download")),
+                    if starting {
+                        "Starting".to_string()
+                    } else {
+                        label
+                    },
+                )
+                .when(!starting, |b| {
+                    b.icon(if failed {
                         icons::RETRY
                     } else {
                         icons::DOWNLOAD
                     })
-                    .on_click(crate::settings::click(cx, move |_, cx| {
-                        if let (Some((family, provider, model)), Some(core)) =
-                            (start.clone(), crate::chat::core(cx))
-                        {
-                            let job = crate::bridge::tokio::Tokio::spawn(cx, async move {
-                                data::start_download(&core, family, provider, model)
-                            });
-                            cx.spawn(async move |this, cx| {
-                                let result = job.await.unwrap_or_else(|e| Err(e.to_string()));
-                                let _ = this.update(cx, |s, cx| {
-                                    if let Err(e) = result {
-                                        log::warn!("settings: model download didn't start: {e}");
-                                        s.ui.note = Some((false, "Model download", e));
-                                    }
-                                    s.refresh(cx)
-                                });
-                            })
-                            .detach();
+                })
+                .spinner(starting)
+                .disabled(starting || start.is_none())
+                .on_click(crate::settings::click(cx, move |s, cx| {
+                    if let (Some((family, provider, model)), Some(core)) =
+                        (start.clone(), crate::chat::core(cx))
+                    {
+                        if !s.ui.busy.insert(starting_name(family)) {
+                            return;
                         }
-                    })),
+                        cx.notify();
+                        let job = crate::bridge::tokio::Tokio::spawn(cx, async move {
+                            data::start_download(&core, family, provider, model)
+                        });
+                        cx.spawn(async move |this, cx| {
+                            let result = job.await.unwrap_or_else(|e| Err(e.to_string()));
+                            let _ = this.update(cx, |s, cx| {
+                                s.ui.busy.remove(starting_name(family));
+                                s.ui.model_notes.remove(&family);
+                                if let Err(e) = result {
+                                    log::warn!("settings: model download didn't start: {e}");
+                                    let words = format!("{}{e}", failure_prefix(family));
+                                    s.ui.model_notes.insert(family, (false, words));
+                                }
+                                s.refresh(cx)
+                            });
+                        })
+                        .detach();
+                    }
+                })),
             );
         }
-        if let Some(e) = self.error {
+        // A failed download / model action on this row speaks over the status's own.
+        let note = family.and_then(|f| s.ui.model_notes.get(&f)).cloned();
+        let error = match &note {
+            Some((false, words)) => Some(words.clone()),
+            _ => self.error,
+        };
+        if let Some(e) = error {
             r = r.below(line(Tone::Danger, icons::ALERT, e, p));
+        }
+        if let Some((true, words)) = note {
+            r = r.below(crate::settings::row::hint(words, p));
         }
         if let Some(w) = self.warning {
             r = r.below(line(Tone::Warn, icons::INFO, w, p));
+        }
+        for n in self.notes {
+            r = r.below(n);
         }
         if let Some(path) = self.folder {
             let copy = path.clone();
@@ -257,6 +360,33 @@ fn files(
                     )
             }))
         })
+}
+
+/// A family's row while it has no status: the read's error (`prefix` + the
+/// backend's words), "Checking installed … models…" while the reads run, else
+/// the "no status" warning (`ModelDownloadRow`'s three early branches).
+pub fn no_status_row(
+    s: &Settings,
+    family: Family,
+    label: &'static str,
+    prefix: &str,
+    checking: &str,
+    none: &str,
+) -> ModelRow {
+    if let Some(e) = s.data.model_errors.get(&family) {
+        return ModelRow {
+            label,
+            error: Some(format!("{prefix}{e}")),
+            ..Default::default()
+        };
+    }
+    let loading = s.ui.models_loading;
+    ModelRow {
+        label,
+        desc: loading.then(|| checking.to_string()),
+        warning: (!loading).then(|| none.to_string()),
+        ..Default::default()
+    }
 }
 
 /// The OCR / transcription / speaker rows' common description + chip rules.

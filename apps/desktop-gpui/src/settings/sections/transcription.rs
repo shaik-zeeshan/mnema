@@ -6,7 +6,7 @@ use capture_types::{AudioTranscriptionMemoryMode, AudioTranscriptionProvider};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context};
 
-use super::model_row::{delete_unused_row, model_files, status_row, ModelRow};
+use super::model_row::{delete_unused_row, model_files, no_status_row, status_row, ModelRow};
 use super::{ix, languages};
 use crate::settings::data::Family;
 use crate::settings::model::{provider_models, selected_model};
@@ -115,13 +115,15 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .into_any_element(),
     ];
     if t.provider == AudioTranscriptionProvider::Deepgram {
-        let key_desc = match (&s.data.deepgram_auth, s.data.deepgram_key) {
-            (Some(problem), _) => format!("Deepgram rejected the saved key: {problem}"),
-            (None, true) => {
-                "A key is saved in the encrypted vault. Paste a new one to replace it.".into()
-            }
-            (None, false) => "Paste the API key from your Deepgram account.".to_string(),
+        let key_desc = if s.data.deepgram_key {
+            "Key stored encrypted on this Mac."
+        } else {
+            "Paste the API key from your Deepgram account."
         };
+        // The standing rejection on file (`transcription_deepgram_auth_status`).
+        let rejected = s.data.deepgram_auth.clone().map(|problem| {
+            crate::settings::row::line(crate::ui::Tone::Danger, icons::ALERT, problem, p)
+        });
         use crate::settings::{commands, live};
         rows.push(
             row("Deepgram API key")
@@ -151,41 +153,25 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                                 })),
                         )
                         .when(s.data.deepgram_key, |d| {
-                            d.child(Button::new("deepgram-check", "Check").ghost().on_click(
-                                crate::settings::click(cx, |s, cx| {
-                                    s.run_command("Deepgram key", cx, live::deepgram_test)
-                                }),
-                            ))
+                            d.child(
+                                Button::new("deepgram-check", "Check connection")
+                                    .ghost()
+                                    .on_click(crate::settings::click(cx, |s, cx| {
+                                        s.run_command("Deepgram key", cx, live::deepgram_test)
+                                    })),
+                            )
                             .child(
-                                Button::new("deepgram-clear", "Clear").ghost().on_click(
-                                    crate::settings::click(cx, |s, cx| {
+                                Button::new("deepgram-clear", "Remove key")
+                                    .ghost()
+                                    .on_click(crate::settings::click(cx, |s, cx| {
                                         s.run_command("Deepgram key", cx, live::deepgram_clear)
-                                    }),
-                                ),
+                                    })),
                             )
                         }),
                 )
-                .build(p)
-                .into_any_element(),
-        );
-    }
-    if t.provider == AudioTranscriptionProvider::AppleSpeechOnDevice {
-        rows.push(
-            row("Speech Recognition permission")
-                .desc(
-                    "Apple Speech needs macOS Speech Recognition access. Audio stays on this Mac.",
-                )
-                .control(
-                    Button::new("speech-allow", "Allow access")
-                        .disabled(s.ui.busy.contains("Speech Recognition"))
-                        .on_click(crate::settings::click(cx, |s, cx| {
-                            s.run_command(
-                                "Speech Recognition",
-                                cx,
-                                crate::settings::live::request_speech_permission,
-                            )
-                        })),
-                )
+                .when(rejected.is_some(), |r| {
+                    r.below(rejected.unwrap_or_else(div))
+                })
                 .build(p)
                 .into_any_element(),
         );
@@ -223,71 +209,91 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             )
             .into_any_element()
     });
-    let mut model = match &m {
-        None => ModelRow {
-            label: "Model",
-            warning: Some("No model status is available for the selected provider.".into()),
-            ..Default::default()
-        },
-        Some(m) if m.os_managed => ModelRow {
-            label: "Model",
-            desc: Some(if t.provider == AudioTranscriptionProvider::Deepgram {
-                "Deepgram runs in the cloud. Availability depends on the API key above; there is no local model to download.".into()
-            } else {
-                format!(
-                    "{} \u{b7} {}",
-                    m.display_name,
-                    if m.available {
-                        "available"
-                    } else {
-                        "unavailable"
-                    }
-                )
-            }),
-            status: (m.available && t.provider != AudioTranscriptionProvider::Deepgram)
-                .then_some("available"),
-            chip: (!m.available).then(|| ("unavailable".into(), ChipKind::Warn)),
-            files: model_files(m),
-            ..Default::default()
-        },
-        Some(m) => {
-            let failed = m.status == "failed";
-            let mut r = status_row("Model", m, failed, "available");
-            r.desc = Some(if m.available {
-                format!("{} \u{b7} installed", m.display_name)
-            } else if failed {
-                m.display_name.clone()
-            } else {
-                let missing = if m.missing_files > 0 {
+    // Apple Speech: denied / not asked / unusable is a permission notice, never "missing".
+    let speech = m
+        .as_ref()
+        .filter(|m| m.provider == "apple_speech_on_device")
+        .and_then(|m| m.availability.clone())
+        .filter(|a| a != "available");
+    if let Some(a) = &speech {
+        rows.push(apple_speech_notice(s, a, p, cx));
+    } else {
+        let mut model = match &m {
+            None => no_status_row(
+                s,
+                Family::Transcription,
+                "Model",
+                "Couldn\u{2019}t load model status: ",
+                "Checking installed transcription models\u{2026}",
+                "No model status is available for the selected provider.",
+            ),
+            Some(m) if m.os_managed => ModelRow {
+                label: "Model",
+                desc: Some(if t.provider == AudioTranscriptionProvider::Deepgram {
+                    "Deepgram runs in the cloud. Availability depends on the API key above; there is no local model to download.".into()
+                } else {
                     format!(
-                        " ({} {} missing)",
-                        m.missing_files,
-                        if m.missing_files == 1 {
-                            "file"
+                        "{} \u{b7} {}",
+                        m.display_name,
+                        if m.availability.is_some() {
+                            // `transcriptionStatusLabel`: Apple Speech names its permission.
+                            "permission granted"
+                        } else if m.available {
+                            "available"
                         } else {
-                            "files"
+                            "unavailable"
                         }
                     )
+                }),
+                status: (m.available && t.provider != AudioTranscriptionProvider::Deepgram)
+                    .then_some("available"),
+                chip: (!m.available).then(|| ("unavailable".into(), ChipKind::Warn)),
+                files: model_files(m),
+                ..Default::default()
+            },
+            Some(m) => {
+                let failed = m.status == "failed";
+                let mut r = status_row("Model", m, failed, "available");
+                r.desc = Some(if m.available {
+                    format!("{} \u{b7} installed", m.display_name)
+                } else if failed {
+                    m.display_name.clone()
                 } else {
-                    String::new()
-                };
-                format!(
-                    "{} isn\u{2019}t downloaded{missing}. Audio waits until it is.",
-                    m.display_name
-                )
-            });
-            r.folder = status
-                .and_then(|v| v["modelsDirectory"].as_str())
-                .map(str::to_string);
-            r.start = m
-                .model_id
-                .clone()
-                .map(|id| (Family::Transcription, m.provider.clone(), id));
-            r
-        }
-    };
-    model.controls.extend(select);
-    rows.push(model.build("tx-model-row", s, p, cx));
+                    let missing = if m.missing_files > 0 {
+                        format!(
+                            " ({} {} missing)",
+                            m.missing_files,
+                            if m.missing_files == 1 {
+                                "file"
+                            } else {
+                                "files"
+                            }
+                        )
+                    } else {
+                        String::new()
+                    };
+                    format!(
+                        "{} isn\u{2019}t downloaded{missing}. Audio waits until it is.",
+                        m.display_name
+                    )
+                });
+                r.folder = status
+                    .and_then(|v| v["modelsDirectory"].as_str())
+                    .map(str::to_string);
+                r.start = m
+                    .model_id
+                    .clone()
+                    .map(|id| (Family::Transcription, m.provider.clone(), id));
+                r.name = Some(m.display_name.clone());
+                r.running_desc = Some(
+                    "Download is checked (sha256) before it\u{2019}s marked installed.".into(),
+                );
+                r
+            }
+        };
+        model.controls.extend(select);
+        rows.push(model.build("tx-model-row", s, p, cx));
+    }
     let stored = if t.language.is_empty() {
         "auto"
     } else {
@@ -371,7 +377,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             s,
             "reload-tx",
             "Refresh transcription model status",
-            false,
+            s.ui.models_loading,
             |s, cx| s.reload_all(cx),
             cx,
         )],
@@ -380,4 +386,97 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         p,
     )
     .into_any_element()
+}
+
+/// `appleSpeechPermissionLabel` for the states that reach the notice.
+fn speech_label(status: &str) -> &'static str {
+    match status {
+        "permission_not_determined" => "Permission not requested",
+        "permission_denied" => "Permission denied",
+        "permission_restricted" => "Permission restricted",
+        "unsupported_platform" => "Unsupported platform",
+        "framework_unavailable" => "Speech framework unavailable",
+        "recognizer_unavailable" => "Recognizer unavailable",
+        "on_device_recognition_unavailable" => "On-device recognition unavailable",
+        _ => "Permission granted",
+    }
+}
+
+/// `appleSpeechPermissionHint`.
+fn speech_hint(status: &str) -> &'static str {
+    match status {
+        "permission_not_determined" => "Mnema has not asked macOS for Speech Recognition permission yet. Request it before recording with Apple Speech selected.",
+        "permission_denied" => "macOS denied Speech Recognition permission. Enable it in System Settings \u{2192} Privacy & Security \u{2192} Speech Recognition, then refresh.",
+        "permission_restricted" => "macOS reports Speech Recognition permission is restricted by policy or parental controls.",
+        _ => "Apple Speech cannot be used until this macOS availability check passes.",
+    }
+}
+
+/// The Model row's Apple Speech permission notice: Get permission while
+/// unasked, Open System Settings after a denial / restriction.
+fn apple_speech_notice(
+    s: &Settings,
+    status: &str,
+    p: &Palette,
+    cx: &mut Context<Settings>,
+) -> AnyElement {
+    use crate::settings::live;
+    let busy = s.ui.busy.contains("Speech Recognition");
+    let act = match status {
+        "permission_not_determined" => Some(
+            Button::new(
+                "speech-allow",
+                if busy { "Requesting" } else { "Get permission" },
+            )
+            .sm()
+            .busy(busy)
+            .on_click(crate::settings::click(cx, |s, cx| {
+                s.run_command("Speech Recognition", cx, live::request_speech_permission)
+            })),
+        ),
+        "permission_denied" | "permission_restricted" => Some(
+            Button::new("speech-settings", "Open System Settings")
+                .sm()
+                .icon(icons::EXTERNAL)
+                .icon_after()
+                .on_click(crate::settings::click(cx, |s, cx| {
+                    s.run_command("Speech Recognition", cx, live::open_speech_pane)
+                })),
+        ),
+        _ => None,
+    };
+    row("Model")
+        .full()
+        .control(div().w_full().child(crate::ui::notice::notice(
+            crate::ui::Tone::Warn,
+            icons::LOCK,
+            format!("Apple Speech \u{b7} {}", speech_label(status)),
+            Some(speech_hint(status).into()),
+            act.into_iter().map(IntoElement::into_any_element).collect(),
+            p,
+        )))
+        .build(p)
+        .into_any_element()
+}
+
+/// The Deepgram field's placeholder follows the vault: "A key is saved — …"
+/// once one is stored (`Transcription.svelte`).
+pub fn sync_key_placeholder(
+    s: &mut Settings,
+    window: &mut gpui_kit::Window,
+    cx: &mut Context<Settings>,
+) {
+    let saved = s.data.deepgram_key;
+    if s.ui.deepgram_placeholder == Some(saved) {
+        return;
+    }
+    s.ui.deepgram_placeholder = Some(saved);
+    let text = if saved {
+        "A key is saved \u{2014} enter a new one to replace it"
+    } else {
+        "Paste your Deepgram API key"
+    };
+    s.inputs
+        .deepgram_key
+        .update(cx, |st, cx| st.set_placeholder(text, window, cx));
 }

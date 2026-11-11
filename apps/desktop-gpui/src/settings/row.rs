@@ -91,6 +91,7 @@ pub struct Row {
     full: bool,
     warn: bool,
     disabled: bool,
+    dim_copy: bool,
     divider: bool,
 }
 
@@ -106,6 +107,7 @@ pub fn row(label: impl Into<SharedString>) -> Row {
         full: false,
         warn: false,
         disabled: false,
+        dim_copy: false,
         divider: true,
     }
 }
@@ -159,6 +161,11 @@ impl Row {
             self
         }
     }
+    /// `.mcp-row--off`: dim the copy only; the controls stay fully usable.
+    pub fn dim_copy(mut self, on: bool) -> Self {
+        self.dim_copy = on;
+        self
+    }
     pub fn no_divider(mut self) -> Self {
         self.divider = false;
         self
@@ -188,6 +195,7 @@ impl Row {
             .gap(px(3.))
             .flex_1()
             .min_w_0()
+            .when(self.dim_copy, |d| d.opacity(theme::DISABLED_OPACITY))
             .child(label)
             .children(self.desc.map(|d| {
                 div()

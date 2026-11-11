@@ -55,19 +55,34 @@ pub fn load_local(core: &Arc<AppCore>) -> SettingsData {
         Some(true),
     ));
     d.storage_location = app_core::app_infra::get_storage_location(core).ok();
-    d.ocr_models = app_core::ocr_models::get_ocr_model_status(core)
-        .ok()
-        .and_then(to_json);
-    d.transcription_models =
-        app_core::audio_transcription_models::get_audio_transcription_model_status(core)
-            .ok()
-            .and_then(to_json);
-    d.speaker_models = app_core::speaker_analysis_models::get_speaker_analysis_model_status(core)
-        .ok()
-        .and_then(to_json);
-    d.semantic_models = app_core::semantic_search_models::get_semantic_search_model_status(core)
-        .ok()
-        .and_then(to_json);
+    // A failed read keeps its reason for the section's "Couldn't load …" row.
+    let mut status = |family: Family, read: Result<Value, String>| match read {
+        Ok(v) => Some(v),
+        Err(e) => {
+            log::warn!("settings: couldn't read the {family:?} model status: {e}");
+            d.model_errors.insert(family, e);
+            None
+        }
+    };
+    let json = |v: Option<Value>| v.ok_or_else(|| "unreadable status".to_string());
+    let ocr = app_core::ocr_models::get_ocr_model_status(core).and_then(|v| json(to_json(v)));
+    let tx = app_core::audio_transcription_models::get_audio_transcription_model_status(core)
+        .and_then(|v| json(to_json(v)));
+    let spk = app_core::speaker_analysis_models::get_speaker_analysis_model_status(core)
+        .and_then(|v| json(to_json(v)));
+    let sem = app_core::semantic_search_models::get_semantic_search_model_status(core)
+        .and_then(|v| json(to_json(v)));
+    let (ocr, tx, spk, sem) = (
+        status(Family::Ocr, ocr),
+        status(Family::Transcription, tx),
+        status(Family::Speaker, spk),
+        status(Family::Semantic, sem),
+    );
+    d.ocr_models = ocr;
+    d.transcription_models = tx;
+    d.speaker_models = spk;
+    d.semantic_models = sem;
+    d.os_locale = crate::native::locale::preferred_language();
     d.log_status = app_core::general_app_log::status(core)
         .ok()
         .and_then(to_json);
@@ -176,15 +191,20 @@ pub async fn load_slow(core: &Arc<AppCore>, mut d: SettingsData) -> SettingsData
     .await
     .and_then(to_json);
     if let Some(infra) = &infra {
+        let people = slow(
+            "the person profiles",
+            app_core::app_infra::list_person_profiles(infra),
+        )
+        .await
+        .and_then(to_json);
+        d.person_count = people
+            .as_ref()
+            .and_then(|p| p.as_array())
+            .map_or(0, Vec::len);
+        d.voice_checked = true;
         let owner = app_core::voice_enrollment::get_account_owner_person_id(infra);
         if let Some(Some(owner)) = slow("the voice owner", owner).await {
             d.voice_owner_id = Some(owner);
-            let people = slow(
-                "the person profiles",
-                app_core::app_infra::list_person_profiles(infra),
-            )
-            .await
-            .and_then(to_json);
             d.voice_owner = people
                 .as_ref()
                 .and_then(|p| p.as_array())
@@ -224,7 +244,7 @@ pub async fn load_slow(core: &Arc<AppCore>, mut d: SettingsData) -> SettingsData
 }
 
 /// A model family's downloadable store.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Family {
     Ocr,
     Transcription,

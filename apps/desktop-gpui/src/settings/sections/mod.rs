@@ -14,9 +14,12 @@ mod license;
 pub(crate) mod mcp;
 mod microphone;
 mod model_row;
+pub(crate) use model_row::failure_prefix as model_row_failure;
 mod ocr;
 #[cfg(test)]
 mod pickers_tests;
+#[cfg(test)]
+mod models_tests;
 mod privacy;
 mod provider_actions;
 pub(crate) mod provider_row;
@@ -29,7 +32,7 @@ mod sources;
 mod speakers;
 mod startup;
 mod storage;
-mod transcription;
+pub(crate) mod transcription;
 mod updates;
 pub(crate) mod user_context;
 mod video;
@@ -112,9 +115,13 @@ pub fn render(
 }
 
 /// Modals over the window (the MCP connector picker).
-pub fn overlays(s: &Settings, _: &mut Window, cx: &mut Context<Settings>) -> Option<AnyElement> {
+pub fn overlays(
+    s: &mut Settings,
+    window: &mut Window,
+    cx: &mut Context<Settings>,
+) -> Option<AnyElement> {
     let p = crate::theme::tokens(cx);
-    mcp::picker(s, &p, cx)
+    mcp::picker(s, &p, window, cx)
 }
 
 /// A listening shortcut row takes the key (true = consumed).

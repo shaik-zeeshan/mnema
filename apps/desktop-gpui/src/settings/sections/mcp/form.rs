@@ -45,15 +45,34 @@ fn field(
 ) -> Entity<InputState> {
     let (ph, v) = (placeholder.to_string(), value.to_string());
     let state = cx.new(|cx| InputState::new(window, cx).placeholder(ph).default_value(v));
-    // The Add button's validity and the URL warning follow every keystroke.
+    // The Add button's validity and the URL warning follow every keystroke;
+    // in edit mode the keystroke also lands on the connector.
     subs.push(
-        cx.subscribe_in(&state, window, |_, _, e: &InputEvent, _, cx| {
+        cx.subscribe_in(&state, window, |s, _, e: &InputEvent, _, cx| {
             if matches!(e, InputEvent::Change) {
+                write_through(s, cx);
                 cx.notify();
             }
         }),
     );
     state
+}
+
+/// Edit mode binds the live draft (Svelte passes it as the form's model): each
+/// field edit lands on the connector at once and rides the ai_runtime autosave.
+/// Only a pasted secret waits for Save.
+fn write_through(s: &mut Settings, cx: &mut Context<Settings>) {
+    let Some(f) = form_mut(s) else { return };
+    let Some(id) = f.edit.clone() else { return };
+    let model = f.model(cx);
+    s.edit(
+        move |d| {
+            if let Some(m) = d.ai_runtime.mcp_servers.iter_mut().find(|m| m.id == id) {
+                *m = model.to_config(id.clone(), m.enabled, m.enabled_tools.clone());
+            }
+        },
+        cx,
+    );
 }
 
 /// Open the form: blank (add, HTTP first as Svelte), or one custom connector (edit).
@@ -115,7 +134,6 @@ pub fn open(s: &mut Settings, edit: Option<&str>, window: &mut Window, cx: &mut 
         connecting: false,
         _subs: subs,
     });
-    s.ui.mcp_open = None;
     s.ui.mcp_picker_open = true;
     cx.notify();
 }
@@ -287,6 +305,9 @@ fn submit(s: &mut Settings, window: &mut Window, cx: &mut Context<Settings>) {
                     }
                     log::info!("settings: MCP connector {id} saved");
                     close_picker(s, cx);
+                    if rollback {
+                        super::flash(s, &id, cx);
+                    }
                     s.refresh(cx);
                 }
                 Err(e) => {
@@ -306,22 +327,25 @@ fn submit(s: &mut Settings, window: &mut Window, cx: &mut Context<Settings>) {
     cx.notify();
 }
 
-fn label(t: &'static str, p: &Palette) -> gpui_kit::Div {
+/// `.field-label`: the kit's `.mx-label` (500, subtle), not an eyebrow.
+pub(super) fn label(t: &'static str, p: &Palette) -> gpui_kit::Div {
     div()
         .text_size(text::BASE)
-        .font_weight(crate::theme::W_SEMIBOLD)
-        .text_color(p.text)
+        .font_weight(crate::theme::W_MEDIUM)
+        .text_color(p.text_subtle)
         .child(t)
 }
 
-fn hint(t: impl Into<SharedString>, p: &Palette) -> gpui_kit::Div {
+/// `.group-hint`: 11 px, muted.
+pub(super) fn hint(t: impl Into<SharedString>, p: &Palette) -> gpui_kit::Div {
     div()
-        .text_size(text::BASE)
+        .text_size(text::SM)
+        .line_height(gpui_kit::relative(1.5))
         .text_color(p.text_muted)
         .child(t.into())
 }
 
-fn stack(children: Vec<AnyElement>) -> gpui_kit::Div {
+pub(super) fn stack(children: Vec<AnyElement>) -> gpui_kit::Div {
     div().flex().flex_col().gap(px(6.)).children(children)
 }
 
@@ -371,8 +395,9 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
             .on_change(crate::settings::on(cx, |s, ix: usize, cx| {
                 if let Some(f) = form_mut(s) {
                     f.stdio = ix == 0;
-                    cx.notify();
                 }
+                write_through(s, cx);
+                cx.notify();
             }))
             .into_any_element(),
         ])
@@ -401,6 +426,7 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
                             f.args.remove(i);
                         }
                     }
+                    write_through(s, cx);
                     cx.notify();
                 },
                 cx,
@@ -448,6 +474,7 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
                             f.env.remove(i);
                         }
                     }
+                    write_through(s, cx);
                     cx.notify();
                 },
                 cx,
@@ -517,8 +544,9 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
                 .on_change(crate::settings::on(cx, |s, ix: usize, cx| {
                     if let Some(f) = form_mut(s) {
                         f.oauth = ix == 1;
-                        cx.notify();
                     }
+                    write_through(s, cx);
+                    cx.notify();
                 }))
                 .into_any_element(),
                 hint(
@@ -605,14 +633,10 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
             None => Button::new("mcp-form-back", "Back")
                 .sm()
                 .disabled(f.connecting)
-                .on_click(click(cx, |s, cx| {
-                    s.ui.mcp.step = Step::Catalog;
-                    cx.notify();
-                })),
+                .on_click(commands::click_w(cx, super::back_to_catalog)),
         })
         .child(
             Button::new("mcp-form-submit", primary)
-                .primary()
                 .busy(f.connecting)
                 .disabled(f.connecting || m.missing_target())
                 .on_click(commands::click_w(cx, submit)),
@@ -627,7 +651,8 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
                 .flex()
                 .flex_col()
                 .gap(space::S4)
-                .p(space::S5)
+                .px(space::S5)
+                .pb(space::S5)
                 .max_h(px(480.))
                 .overflow_y_scroll()
                 .children(body),

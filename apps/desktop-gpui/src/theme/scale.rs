@@ -184,6 +184,8 @@ pub mod motion {
     pub const THEME_FADE: Duration = Duration::from_millis(180);
     /// Tooltip dwell; instant on keyboard focus.
     pub const TOOLTIP_DWELL: Duration = Duration::from_millis(350);
+    /// `mcp-row-flash`: a just-added connector row's accent wash fading out.
+    pub const FLASH: Duration = Duration::from_millis(1400);
     /// `.mx-spin`: one turn, linear, forever (the app's only looping motion).
     pub const SPIN: Duration = Duration::from_millis(800);
 

@@ -10,6 +10,7 @@ pub mod dialogs;
 pub mod dock;
 pub mod hotkeys;
 pub mod notification;
+pub mod locale;
 pub mod quit;
 pub mod single_instance;
 pub mod sys;

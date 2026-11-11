@@ -393,3 +393,99 @@ fn oauth_rows() {
         (Badge::AuthorizedMuted, CONFIGURE, true)
     );
 }
+
+fn preset(id: &str) -> &'static Preset {
+    PRESETS.iter().find(|p| p.id == id).unwrap()
+}
+
+/// `presetOverrides` applied over `presetToDraft`.
+fn overridden(id: &str, adv: Advanced, node_missing: bool) -> McpServerConfig {
+    let p = preset(id);
+    let mut m = from_preset(p, &[], true);
+    apply_overrides(p, &adv, node_missing, &mut m);
+    m
+}
+
+#[test]
+fn preset_overrides_carry_only_what_changed() {
+    let base = from_preset(preset("github"), &[], true);
+    assert_eq!(
+        overridden("github", Advanced::default(), false),
+        base,
+        "no edits"
+    );
+    let same_name = Advanced {
+        name: "GitHub".into(),
+        ..Default::default()
+    };
+    assert_eq!(overridden("github", same_name, false), base);
+    let m = overridden(
+        "github",
+        Advanced {
+            name: "Work GH".into(),
+            url: "https://gh.example/mcp".into(),
+            ..Default::default()
+        },
+        true,
+    );
+    assert_eq!(
+        (m.label.as_str(), m.url.as_deref()),
+        ("Work GH", Some("https://gh.example/mcp"))
+    );
+    assert!(m.enabled, "Node is irrelevant to a hosted preset");
+}
+
+#[test]
+fn a_local_preset_takes_command_and_split_args_and_lands_off_without_node() {
+    let fs = preset("filesystem");
+    let defaults = Advanced {
+        command: "npx".into(),
+        args: fs.command.unwrap().1.join(" "),
+        ..Default::default()
+    };
+    assert!(!overridden("filesystem", defaults.clone(), true).enabled);
+    let m = overridden(
+        "filesystem",
+        Advanced {
+            command: "node".into(),
+            args: "server.js ~/Docs".into(),
+            ..defaults.clone()
+        },
+        false,
+    );
+    assert_eq!(m.command.as_deref(), Some("node"));
+    assert_eq!(m.args, v(&["server.js", "~/Docs"]));
+    assert!(overridden(
+        "filesystem",
+        Advanced {
+            args: String::new(),
+            ..defaults
+        },
+        false
+    )
+    .args
+    .is_empty());
+}
+
+#[test]
+fn catalog_search_and_the_added_badge() {
+    assert!(matches(preset("github"), "  PULL "), "tagline, case-blind");
+    assert!(!matches(preset("github"), "stripe"));
+    assert!(matches(preset("stripe"), ""));
+    let gh2 = McpServerConfig {
+        id: "github-2".into(),
+        ..from_preset(preset("github"), &[], true)
+    };
+    assert!(added(preset("github"), &[gh2.clone()]));
+    let other = McpServerConfig {
+        id: "github-x".into(),
+        ..gh2
+    };
+    assert!(!added(preset("github"), &[other]));
+    assert!(
+        PRESETS
+            .iter()
+            .all(|p| p.secret.is_some() == p.help.is_some()),
+        "secret ⇔ help link"
+    );
+}

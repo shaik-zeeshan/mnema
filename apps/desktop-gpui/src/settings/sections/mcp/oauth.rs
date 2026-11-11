@@ -41,7 +41,6 @@ pub struct Flow {
 fn start(s: &mut Settings, flow: Flow, window: &mut Window, cx: &mut Context<Settings>) {
     flow.primary.focus(window, cx);
     s.ui.mcp.step = Step::OAuth(flow);
-    s.ui.mcp_open = None;
     s.ui.mcp_picker_open = true;
     cx.notify();
 }
@@ -344,7 +343,15 @@ pub fn render(s: &Settings, f: &Flow, p: &Palette, cx: &mut Context<Settings>) -
             .child(
                 primary("mcp-oauth-done", "Done".into())
                     .on_click(click(cx, |s, cx| {
+                        // `oauthDone`: a brand-new (catalog) connector flashes its row.
+                        let added = match &s.ui.mcp.step {
+                            Step::OAuth(f) if f.preset.is_some() => f.id.clone(),
+                            _ => None,
+                        };
                         close_picker(s, cx);
+                        if let Some(id) = added {
+                            super::flash(s, &id, cx);
+                        }
                         s.refresh(cx);
                     })),
             ),
@@ -378,7 +385,8 @@ pub fn render(s: &Settings, f: &Flow, p: &Palette, cx: &mut Context<Settings>) -
         .flex()
         .flex_col()
         .gap(px(14.))
-        .p(space::S5)
+        .px(space::S5)
+        .pb(space::S5)
         .when(!lede.is_empty(), |d| {
             d.child(
                 div()

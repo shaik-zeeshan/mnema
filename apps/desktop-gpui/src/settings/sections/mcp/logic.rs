@@ -15,6 +15,10 @@ pub struct Preset {
     pub oauth: bool,
     /// `helpUrl`: where to create the token the secret field asks for.
     pub help: Option<&'static str>,
+    /// `secretLabel`: the ONE token field's label (`None` = no secret).
+    pub secret: Option<&'static str>,
+    /// The tile's brand mark (an asset path).
+    pub icon: &'static str,
 }
 
 pub const PRESETS: [Preset; 5] = [
@@ -27,6 +31,8 @@ pub const PRESETS: [Preset; 5] = [
         command: None,
         oauth: false,
         help: Some("https://github.com/settings/personal-access-tokens"),
+        secret: Some("Personal access token"),
+        icon: crate::assets::BRAND_GITHUB,
     },
     Preset {
         id: "linear",
@@ -37,6 +43,8 @@ pub const PRESETS: [Preset; 5] = [
         command: None,
         oauth: false,
         help: Some("https://linear.app/settings/account/security"),
+        secret: Some("API key"),
+        icon: crate::assets::BRAND_LINEAR,
     },
     Preset {
         id: "stripe",
@@ -47,6 +55,8 @@ pub const PRESETS: [Preset; 5] = [
         command: None,
         oauth: false,
         help: Some("https://dashboard.stripe.com/apikeys"),
+        secret: Some("Restricted API key"),
+        icon: crate::assets::BRAND_STRIPE,
     },
     Preset {
         id: "notion",
@@ -57,6 +67,8 @@ pub const PRESETS: [Preset; 5] = [
         command: None,
         oauth: true,
         help: None,
+        secret: None,
+        icon: crate::assets::BRAND_NOTION,
     },
     Preset {
         id: "filesystem",
@@ -74,8 +86,85 @@ pub const PRESETS: [Preset; 5] = [
         )),
         oauth: false,
         help: None,
+        secret: None,
+        icon: "icons/folder.svg",
     },
 ];
+
+impl Preset {
+    /// `kind === "hosted"`: an HTTP endpoint (else a local command).
+    pub fn hosted(&self) -> bool {
+        self.url.is_some()
+    }
+}
+
+/// The catalog search (`matchesQuery`): label + tagline, case-blind.
+pub fn matches(p: &Preset, query: &str) -> bool {
+    let q = query.trim().to_lowercase();
+    q.is_empty()
+        || format!("{} {}", p.label, p.tagline)
+            .to_lowercase()
+            .contains(&q)
+}
+
+/// "✓ added": a connector already carries this preset's slug or a suffixed one.
+pub fn added(p: &Preset, servers: &[McpServerConfig]) -> bool {
+    let slug = new_server_id(p.label, &[]);
+    servers.iter().any(|m| {
+        m.id == slug
+            || m.id
+                .strip_prefix(&slug)
+                .and_then(|r| r.strip_prefix('-'))
+                .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// The Advanced panel's text (`PresetAdvancedInput` minus Node).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Advanced {
+    pub name: String,
+    pub url: String,
+    pub command: String,
+    pub args: String,
+}
+
+/// `presetOverrides`: only the fields the user changed land on `m` (a local
+/// preset added while Node is missing lands switched off).
+pub fn apply_overrides(p: &Preset, adv: &Advanced, node_missing: bool, m: &mut McpServerConfig) {
+    if !p.hosted() && node_missing {
+        m.enabled = false;
+    }
+    let name = adv.name.trim();
+    if !name.is_empty() && name != p.label {
+        m.label = name.to_string();
+    }
+    if p.hosted() {
+        let url = adv.url.trim();
+        if !url.is_empty() && Some(url) != p.url {
+            m.url = Some(url.to_string());
+        }
+    } else {
+        let (cmd, args) = p.command.unwrap_or_default();
+        let command = adv.command.trim();
+        if !command.is_empty() && command != cmd {
+            m.command = Some(command.to_string());
+        }
+        if adv.args.trim() != args.join(" ") {
+            m.args = adv.args.split_whitespace().map(str::to_string).collect();
+        }
+    }
+}
+
+/// `syncAdvToDraft`: edit mode writes the Advanced text straight onto the connector.
+pub fn write_advanced(adv: &Advanced, m: &mut McpServerConfig) {
+    m.label = adv.name.clone();
+    if m.transport == McpTransport::Http {
+        m.url = Some(adv.url.trim().to_string());
+    } else {
+        m.command = Some(adv.command.trim().to_string());
+        m.args = adv.args.split_whitespace().map(str::to_string).collect();
+    }
+}
 
 /// `presetForServer`: the id is the preset id or a slugger variant
 /// (`github`, `github-2`…) AND the transport matches. `None` = a custom connector.

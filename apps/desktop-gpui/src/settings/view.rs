@@ -95,6 +95,7 @@ impl Render for Settings {
         theme::request_fade_frames(window, cx);
         self.ensure_provider_inputs(window, cx);
         self.sync_controls(window, cx);
+        sections::transcription::sync_key_placeholder(self, window, cx);
         if let Some(section) = self.pending_scroll {
             scroll_to(self, section);
         }

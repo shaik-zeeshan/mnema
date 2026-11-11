@@ -7,7 +7,7 @@ use capture_types::{
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Context};
 
-use super::model_row::{delete_unused_row, model_files, status_row, ModelRow};
+use super::model_row::{delete_unused_row, model_files, no_status_row, status_row, ModelRow};
 use super::{ix, languages};
 use crate::settings::data::Family;
 use crate::settings::model::{format_bytes, selected_model};
@@ -220,11 +220,14 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         .and_then(|v| v["modelsDirectory"].as_str())
         .map(str::to_string);
     let model = match &m {
-        None => ModelRow {
-            label: "Model status",
-            warning: Some("No OCR model status is available for the selected provider.".into()),
-            ..Default::default()
-        },
+        None => no_status_row(
+            s,
+            Family::Ocr,
+            "Model status",
+            "Couldn\u{2019}t load OCR model status: ",
+            "Checking installed OCR models\u{2026}",
+            "No OCR model status is available for the selected provider.",
+        ),
         Some(m) if m.os_managed => ModelRow {
             label: "Model status",
             desc: Some("Managed by macOS \u{2014} nothing to download.".into()),
@@ -247,12 +250,18 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                     }
                 )
             } else {
+                // `ocrStatusLabel`, lower-cased.
                 let word = if m.available {
-                    "installed".to_string()
+                    "installed"
                 } else if failed {
-                    "not installed".into()
+                    "not installed"
                 } else {
-                    m.status.replace('_', " ")
+                    match m.status.as_str() {
+                        "os_managed" => "os managed",
+                        "installed" => "installed",
+                        "downloading" => "downloading",
+                        _ => "missing",
+                    }
                 };
                 let size = m
                     .download_bytes
@@ -262,8 +271,30 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             };
             let mut r = status_row("Model status", m, failed, "available");
             r.desc = Some(desc);
-            r.warning = m.runtime_message.clone();
+            // OCR's chip: "missing" only for a missing model, else "unavailable".
+            if !m.available && !failed {
+                r.chip = Some((
+                    if m.status == "missing" {
+                        "missing"
+                    } else {
+                        "unavailable"
+                    }
+                    .into(),
+                    ChipKind::Warn,
+                ));
+            }
+            r.warning = m.runtime_message.clone().or_else(|| {
+                (!m.available && m.download_bytes.is_none()).then(|| {
+                    if m.provider == "tesseract" {
+                        "This provider still needs a Mnema-published self-contained runtime bundle before in-app download can work."
+                    } else {
+                        "This app-managed OCR bundle is missing, and the current manifest does not ship a downloadable artifact yet."
+                    }
+                    .to_string()
+                })
+            });
             r.folder = folder.clone();
+            r.name = Some(m.display_name.clone());
             r.start = m
                 .model_id
                 .clone()
@@ -312,7 +343,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             s,
             "reload-ocr",
             "Refresh OCR model status",
-            false,
+            s.ui.models_loading,
             |s, cx| s.reload_all(cx),
             cx,
         )],

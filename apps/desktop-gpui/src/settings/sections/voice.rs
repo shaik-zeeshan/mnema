@@ -106,16 +106,19 @@ pub fn render(
         }
         if let Some(id) = s.data.voice_owner_id {
             let name = owner.unwrap_or("you").to_string();
+            let deleting = s.ui.busy.contains("Voiceprint");
             actions.push(
-                Button::new("voice-delete", "Delete voiceprint")
+                Button::new("voice-delete", if deleting { "Deleting" } else { "Delete voiceprint" })
                     .danger()
-                    .disabled(t.busy() || s.ui.busy.contains("Voiceprint"))
+                    .spinner(deleting)
+                    .disabled(t.busy() || deleting)
                     .on_click(crate::settings::click(cx, move |_, cx| {
-                        crate::settings::confirm(
+                        crate::settings::commands::confirm_as(
                             cx,
                             "Delete voiceprint",
                             &format!("Delete the voiceprint saved for {name}? Mnema stops recognising your voice and labels your turns \u{201c}Speaker 1\u{201d} again. Your recordings and transcripts are not touched."),
                             "Delete",
+                            "Keep",
                             move |s, cx| {
                                 s.run_command("Voiceprint", cx, move |core| {
                                     crate::settings::live::delete_person(core, id)
@@ -175,7 +178,15 @@ pub fn render(
         .flex_col()
         .gap(space::S3)
         .w_full()
-        .child(hint(readout, p))
+        // `voice.loading`: the owner arrives with the slow reads.
+        .child(hint(
+            if s.data.voice_checked || s.data.complete {
+                readout
+            } else {
+                "Checking for a saved voiceprint\u{2026}".to_string()
+            },
+            p,
+        ))
         .when(v.just_enrolled, |b| {
             b.child(hint("Saved. Recognising saved people was switched on for you.", p))
         })

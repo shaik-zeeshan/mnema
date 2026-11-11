@@ -11,8 +11,8 @@ use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
 use gpui_kit::{AppContext, Context, VisualTestAppContext, Window};
 use mnema_gpui::settings::fixture::{
-    open_mcp_state, open_provider_state, settings_data, FixtureBackend, MCP_STATES,
-    PROVIDER_STATES, STATES,
+    open_mcp_state, open_model_state, open_provider_state, settings_data, FixtureBackend,
+    MCP_STATES, MODEL_STATES, PROVIDER_STATES, STATES,
 };
 use mnema_gpui::settings::privacy_prompt::{PromptData, Recommended};
 use mnema_gpui::settings::Settings;
@@ -55,9 +55,20 @@ fn mcp_modal(state: &str) -> Option<&'static str> {
         .map(|(_, m)| *m)
 }
 
+/// A model-section state's setup.
+fn model_state(state: &str) -> Option<(&'static str, &'static str)> {
+    MODEL_STATES
+        .iter()
+        .find(|(s, _, _)| *s == state)
+        .map(|(_, t, w)| (*t, *w))
+}
+
 fn tab_for(state: &str) -> anyhow::Result<&'static str> {
     if mcp_modal(state).is_some() || PROVIDER_STATES.contains(&state) {
         return Ok("intelligence");
+    }
+    if let Some((tab, _)) = model_state(state) {
+        return Ok(tab);
     }
     STATES
         .iter()
@@ -80,6 +91,7 @@ pub fn render(
     }
     let modal = mcp_modal(state);
     let provider = PROVIDER_STATES.iter().find(|s| **s == state).copied();
+    let setup = model_state(state).map(|(_, w)| w);
     render_open(
         cx,
         shell_model,
@@ -93,6 +105,9 @@ pub fn render(
             }
             if let Some(which) = provider {
                 open_provider_state(s, which, window, cx)
+            }
+            if let Some(which) = setup {
+                open_model_state(s, which, cx)
             }
         },
     )
@@ -174,7 +189,8 @@ pub fn goldens(
         .chain(PROMPT_STATES.iter())
         .chain(MCP_STATES.iter())
         .map(|(s, _)| *s)
-        .chain(PROVIDER_STATES);
+        .chain(PROVIDER_STATES)
+        .chain(MODEL_STATES.iter().map(|(s, _, _)| *s));
     for state in states {
         for (theme_name, setting) in themes {
             let name = format!("settings-{state}-{theme_name}");

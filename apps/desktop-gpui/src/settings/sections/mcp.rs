@@ -1,28 +1,36 @@
 //! Intelligence › MCP connectors (`McpConnectors.svelte` + `mcp-connector-row.ts`,
 //! the picker `McpConnectorPicker` / `McpConnectorCatalog`): one row per
 //! connector with its auth state and tool caption, and the Add connector modal.
-//! The modal's steps live beside this file: `form` (Custom), `oauth` (the
-//! in-modal Connect stages), `tools` (per-tool curation); the rules in `logic`.
+//! The modal's steps live beside this file: `catalog` (step 1), `preset` (a
+//! preset's Connect / Edit body), `form` (Custom), `oauth` (the in-modal
+//! Connect stages), `tools` (per-tool curation); the rules in `logic`.
 
+mod catalog;
 mod form;
 mod logic;
 mod oauth;
+mod preset;
 mod tools;
 
 #[cfg(test)]
 #[path = "mcp/flow_tests.rs"]
 mod flow_tests;
+#[cfg(test)]
+#[path = "mcp/preset_tests.rs"]
+mod preset_tests;
 
 use std::cell::Cell;
 use std::collections::HashMap;
 
 use capture_types::{McpAuthMode, McpServerConfig, McpTransport};
+use gpui_kit::component::input::InputState;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, AnyElement, Context, SharedString, Window};
+use gpui_kit::{div, px, AnyElement, Context, Entity, SharedString, Subscription, Window};
+use gpui_kit::{AnimationExt as _, TestSupportExt as _};
 
 use crate::settings::row::{row, section, state_word};
 use crate::settings::{click, commands, icons, live, on, Settings};
-use crate::theme::{self, space, text, Palette};
+use crate::theme::{space, text, Palette};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::dialog::Modal;
 use crate::ui::empty::{empty, EmptyLayout};
@@ -48,19 +56,37 @@ pub struct McpUi {
     node_probed: Cell<bool>,
     /// The last `mcp_oauth_begin` failure per connector, shown on its row.
     pub oauth_errors: HashMap<String, String>,
+    /// The catalog's search field, alive while the catalog shows.
+    pub search: Option<(Entity<InputState>, Subscription)>,
+    /// The connector just added: its row flashes once (`mcp-row--new`).
+    pub flash: Option<String>,
+}
+
+/// `onPickerAdded`: flash the new row, then forget it once the wash has faded.
+pub(super) fn flash(s: &mut Settings, id: &str, cx: &mut Context<Settings>) {
+    s.ui.mcp.flash = Some(id.to_string());
+    let id = id.to_string();
+    cx.spawn(async move |this, cx| {
+        cx.background_executor()
+            .timer(crate::theme::motion::FLASH)
+            .await;
+        let _ = this.update(cx, |s, cx| {
+            if s.ui.mcp.flash.as_deref() == Some(id.as_str()) {
+                s.ui.mcp.flash = None;
+                cx.notify();
+            }
+        });
+    })
+    .detach();
 }
 
 #[derive(Default)]
 pub enum Step {
     #[default]
     Catalog,
+    Preset(preset::Connect),
     Form(form::Form),
     OAuth(oauth::Flow),
-}
-
-/// The preset a connector was added from: its "Create one" link.
-fn help_url(server: &McpServerConfig) -> Option<&'static str> {
-    logic::preset_for(server).and_then(|p| p.help)
 }
 
 /// `rowTag`: http rows show their auth mode, stdio its transport.
@@ -84,7 +110,31 @@ fn oauth_state<'a>(s: &'a Settings, id: &str) -> Option<&'a str> {
 fn close_picker(s: &mut Settings, cx: &mut Context<Settings>) {
     s.ui.mcp_picker_open = false;
     s.ui.mcp.step = Step::Catalog;
+    s.ui.mcp.search = None;
     cx.notify();
+}
+
+/// `backToCatalog` (Back, or Esc on an add step): not while connecting.
+fn back_to_catalog(s: &mut Settings, _: &mut Window, cx: &mut Context<Settings>) {
+    let connecting = match &s.ui.mcp.step {
+        Step::Preset(c) => c.connecting,
+        Step::Form(f) => f.connecting,
+        _ => false,
+    };
+    if !connecting {
+        s.ui.mcp.step = Step::Catalog;
+        cx.notify();
+    }
+}
+
+/// The open step is busy (a connect or save in flight): close stands down.
+fn busy(step: &Step) -> bool {
+    match step {
+        Step::Catalog => false,
+        Step::Preset(c) => c.connecting,
+        Step::Form(f) => f.connecting,
+        Step::OAuth(f) => f.busy,
+    }
 }
 
 /// One Node probe per Settings visit, once a stdio connector shows
@@ -124,7 +174,7 @@ fn connector_row(
     let stdio = server.transport == McpTransport::Stdio;
     let needs_node = stdio && s.ui.mcp.node == Some(None);
     let state: Option<(&str, Option<Tone>)> = match view.badge {
-        Badge::Authorizing => Some(("authorizing\u{2026}", None)),
+        Badge::Authorizing => None,
         Badge::Reconnect => Some(("needs reconnect", Some(Tone::Warn))),
         Badge::NotConnected => Some(("not connected", None)),
         _ => None,
@@ -211,6 +261,20 @@ fn connector_row(
             let (w, t) = state.unwrap_or_default();
             r.control(state_word(w, t, p))
         })
+        .when(view.badge == Badge::Authorizing, |r| {
+            // `.settings-state` with its small `.mx-spin`.
+            r.control(
+                div()
+                    .id(SharedString::from(format!("mcp-authorizing-{}", server.id)))
+                    .role(gpui_kit::Role::Status)
+                    .flex()
+                    .items_center()
+                    .gap(px(6.))
+                    .child(crate::ui::progress::spinner(crate::theme::size::SPIN_SM))
+                    .child(state_word("authorizing\u{2026}", None, p))
+                    .test_support(),
+            )
+        })
         .when(view.actions.connect, |r| {
             r.control(verb_button("Connect", false))
         })
@@ -235,7 +299,7 @@ fn connector_row(
         })
         .when(view.actions.configure, |r| {
             let cid = server.id.clone();
-            let custom = logic::preset_for(server).is_none();
+            let preset = logic::preset_for(server).map(|p| p.id);
             r.control(
                 Button::new(
                     SharedString::from(format!("mcp-configure-{}", server.id)),
@@ -243,13 +307,11 @@ fn connector_row(
                 )
                 .ghost()
                 .on_click(commands::click_w(cx, move |s, window, cx| {
-                    if custom {
-                        // A custom connector edits in its full form (edit mode).
-                        form::open(s, Some(&cid), window, cx);
-                    } else {
-                        s.ui.mcp_open =
-                            (s.ui.mcp_open.as_deref() != Some(cid.as_str())).then(|| cid.clone());
-                        cx.notify();
+                    // `openConfigure`: a preset edits in its Connect body, a
+                    // custom connector in its full form.
+                    match preset.and_then(|id| PRESETS.iter().position(|p| p.id == id)) {
+                        Some(i) => preset::open(s, i, Some(&cid), window, cx),
+                        None => form::open(s, Some(&cid), window, cx),
                     }
                 })),
             )
@@ -274,84 +336,21 @@ fn connector_row(
             }))
         })
         .below(below)
-        .when(s.ui.mcp_open.as_deref() == Some(server.id.as_str()), |r| {
-            r.below(configure(s, server, oauth, secret, cx))
-        })
+        .dim_copy(view.dimmed)
         .build(p)
-        .when(view.dimmed, |d| d.opacity(theme::DISABLED_OPACITY))
-        .into_any_element()
-}
-
-/// A preset connector's inline Configure: its secret (stored in the vault,
-/// never in settings) and Remove.
-// shortcut: presets edit inline (secret + Remove), not in Svelte's step-2 body with
-// the Advanced name/URL/command overrides; port `McpAdvancedFields` if presets need editing.
-fn configure(
-    s: &Settings,
-    server: &McpServerConfig,
-    oauth: bool,
-    secret: bool,
-    cx: &mut Context<Settings>,
-) -> AnyElement {
-    let (save_id, clear_id) = (server.id.clone(), server.id.clone());
-    let rm = server.clone();
-    div()
-        .flex()
-        .flex_wrap()
-        .items_center()
-        .gap(space::S2)
-        .w_full()
-        .pt(space::S2)
-        .when(!oauth, |d| {
-            d.child(
-                div()
-                    .flex_1()
-                    .min_w(px(200.))
-                    .child(crate::ui::input::TextInput::new(
-                        "mcp-secret",
-                        "Connector secret",
-                        &s.inputs.mcp_secret,
-                    )),
+        .map(|row| {
+            if s.ui.mcp.flash.as_deref() != Some(server.id.as_str()) {
+                return row.into_any_element();
+            }
+            let wash = p.accent;
+            row.with_animation(
+                SharedString::from(format!("mcp-flash-{}", server.id)),
+                gpui_kit::Animation::new(crate::theme::motion::FLASH)
+                    .with_easing(crate::theme::motion::quart),
+                move |el, t| el.bg(crate::ui::alpha(wash, 0.1 * (1. - t))),
             )
-            .children(help_url(server).map(|url| {
-                // `.field-help`: small and muted; the kit arrow stands for its "→".
-                crate::ui::link::Link::new("mcp-secret-help", "Create one", url).quiet()
-            }))
-            .child(
-                Button::new("mcp-secret-save", "Save secret")
-                    .sm()
-                    .on_click(commands::click_w(cx, move |s, window, cx| {
-                        let input = s.inputs.mcp_secret.clone();
-                        let value = commands::take_input(&input, window, cx);
-                        let id = save_id.clone();
-                        if !value.is_empty() {
-                            s.run_command("MCP connector", cx, move |core| {
-                                live::mcp_set_secret(core, &id, &value)
-                            });
-                        }
-                    })),
-            )
-            .when(secret, |d| {
-                d.child(
-                    Button::new("mcp-secret-clear", "Clear secret")
-                        .sm()
-                        .ghost()
-                        .on_click(click(cx, move |s, cx| {
-                            let id = clear_id.clone();
-                            s.run_command("MCP connector", cx, move |core| {
-                                live::mcp_clear_secret(core, &id)
-                            })
-                        })),
-                )
-            })
+            .into_any_element()
         })
-        .child(
-            Button::new("mcp-remove", "Remove")
-                .sm()
-                .ghost_danger()
-                .on_click(click(cx, move |_, cx| remove(&rm, cx))),
-        )
-        .into_any_element()
 }
 
 /// `removeMcpServer`: the confirm, then the draft row and its vault secret go.
@@ -362,16 +361,21 @@ pub(super) fn remove(server: &McpServerConfig, cx: &mut Context<Settings>) {
     } else {
         server.label.trim().to_string()
     };
-    crate::settings::confirm(
+    crate::settings::commands::confirm_as(
         cx,
         "Remove this connector?",
         &format!(
             "Removing \u{201c}{label}\u{201d} deletes its saved secret from this Mac right away and stops offering its tools to chat."
         ),
         "Remove & Delete Secret",
+        "Keep Connector",
         move |s, cx| {
-            s.ui.mcp_open = None;
-            if matches!(&s.ui.mcp.step, Step::Form(f) if f.edit.as_deref() == Some(id.as_str())) {
+            let editing = match &s.ui.mcp.step {
+                Step::Form(f) => f.edit.as_deref(),
+                Step::Preset(c) => c.edit.as_deref(),
+                _ => None,
+            };
+            if editing == Some(id.as_str()) {
                 close_picker(s, cx);
             }
             s.data.mcp_secrets.remove(&id);
@@ -443,105 +447,66 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     .into_any_element()
 }
 
-/// A catalog tile (McpConnectorCatalog `.tile`).
-fn tile(
-    id: &str,
-    label: &'static str,
-    tagline: &'static str,
-    p: &Palette,
-) -> gpui_kit::Stateful<gpui_kit::Div> {
-    div()
-        .id(SharedString::from(format!("mcp-preset-{id}")))
-        .role(gpui_kit::Role::Button)
-        .aria_label(label)
-        .flex()
-        .flex_col()
-        .gap(px(4.))
-        .p(space::S3)
-        .rounded(px(10.))
-        .border_1()
-        .border_color(p.border)
-        .bg(p.surface)
-        .cursor_pointer()
-        .hover(|st| st.bg(p.surface_hover).border_color(p.border_hover))
-        .child(
-            div()
-                .text_size(text::MD)
-                .font_weight(theme::W_SEMIBOLD)
-                .text_color(p.text_strong)
-                .child(label),
-        )
-        .child(
-            div()
-                .text_size(text::BASE)
-                .text_color(p.text_muted)
-                .child(tagline),
-        )
-}
-
-/// The catalog: one tile per preset, then Custom. A bearer or local preset adds
-/// at once, switched off; the OAuth one opens its Connect stages.
-fn catalog(p: &Palette, cx: &mut Context<Settings>) -> AnyElement {
-    let tiles = PRESETS.iter().enumerate().map(|(i, preset)| {
-        tile(preset.id, preset.label, preset.tagline, p).on_click(commands::click_w(
-            cx,
-            move |s, window, cx| {
-                if PRESETS[i].oauth {
-                    oauth::open_preset(s, i, window, cx);
-                    return;
-                }
-                close_picker(s, cx);
-                s.edit(
-                    |d| {
-                        let m = logic::from_preset(&PRESETS[i], &d.ai_runtime.mcp_servers, false);
-                        d.ai_runtime.mcp_servers.push(m)
-                    },
-                    cx,
-                );
-            },
-        ))
-    });
-    let custom = tile(
-        "custom",
-        "Custom",
-        "Any other MCP server \u{2014} fill in every field yourself.",
-        p,
-    )
-    .border_dashed()
-    .on_click(commands::click_w(cx, |s, window, cx| {
-        form::open(s, None, window, cx)
-    }));
-    div()
-        .flex()
-        .flex_col()
-        .gap(space::S3)
-        .p(space::S5)
-        .child(
-            div().text_color(p.text_muted).child(
-                "Pick a service. You can Connect or add its secret after it\u{2019}s added.",
-            ),
-        )
-        .child(div().grid().grid_cols(2).gap(space::S2).children(tiles))
-        .child(custom)
-        .into_any_element()
-}
-
 /// Modals over the window: the tool list, else the Add / Edit / Connect picker.
-pub fn picker(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Option<AnyElement> {
+/// The catalog's search field is made here, where the window is at hand.
+pub fn picker(
+    s: &mut Settings,
+    p: &Palette,
+    window: &mut Window,
+    cx: &mut Context<Settings>,
+) -> Option<AnyElement> {
     if let Some(list) = &s.ui.mcp.tools {
         return Some(tools::modal(s, list, p, cx));
     }
     if !s.ui.mcp_picker_open {
         return None;
     }
-    let (title, body, busy): (String, AnyElement, bool) = match &s.ui.mcp.step {
-        Step::Catalog => ("Add a connector".into(), catalog(p, cx), false),
-        Step::Form(f) => (form::title(s, f), form::render(s, f, p, cx), f.connecting),
-        Step::OAuth(f) => (oauth::title(s, f), oauth::render(s, f, p, cx), f.busy),
+    if matches!(s.ui.mcp.step, Step::Catalog) {
+        catalog::ensure_search(s, window, cx);
+    } else {
+        s.ui.mcp.search = None;
+    }
+    let s = &*s;
+    // `eyebrow` / `title` of the picker header.
+    let (eyebrow, title, body): (&str, String, AnyElement) = match &s.ui.mcp.step {
+        Step::Catalog => (
+            "Add connector",
+            "Pick a service".into(),
+            catalog::render(s, p, cx),
+        ),
+        Step::Preset(c) => (
+            if c.edit.is_some() {
+                "Edit connector"
+            } else {
+                "Add connector"
+            },
+            preset::title(s, c),
+            preset::render(s, c, p, cx),
+        ),
+        Step::Form(f) => (
+            if f.edit.is_some() {
+                "Edit connector"
+            } else {
+                "Add connector"
+            },
+            form::title(s, f),
+            form::render(s, f, p, cx),
+        ),
+        Step::OAuth(f) => (
+            match (&f.preset, f.reconnect) {
+                (Some(_), _) => "Add connector",
+                (None, true) => "Reconnect",
+                (None, false) => "Connect",
+            },
+            oauth::title(s, f),
+            oauth::render(s, f, p, cx),
+        ),
     };
+    let busy = busy(&s.ui.mcp.step);
     let this = cx.entity().downgrade();
     Some(
         Modal::new("mcp-picker", title)
+            .eyebrow(eyebrow)
             .max_w(px(560.))
             .child(body)
             .on_close(move |_, cx| {
@@ -556,8 +521,9 @@ pub fn picker(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Option<A
     )
 }
 
-/// Esc: close the tool list, else the picker (not while a connect or save is
-/// in flight, as its close button). True when something was open.
+/// Esc: close the tool list, else the picker; an add step (preset or Custom)
+/// steps back to the catalog instead. Nothing while a connect or save is in
+/// flight, as the close button. True when something was open.
 pub(crate) fn escape(s: &mut Settings, cx: &mut Context<Settings>) -> bool {
     if s.ui.mcp.tools.take().is_some() {
         cx.notify();
@@ -566,12 +532,18 @@ pub(crate) fn escape(s: &mut Settings, cx: &mut Context<Settings>) -> bool {
     if !s.ui.mcp_picker_open {
         return false;
     }
-    let busy = match &s.ui.mcp.step {
-        Step::Catalog => false,
-        Step::Form(f) => f.connecting,
-        Step::OAuth(f) => f.busy,
+    if busy(&s.ui.mcp.step) {
+        return true;
+    }
+    let adding = match &s.ui.mcp.step {
+        Step::Preset(c) => c.edit.is_none(),
+        Step::Form(f) => f.edit.is_none(),
+        _ => false,
     };
-    if !busy {
+    if adding {
+        s.ui.mcp.step = Step::Catalog;
+        cx.notify();
+    } else {
         close_picker(s, cx);
     }
     true
@@ -597,6 +569,7 @@ pub(crate) fn fixture_state(
             let i = PRESETS.iter().position(|p| p.oauth).unwrap_or(0);
             oauth::open_preset(s, i, window, cx);
         }
+        "connect" => preset::open(s, 0, None, window, cx),
         _ => {}
     }
 }

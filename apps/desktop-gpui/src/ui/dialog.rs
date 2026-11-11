@@ -22,6 +22,7 @@ type OnClose = Rc<dyn Fn(&mut Window, &mut App)>;
 pub struct Modal {
     id: ElementId,
     title: SharedString,
+    eyebrow: Option<SharedString>,
     lead: Option<AnyElement>,
     body: Vec<AnyElement>,
     on_close: Option<OnClose>,
@@ -35,6 +36,7 @@ impl Modal {
         Self {
             id: id.into(),
             title: title.into(),
+            eyebrow: None,
             lead: None,
             body: Vec::new(),
             on_close: None,
@@ -46,6 +48,12 @@ impl Modal {
     /// A narrower panel (default `size::MODAL_MAX_W`).
     pub fn max_w(mut self, w: Pixels) -> Self {
         self.max_w = w;
+        self
+    }
+    /// The `.cat-modal` head (Settings' connector modals): a small uppercase
+    /// line over a 16 px title, no rule under it.
+    pub fn eyebrow(mut self, text: impl Into<SharedString>) -> Self {
+        self.eyebrow = Some(text.into());
         self
     }
     /// A swatch / glyph before the title.
@@ -93,26 +101,43 @@ impl RenderOnce for Modal {
                 .child(close_button);
             (None, Some(corner))
         } else {
+            let eyebrow = self.eyebrow.is_some();
             let title = div()
                 .flex()
                 .flex_1()
                 .items_center()
                 .gap(px(10.))
                 .font_weight(theme::W_SEMIBOLD)
-                .text_size(text::XL)
+                .text_size(if eyebrow { text::LG } else { text::XL })
                 .line_height(gpui_kit::relative(1.25))
                 .text_color(p.text_strong)
                 .children(self.lead)
                 .child(self.title.clone());
+            let title = match self.eyebrow {
+                Some(e) => div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .text_size(text::SM)
+                            .text_color(p.text_muted)
+                            .child(SharedString::from(e.to_uppercase())),
+                    )
+                    .child(title),
+                None => title,
+            };
             let head = div()
                 .flex()
                 .items_start()
                 .gap(space::S4)
                 .px(space::S5)
                 .pt(space::S5)
-                .pb(space::S4)
-                .border_b_1()
-                .border_color(p.hairline)
+                .when(eyebrow, |d| d.pb(space::S3))
+                .when(!eyebrow, |d| {
+                    d.pb(space::S4).border_b_1().border_color(p.hairline)
+                })
                 .child(title)
                 .child(close_button);
             (Some(head), None)

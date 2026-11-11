@@ -25,16 +25,16 @@ use crate::settings::{domain_value, Settings};
 use crate::ui::nid;
 use crate::voice::{self, Enrollment};
 
-const MS: Duration = Duration::from_millis(1);
+pub(super) const MS: Duration = Duration::from_millis(1);
 /// Tall enough that a whole group's column is on screen (clicks need hit tests).
-const TALL: (f32, f32) = (1280., 4000.);
+pub(super) const TALL: (f32, f32) = (1280., 4000.);
 
-fn advance(cx: &mut TestAppContext, d: Duration) {
+pub(super) fn advance(cx: &mut TestAppContext, d: Duration) {
     cx.executor().advance_clock(d);
     cx.run_until_parked();
 }
 
-fn on_window<R>(
+pub(super) fn on_window<R>(
     cx: &mut TestAppContext,
     w: WindowHandle<Root>,
     f: impl FnOnce(&mut gpui_kit::Window, &mut gpui_kit::App) -> R,
@@ -49,22 +49,26 @@ fn on_window<R>(
     r
 }
 
-fn click(cx: &mut TestAppContext, w: WindowHandle<Root>, id: impl Into<gpui_kit::ElementId>) {
+pub(super) fn click(
+    cx: &mut TestAppContext,
+    w: WindowHandle<Root>,
+    id: impl Into<gpui_kit::ElementId>,
+) {
     let id = id.into();
     on_window(cx, w, |window, cx| window.click(id, cx));
 }
 
-fn present(cx: &mut TestAppContext, w: WindowHandle<Root>, id: &'static str) -> bool {
+pub(super) fn present(cx: &mut TestAppContext, w: WindowHandle<Root>, id: &'static str) -> bool {
     on_window(cx, w, |window, _| window.try_find(id).is_some())
 }
 
-fn label(cx: &mut TestAppContext, w: WindowHandle<Root>, id: &'static str) -> String {
+pub(super) fn label(cx: &mut TestAppContext, w: WindowHandle<Root>, id: &'static str) -> String {
     on_window(cx, w, |window, _| {
         window.find(id).label().unwrap_or_default().to_string()
     })
 }
 
-fn open(
+pub(super) fn open(
     cx: &mut TestAppContext,
     tab: &str,
 ) -> (WindowHandle<Root>, Entity<Settings>, Arc<FixtureBackend>) {
@@ -76,7 +80,12 @@ fn open(
 
 /// Open combobox `id`, filter it to `query`, and click the one option left
 /// (the option rows aren't observable; the last row sits at the list's foot).
-fn choose(cx: &mut TestAppContext, w: WindowHandle<Root>, id: &'static str, query: &str) {
+pub(super) fn choose(
+    cx: &mut TestAppContext,
+    w: WindowHandle<Root>,
+    id: &'static str,
+    query: &str,
+) {
     click(cx, w, id);
     on_window(cx, w, |window, cx| window.input(query, cx));
     let list = nid(&format!("{id}-listbox"), 0);
@@ -96,7 +105,7 @@ fn expanded(cx: &mut TestAppContext, w: WindowHandle<Root>, id: &'static str) ->
     on_window(cx, w, |window, _| window.find(id).expanded() == Some(true))
 }
 
-fn count(b: &FixtureBackend, c: &Call) -> usize {
+pub(super) fn count(b: &FixtureBackend, c: &Call) -> usize {
     b.calls().iter().filter(|x| *x == c).count()
 }
 
@@ -244,6 +253,8 @@ fn the_picker_lists_the_catalog_from_the_backend(cx: &mut TestAppContext) {
 pub(super) struct ConfirmHost {
     answer: bool,
     pub(super) asked: Mutex<Vec<String>>,
+    /// Each dialog's cancel label, in order.
+    pub(super) cancels: Mutex<Vec<String>>,
 }
 
 impl Host for ConfirmHost {
@@ -251,6 +262,7 @@ impl Host for ConfirmHost {
     fn message(&self, _: MessageDialog) {}
     fn confirm(&self, d: ConfirmDialog) -> tokio::sync::oneshot::Receiver<bool> {
         self.asked.lock().unwrap().push(d.title.unwrap_or_default());
+        self.cancels.lock().unwrap().push(d.cancel_label);
         let (tx, rx) = tokio::sync::oneshot::channel();
         let _ = tx.send(self.answer);
         rx
@@ -275,6 +287,7 @@ pub(super) fn confirm_core(
     let host = Arc::new(ConfirmHost {
         answer,
         asked: Mutex::default(),
+        cancels: Mutex::default(),
     });
     let paths = Paths {
         data: dir.path().join("data"),
@@ -343,13 +356,22 @@ fn a_confirmed_switch_rebuilds_and_says_so(cx: &mut TestAppContext) {
             Some("bge-m3")
         );
         assert_eq!(
-            s.ui.note.as_ref().map(|n| n.2.as_str()),
-            Some("Cleared 42 vectors; re-indexing in the background.")
+            s.ui.reindex.as_deref(),
+            Some("Cleared 42 vectors; re-indexing in the background."),
+            "the row keeps the re-index line (not a page note)"
         );
     });
     assert!(
         !present(cx, w, "ss-use"),
         "the active model has nothing to switch to"
+    );
+    assert!(
+        present(cx, w, "ss-reindexing"),
+        "the re-indexing progress shows"
+    );
+    assert_eq!(
+        *host.cancels.lock().unwrap(),
+        vec!["Keep Current Model".to_string()]
     );
 }
 
@@ -509,4 +531,59 @@ fn a_take_cancelled_elsewhere_goes_back_to_idle(cx: &mut TestAppContext) {
     assert!(!present(cx, w, "voice-use") && !present(cx, w, "voice-meter"));
     assert_eq!(count(&b, &Call::Enroll), 0);
     assert_eq!(count(&b, &Call::CancelClip), 0, "nothing left to release");
+}
+
+#[gpui_kit::test]
+fn apple_speech_shows_its_permission_notice_with_the_right_action(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx, "transcription");
+    let with_status = |cx: &mut TestAppContext, status: &'static str| {
+        v.update(cx, |s, cx| {
+            s.edit(
+                |d| d.transcription.provider = AudioTranscriptionProvider::AppleSpeechOnDevice,
+                cx,
+            );
+            fn set(v: &mut serde_json::Value, status: &str) {
+                match v {
+                    serde_json::Value::Object(m) => {
+                        if m.contains_key("availabilityStatus") {
+                            m.insert("availabilityStatus".into(), json!(status));
+                            m.insert("available".into(), json!(status == "available"));
+                        }
+                        m.values_mut().for_each(|x| set(x, status));
+                    }
+                    serde_json::Value::Array(a) => a.iter_mut().for_each(|x| set(x, status)),
+                    _ => {}
+                }
+            }
+            if let Some(m) = s.data.transcription_models.as_mut() {
+                set(m, status);
+            }
+            cx.notify();
+        });
+        cx.run_until_parked();
+        (
+            present(cx, w, "speech-allow"),
+            present(cx, w, "speech-settings"),
+        )
+    };
+    assert_eq!(
+        with_status(cx, "permission_not_determined"),
+        (true, false),
+        "Get permission"
+    );
+    assert_eq!(
+        with_status(cx, "permission_denied"),
+        (false, true),
+        "Open System Settings"
+    );
+    assert_eq!(
+        with_status(cx, "framework_unavailable"),
+        (false, false),
+        "nothing to ask"
+    );
+    assert_eq!(
+        with_status(cx, "available"),
+        (false, false),
+        "granted: no prompt at all"
+    );
 }

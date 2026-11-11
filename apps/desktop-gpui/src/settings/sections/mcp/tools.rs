@@ -253,8 +253,15 @@ pub fn modal(s: &Settings, list: &ToolList, p: &Palette, cx: &mut Context<Settin
     };
     let this = cx.entity().downgrade();
     Modal::new("mcp-tools", format!("{name} \u{b7} tools"))
+        .eyebrow("MCP connector")
         .max_w(px(560.))
-        .child(div().track_focus(&list.focus).p(space::S5).child(body))
+        .child(
+            div()
+                .track_focus(&list.focus)
+                .px(space::S5)
+                .pb(space::S5)
+                .child(body),
+        )
         .on_close(move |_, cx| {
             let _ = this.update(cx, |s, cx| {
                 s.ui.mcp.tools = None;
