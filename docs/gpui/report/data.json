@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 14:14",
- "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. What needs you: sixteen screenshots to approve on the Settings › Intelligence check page, with one decision about brand logos.",
+ "updated": "2026-11-11 14:43",
+ "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. Nothing is waiting on you right now; the date control and the rest of Settings are next.",
  "metrics": [
   {
    "label": "Overall",
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "16 pending",
-   "note": "Settings › Intelligence: twelve new screens and four changed connector windows"
+   "value": "all approved",
+   "note": "the sixteen Settings › Intelligence screens approved on 11 Nov; baselines recorded in 07b72bc6; more will come from the sweep"
   }
  ],
  "bars": [
@@ -471,13 +471,13 @@
   {
    "id": "Sweep 1",
    "title": "Settings › Intelligence: providers, Ask AI, User Context match the Tauri app",
-   "what": "A provider's Manage panel opens to its real contents for every kind, including the ChatGPT sign-in; about 25 more gaps closed, two of which could lose a saved or typed key. Built, with 15 click-through tests; screenshots await your approval; not tried in the real app.",
+   "what": "A provider's Manage panel opens to its real contents for every kind, including the ChatGPT sign-in; about 25 more gaps closed, two of which could lose a saved or typed key. Built, with 15 click-through tests; screenshots approved on 11 Nov; not tried in the real app.",
    "commit": "537cdd38"
   },
   {
    "id": "Sweep 2",
    "title": "Settings › Intelligence: connectors and local models match the Tauri app",
-   "what": "Add a connector looks like the Tauri app's and picking a service opens its Connect step; model sections explain read errors, show downloads properly and confirm destructive actions. Built, with 23 click-through tests; screenshots await your approval; not tried in the real app.",
+   "what": "Add a connector looks like the Tauri app's and picking a service opens its Connect step; model sections explain read errors, show downloads properly and confirm destructive actions. Built, with 23 click-through tests; screenshots approved on 11 Nov; not tried in the real app.",
    "commit": "99359f69"
   }
  ],
@@ -515,7 +515,8 @@
   "Licence receipts: the updates timeline for activated, the ticket with device tiles for the device limit, the notched tear line on both (2026-11-10).",
   "Sensitive-app exclusion prompt and the two licence banners approved (2026-11-10).",
   "Final licence receipt design approved, incl. renewed, pending, working and failed (2026-11-10).",
-  "Scroll bars auto-hide like macOS everywhere, a deliberate difference from Tauri; the gallery's link row approved (2026-11-10)."
+  "Scroll bars auto-hide like macOS everywhere, a deliberate difference from Tauri; the gallery's link row approved (2026-11-10).",
+  "Brand marks (GitHub, Linear, Stripe, Notion) are allowed in the connector picker, as in the Tauri app; elsewhere icons stay Lucide (2026-11-11)."
  ],
  "risks": [
   "Disk space: fixed for now (73 GB free after clearing stale builds), but build folders grow fast; I clear them after each big move.",
@@ -793,11 +794,6 @@
   }
  ],
  "waiting": [
-  {
-   "id": "Approve",
-   "title": "Sixteen Settings › Intelligence screenshots",
-   "detail": "Twelve new screens that only appear after a click, and four changed connector windows. One decision rides on them: brand logos in the connector picker. On the Settings › Intelligence check page, first section."
-  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -2320,12 +2316,12 @@
  "round5": [
   {
    "anchor": "r7-approve",
-   "title": "Settings › Intelligence: screenshots to approve",
-   "toc": "To approve",
-   "commit": "537cdd38, 99359f69",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "Sixteen screens need your yes, all rendered from test data. Twelve are new: they show things that only appear after a click and were missing or wrong before. Four changed: the connector windows got the Tauri app's small header line, and Add a connector was rebuilt to match. One decision rides on these pictures: the connector picker uses the GitHub, Linear, Stripe and Notion brand marks, as the Tauri app does, which departs from the Lucide-icons-only rule. Recommended: keep them.",
+   "title": "Settings › Intelligence: approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "537cdd38, 99359f69, baselines 07b72bc6",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these sixteen screens on 11 Nov, including the brand logos in the connector picker; their baselines are recorded from the run these pictures were made from. Twelve were new: things that only appear after a click and were missing or wrong before. Four changed: the connector windows got the Tauri app's small header line, and Add a connector was rebuilt to match.",
    "rows": [
     {
      "heading": "Providers › Manage on Ollama (your report: it opened to nothing)",
@@ -2584,5 +2580,5 @@
    "rows": []
   }
  ],
- "round5_verdict": "Settings › Intelligence has been checked control by control and flow by flow against the Tauri app, and what was missing or wrong is built and committed locally: the provider Manage panel and about 25 more gaps in Providers, Ask AI and User Context; the connector picker and its missing Connect step; and the model sections' errors, downloads and confirmations. Sixteen screens need your approval, with one decision about brand logos. Nothing here has been tried in the real app yet. Nothing has been pushed."
+ "round5_verdict": "Settings › Intelligence has been checked control by control and flow by flow against the Tauri app, and what was missing or wrong is built and committed locally: the provider Manage panel and about 25 more gaps in Providers, Ask AI and User Context; the connector picker and its missing Connect step; and the model sections' errors, downloads and confirmations. You approved the sixteen screens on 11 Nov, brand logos included. Nothing here has been tried in the real app yet. Nothing has been pushed."
 }
