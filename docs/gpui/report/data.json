@@ -1,11 +1,11 @@
 {
- "updated": "2026-11-11 19:30",
- "verdict": "Every screen is built and connected to the real backend, but using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's. A control-by-control check of every screen against the Tauri app is running, two parts at a time. Settings › Intelligence is done: the empty Manage panel, the connector picker and its missing Connect step, and about 40 smaller gaps are built and committed. Everything is in local commits; nothing is pushed. You approved its sixteen screenshots. The date control is done and approved, and the rest of Settings, the Timeline, Chat and Quick Recall are done: all approved. The main window chrome, onboarding and small windows are done and approved too. Insights, the last part, is being finished.",
+ "updated": "2026-11-11 19:54",
+ "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. Everything is in local commits; nothing is pushed. What needs you: ten Insights screenshots to approve, and a hands-on pass in the real app, since none of this has been used by hand yet.",
  "metrics": [
   {
    "label": "Overall",
-   "value": "built, flows being checked",
-   "note": "all screens built and wired; a screen-by-screen check of every flow against the Tauri app is in progress after hands-on use found thin spots"
+   "value": "built, every flow checked",
+   "note": "all screens built and wired; every part checked control by control against the Tauri app on 11 Nov; none of that day's fixes used by hand in the real app yet"
   },
   {
    "label": "Backend moved",
@@ -19,13 +19,13 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,142",
-   "note": "1,353 shared backend + 141 activity-source + 639 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
+   "value": "2,171",
+   "note": "1,353 shared backend + 141 activity-source + 668 GPUI + 6 wiring + 3 engines, all run on 11 Nov with no failures; the Tauri app's own 71 tests were last run before 10 Nov; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
-   "value": "all approved",
-   "note": "the eight chrome, onboarding and small-window screens approved on 11 Nov; baselines recorded in 75bd413b; Insights still to come"
+   "value": "10 pending",
+   "note": "Insights: seven new screens and three changed"
   }
  ],
  "bars": [
@@ -56,9 +56,9 @@
  ],
  "now": [
   {
-   "id": "Sweep 8",
-   "title": "Insights",
-   "detail": "The last part. Most of it is built; the agent is finishing receipt audio, the day spine's hover and scroll, and the Subjects refresh pill."
+   "id": "Final check",
+   "title": "One combined check and a fresh dev build",
+   "detail": "Every test suite on the final commit from a clean checkout, and a signed dev build with everything from 11 Nov."
   }
  ],
  "done": [
@@ -505,6 +505,12 @@
    "title": "Main window chrome, onboarding and small windows match the Tauri app",
    "what": "Status-bar flags and button states, notification actions, onboarding's app rules, engine costs and the right Parakeet build, the expired-licence update window, the access request window following a replaced request. Built, with click tests and Tauri-side pictures; screenshots approved on 11 Nov; not tried in the real app.",
    "commit": "8f6f3056"
+  },
+  {
+   "id": "Sweep 8",
+   "title": "Insights matches the Tauri app",
+   "what": "Dead buttons, lost text in Context, the page waiting on the AI, missing paging in Subjects and the three simplified detail windows are fixed; receipts play their cited audio; the day spine and its cards are linked. Built, with 24 tests on the real view and Tauri-side pictures; screenshots await your approval; not tried in the real app.",
+   "commit": "03b56f15"
   }
  ],
  "next": [
@@ -820,6 +826,16 @@
   }
  ],
  "waiting": [
+  {
+   "id": "Approve",
+   "title": "Ten Insights screenshots",
+   "detail": "Seven new and three changed, each next to the Tauri app's picture. On the Insights page, first section."
+  },
+  {
+   "id": "Hands-on",
+   "title": "Try the app",
+   "detail": "Every part of the app has now been checked against the Tauri app, but none of today's fixes has been used by hand in the real app. A fresh signed dev build with all of it is being prepared."
+  },
   {
    "id": "Review",
    "title": "Your call: a deep review before cut-over",
@@ -2110,9 +2126,9 @@
    "title": "Screen-by-screen check against the Tauri app",
    "toc": "Full sweep",
    "commit": "—",
-   "state": "in progress",
+   "state": "done · committed",
    "awaiting": false,
-   "what": "You found that Manage on a provider opens to nothing for Ollama and ChatGPT, and that Add a connector does not look like the Tauri app's. Both are confirmed: the new app's Manage panel only draws an API-key field for key-based cloud providers, where the Tauri app also has a label, the address, the ChatGPT sign-in block and Remove provider. The cause is general: screens were built to match screenshots, so what only appears after a click was often left out. Every part of the app is now being checked the same way: list every control, message and click-through flow in the Tauri app's code, find each in the new app, build what is missing with the Tauri wording and behaviour, and add a test that clicks through it. Order, two agents at a time: 1. Settings › Intelligence: providers, Ask AI, User Context (done). 2. Settings › Intelligence: connectors, transcription, speakers, text reading, search models (done; both are on the Settings › Intelligence check page). 3. Settings › General, Capture, Data, About. 4. Timeline, audio drawer, frame detail. 5. Chat and Quick Recall. 6. Insights. 7. Main window chrome, onboarding and the small windows. Also queued from you: in the Insights calendar a selected week or month is drawn as a square-cornered block; the Tauri app draws a week as one rounded row with its week number and has a separate month grid, and the new app has neither yet.",
+   "what": "You found that Manage on a provider opens to nothing for Ollama and ChatGPT, and that Add a connector does not look like the Tauri app's. Both are confirmed: the new app's Manage panel only draws an API-key field for key-based cloud providers, where the Tauri app also has a label, the address, the ChatGPT sign-in block and Remove provider. The cause is general: screens were built to match screenshots, so what only appears after a click was often left out. Every part of the app is now being checked the same way: list every control, message and click-through flow in the Tauri app's code, find each in the new app, build what is missing with the Tauri wording and behaviour, and add a test that clicks through it. All seven parts and the date control are done; each has its own page in this report.",
    "rows": []
   },
   {
@@ -3228,5 +3244,199 @@
    "rows": []
   }
  ],
- "round9_verdict": "The main window chrome, onboarding and the small windows have been checked control by control against the Tauri app; about 30 differences are fixed and committed locally. You approved the eight screens on 11 Nov; each sits next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed."
+ "round9_verdict": "The main window chrome, onboarding and the small windows have been checked control by control against the Tauri app; about 30 differences are fixed and committed locally. You approved the eight screens on 11 Nov; each sits next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed.",
+ "round10": [
+  {
+   "anchor": "r12-approve",
+   "title": "Insights: screenshots to approve",
+   "toc": "To approve",
+   "commit": "03b56f15",
+   "state": "awaiting your approval",
+   "awaiting": true,
+   "what": "Ten screens need your yes, all rendered from test data, each next to the Tauri app's own picture of the same data. Seven are new: the three rebuilt Overview detail windows, a Journal receipt with its spoken turns, a day with captures but nothing written up, the frame window opened from a subject's evidence, and editing a statement in Context. Three changed: the Journal (its live \"writing up\" row), a receipt (the 1× · 8× · 16× speed picker and ticks for cited frames) and the empty Journal (a top margin). In some pairs the Tauri picture is scrolled to a different place; the content is the same.",
+   "rows": [
+    {
+     "heading": "Overview › What you worked on (rebuilt)",
+     "shots": [
+      {
+       "file": "r12-insights-categories-open-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-categories-open-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-categories-open-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Overview › App usage (rebuilt)",
+     "shots": [
+      {
+       "file": "r12-insights-apps-open-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-apps-open-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-apps-open-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Overview › Focus detail (rebuilt)",
+     "shots": [
+      {
+       "file": "r12-insights-focus-open-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-focus-open-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-focus-open-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Journal › a receipt with its spoken turns (new)",
+     "shots": [
+      {
+       "file": "r12-insights-receipt-audio-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-receipt-audio-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-receipt-audio-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Journal › captured but nothing written up (new)",
+     "shots": [
+      {
+       "file": "r12-insights-journal-capture-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-journal-capture-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-journal-capture-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Subjects › a frame's evidence opened in place (new)",
+     "shots": [
+      {
+       "file": "r12-insights-subject-peek-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-subject-peek-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-subject-peek-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Context › editing a statement (new)",
+     "shots": [
+      {
+       "file": "r12-insights-context-edit-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-context-edit-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-context-edit-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Journal (changed)",
+     "shots": [
+      {
+       "file": "r12-insights-journal-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-journal-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-journal-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Journal › receipt (changed)",
+     "shots": [
+      {
+       "file": "r12-insights-receipt-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-receipt-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-receipt-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    },
+    {
+     "heading": "Journal › empty day (changed)",
+     "shots": [
+      {
+       "file": "r12-insights-journal-empty-tauri.jpg",
+       "caption": "The Tauri app, same data"
+      },
+      {
+       "file": "r12-insights-journal-empty-light.jpg",
+       "caption": "New app, light"
+      },
+      {
+       "file": "r12-insights-journal-empty-dark.jpg",
+       "caption": "New app, dark"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "anchor": "r12-insights",
+   "title": "Insights: Overview, Journal, Subjects, Context",
+   "toc": "What changed",
+   "commit": "03b56f15",
+   "state": "fixed · committed",
+   "awaiting": false,
+   "what": "Dead buttons: Journal's Re-read and Set up AI did nothing; Context showed a ⌘↵ hint on Add that nothing handled. Lost text: in Context a failed add cleared the box even though the message said your text was still there. Slow and misleading: the Overview read and the Journal's day digest were loaded together with everything else, so Insights sat on placeholders until a model call finished, and stepping the period showed the previous week's numbers under the new label; they now load on their own with their own states. The notice about the AI engine went stale after a Settings change or a ChatGPT sign-in. \"Ask about this week\" sent only the question, where the Tauri app opens Chat limited to that week. Subjects showed only the first 10 rows of each tier, with no paging; evidence rows could not be clicked. Context had no way to edit a statement. The three Overview detail windows were simplified and cut their content off; all three are rebuilt and scroll. Several error states had no Try again, and failed re-reads, deletes and restores were swallowed. Also built: every Journal empty state, the day with captures but no summary, hover and click between the day spine and its cards, receipts that play their cited audio, the \"N views updated · Refresh\" pill in Subjects, \"Recording since\" while waiting for the first summary, and a frame's evidence opening the frame window in place. Settled toward the Tauri app, overrule if you prefer the old way: a dismissed conclusion leaves the list with Undo on the toast for 5 seconds. Not tried in the real app: real audio playback, scroll feel, and the live \"Recording since\" line.",
+   "rows": []
+  }
+ ],
+ "round10_verdict": "Insights was the last part of the screen-by-screen check against the Tauri app. Its dead buttons, lost text, missing paging and simplified detail windows are fixed and committed locally. Ten screens need your approval, each next to the Tauri app's own picture. Not tried in the real app. Nothing has been pushed."
 }

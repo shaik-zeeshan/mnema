@@ -188,7 +188,8 @@ def index_page(d, drafts):
     p.append(h2(n, "Screenshots")); n += 1
     p.append('<p>One page per screen, dark next to light. Approved sets are the reference every later change '
              'is checked against. Today’s changed screens are on their own page until you approve them.</p>')
-    rows = ([(link(drafts, "round9", "Main window chrome, onboarding and small windows, checked against the Tauri app"), "11 Nov · status-bar flags, notifications, onboarding engines and app rules, the update window",
+    rows = ([(link(drafts, "round10", "Insights, checked against the Tauri app"), "11 Nov · detail windows, receipts with audio, the day spine, Subjects paging, Context editing",
+              page_chip(d, "round10"))] if d.get("round10") else []) + ([(link(drafts, "round9", "Main window chrome, onboarding and small windows, checked against the Tauri app"), "11 Nov · status-bar flags, notifications, onboarding engines and app rules, the update window",
               page_chip(d, "round9"))] if d.get("round9") else []) + ([(link(drafts, "round8", "Timeline, Chat and Quick Recall, checked against the Tauri app"), "11 Nov · keys, the text overlay, audio errors, the frame detail window, the model picker",
               page_chip(d, "round8"))] if d.get("round8") else []) + ([(link(drafts, "round7", "The rest of Settings, checked against the Tauri app"), "11 Nov · shortcuts, capture, privacy, data, about, licence; and the keychain prompt",
               page_chip(d, "round7"))] if d.get("round7") else []) + ([(link(drafts, "round6", "The date control, checked against the Tauri app"), "11 Nov · the Insights calendar's week rows and month grid, Chat's range, the Timeline jumper",
@@ -267,6 +268,11 @@ def main():
          fixes_page(d, drafts, "approve", "Earlier approvals",
                     "Screenshots you approved on 10 Nov before they became references. Nothing here is waiting."),
          "Mnema GPUI — earlier approvals")
+    if d.get("round10"):
+        emit("round10", "round10.html", "Insights check",
+             fixes_page(d, drafts, "round10", "Insights, checked against the Tauri app",
+                        "Overview, Journal, Subjects and Context, compared with the Tauri app control by control. The new-app pictures are rendered from test data; the Tauri pictures are the Tauri app's own render of the same data."),
+             "Mnema GPUI — Insights check")
     if d.get("round9"):
         emit("round9", "round9.html", "Chrome and onboarding check",
              fixes_page(d, drafts, "round9", "Main window chrome, onboarding and small windows, checked against the Tauri app",
