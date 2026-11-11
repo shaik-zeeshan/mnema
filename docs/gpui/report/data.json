@@ -1,6 +1,6 @@
 {
- "updated": "2026-11-11 02:52",
- "verdict": "Every screen is built and connected to the real backend. On 10 Nov both of your hands-on rounds were fixed; then an agent used the real dev build by hand and a behaviour audit compared the two apps, and everything those found is fixed too, including the build that was missing the Whisper transcriber. All of it is in local commits and a signed dev build from midnight; nothing is pushed. What needs you: unlock the Mac, approve two screenshots, and five decisions.",
+ "updated": "2026-11-11 05:34",
+ "verdict": "Every screen is built and connected to the real backend, and everything found by your two hands-on rounds, the real-app test and the behaviour audit is fixed. On 11 Nov you approved the last nine screenshots and all seven decisions as recommended. The baselines and the CLAUDE.md rule are committed; the recording-clock fix and the missing-engine check are being built now. Auto-start was seen working in the real app: it began recording by itself when you unlocked the Mac. All of it is in local commits; nothing is pushed.",
  "metrics": [
   {
    "label": "Overall",
@@ -24,8 +24,8 @@
   },
   {
    "label": "Screenshots approved",
-   "value": "9 pending",
-   "note": "four developer-window screens, three MCP screens, onboarding Models, gallery dropdowns"
+   "value": "all approved",
+   "note": "the last nine approved on 11 Nov; baselines recorded in 2df6fe07"
   }
  ],
  "bars": [
@@ -54,7 +54,23 @@
    "pct": 0
   }
  ],
- "now": [],
+ "now": [
+  {
+   "id": "Clock",
+   "title": "Recording clock",
+   "detail": "The REC timer and the developer window's \"since\" time get a real session start in the shared backend, for both apps. With an agent now."
+  },
+  {
+   "id": "Guard",
+   "title": "Missing-engine check and two small items",
+   "detail": "Recording will refuse to start, with a clear message, if the chosen transcriber is not in the build; the connector warm-up warning will log the id; the developer Logs filter field takes its real height. With an agent now."
+  },
+  {
+   "id": "Tests",
+   "title": "Two older failing tests",
+   "detail": "Microphone restore after an inactivity pause. Queued behind the two above."
+  }
+ ],
  "done": [
   {
    "id": "T0",
@@ -415,7 +431,7 @@
   {
    "id": "Gaps",
    "title": "Still unwired or unbuilt",
-   "detail": "20 marked shortcuts remain, all small: drawing approximations the toolkit forces and shortcuts the Tauri app takes too. One one-line follow-up is open: the developer Logs filter field's height."
+   "detail": "20 marked shortcuts remain, all small: drawing approximations the toolkit forces and shortcuts the Tauri app takes too."
   },
   {
    "id": "Docs",
@@ -724,19 +740,9 @@
  ],
  "waiting": [
   {
-   "id": "Unlock",
-   "title": "Unlock the Mac",
-   "detail": "The newest dev build (11 Nov, early morning) is open and waiting for a display; it should start recording by itself when you unlock. It has everything committed so far."
-  },
-  {
-   "id": "Approve",
-   "title": "Nine screenshots",
-   "detail": "Four developer-window screens, three MCP screens, the fuller onboarding Models tab and the control gallery's dropdown page, on the \"Real-app test and behaviour audit\" page."
-  },
-  {
-   "id": "Decide",
-   "title": "Seven decisions or looks",
-   "detail": "The fast recording clock, the missing-engine safety check, a CLAUDE.md rule, the new ChatGPT sign-in in Chat, two older failing tests, the microphone-cancel change made in your absence, and a log detail. On the real-app test page, under Decisions."
+   "id": "Look",
+   "title": "One small picture, later today",
+   "detail": "The developer Logs filter field will be a few pixels shorter once it takes its real height. A before and after will be on the real-app test page when it is ready."
   }
  ],
  "fixes_verdict": "Five of today's six issues have pictures here, plus capture health. Every changed screenshot on this page is approved. Large windows will be centred (your ruling); that picture will be on the approval page.",
@@ -1779,16 +1785,16 @@
    ]
   }
  ],
- "round3_verdict": "Everything found by the real-app test and the behaviour audit is fixed and committed locally, except the items under Decisions. Since then the Settings pickers, the microphone-cancel fix, MCP custom connectors, the developer window's job inspector and a batch of small parity items have been added. A signed dev build with all of it was built on 11 Nov at 01:43 and opened in the background; the Mac is locked, so it is waiting for a display and should start recording when you unlock. Nine screenshots need your approval and seven things need a decision or a look. Nothing has been pushed.",
+ "round3_verdict": "Everything found by the real-app test and the behaviour audit is fixed and committed locally. On 11 Nov you approved the nine screenshots and all seven decisions as recommended: the baselines are recorded, the CLAUDE.md rule is added, and the recording clock, the missing-engine check, the log detail and the two older failing tests are in progress. Auto-start is confirmed in the real app: with the Mac locked it waited, and at 05:12 on unlock it began recording by itself. Still not used by hand in the real app: a first Whisper transcript, the titlebar fix, the pickers, MCP and the job inspector. Nothing has been pushed.",
  "round3": [
   {
    "anchor": "r3-approve",
-   "title": "Screenshots to approve",
-   "toc": "To approve",
-   "commit": "50cdc2d7, 0161ccbd, fc010334, b81defc6",
-   "state": "awaiting your approval",
-   "awaiting": true,
-   "what": "Nine screens need your yes, all rendered from test data. Developer window: the Logs tab's filter chips wrap; the Capture tab's disk labels join when they would overlap; new, a processor's jobs table and one job's inspector. Settings › MCP, new: the custom connector form (its two selectors now hug their options), a connector's tool list, and the sign-in dialog. Onboarding › Models: you approved this screen on 10 Nov; it now also has the per-model Download / Memory strip and the budget bar the Tauri app has. Control gallery › dropdowns: the search row is about 9 px shorter, because text fields now take their real height.",
+   "title": "Screenshots approved on 11 Nov",
+   "toc": "Approved",
+   "commit": "50cdc2d7, 0161ccbd, fc010334, b81defc6, baselines 2df6fe07",
+   "state": "approved · baselines recorded",
+   "awaiting": false,
+   "what": "You approved these nine screens on 11 Nov; their baselines are recorded from a run that matches these pictures. All are rendered from test data. Developer window: the Logs tab's filter chips wrap; the Capture tab's disk labels join when they would overlap; new, a processor's jobs table and one job's inspector. Settings › MCP, new: the custom connector form (its two selectors now hug their options), a connector's tool list, and the sign-in dialog. Onboarding › Models: you approved this screen on 10 Nov; it now also has the per-model Download / Memory strip and the budget bar the Tauri app has. Control gallery › dropdowns: the search row is about 9 px shorter, because text fields now take their real height.",
    "rows": [
     {
      "heading": "Developer window › Logs",
@@ -1911,12 +1917,12 @@
   },
   {
    "anchor": "r3-decide",
-   "title": "Decisions waiting for you",
+   "title": "Your seven decisions",
    "toc": "Decisions",
-   "commit": "—",
-   "state": "your decision",
-   "awaiting": true,
-   "what": "1. The recording clock runs fast, in both apps. The REC timer and the developer window's \"since\" time read a value that is not the session start; it is a timing anchor that moves earlier each time the screen pauses for inactivity and resumes. The fix stores a real session start in the shared backend and changes the Tauri app too. Recommended: fix it. 2. A safety check so recording refuses to start, with a clear message, if the Whisper engine is ever missing from a build again. Today the jobs retry forever in silence. It changes nothing in a correct build. Recommended: add it. 3. A rule in the project's CLAUDE.md that a click handler must call its handler directly and never send an action through keyboard focus (the cause of the dead titlebar buttons). Recommended: add it. 4. Chat's failed-turn notice now includes a compact ChatGPT sign-in, because the new app had no way to reconnect a signed-out account. It reuses onboarding's sign-in. Have a look when you can. 5. Two older failing tests in the shared backend (microphone restore after an inactivity pause) are not on the known-failures list. They fail without any of today's changes. Worth a separate look. 6. One shared-code change was made without waiting for you: cancelling a voice take now releases the microphone at once (commit 1e9d4c95). A Cancel button that leaves the microphone on is a privacy defect. If you would rather remove the Cancel button to match the Tauri app, it is easy to undo. 7. A log detail in the shared backend: when a connector fails to warm up, the connector warm-up warning names the connector's label (something you typed) where the logging rules prefer its id. Small; shared code, so left for you.",
+   "commit": "7e1a33cd (rule); the rest in progress",
+   "state": "decided 11 Nov · in progress",
+   "awaiting": false,
+   "what": "You chose the recommended option for all seven. 1. Recording clock that runs fast in both apps: being fixed in the shared backend with a real session start. 2. Safety check so recording refuses to start, with a clear message, when the chosen transcriber is missing from a build: being added. 3. CLAUDE.md rule that a click handler calls its handler directly and never sends an action through keyboard focus: added. No click in the new app does this any more. 4. The compact ChatGPT sign-in in Chat's failed-turn notice: stays. 5. Two older failing tests (microphone restore after an inactivity pause): being investigated next; a fix that changes microphone behaviour will come back to you first. 6. Cancelling a voice take releases the microphone at once (1e9d4c95): stays. 7. The connector warm-up warning will log the connector's id, not the label you typed: being changed.",
    "rows": []
   },
   {
@@ -1956,7 +1962,7 @@
    "commit": "5cf4af62",
    "state": "fixed · committed",
    "awaiting": false,
-   "what": "Auto-start: both apps gave up for good if the display was asleep at launch. Now the start is retried when a display returns, and the status bar says it is waiting. Seen working in the real app's log after the rebuild: with the Mac locked it reported no display yet and kept waiting. Quit: the final \"completed\" line is now logged and each background worker logs that it stopped. Settings notices changes made from the menu bar or a shortcut, merges them with unsaved edits, and re-checks permissions when you return to the window. Insights' tracked time refreshes every minute and the status bar's \"today\" every five. An agent's audio link opens the audio drawer, and says so when the capture is gone. A second launch brings the window forward. Quit, re-measured in the real app on 11 Nov with the machine quiet and not recording: 12 ms from start to the final line, with every worker's stop line logged. The 12 seconds seen earlier was on a heavily loaded machine; a quit while recording has not been timed yet.",
+   "what": "Auto-start: both apps gave up for good if the display was asleep at launch. Now the start is retried when a display returns, and the status bar says it is waiting. Driven in the real app on 11 Nov: with the Mac locked it reported no display and kept waiting, and at 05:12, when you unlocked, it began recording by itself. Quit: the final \"completed\" line is now logged and each background worker logs that it stopped. Settings notices changes made from the menu bar or a shortcut, merges them with unsaved edits, and re-checks permissions when you return to the window. Insights' tracked time refreshes every minute and the status bar's \"today\" every five. An agent's audio link opens the audio drawer, and says so when the capture is gone. A second launch brings the window forward. Quit, re-measured in the real app on 11 Nov with the machine quiet and not recording: 12 ms from start to the final line, with every worker's stop line logged. The 12 seconds seen earlier was on a heavily loaded machine; a quit while recording has not been timed yet.",
    "rows": []
   },
   {
