@@ -3,18 +3,26 @@
 //! on the `AppCore`; each host's quit paths call `shutdown` and long-running
 //! startup work polls it.
 
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
+use std::{
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
+    time::Duration,
 };
 
 use crate::{startup::step, AppCore, ExitKind};
+
+/// How long a graceful exit may run before the process is ended anyway. Each
+/// recording writer gets up to 15 s to finalize, so this leaves room for several.
+const QUIT_DEADLINE: Duration = Duration::from_secs(60);
 
 #[derive(Default)]
 pub struct AppExitCoordinatorState {
     exit_requested: AtomicBool,
     final_graceful_exit_ready: AtomicBool,
     restart_after_graceful_exit: AtomicBool,
+    host_exit_claimed: AtomicBool,
 }
 
 impl AppExitCoordinatorState {
@@ -43,6 +51,12 @@ impl AppExitCoordinatorState {
     pub fn should_restart_after_graceful_exit(&self) -> bool {
         self.restart_after_graceful_exit.load(Ordering::SeqCst)
     }
+
+    /// `true` for exactly one caller: whoever hands the process to `Host::exit`
+    /// (the finished shutdown or the quit deadline).
+    fn claim_host_exit(&self) -> bool {
+        !self.host_exit_claimed.swap(true, Ordering::SeqCst)
+    }
 }
 
 pub fn is_graceful_exit_in_progress(core: &AppCore) -> bool {
@@ -63,6 +77,7 @@ impl AppCore {
             return;
         }
         step(self, "begin_exit");
+        spawn_quit_deadline(self, QUIT_DEADLINE);
 
         let core = Arc::clone(self);
         self.spawn(async move {
@@ -133,10 +148,36 @@ impl AppCore {
     }
 }
 
+/// Ends the process if the graceful exit hasn't reached `Host::exit` within
+/// `deadline` (a hung worker or writer). Always a plain quit: a relaunch needs
+/// the main thread on the GPUI host, and that may be what is stuck.
+fn spawn_quit_deadline(core: &Arc<AppCore>, deadline: Duration) {
+    let core = Arc::downgrade(core);
+    let spawned = std::thread::Builder::new()
+        .name("mnema-quit-deadline".to_string())
+        .spawn(move || {
+            std::thread::sleep(deadline);
+            let Some(core) = core.upgrade() else { return };
+            let exit_state = core.state::<AppExitCoordinatorState>();
+            if !exit_state.claim_host_exit() {
+                return;
+            }
+            crate::debug_log::log_warn("quit deadline reached, forcing exit");
+            exit_state.mark_final_graceful_exit_ready();
+            core.host().exit(ExitKind::Quit);
+        });
+    if let Err(error) = spawned {
+        crate::debug_log::log_warn(format!("failed to start the quit deadline thread: {error}"));
+    }
+}
+
 /// Marks the exit final (the host's quit hooks then let it through) and hands
 /// the process to the host, relaunching when any request asked for it.
 fn complete_graceful_exit(core: &AppCore) {
     let exit_state = core.state::<AppExitCoordinatorState>();
+    if !exit_state.claim_host_exit() {
+        return; // the quit deadline already ended it
+    }
     let restart_requested = exit_state.should_restart_after_graceful_exit();
     exit_state.mark_final_graceful_exit_ready();
     step(core, "host_exit");
@@ -149,7 +190,56 @@ fn complete_graceful_exit(core: &AppCore) {
 
 #[cfg(test)]
 mod tests {
-    use super::AppExitCoordinatorState;
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
+    use super::{complete_graceful_exit, spawn_quit_deadline, AppExitCoordinatorState};
+    use crate::test_support::{core_in, FakeHost};
+    use crate::{AppCore, ExitKind};
+
+    fn exiting_core(dir: &std::path::Path, restart: bool) -> (Arc<FakeHost>, Arc<AppCore>) {
+        let host = Arc::new(FakeHost::default());
+        let core = Arc::new(core_in(Arc::clone(&host), dir));
+        core.manage(AppExitCoordinatorState::default());
+        core.state::<AppExitCoordinatorState>().begin_exit(restart);
+        (host, core)
+    }
+
+    #[test]
+    fn quit_deadline_forces_one_exit_when_shutdown_hangs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, core) = exiting_core(dir.path(), true);
+
+        spawn_quit_deadline(&core, Duration::from_millis(20));
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while host.exits.lock().unwrap().is_empty() {
+            assert!(Instant::now() < give_up, "quit deadline never fired");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A plain quit even though a relaunch was asked for.
+        assert_eq!(*host.exits.lock().unwrap(), [ExitKind::Quit]);
+        assert!(core
+            .state::<AppExitCoordinatorState>()
+            .is_final_graceful_exit_ready());
+
+        // The hung shutdown finishing late hands nothing over a second time.
+        complete_graceful_exit(&core);
+        assert_eq!(*host.exits.lock().unwrap(), [ExitKind::Quit]);
+    }
+
+    #[test]
+    fn quit_deadline_stays_quiet_after_a_normal_exit() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, core) = exiting_core(dir.path(), true);
+
+        spawn_quit_deadline(&core, Duration::from_millis(20));
+        complete_graceful_exit(&core);
+        std::thread::sleep(Duration::from_millis(200));
+
+        assert_eq!(*host.exits.lock().unwrap(), [ExitKind::Restart]);
+    }
 
     #[test]
     fn app_exit_coordinator_marks_final_exit_only_after_graceful_work_is_done() {
