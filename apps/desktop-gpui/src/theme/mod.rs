@@ -113,10 +113,12 @@ pub fn fading(cx: &App) -> bool {
 }
 
 /// Keep repainting while a cross-fade runs. Call from the root view's render.
+/// A full refresh, not an animation frame: that would re-render only the root
+/// view, and the shell's cached surfaces would keep the old colours.
 pub fn request_fade_frames(window: &mut Window, cx: &App) {
     if let Some((_, started)) = cx.global::<ThemeState>().fade {
         if fade_progress(started, cx).is_some() {
-            window.request_animation_frame();
+            window.on_next_frame(|window, _| window.refresh());
         }
     }
 }

@@ -20,7 +20,9 @@ use std::time::Duration;
 
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, Context, Entity, FocusHandle, Subscription, Task, Window};
+use gpui_kit::{
+    div, AnyView, Context, Entity, FocusHandle, StyleRefinement, Subscription, Task, Window,
+};
 
 use crate::keymap::{self, Bindings, HelpState};
 use crate::theme::{self, text, FONT_UI};
@@ -210,33 +212,47 @@ impl Shell {
         };
         let developer = self.model.developer_options;
         cx.set_global(DeveloperOptions(developer));
+        // The surfaces are cached views: notify one only when what it shows
+        // changed, or the 2 s live poll would rebuild it on every reading.
         let status = self.model.status.clone();
         self.settings.update(cx, |s, cx| {
-            s.status = status;
-            cx.notify();
+            if s.status != status {
+                s.status = status;
+                cx.notify();
+            }
         });
         let low_disk = self.model.status.low_disk;
         self.licence.update(cx, |l, _| l.low_disk = low_disk);
         let recording = (self.model.status.running, self.model.status.user_paused);
+        let since = self.model.status.session_start_ms;
         self.insights.update(cx, |i, cx| {
-            i.recording = recording;
-            i.recording_since = self.model.status.session_start_ms;
-            cx.notify();
+            if (i.recording, i.recording_since) != (recording, since) {
+                i.recording = recording;
+                i.recording_since = since;
+                cx.notify();
+            }
         });
         self.timeline.update(cx, |t, cx| {
-            t.capture = hint;
-            t.developer = developer;
-            cx.notify();
+            if (t.capture, t.developer) != (hint, developer) {
+                t.capture = hint;
+                t.developer = developer;
+                cx.notify();
+            }
         });
         // The REC / PAUSED clock ticks once a second while it shows (not while
-        // the window is hidden or every screen is asleep).
+        // the window is hidden or every screen is asleep). It repaints the
+        // shell's bars; the cached surface below stays as it is, except
+        // Settings, whose rail shows the same clock.
         let ticking = model::rec_view(&self.model.status).clock.is_some();
         self.tick = ticking.then(|| {
             cx.spawn(async move |this, cx| loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
-                let ticked = this.update(cx, |_, cx| {
+                let ticked = this.update(cx, |this, cx| {
                     if !crate::window::render_idle(cx) {
                         cx.notify();
+                        if this.surface == Surface::Settings {
+                            this.notify_surface(cx);
+                        }
                     }
                 });
                 if ticked.is_err() {
@@ -283,6 +299,16 @@ impl Shell {
             self.chat.update(cx, |c, cx| c.warm_mcp(cx));
         }
         cx.notify();
+    }
+
+    /// Re-render the shown surface (a cached view: a shell notify alone reuses it).
+    fn notify_surface(&self, cx: &mut Context<Self>) {
+        match self.surface {
+            Surface::Timeline => self.timeline.update(cx, |_, cx| cx.notify()),
+            Surface::Chat => self.chat.update(cx, |_, cx| cx.notify()),
+            Surface::Settings => self.settings.update(cx, |_, cx| cx.notify()),
+            Surface::Insights => self.insights.update(cx, |_, cx| cx.notify()),
+        }
     }
 
     /// The gear and ⌘,: Settings, or back to where it was opened from.
@@ -534,12 +560,17 @@ impl Render for Shell {
                 el.child(titlebar::render(self, &p, window, cx))
             })
             .children(crate::licence::render_banner(&self.licence, cx))
-            .map(|el| match self.surface {
-                Surface::Timeline => el.child(self.timeline.clone()),
-                Surface::Chat => el.child(self.chat.clone()),
-                Surface::Settings => el.child(self.settings.clone()),
-                Surface::Insights => el.child(self.insights.clone()),
-            })
+            // Cached: a shell-only repaint (the REC clock, a popover) reuses the
+            // surface's last frame unless the surface itself was notified.
+            .child(
+                match self.surface {
+                    Surface::Timeline => AnyView::from(self.timeline.clone()),
+                    Surface::Chat => AnyView::from(self.chat.clone()),
+                    Surface::Settings => AnyView::from(self.settings.clone()),
+                    Surface::Insights => AnyView::from(self.insights.clone()),
+                }
+                .cached(StyleRefinement::default().flex_1().min_h_0().w_full()),
+            )
             .when(chrome, |el| {
                 el.child(status_bar::render(self, &p, window, cx))
             })

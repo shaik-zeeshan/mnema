@@ -183,6 +183,8 @@ impl Onboarding {
             .iter()
             .flatten()
             .filter(|(_, n)| q.is_empty() || n.to_lowercase().contains(&q))
+            // Settings' cap: the full list drew every installed app's icon.
+            .take(12)
             .cloned()
             .collect()
     }

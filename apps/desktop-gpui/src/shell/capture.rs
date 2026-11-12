@@ -60,7 +60,10 @@ impl Shell {
             self.start_error = None;
             self.model.status.start_error = None;
             self.model.status.loading_start = true;
-            self.timeline.update(cx, |t, _| t.capture.starting = true);
+            self.timeline.update(cx, |t, cx| {
+                t.capture.starting = true;
+                cx.notify();
+            });
         }
         self.model.status.loading_stop = command == Command::Stop;
         self.model.status.loading_pause = command == Command::Pause;
@@ -92,7 +95,10 @@ impl Shell {
                 this.model.status.loading_start = false;
                 this.model.status.loading_stop = false;
                 this.model.status.loading_pause = false;
-                this.timeline.update(cx, |t, _| t.capture.starting = false);
+                this.timeline.update(cx, |t, cx| {
+                    t.capture.starting = false;
+                    cx.notify();
+                });
                 let failed = matches!(&result, Ok(Err(_)) | Err(_));
                 if let Ok(Err((title, e))) = &result {
                     if command == Command::Start {
@@ -286,6 +292,9 @@ impl Shell {
                     {
                         this.beat_reads.1 += 1;
                     }
+                    // The surfaces are cached: repaint the shown one so its
+                    // "3 min ago" / "Today" labels keep up with the clock.
+                    this.notify_surface(cx);
                     if today {
                         this.beat_reads.0 += 1;
                         this.reload(cx);

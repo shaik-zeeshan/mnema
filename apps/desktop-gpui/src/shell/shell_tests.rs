@@ -652,3 +652,27 @@ fn cmd_j_on_the_overview_asks_about_its_period(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[gpui_kit::test]
+fn the_rec_clock_tick_reuses_the_cached_surface(cx: &mut TestAppContext) {
+    let (window, shell) = open(cx);
+    let mut model = ShellModel::default();
+    model.status.running = true;
+    model.status.session_start_ms = Some(0);
+    shell.update(cx, |s, cx| s.set_model(model, cx));
+    // A plain draw (no refresh): only dirty views re-render.
+    let draw = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, w, cx| w.draw(cx).clear(cx))
+            .unwrap();
+        cx.read(|cx| shell.read(cx).timeline.read(cx).renders)
+    };
+    cx.run_until_parked();
+    let before = draw(cx);
+    assert!(before > 0, "the Timeline drew once");
+    assert!(cx.read(|cx| shell.read(cx).tick.is_some()), "REC ticks");
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    assert_eq!(draw(cx), before, "a clock tick skips the Timeline");
+    shell.update(cx, |s, cx| s.timeline.update(cx, |_, cx| cx.notify()));
+    assert_eq!(draw(cx), before + 1, "its own notify still re-renders it");
+}

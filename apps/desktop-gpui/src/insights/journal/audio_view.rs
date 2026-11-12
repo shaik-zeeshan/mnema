@@ -8,7 +8,7 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, AnyElement, Context, Div, Role, SharedString, Window};
+use gpui_kit::{div, px, AnyElement, Context, Div, Role, SharedString};
 
 use super::audio::{self, Span, TurnView};
 use crate::insights::stats;
@@ -55,6 +55,16 @@ impl ReceiptAudio {
     pub fn head(&self) -> Option<i64> {
         self.clip
             .map(|(_, start)| start + self.transport.current_ms())
+    }
+    /// The lit turn: while a clip plays only its segment's turns can light up.
+    pub fn active_turn(&self) -> Option<(i64, i64)> {
+        let head = self.head().filter(|_| self.transport.engaged());
+        match self.clip {
+            Some((seg, _)) if head.is_some() => {
+                audio::active_key_at(self.turns().iter().filter(|t| t.segment == seg), head)
+            }
+            _ => self.selected,
+        }
     }
 }
 
@@ -218,9 +228,9 @@ impl Insights {
         cx.notify();
     }
 
-    /// One display frame while a clip plays: poll the player, move the strip
-    /// to the audio clock; at the clip's end, the next segment's first turn.
-    pub(super) fn tick_receipt_audio(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// One poll while a clip plays: poll the player, move the strip to the
+    /// audio clock; at the clip's end, the next segment's first turn.
+    pub(super) fn tick_receipt_audio(&mut self, cx: &mut Context<Self>) {
         let Some(rc) = self.receipt.as_mut() else {
             return;
         };
@@ -232,7 +242,6 @@ impl Insights {
             rc.index = crate::chat::clip::index_at(frames, head);
         }
         if rc.audio.transport.playing {
-            window.request_animation_frame();
             return;
         }
         let ended = rc.audio.clip.map(|c| c.0);
@@ -256,14 +265,7 @@ pub fn turn_list(
         return div();
     };
     let a = &rc.audio;
-    // While a clip plays only its segment's turns can light up.
-    let head = a.head().filter(|_| a.transport.engaged());
-    let active = match a.clip {
-        Some((seg, _)) if head.is_some() => {
-            audio::active_key_at(a.turns().iter().filter(|t| t.segment == seg), head)
-        }
-        _ => a.selected,
-    };
+    let active = a.active_turn();
     div().child(
         div()
             .id("insights-receipt-turns")

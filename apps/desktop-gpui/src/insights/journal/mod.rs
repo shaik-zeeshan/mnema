@@ -10,6 +10,8 @@ pub mod receipt;
 mod river;
 mod spine;
 
+use std::rc::Rc;
+
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, AnyElement, Context, Window};
@@ -114,7 +116,7 @@ fn center_tone(title: String, body: &str, acts: Vec<AnyElement>, tone: Tone, p: 
 pub fn render(
     this: &mut Insights,
     p: &Palette,
-    window: &mut Window,
+    _: &mut Window,
     cx: &mut Context<Insights>,
 ) -> AnyElement {
     let Some(j) = this
@@ -150,33 +152,11 @@ pub fn render(
             p,
         );
     }
+    let view = day_view(this, &j, range, now, at_latest);
+    let (model, cards) = (&view.0, &view.1);
     let ctx = this.status.ctx.as_ref();
     let pitch = this.status.ai.as_ref().is_some_and(|a| !a.has_providers);
-    let frames: Vec<i64> = j.frames.iter().map(|f| f.1).collect();
-    let mut model = day::build(day::DayInput {
-        activities: &j.activities,
-        frames: &frames,
-        audio: &j.audio,
-        failed: &j.failed,
-        covered_until: ctx.and_then(|c| c.covered_until_ms),
-        engine_available: ctx.is_some_and(|c| c.engine_available),
-        engine_reason: ctx.and_then(|c| c.reason.clone()),
-        day: range,
-        retention: this.status.settings.as_ref().map(|s| &s.retention_policy),
-        now,
-    });
-    let cards = day::fold_cards(&model.slots);
     let (running, paused) = this.recording;
-    // Recording today with nothing summarized yet: the first stretch shows
-    // before the first frame lands (JR-04/05), from the session's start.
-    if !model.pending.active && at_latest && running && !paused && model.slots.is_empty() {
-        let engine = ctx.is_some_and(|c| c.engine_available);
-        model.pending = day::Pending {
-            active: true,
-            since: this.recording_since.map(|s| s.max(range.0)),
-            unavailable: (!engine).then(|| ctx.and_then(|c| c.reason.clone()).unwrap_or_default()),
-        };
-    }
     if pitch && cards.is_empty() {
         return center(
             PITCH.into(),
@@ -256,6 +236,7 @@ pub fn render(
         }
     });
     let runs: Option<Vec<spine::Run>> = why.map(|_| {
+        let frames: Vec<i64> = j.frames.iter().map(|f| f.1).collect();
         let raw: Vec<(i64, i64)> = day::capture_runs(&frames, &j.audio)
             .into_iter()
             .map(|(s, e)| (s.max(range.0), e.min(range.1)))
@@ -274,7 +255,7 @@ pub fn render(
             .map(|(i, (s, e))| (s, e, apps.get(i).cloned().unwrap_or_default()))
             .collect()
     });
-    let shown = day::shown_activities(&cards);
+    let shown = day::shown_activities(cards);
     let day_acts = stats::in_range(&j.activities, range.0, range.1);
     let tracked: i64 = j
         .usage
@@ -331,10 +312,92 @@ pub fn render(
             &shown,
             (range.0, why, pending),
             p,
-            window,
             cx,
         ))
         .into_any_element()
+}
+
+/// What the day model is built from besides the journal itself.
+type DayKey = (
+    (i64, i64),
+    Option<i64>,
+    bool,
+    Option<String>,
+    Option<capture_types::RetentionPolicy>,
+    i64,
+    (bool, (bool, bool), Option<i64>),
+    (usize, usize),
+);
+
+/// The last day model and the journal it was built from (kept alive, so the
+/// pointer can't be reused by another load).
+pub struct DayMemo {
+    journal: Rc<JournalData>,
+    key: DayKey,
+    pub(crate) view: Rc<(day::DayModel, Vec<day::Card>)>,
+}
+
+/// `buildJournalDay` + the folded cards, rebuilt only when an input changes: a
+/// new load, the day, the engine's watermark, recording, or the minute (retention
+/// reads `now`). A hover or a playing receipt reuses the last build.
+fn day_view(
+    this: &mut Insights,
+    j: &Rc<JournalData>,
+    range: (i64, i64),
+    now: i64,
+    at_latest: bool,
+) -> Rc<(day::DayModel, Vec<day::Card>)> {
+    let ctx = this.status.ctx.as_ref();
+    let retention = this.status.settings.as_ref().map(|s| s.retention_policy);
+    let key: DayKey = (
+        range,
+        ctx.and_then(|c| c.covered_until_ms),
+        ctx.is_some_and(|c| c.engine_available),
+        ctx.and_then(|c| c.reason.clone()),
+        retention,
+        now.div_euclid(60_000),
+        (at_latest, this.recording, this.recording_since),
+        // In-place edits (tests) keep the pointer; their lengths still move.
+        (j.activities.len(), j.frames.len()),
+    );
+    if let Some(m) = this
+        .journal_day
+        .as_ref()
+        .filter(|m| Rc::ptr_eq(&m.journal, j) && m.key == key)
+    {
+        return m.view.clone();
+    }
+    let frames: Vec<i64> = j.frames.iter().map(|f| f.1).collect();
+    let mut model = day::build(day::DayInput {
+        activities: &j.activities,
+        frames: &frames,
+        audio: &j.audio,
+        failed: &j.failed,
+        covered_until: key.1,
+        engine_available: key.2,
+        engine_reason: key.3.clone(),
+        day: range,
+        retention: retention.as_ref(),
+        now,
+    });
+    let cards = day::fold_cards(&model.slots);
+    let (running, paused) = this.recording;
+    // Recording today with nothing summarized yet: the first stretch shows
+    // before the first frame lands (JR-04/05), from the session's start.
+    if !model.pending.active && at_latest && running && !paused && model.slots.is_empty() {
+        model.pending = day::Pending {
+            active: true,
+            since: this.recording_since.map(|s| s.max(range.0)),
+            unavailable: (!key.2).then(|| key.3.clone().unwrap_or_default()),
+        };
+    }
+    let view = Rc::new((model, cards));
+    this.journal_day = Some(DayMemo {
+        journal: j.clone(),
+        key,
+        view: view.clone(),
+    });
+    view
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -7,7 +7,7 @@ use capture_types::FocusLevel;
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, Window};
+use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role};
 
 use super::day::{self, Card, DayModel, Row};
 use crate::insights::charts::{bar, spec_rows, swatch};
@@ -31,7 +31,6 @@ pub fn render(
     shown: &[capture_types::Activity],
     (day_start, why, pending): (i64, Option<&str>, bool),
     p: &Palette,
-    window: &mut Window,
     cx: &mut Context<Insights>,
 ) -> AnyElement {
     let off = clock::now(cx).offset();
@@ -171,7 +170,7 @@ pub fn render(
                 stats::clock_range(s, e, off, "–")
             ))
             .into_any_element(),
-            Row::Card(c) => card(this, j, c, p, window, cx),
+            Row::Card(c) => card(this, j, c, p, cx),
         });
     }
     if n == 0 && pending {
@@ -196,7 +195,6 @@ fn card(
     j: &JournalData,
     c: &Card,
     p: &Palette,
-    window: &mut Window,
     cx: &mut Context<Insights>,
 ) -> AnyElement {
     let off = clock::now(cx).offset();
@@ -294,10 +292,10 @@ fn card(
                 .child(mono_label(format!("· {}", humanize_ms(en - st)), p)),
         );
         if sub_open {
-            subs = subs.child(super::receipt::render(this, p, window, cx));
+            subs = subs.child(super::receipt::render(this, p, cx));
         }
     }
-    let receipt = open.then(|| super::receipt::render(this, p, window, cx));
+    let receipt = open.then(|| super::receipt::render(this, p, cx));
     let bounds = this.card_bounds.clone();
     div()
         .id(nid("insights-act", id as u64))

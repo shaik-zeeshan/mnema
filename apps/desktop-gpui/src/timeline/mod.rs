@@ -193,6 +193,9 @@ pub struct TimelineView {
     engine_timer: Option<Task<()>>,
     status_timer: Option<Task<()>>,
     _poll: Option<Task<()>>,
+    /// Renders so far: the shell caches this view, tests check a tick skips it.
+    #[cfg(test)]
+    pub(crate) renders: usize,
 }
 
 impl TimelineView {
@@ -248,6 +251,8 @@ impl TimelineView {
             engine_timer: None,
             status_timer: None,
             _poll: None,
+            #[cfg(test)]
+            renders: 0,
         };
         view.start(cx);
         view
@@ -559,6 +564,10 @@ pub fn key_bindings() -> [gpui_kit::KeyBinding; 5] {
 impl Render for TimelineView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::tokens(cx);
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         self.settle_painted(window, cx);
         self.sync_drawer(window, cx);
         // A keyboard open of ⋯ moves focus to its first row that can act
@@ -580,7 +589,8 @@ impl Render for TimelineView {
             .flex_col()
             .flex_1()
             .min_h_0()
-            .w_full()
+            // Fills the shell's cached slot (laid out as its own root there).
+            .size_full()
             .gap(space::S3)
             .px(space::S4)
             .py(space::S3)

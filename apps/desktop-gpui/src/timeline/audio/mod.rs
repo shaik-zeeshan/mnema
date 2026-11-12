@@ -141,7 +141,8 @@ pub struct AudioDrawer {
     pub marks: Marks,
     pub bars: Vec<Bar>,
     peaks: Vec<f32>,
-    karaoke: Vec<Option<Vec<Run>>>,
+    /// Each paragraph's timed words, shared (not cloned) into every render.
+    karaoke: Vec<Option<Rc<[Run]>>>,
     pub(crate) wave_bounds: Rc<Cell<Bounds<Pixels>>>,
     pub(crate) wave_hover: Option<Pixels>,
     pending_seek: Option<i64>,
@@ -155,6 +156,8 @@ pub struct AudioDrawer {
     gen: u64,
     load_task: Option<Task<()>>,
     poll_task: Option<Task<()>>,
+    /// Polls the player while it plays (`transport::poll_playback`).
+    play_task: Option<Task<()>>,
     media_task: Option<Task<()>>,
     segment_task: Option<Task<()>>,
     peaks_task: Option<Task<()>>,
@@ -227,6 +230,7 @@ impl AudioDrawer {
             gen: 0,
             load_task: None,
             poll_task: None,
+            play_task: None,
             media_task: None,
             segment_task: None,
             peaks_task: None,
@@ -416,7 +420,7 @@ impl AudioDrawer {
         self.karaoke = self
             .groups
             .iter()
-            .map(|g| vm::karaoke(&t.words, g))
+            .map(|g| vm::karaoke(&t.words, g).map(Rc::from))
             .collect();
         let duration_ms = self.transport.duration.max(self.segment.duration_s()) * 1000.;
         self.bars = vm::wave_bars(&self.peaks, duration_ms, &t.turns);
@@ -587,6 +591,35 @@ impl AudioDrawer {
         cx.notify();
     }
 
+    /// What playback moves on screen: the transport bar, the paragraph, and
+    /// that paragraph's lit and played words.
+    fn play_shown(&self) -> ((bool, i64, i64), Option<usize>, Option<usize>, usize) {
+        let w = f64::from(f32::from(self.wave_bounds.get().size.width));
+        let now = self.transport.current_ms();
+        let group = self.active_group();
+        let words = group.and_then(|ix| self.karaoke.get(ix)?.as_deref());
+        (
+            self.transport
+                .shown(if w > 0. { w } else { transport::TRACK_STEPS }),
+            group,
+            words.and_then(|w| vm::active_word(w, now)),
+            words.map_or(0, |w| w.iter().filter(|w| w.end_ms <= now).count()),
+        )
+    }
+
+    /// One playback poll: repaint only when something shown moved.
+    fn poll_play(&mut self, cx: &mut Context<Self>) -> bool {
+        let before = self.play_shown();
+        self.transport.tick();
+        if self.play_shown() != before {
+            cx.notify();
+        }
+        if !self.transport.playing {
+            self.play_task = None;
+        }
+        self.transport.playing
+    }
+
     /// Keep the active paragraph in view while following playback.
     fn follow(&mut self) {
         let active = self.active_group();
@@ -629,10 +662,8 @@ fn error_row(label: &'static str, msg: &str, p: &theme::Palette) -> gpui_kit::Di
 impl Render for AudioDrawer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = theme::tokens(cx);
-        if self.transport.playing {
-            // Poll the player at display rate, and only while it plays.
-            self.transport.tick();
-            window.request_animation_frame();
+        if self.transport.playing && self.play_task.is_none() {
+            self.play_task = Some(transport::poll_playback(cx, Self::poll_play));
         }
         self.follow();
         let viewport = window.viewport_size().height;

@@ -265,3 +265,26 @@ fn a_failed_write_keeps_the_panel_open_with_the_error(cx: &mut TestAppContext) {
         assert_eq!(d.correction_error.as_deref(), Some("database is locked"));
     });
 }
+
+#[gpui_kit::test]
+fn playback_is_polled_every_33ms_and_holds_the_end(cx: &mut TestAppContext) {
+    use super::transport::PLAY_POLL;
+    let (view, vcx, _, player) = open(cx, map("completed"));
+    keys(vcx, "space"); // plays; the next render arms the poll
+    vcx.update(|window, cx| window.render_frame(cx));
+    player.advance(1.5);
+    vcx.executor().advance_clock(PLAY_POLL - MS);
+    vcx.run_until_parked();
+    view.update(vcx, |d, _| assert_eq!(d.transport.current, 0., "32 ms"));
+    vcx.executor().advance_clock(MS);
+    vcx.run_until_parked();
+    view.update(vcx, |d, _| assert_eq!(d.transport.current, 1.5, "33 ms"));
+    player.advance(DURATION);
+    vcx.executor().advance_clock(PLAY_POLL);
+    vcx.run_until_parked();
+    view.update(vcx, |d, _| {
+        assert!(!d.transport.playing);
+        assert_eq!(d.transport.current, DURATION, "the end holds");
+        assert!(d.play_task.is_none(), "the poll stops with playback");
+    });
+}

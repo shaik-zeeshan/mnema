@@ -2,13 +2,17 @@
 //! filter and the feature chips over the app log's last 500 lines, oldest first,
 //! with the tail filling the rest of the tab. Warnings and errors are tinted.
 
+use std::cell::RefCell;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
+
 use crate::ui::input::FieldText as _;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, relative, AnyElement, Context, Window};
+use gpui_kit::{div, px, relative, AnyElement, Context, ElementId, SharedString, Window};
 
 use super::data::LOG_TAIL_LINES;
-use super::readouts::{filter_entries, group_log_lines, Level, LOG_FEATURES};
+use super::readouts::{filter_entries, group_log_lines, Level, LogEntry, LOG_FEATURES};
 use super::DebugWindow;
 use crate::settings::model::Json;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
@@ -18,6 +22,71 @@ use crate::ui::switch::Switch;
 use crate::ui::{mix, nid, Button, CopyButton, Tone};
 
 const LEVELS: [Level; 3] = [Level::All, Level::Warn, Level::Error];
+
+/// The tail parsed, filtered and joined once per new tail or filter change, not
+/// on every redraw (hovering a line re-renders the tab).
+#[derive(Default)]
+pub struct LogCache(RefCell<Option<(LogKey, Rc<Parsed>)>>);
+
+type LogKey = (Option<serde_json::Value>, i64, Level, usize, String);
+
+pub struct Parsed {
+    /// What the filters leave, oldest first (a backtrace stays with its line).
+    shown: Vec<LogEntry>,
+    /// `shown` joined, for "Copy visible lines".
+    visible: SharedString,
+    /// Lines in the tail before any filter.
+    total: usize,
+}
+
+impl LogCache {
+    fn get(
+        &self,
+        tail: Option<&serde_json::Value>,
+        key: (i64, Level, usize, String),
+    ) -> Rc<Parsed> {
+        let mut cell = self.0.borrow_mut();
+        if let Some((k, parsed)) = cell.as_ref() {
+            if k.0.as_ref() == tail && (k.1, k.2, k.3, &k.4) == (key.0, key.1, key.2, &key.3) {
+                return parsed.clone();
+            }
+        }
+        let lines: Vec<String> = tail
+            .and_then(|t| t["lines"].as_array())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|l| l.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let grouped = group_log_lines(&lines, key.0);
+        let shown: Vec<LogEntry> = filter_entries(&grouped, key.1, key.2, &key.3)
+            .into_iter()
+            .cloned()
+            .collect();
+        let visible = shown
+            .iter()
+            .map(|e| e.raw.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+            .into();
+        let parsed = Rc::new(Parsed {
+            shown,
+            visible,
+            total: lines.len(),
+        });
+        *cell = Some(((tail.cloned(), key.0, key.1, key.2, key.3), parsed.clone()));
+        parsed
+    }
+}
+
+/// A line's copy button, keyed by its text: its "Copied" state stays on that
+/// line when new lines push the tail up (an index would hand it to another).
+pub fn line_copy_id(raw: &str) -> ElementId {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    raw.hash(&mut h);
+    nid("dv-line-copy", h.finish())
+}
 
 pub fn tab(
     w: &DebugWindow,
@@ -32,23 +101,10 @@ pub fn tab(
     let path = tail.and_then(|t| t.str_at(&["path"])).map(str::to_string);
     let this2 = this.clone();
     let offset = crate::ui::clock::now(cx).offset().whole_seconds() as i64;
-    let lines: Vec<String> = tail
-        .and_then(|t| t["lines"].as_array())
-        .map(|a| {
-            a.iter()
-                .filter_map(|l| l.as_str().map(str::to_string))
-                .collect()
-        })
-        .unwrap_or_default();
-    let grouped = group_log_lines(&lines, offset);
     let needle = w.needle.read(cx).value().to_string();
-    let shown = filter_entries(&grouped, w.level, w.feature, &needle);
-    // What the filters leave on screen, oldest first (a backtrace stays with its line).
-    let visible = shown
-        .iter()
-        .map(|e| e.raw.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
+    let parsed = w.log_cache.get(tail, (offset, w.level, w.feature, needle));
+    let shown = &parsed.shown;
+    let visible = parsed.visible.clone();
     let bar = div()
         .flex()
         .flex_col()
@@ -227,16 +283,13 @@ pub fn tab(
                                 .border_color(p.hairline)
                                 .bg(p.surface_raised)
                                 .child(
-                                    CopyButton::icon(
-                                        nid("dv-line-copy", i as u64),
-                                        "Copy line",
-                                        raw,
-                                    )
-                                    .h(px(18.))
-                                    .on_copied(move |_, cx| {
-                                        let _ = me
-                                            .update(cx, |w, cx| w.mark_copied(marked.clone(), cx));
-                                    }),
+                                    CopyButton::icon(line_copy_id(&raw), "Copy line", raw)
+                                        .h(px(18.))
+                                        .on_copied(move |_, cx| {
+                                            let _ = me.update(cx, |w, cx| {
+                                                w.mark_copied(marked.clone(), cx)
+                                            });
+                                        }),
                                 ),
                         )
                     })
@@ -291,7 +344,7 @@ pub fn tab(
             })
             .collect();
         if tail.is_some() {
-            let total = lines.len();
+            let total = parsed.total;
             let mut foot = if total >= LOG_TAIL_LINES {
                 format!("Showing the last {LOG_TAIL_LINES} lines")
             } else {
@@ -343,4 +396,34 @@ pub fn tab(
         .child(bar)
         .child(tail_el)
         .into_any_element()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_tail_is_parsed_once_per_tail_and_filter() {
+        let line =
+            |t: &str, l: &str| format!("[2026-11-04][09:01:{t}][app_infra::ocr][{l}] [ocr] {l}");
+        let tail = serde_json::json!({ "lines": [line("40", "INFO"), line("41", "WARN")] });
+        let all = || (0, Level::All, 0, String::new());
+        let cache = LogCache::default();
+        let a = cache.get(Some(&tail), all());
+        assert!(
+            Rc::ptr_eq(&a, &cache.get(Some(&tail), all())),
+            "a redraw reuses it"
+        );
+        assert_eq!((a.total, a.shown.len()), (2, 2));
+        let warn = cache.get(Some(&tail), (0, Level::Warn, 0, String::new()));
+        assert_eq!(warn.shown.len(), 1, "a filter change re-filters");
+        let grown = serde_json::json!({
+            "lines": [line("40", "INFO"), line("41", "WARN"), line("42", "INFO")]
+        });
+        assert_eq!(
+            cache.get(Some(&grown), all()).total,
+            3,
+            "a new tail re-parses"
+        );
+    }
 }

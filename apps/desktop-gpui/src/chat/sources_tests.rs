@@ -356,6 +356,10 @@ fn an_audio_chip_opens_its_receipt_that_plays_with_the_strip_on_its_clock(cx: &m
     assert!(player.state().1, "playing");
     player.advance(25.);
     draw(cx, w, &chat);
+    // The player is polled on a timer while it plays, not every display frame.
+    cx.executor()
+        .advance_clock(crate::timeline::audio::transport::PLAY_POLL);
+    cx.run_until_parked();
     let (at, index) = chat.read_with(cx, |c, _| {
         let c = c.clip.as_ref().unwrap();
         (c.transport.current, c.strip.index)

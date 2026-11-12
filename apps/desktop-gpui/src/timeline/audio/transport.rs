@@ -8,12 +8,13 @@
 
 use std::cell::Cell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::{
     canvas, div, fill, point, px, size, AnyElement, Bounds, Context, MouseButton, Pixels, Role,
-    SharedString,
+    SharedString, Task,
 };
 
 use super::view_model::{player_time, Bar, Marks, StripSpeaker};
@@ -29,6 +30,26 @@ const WAVE_H_COMPACT: Pixels = px(20.);
 const TRACK_H: Pixels = px(4.);
 const THUMB: Pixels = px(10.);
 const HEAD_DOT: Pixels = px(7.);
+
+/// How often a playing clip polls its player (~30 Hz). A poll repaints only when
+/// what shows moved, never on every display frame.
+pub const PLAY_POLL: Duration = Duration::from_millis(33);
+/// Playhead steps across a track whose width the view doesn't measure (~1 px).
+pub const TRACK_STEPS: f64 = 600.;
+
+/// Run `step` every [`PLAY_POLL`] until it returns `false` (playback stopped).
+/// Keep the task: dropping it (or the view) stops the poll.
+pub fn poll_playback<V: 'static>(
+    cx: &mut Context<V>,
+    step: fn(&mut V, &mut Context<V>) -> bool,
+) -> Task<()> {
+    cx.spawn(async move |this, cx| loop {
+        cx.background_executor().timer(PLAY_POLL).await;
+        if !matches!(this.update(cx, step), Ok(true)) {
+            break;
+        }
+    })
+}
 
 /// What the drawer needs from a player.
 pub trait Player {
@@ -65,6 +86,17 @@ impl Transport {
 
     pub fn current_ms(&self) -> i64 {
         (self.current * 1000.).round() as i64
+    }
+
+    /// What a transport bar shows: playing, the clock's whole second, and the
+    /// playhead in `steps` across its track. A poll repaints when this moves.
+    pub fn shown(&self, steps: f64) -> (bool, i64, i64) {
+        let head = if self.duration > 0. {
+            (self.current / self.duration * steps) as i64
+        } else {
+            0
+        };
+        (self.playing, self.current as i64, head)
     }
 
     /// The user has engaged with playback (vs. a drawer open at 0:00).

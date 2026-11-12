@@ -109,6 +109,8 @@ fn the_receipt_lists_spoken_turns_and_a_click_plays_that_turn(cx: &mut TestAppCo
     v.update(cx, |_, cx| cx.notify());
     cx.update_window(w.into(), |_, window, cx| window.render_frame(cx))
         .unwrap();
+    cx.executor()
+        .advance_clock(crate::timeline::audio::transport::PLAY_POLL);
     cx.run_until_parked();
     let idx = v.read_with(cx, |i, _| i.receipt.as_ref().unwrap().index);
     assert!(idx > 0, "the strip moved with the clip");
@@ -166,7 +168,9 @@ fn a_capture_only_day_draws_runs_with_their_top_apps(cx: &mut TestAppContext) {
     v.update(cx, |i, cx| i.set_tab(Tab::Journal, cx));
     cx.run_until_parked();
     v.update(cx, |i, cx| {
-        i.journal.as_mut().unwrap().activities.clear();
+        std::rc::Rc::make_mut(i.journal.as_mut().unwrap())
+            .activities
+            .clear();
         i.status.ctx.as_mut().unwrap().engine_available = false;
         cx.notify();
     });
@@ -300,7 +304,9 @@ fn recording_today_with_no_cards_writes_up_from_the_session_start(cx: &mut TestA
     v.update(cx, |i, cx| i.set_tab(Tab::Journal, cx));
     cx.run_until_parked();
     let since = v.update(cx, |i, cx| {
-        i.journal.as_mut().unwrap().activities.clear();
+        std::rc::Rc::make_mut(i.journal.as_mut().unwrap())
+            .activities
+            .clear();
         i.recording = (true, false);
         let start = crate::insights::stats::window(
             i.day,
@@ -317,4 +323,28 @@ fn recording_today_with_no_cards_writes_up_from_the_session_start(cx: &mut TestA
         "the first stretch shows before any card"
     );
     let _ = since;
+}
+
+#[gpui_kit::test]
+fn the_journal_builds_its_day_once_per_load_not_per_render(cx: &mut TestAppContext) {
+    let (w, v, _) = open(cx);
+    v.update(cx, |i, cx| i.set_tab(Tab::Journal, cx));
+    cx.run_until_parked();
+    let view = |cx: &mut TestAppContext| {
+        cx.update_window(w.into(), |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        v.read_with(cx, |i, _| i.journal_day.as_ref().map(|m| m.view.clone()))
+            .expect("the Journal drew its day")
+    };
+    let first = view(cx);
+    assert!(std::rc::Rc::ptr_eq(&first, &view(cx)), "a redraw reuses it");
+    v.update(cx, |i, cx| {
+        let j = i.journal.as_deref().cloned().unwrap();
+        i.journal = Some(std::rc::Rc::new(j)); // a new load
+        cx.notify();
+    });
+    assert!(
+        !std::rc::Rc::ptr_eq(&first, &view(cx)),
+        "a new load rebuilds it"
+    );
 }

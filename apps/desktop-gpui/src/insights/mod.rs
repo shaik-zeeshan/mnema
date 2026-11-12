@@ -81,7 +81,10 @@ pub struct Insights {
     pub highlight: Option<Option<ActivityCategory>>,
     // Journal
     pub day: Date,
-    pub journal: Option<JournalData>,
+    /// Shared, so a render borrows the day instead of cloning it.
+    pub journal: Option<std::rc::Rc<JournalData>>,
+    /// The day model built from `journal` (`journal::day_view`).
+    pub(crate) journal_day: Option<journal::DayMemo>,
     pub receipt: Option<journal::receipt::Receipt>,
     /// The card under the pointer, lit on the spine and the river (`hot`).
     pub hot: Option<i64>,
@@ -197,6 +200,7 @@ impl Insights {
             highlight: None,
             day: today,
             journal: None,
+            journal_day: None,
             receipt: None,
             hot: None,
             card_bounds: Default::default(),
@@ -405,7 +409,7 @@ impl Insights {
                     error: None,
                 },
             },
-            |this, d, _| this.journal = Some(d),
+            |this, d, _| this.journal = Some(std::rc::Rc::new(d)),
         );
     }
 
@@ -571,10 +575,12 @@ impl Insights {
     pub fn set_day(&mut self, d: Date, cx: &mut Context<Self>) {
         self.day = d;
         self.receipt = None;
-        self.journal = self.journal.take().map(|j| JournalData {
-            history: j.history,
-            stale: true,
-            ..Default::default()
+        self.journal = self.journal.take().map(|j| {
+            std::rc::Rc::new(JournalData {
+                history: j.history.clone(),
+                stale: true,
+                ..Default::default()
+            })
         });
         self.load_journal(cx);
         self.schedule_read(read::Of::Journal, cx);
@@ -679,6 +685,8 @@ impl Render for Insights {
             .flex_col()
             .flex_1()
             .min_h_0()
+            // Fills the shell's cached slot (laid out as its own root there).
+            .size_full()
             .bg(p.bg)
             .child(header::bar(self, &p, window, cx))
             .child(

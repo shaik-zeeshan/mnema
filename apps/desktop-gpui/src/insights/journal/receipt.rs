@@ -12,12 +12,13 @@ use std::time::Instant;
 
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, img, px, relative, AnyElement, Context, Div, Entity, Role, Window};
+use gpui_kit::{div, img, px, relative, AnyElement, Context, Div, Entity, Role, Task};
 
 use crate::insights::parts::{inset, mono_label};
 use crate::insights::stats;
 use crate::insights::Insights;
 use crate::theme::{radius, space, text, Palette, FONT_MONO};
+use crate::timeline::audio::transport::{poll_playback, TRACK_STEPS};
 use crate::timeline::image_cache::FrameImages;
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::segmented::Segmented;
@@ -42,6 +43,8 @@ pub struct Receipt {
     requested: HashSet<i64>,
     /// The span's spoken turns and the clip playing.
     pub audio: super::audio_view::ReceiptAudio,
+    /// Steps the timelapse / polls the clip while either plays; closing drops it.
+    poll: Option<Task<()>>,
 }
 
 impl Receipt {
@@ -58,7 +61,16 @@ impl Receipt {
             previews: HashMap::new(),
             requested: HashSet::new(),
             audio: Default::default(),
+            poll: None,
         }
+    }
+
+    /// What playback moves on screen: the frame, the clip's bar, the lit turn.
+    #[allow(clippy::type_complexity)]
+    fn shown(&self) -> (bool, usize, (bool, i64, i64), Option<(i64, i64)>) {
+        let a = &self.audio;
+        let bar = a.transport.shown(TRACK_STEPS);
+        (self.playing, self.index, bar, a.active_turn())
     }
 
     pub fn len(&self) -> usize {
@@ -119,6 +131,30 @@ impl Receipt {
 }
 
 impl Insights {
+    /// One poll while the receipt plays: the timelapse steps by the clock, a
+    /// clip moves the strip; repaint only when something shown moved.
+    fn poll_receipt(&mut self, cx: &mut Context<Self>) -> bool {
+        let now = cx.background_executor().now();
+        let Some(rc) = self.receipt.as_mut() else {
+            return false;
+        };
+        let before = rc.shown();
+        rc.advance(now);
+        self.tick_receipt_audio(cx);
+        let Some(rc) = self.receipt.as_mut() else {
+            return false;
+        };
+        let playing = rc.playing || rc.audio.transport.playing;
+        if !playing {
+            rc.poll = None;
+        }
+        if rc.shown() != before {
+            self.fetch_previews(cx);
+            cx.notify();
+        }
+        playing
+    }
+
     pub fn toggle_receipt(&mut self, id: i64, span: (i64, i64), cx: &mut Context<Self>) {
         if let Some(a) = self
             .receipt
@@ -172,28 +208,14 @@ impl Insights {
     }
 }
 
-pub fn render(
-    this: &mut Insights,
-    p: &Palette,
-    window: &mut Window,
-    cx: &mut Context<Insights>,
-) -> AnyElement {
-    let now = cx.background_executor().now();
-    let playing = this.receipt.as_ref().is_some_and(|r| r.playing);
-    if playing {
-        if let Some(rc) = this.receipt.as_mut() {
-            rc.advance(now);
-        }
-        this.fetch_previews(cx);
-        window.request_animation_frame();
-    }
-    if this
+pub fn render(this: &mut Insights, p: &Palette, cx: &mut Context<Insights>) -> AnyElement {
+    // From render, so any path that starts the timelapse or a clip arms it.
+    if let Some(rc) = this
         .receipt
-        .as_ref()
-        .is_some_and(|r| r.audio.transport.playing)
+        .as_mut()
+        .filter(|r| (r.playing || r.audio.transport.playing) && r.poll.is_none())
     {
-        this.tick_receipt_audio(window, cx);
-        this.fetch_previews(cx);
+        rc.poll = Some(poll_playback(cx, Insights::poll_receipt));
     }
     let off = clock::now(cx).offset();
     let Some(rc) = this.receipt.as_ref() else {

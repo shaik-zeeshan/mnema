@@ -11,13 +11,13 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, AnyElement, Context, FocusHandle, Role, SharedString, Window};
+use gpui_kit::{div, AnyElement, Context, FocusHandle, Role, SharedString, Task, Window};
 
 use super::{Chat, Source};
 use crate::insights::journal::receipt::{foot, screen, shell, track, Receipt};
 use crate::keymap::CloseOverlay;
 use crate::theme::{space, text, Palette, FONT_MONO};
-use crate::timeline::audio::transport::Transport;
+use crate::timeline::audio::transport::{poll_playback, Transport, TRACK_STEPS};
 use crate::timeline::audio::view_model::player_time;
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::notice::inline;
@@ -46,6 +46,8 @@ pub struct Clip {
     /// The frames over the span and their previews.
     pub strip: Receipt,
     focus: FocusHandle,
+    /// Polls the player while it plays; closing the clip drops it.
+    poll: Option<Task<()>>,
 }
 
 fn ms(iso: &str) -> Option<i64> {
@@ -103,6 +105,7 @@ impl Chat {
             media_error: None,
             strip: Receipt::new(id, span.unwrap_or_default()),
             focus,
+            poll: None,
         });
         cx.notify();
         let (audio, b) = (self.audio.clone(), self.sources.clone());
@@ -182,21 +185,39 @@ impl Chat {
         }
     }
 
-    /// One display frame while the clip plays: poll the player, move the strip
-    /// to the audio clock, and ask for the next frame.
-    pub(super) fn tick_clip(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(c) = self.clip.as_mut().filter(|c| c.transport.playing) else {
-            return;
+    /// While the clip plays, poll its player on a timer (from render, so any
+    /// path that starts playback arms it).
+    pub(super) fn tick_clip(&mut self, cx: &mut Context<Self>) {
+        if let Some(c) = self
+            .clip
+            .as_mut()
+            .filter(|c| c.transport.playing && c.poll.is_none())
+        {
+            c.poll = Some(poll_playback(cx, Self::poll_clip));
+        }
+    }
+
+    /// One poll: move the strip to the audio clock; repaint only when the
+    /// clock, the playhead or the frame moved.
+    fn poll_clip(&mut self, cx: &mut Context<Self>) -> bool {
+        let Some(c) = self.clip.as_mut() else {
+            return false;
         };
+        let before = (c.transport.shown(TRACK_STEPS), c.strip.index);
         c.transport.tick();
         let at = c.span.0 + c.transport.current_ms();
         if let Some(Ok(frames)) = &c.strip.frames {
             c.strip.index = index_at(frames, at);
         }
-        if c.transport.playing {
-            window.request_animation_frame();
+        let playing = c.transport.playing;
+        if !playing {
+            c.poll = None;
         }
-        self.fetch_clip_previews(cx);
+        if (c.transport.shown(TRACK_STEPS), c.strip.index) != before {
+            self.fetch_clip_previews(cx);
+            cx.notify();
+        }
+        playing
     }
 }
 

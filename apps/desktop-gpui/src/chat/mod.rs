@@ -664,7 +664,7 @@ impl Render for Chat {
         self.request_usage_windows(cx);
         self.request_thumbs(cx);
         self.request_icons(cx);
-        self.tick_clip(window, cx);
+        self.tick_clip(cx);
         let narrow = window.viewport_size().width <= size::CHAT_LIST_BREAKPOINT;
         div()
             .id("surface-chat")
@@ -674,6 +674,8 @@ impl Render for Chat {
             .flex()
             .flex_1()
             .min_h_0()
+            // Fills the shell's cached slot (laid out as its own root there).
+            .size_full()
             .overflow_hidden()
             .bg(p.bg)
             .child(list::render(self, narrow, &p, window, cx))

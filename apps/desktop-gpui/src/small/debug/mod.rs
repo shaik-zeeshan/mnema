@@ -11,7 +11,7 @@ pub mod data;
 pub mod detail;
 mod detail_view;
 mod inspector;
-mod logs;
+pub(crate) mod logs;
 pub mod model;
 pub mod readouts;
 mod tabs;
@@ -67,6 +67,7 @@ pub struct DebugWindow {
     pub copied_line: Option<String>,
     copied_line_task: Option<Task<()>>,
     pub hovered_line: Option<String>,
+    log_cache: logs::LogCache,
     pub toasts: Entity<Toasts>,
     pub(crate) body_scroll: ScrollHandle,
     pub(crate) log_scroll: ScrollHandle,
@@ -118,6 +119,7 @@ impl DebugWindow {
             copied_line: None,
             copied_line_task: None,
             hovered_line: None,
+            log_cache: Default::default(),
             toasts: cx.new(|_| Toasts::default()),
             body_scroll: ScrollHandle::new(),
             log_scroll: ScrollHandle::new(),

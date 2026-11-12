@@ -6,6 +6,7 @@ use std::time::Duration;
 use gpui_kit::test::TestWindowExt as _;
 use gpui_kit::{TestAppContext, VisualTestContext};
 
+use super::debug::logs::line_copy_id;
 use super::debug::model::Tab;
 use super::debug::readouts::Level;
 use super::debug::{DebugWindow, LINE_COPIED_FOR};
@@ -61,18 +62,23 @@ fn clicking_a_log_line_copies_it_and_marks_it_copied_for_1200ms(cx: &mut TestApp
 #[gpui_kit::test]
 fn the_hovered_log_line_shows_a_copy_button_that_copies_it(cx: &mut TestAppContext) {
     let (view, vcx) = logs(cx);
-    assert!(!has(vcx, nid("dv-line-copy", 5)), "hidden until hovered");
+    assert!(!has(vcx, line_copy_id(ERROR_ENTRY)), "hidden until hovered");
     vcx.update(|window, cx| window.hover(nid("dv-line", 5), cx));
     vcx.run_until_parked();
     vcx.update(|window, cx| window.render_frame(cx));
     assert!(
-        has(vcx, nid("dv-line-copy", 5)),
+        has(vcx, line_copy_id(ERROR_ENTRY)),
         "shown on the hovered line"
     );
-    assert!(!has(vcx, nid("dv-line-copy", 4)), "only that line");
-    click(vcx, nid("dv-line-copy", 5));
+    assert_eq!(
+        view.read_with(vcx, |w, _| w.hovered_line.clone())
+            .as_deref(),
+        Some(ERROR_ENTRY),
+        "only that line"
+    );
+    click(vcx, line_copy_id(ERROR_ENTRY));
     assert_eq!(clipboard(vcx).as_deref(), Some(ERROR_ENTRY));
-    assert_eq!(label(vcx, nid("dv-line-copy", 5)), "Copied");
+    assert_eq!(label(vcx, line_copy_id(ERROR_ENTRY)), "Copied");
     assert_eq!(
         view.read_with(vcx, |w, _| w.copied_line.clone()).as_deref(),
         Some(ERROR_ENTRY),
