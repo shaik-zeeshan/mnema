@@ -535,6 +535,33 @@ fn completed_run() -> NewDerivationRun {
     }
 }
 
+/// Seed the `frames` / `audio_segments` rows an Activity's evidence names:
+/// `persist_batch` drops evidence whose capture row is gone.
+async fn seed_capture_rows(infra: &app_infra::AppInfra, frame_ids: &[i64], audio_ids: &[i64]) {
+    for id in frame_ids {
+        sqlx::query(
+            "INSERT INTO frames (id, session_id, file_path, captured_at) \
+             VALUES (?1, 'screen-test', '/tmp/frame-' || ?1 || '.jpg', '2026-05-19T10:00:00Z')",
+        )
+        .bind(id)
+        .execute(infra.write_pool())
+        .await
+        .expect("frame should insert");
+    }
+    for id in audio_ids {
+        sqlx::query(
+            "INSERT INTO audio_segments \
+                (id, source_kind, source_session_id, segment_index, file_path, started_at, ended_at) \
+             VALUES (?1, 'microphone', 'mic-test', ?1, '/tmp/audio.m4a', \
+                     '2026-05-19T10:00:00Z', '2026-05-19T10:00:30Z')",
+        )
+        .bind(id)
+        .execute(infra.write_pool())
+        .await
+        .expect("audio segment should insert");
+    }
+}
+
 /// A batch that grounds nothing (no activities, or only refs the window never
 /// showed) must be an `Err` so the worker records `failed` and retries it —
 /// with neither Activities nor a `completed` run written; a grounded batch
@@ -550,6 +577,7 @@ async fn a_batch_that_grounds_nothing_is_an_error() {
     let infra = app_infra::AppInfra::initialize(&dir)
         .await
         .expect("app infra");
+    seed_capture_rows(&infra, &[], &[1]).await;
     let window = CaptureWindow {
         start_ms: 0,
         end_ms: 10,
@@ -605,6 +633,56 @@ async fn a_batch_that_grounds_nothing_is_an_error() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Delete Recent Capture can run while a derivation's AI call is in flight (it
+/// never takes the forward-derivation lock). Its cascade finds no Activity
+/// yet, so the one `persist_batch` writes afterwards must not land describing
+/// the deleted capture (ADR 0029). Here the window's only subject is already
+/// gone from `audio_segments` when `persist_batch` runs.
+#[tokio::test]
+async fn an_activity_for_capture_deleted_mid_derivation_is_not_saved() {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after epoch")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("deleted-mid-derivation-{unique}"));
+    std::fs::create_dir_all(&dir).expect("test dir");
+    let infra = app_infra::AppInfra::initialize(&dir)
+        .await
+        .expect("app infra");
+    let window = CaptureWindow {
+        start_ms: 0,
+        end_ms: 10,
+        items: vec![audio_item(1, 5, "hello", "microphone", vec![])],
+    };
+    let tags = HashMap::from([("a1".to_string(), 5_i64)]);
+    let batch = DerivedActivityBatch {
+        activities: vec![derived(&["a1"])],
+    };
+    let result = persist_batch(
+        infra.user_context(),
+        &window,
+        &tags,
+        &std::collections::HashSet::new(),
+        &batch,
+        completed_run(),
+    )
+    .await;
+    assert!(
+        result.is_err(),
+        "nothing grounded is the failed path, got {result:?}"
+    );
+    assert_eq!(
+        infra
+            .user_context()
+            .count_activities()
+            .await
+            .expect("count"),
+        0,
+        "an Activity whose every evidence subject was deleted must not be saved"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Two Activities whose items interleave must not both claim the stretch:
 /// the later one keeps only the time the first doesn't hold; one wholly inside
 /// another's time is still its own row, nested; and two-frame Activities are
@@ -620,6 +698,7 @@ async fn interleaved_activities_in_one_window_do_not_overlap() {
     let infra = app_infra::AppInfra::initialize(&dir)
         .await
         .expect("app infra");
+    seed_capture_rows(&infra, &[1, 2, 3, 4, 5], &[]).await;
     let window = CaptureWindow {
         start_ms: 0,
         end_ms: 100,

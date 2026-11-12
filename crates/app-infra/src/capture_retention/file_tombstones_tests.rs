@@ -172,3 +172,86 @@ fn sweep_failing_in_a_later_batch_keeps_earlier_deletes_whole_and_strands_nothin
         fs::remove_dir_all(&dir).ok();
     });
 }
+
+#[test]
+fn a_failed_tombstone_row_write_does_not_stop_the_remaining_file_deletes() {
+    runtime().block_on(async {
+        let (pool, dir, media, frame_dir) = seed_six_segments("tombstone-row-fails").await;
+        let store = CaptureRetentionStore::new(CaptureDb::single(pool.clone()));
+        let context = RetentionCleanupContext {
+            save_directory: Some(dir.to_string_lossy().to_string()),
+            ..Default::default()
+        };
+        let batch = [1_i64, 2, 3, 4];
+        let paths = file_paths_for_segments(&pool, &batch)
+            .await
+            .expect("paths should load");
+        let refs = paths.iter().collect::<Vec<_>>();
+        let mut summary = RetentionCleanupSummary::default();
+        let tombstones = store
+            .delete_eligible_batch(&batch, &[], &[], &refs, &mut summary)
+            .await
+            .expect("batch should commit");
+        sqlx::query(
+            "CREATE TRIGGER fail_tombstone_delete BEFORE DELETE ON retention_file_tombstones
+             BEGIN SELECT RAISE(ABORT, 'injected'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("trigger should create");
+
+        let failures = store
+            .remove_tombstoned_files(tombstones, &context)
+            .await
+            .expect("bookkeeping failures must not abort the deletes");
+
+        assert_eq!(failures, 0);
+        assert!(media[..4].iter().all(|path| !path.exists()));
+        assert!(!frame_dir.exists(), "every file still deleted");
+        assert_eq!(
+            store.pending_file_tombstone_count().await.unwrap(),
+            5,
+            "the rows stay pending for the healer"
+        );
+        fs::remove_dir_all(&dir).ok();
+    });
+}
+
+#[test]
+fn a_blank_segment_path_does_not_roll_back_its_batch() {
+    runtime().block_on(async {
+        let (pool, dir, _media, _frame_dir) = seed_six_segments("blank-path").await;
+        // The real table's CHECK (LENGTH(TRIM(path)) > 0), as a trigger.
+        sqlx::query(
+            "CREATE TRIGGER reject_blank_tombstone BEFORE INSERT ON retention_file_tombstones
+             WHEN LENGTH(TRIM(NEW.path)) = 0 BEGIN SELECT RAISE(ABORT, 'blank path'); END",
+        )
+        .execute(&pool)
+        .await
+        .expect("trigger should create");
+        sqlx::query("UPDATE capture_segments SET media_file_path = '' WHERE id = 2")
+            .execute(&pool)
+            .await
+            .expect("blank path should set");
+        let store = CaptureRetentionStore::new(CaptureDb::single(pool.clone()));
+        let batch = [1_i64, 2, 3, 4];
+        let paths = file_paths_for_segments(&pool, &batch)
+            .await
+            .expect("paths should load");
+        let refs = paths.iter().collect::<Vec<_>>();
+        let mut summary = RetentionCleanupSummary::default();
+
+        let tombstones = store
+            .delete_eligible_batch(&batch, &[], &[], &refs, &mut summary)
+            .await
+            .expect("a blank path must not fail the batch");
+
+        assert_eq!(segment_ids(&pool).await, vec![5, 6]);
+        assert_eq!(
+            tombstones.len(),
+            4,
+            "three media files and the frame folder"
+        );
+        fs::remove_dir_all(&dir).ok();
+    });
+}

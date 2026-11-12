@@ -289,7 +289,14 @@ pub async fn get_cli_status_inner() -> Result<MnemaCliStatus, String> {
     Ok(mnema_cli_status_for_paths(install_path, bundled_cli_path))
 }
 
+/// Links the bundled CLI onto the PATH, on the blocking pool (filesystem work).
 pub async fn install_cli_inner() -> Result<MnemaCliStatus, String> {
+    tokio::task::spawn_blocking(install_cli)
+        .await
+        .map_err(|error| format!("CLI install task failed: {error}"))?
+}
+
+fn install_cli() -> Result<MnemaCliStatus, String> {
     let install_path = mnema_cli_install_path()?;
     let bundled_cli_path = bundled_mnema_cli_path()?;
 

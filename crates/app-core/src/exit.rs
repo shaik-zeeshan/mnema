@@ -57,6 +57,10 @@ impl AppExitCoordinatorState {
     fn claim_host_exit(&self) -> bool {
         !self.host_exit_claimed.swap(true, Ordering::SeqCst)
     }
+
+    fn is_host_exit_claimed(&self) -> bool {
+        self.host_exit_claimed.load(Ordering::SeqCst)
+    }
 }
 
 pub fn is_graceful_exit_in_progress(core: &AppCore) -> bool {
@@ -172,13 +176,20 @@ fn spawn_quit_deadline(core: &Arc<AppCore>, deadline: Duration) {
 }
 
 /// Marks the exit final (the host's quit hooks then let it through) and hands
-/// the process to the host, relaunching when any request asked for it.
+/// the process to the host, relaunching when any request asked for it. A
+/// relaunch leaves the quit deadline armed: on GPUI it only messages the main
+/// thread, and if that is stuck the deadline's plain quit still ends the process.
 fn complete_graceful_exit(core: &AppCore) {
     let exit_state = core.state::<AppExitCoordinatorState>();
-    if !exit_state.claim_host_exit() {
+    let restart_requested = exit_state.should_restart_after_graceful_exit();
+    let ours = if restart_requested {
+        !exit_state.is_host_exit_claimed()
+    } else {
+        exit_state.claim_host_exit()
+    };
+    if !ours {
         return; // the quit deadline already ended it
     }
-    let restart_requested = exit_state.should_restart_after_graceful_exit();
     exit_state.mark_final_graceful_exit_ready();
     step(core, "host_exit");
     core.host().exit(if restart_requested {
@@ -230,15 +241,36 @@ mod tests {
     }
 
     #[test]
-    fn quit_deadline_stays_quiet_after_a_normal_exit() {
+    fn quit_deadline_stays_quiet_after_a_normal_quit() {
         let dir = tempfile::tempdir().unwrap();
-        let (host, core) = exiting_core(dir.path(), true);
+        let (host, core) = exiting_core(dir.path(), false);
 
         spawn_quit_deadline(&core, Duration::from_millis(20));
         complete_graceful_exit(&core);
         std::thread::sleep(Duration::from_millis(200));
 
-        assert_eq!(*host.exits.lock().unwrap(), [ExitKind::Restart]);
+        assert_eq!(*host.exits.lock().unwrap(), [ExitKind::Quit]);
+    }
+
+    /// A relaunch only messages the GPUI main thread; if that is wedged the
+    /// process must still end, so the deadline stays armed behind it.
+    #[test]
+    fn quit_deadline_still_quits_when_a_relaunch_never_lands() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, core) = exiting_core(dir.path(), true);
+
+        spawn_quit_deadline(&core, Duration::from_millis(20));
+        complete_graceful_exit(&core);
+        let give_up = Instant::now() + Duration::from_secs(10);
+        while host.exits.lock().unwrap().len() < 2 {
+            assert!(Instant::now() < give_up, "quit deadline never fired");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        assert_eq!(
+            *host.exits.lock().unwrap(),
+            [ExitKind::Restart, ExitKind::Quit]
+        );
     }
 
     #[test]

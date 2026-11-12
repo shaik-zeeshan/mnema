@@ -47,7 +47,14 @@ pub struct BrowserUrlSupportResponse {
     pub warning: Option<String>,
 }
 
+/// Scans the installed and running apps on the blocking pool.
 pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, String> {
+    tokio::task::spawn_blocking(scan_privacy_app_candidates)
+        .await
+        .map_err(|error| format!("app list task failed: {error}"))
+}
+
+fn scan_privacy_app_candidates() -> Vec<PrivacyAppCandidate> {
     let mut candidates = BTreeMap::new();
     insert_privacy_app_candidate(
         &mut candidates,
@@ -77,7 +84,7 @@ pub async fn list_privacy_app_candidates() -> Result<Vec<PrivacyAppCandidate>, S
             .cmp(&right.display_name.to_ascii_lowercase())
             .then_with(|| left.bundle_id.cmp(&right.bundle_id))
     });
-    Ok(candidates)
+    candidates
 }
 
 pub async fn resolve_app_icons(
@@ -95,55 +102,13 @@ pub async fn resolve_app_icons(
         return Ok(Vec::new());
     }
 
+    // The app scan and icon renders run on the blocking pool.
     #[cfg(target_os = "macos")]
     {
-        // Each requested identifier resolves to an app bundle path. They are
-        // usually bundle ids, but some callers (e.g. the Ask-AI timeline chip)
-        // pass a human display name like "Zen Browser"; when the bundle-id
-        // lookup misses, fall back to a case-insensitive match against the
-        // installed/running app catalog so those chips still get a real icon.
-        // Non-app labels (e.g. a website name) stay unresolved, and the frontend
-        // renders its letter fallback.
-        let mut bundle_paths: BTreeMap<String, Option<PathBuf>> = requested_bundle_ids
-            .iter()
-            .map(|identifier| (identifier.clone(), app_icon_bundle_path(identifier)))
-            .collect();
-        if bundle_paths.values().any(Option::is_none) {
-            let catalog = app_display_name_bundle_path_catalog();
-            for (identifier, path) in bundle_paths.iter_mut() {
-                if path.is_none() {
-                    *path = catalog
-                        .get(&canonical_app_display_name(identifier))
-                        .cloned();
-                }
-            }
-        }
-
-        let mut candidates = BTreeMap::new();
-        for identifier in &requested_bundle_ids {
-            insert_privacy_app_candidate(
-                &mut candidates,
-                PrivacyAppCandidate {
-                    bundle_id: identifier.clone(),
-                    display_name: identifier.clone(),
-                    running: false,
-                    icon_path: None,
-                    bundle_path: bundle_paths.get(identifier).cloned().flatten(),
-                },
-            );
-        }
-        materialize_app_candidate_icons(core, &mut candidates);
-
-        let icons = requested_bundle_ids
-            .into_iter()
-            .map(|bundle_id| AppIconResolution {
-                icon_path: candidates
-                    .get(&bundle_id)
-                    .and_then(|candidate| candidate.icon_path.clone()),
-                bundle_id,
-            })
-            .collect();
-        Ok(icons)
+        let cache_dir = ensure_app_icon_cache_dir(core);
+        Ok(core
+            .run_blocking(move || resolve_app_icons_blocking(cache_dir.ok(), requested_bundle_ids))
+            .await)
     }
 
     #[cfg(not(target_os = "macos"))]
@@ -157,6 +122,61 @@ pub async fn resolve_app_icons(
             })
             .collect())
     }
+}
+
+#[cfg(target_os = "macos")]
+fn resolve_app_icons_blocking(
+    cache_dir: Option<PathBuf>,
+    requested_bundle_ids: BTreeSet<String>,
+) -> Vec<AppIconResolution> {
+    // Each requested identifier resolves to an app bundle path. They are
+    // usually bundle ids, but some callers (e.g. the Ask-AI timeline chip)
+    // pass a human display name like "Zen Browser"; when the bundle-id
+    // lookup misses, fall back to a case-insensitive match against the
+    // installed/running app catalog so those chips still get a real icon.
+    // Non-app labels (e.g. a website name) stay unresolved, and the frontend
+    // renders its letter fallback.
+    let mut bundle_paths: BTreeMap<String, Option<PathBuf>> = requested_bundle_ids
+        .iter()
+        .map(|identifier| (identifier.clone(), app_icon_bundle_path(identifier)))
+        .collect();
+    if bundle_paths.values().any(Option::is_none) {
+        let catalog = app_display_name_bundle_path_catalog();
+        for (identifier, path) in bundle_paths.iter_mut() {
+            if path.is_none() {
+                *path = catalog
+                    .get(&canonical_app_display_name(identifier))
+                    .cloned();
+            }
+        }
+    }
+
+    let mut candidates = BTreeMap::new();
+    for identifier in &requested_bundle_ids {
+        insert_privacy_app_candidate(
+            &mut candidates,
+            PrivacyAppCandidate {
+                bundle_id: identifier.clone(),
+                display_name: identifier.clone(),
+                running: false,
+                icon_path: None,
+                bundle_path: bundle_paths.get(identifier).cloned().flatten(),
+            },
+        );
+    }
+    if let Some(cache_dir) = cache_dir {
+        materialize_app_candidate_icons(&cache_dir, &mut candidates);
+    }
+
+    requested_bundle_ids
+        .into_iter()
+        .map(|bundle_id| AppIconResolution {
+            icon_path: candidates
+                .get(&bundle_id)
+                .and_then(|candidate| candidate.icon_path.clone()),
+            bundle_id,
+        })
+        .collect()
 }
 
 pub(crate) fn insert_privacy_app_candidate(
@@ -448,18 +468,14 @@ fn ensure_app_icon_cache_dir(core: &AppCore) -> Result<PathBuf, String> {
 
 #[cfg(target_os = "macos")]
 fn materialize_app_candidate_icons(
-    core: &AppCore,
+    cache_dir: &Path,
     candidates: &mut BTreeMap<String, PrivacyAppCandidate>,
 ) {
-    let Ok(cache_dir) = ensure_app_icon_cache_dir(core) else {
-        return;
-    };
-
     for candidate in candidates.values_mut() {
         let Some(bundle_path) = candidate.bundle_path.as_deref() else {
             continue;
         };
-        let Some(icon_path) = app_icon_cache_path(&cache_dir, &candidate.bundle_id) else {
+        let Some(icon_path) = app_icon_cache_path(cache_dir, &candidate.bundle_id) else {
             continue;
         };
         let cached_icon_available = icon_path

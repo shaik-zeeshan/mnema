@@ -499,7 +499,6 @@ pub async fn delete_recent_capture_rows(
 
     let tombstone_paths: Vec<_> = paths
         .iter()
-        .filter(|path| !path.path.trim().is_empty())
         .map(|path| {
             (
                 path.capture_segment_id,

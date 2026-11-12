@@ -632,6 +632,16 @@ async fn persist_batch(
     let mut inserted = 0usize;
     let mut extended = 0usize;
     for (continues, mut draft) in drafts {
+        // Capture deleted during the AI call grounds nothing (ADR 0029).
+        write
+            .retain_live_evidence(&mut draft.evidence)
+            .await
+            .map_err(|error| error.to_string())?;
+        let times = draft.evidence.iter().filter_map(|e| e.captured_at_ms);
+        let (Some(start), Some(end)) = (times.clone().min(), times.max()) else {
+            continue;
+        };
+        (draft.started_at_ms, draft.ended_at_ms) = (start, end);
         let span = (draft.started_at_ms, draft.ended_at_ms);
         // Continuation: extend the neighbour (blank title or summary keep the
         // stored ones). Anything else is a new row over the time `place` gave it.

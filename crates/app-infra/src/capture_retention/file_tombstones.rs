@@ -70,7 +70,9 @@ impl CaptureRetentionStore {
     /// tombstone row is dropped (a clean delete never left a row); a failure is
     /// marked `failed` for the healer. Returns the failure count. Dropped
     /// mid-way (quit), the remaining tombstones stay `pending` and the next
-    /// worker pass finishes them.
+    /// worker pass finishes them. A tombstone-row write that fails only logs:
+    /// the row stays `pending`, the healer retries it, and the remaining files
+    /// still get deleted.
     pub async fn remove_tombstoned_files(
         &self,
         tombstones: Vec<(i64, String)>,
@@ -78,12 +80,12 @@ impl CaptureRetentionStore {
     ) -> Result<i64> {
         let mut failures = 0_i64;
         for (id, path) in tombstones {
-            match delete_path_off_thread(path, context).await {
+            let bookkeeping = match delete_path_off_thread(path, context).await {
                 Ok(()) => {
                     sqlx::query("DELETE FROM retention_file_tombstones WHERE id = ?1")
                         .bind(id)
                         .execute(self.db.write())
-                        .await?;
+                        .await
                 }
                 Err(error) => {
                     failures += 1;
@@ -96,8 +98,13 @@ impl CaptureRetentionStore {
                     .bind(id)
                     .bind(error)
                     .execute(self.db.write())
-                    .await?;
+                    .await
                 }
+            };
+            if let Err(error) = bookkeeping {
+                log::warn!(
+                    "retention: tombstone {id} row update failed, healer will retry: {error}"
+                );
             }
         }
         Ok(failures)
@@ -107,12 +114,17 @@ impl CaptureRetentionStore {
     /// path_kind)` inside the caller's row-deleting transaction, returning
     /// `(tombstone id, path)` for [`Self::remove_tombstoned_files`] after commit.
     /// For deletes that own their transaction elsewhere (Delete Recent Capture).
+    /// Blank paths are skipped: the table's CHECK would reject them and roll
+    /// back the caller's whole delete, on every pass.
     pub async fn insert_pending_file_tombstones(
         tx: &mut sqlx::Transaction<'_, Sqlite>,
         paths: &[(Option<i64>, &str, &str)],
     ) -> Result<Vec<(i64, String)>> {
         let mut tombstones = Vec::with_capacity(paths.len());
         for &(capture_segment_id, path, path_kind) in paths {
+            if path.trim().is_empty() {
+                continue;
+            }
             let id = sqlx::query(
                 "INSERT INTO retention_file_tombstones
                     (capture_segment_id, path, path_kind, status)

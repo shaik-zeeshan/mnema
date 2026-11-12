@@ -8,7 +8,9 @@
 
 use sqlx::{Executor, Sqlite, SqliteConnection, Transaction};
 
-use super::store::{category_to_str, focus_to_str, now_ms, NewActivity, NewDerivationRun};
+use super::store::{
+    category_to_str, focus_to_str, now_ms, NewActivity, NewActivityEvidence, NewDerivationRun,
+};
 use super::UserContextStore;
 use crate::Result;
 
@@ -29,6 +31,34 @@ impl UserContextStore {
 }
 
 impl ActivityWindowWrite {
+    /// Drop evidence whose frame / audio segment is gone. Delete Recent
+    /// Capture can run during the AI call without the derivation lock; checked
+    /// inside this transaction, a deletion either landed first (its evidence
+    /// drops here) or lands after commit (its cascade finds the Activity).
+    pub async fn retain_live_evidence(
+        &mut self,
+        evidence: &mut Vec<NewActivityEvidence>,
+    ) -> Result<()> {
+        let mut live = Vec::with_capacity(evidence.len());
+        for item in evidence.drain(..) {
+            let exists: bool = sqlx::query_scalar(
+                "SELECT CASE ?1 \
+                    WHEN 'frame' THEN EXISTS (SELECT 1 FROM frames WHERE id = ?2) \
+                    WHEN 'audio_segment' THEN EXISTS (SELECT 1 FROM audio_segments WHERE id = ?2) \
+                    ELSE 0 END",
+            )
+            .bind(&item.subject_type)
+            .bind(item.subject_id)
+            .fetch_one(&mut *self.tx)
+            .await?;
+            if exists {
+                live.push(item);
+            }
+        }
+        *evidence = live;
+        Ok(())
+    }
+
     /// [`UserContextStore::insert_activity_with_evidence`] inside this window's
     /// transaction.
     pub async fn insert_activity(&mut self, draft: &NewActivity) -> Result<i64> {
