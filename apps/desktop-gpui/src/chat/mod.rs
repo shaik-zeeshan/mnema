@@ -156,6 +156,9 @@ pub struct Chat {
     /// The pending debounced search.
     search_task: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// Renders so far: the shell caches this view (tests check it redraws).
+    #[cfg(test)]
+    pub(crate) renders: usize,
 }
 
 /// Inline text runs in one wrapping paragraph (HTML `text <b>bold</b> text`);
@@ -290,6 +293,8 @@ impl Chat {
             load_generation: 0,
             search_task: None,
             _subscriptions: subs,
+            #[cfg(test)]
+            renders: 0,
         }
     }
 
@@ -645,6 +650,10 @@ impl Chat {
 
 impl Render for Chat {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let p = theme::tokens(cx);
         let docked = !self.is_new() && self.pane == Pane::Thread;
         if docked != self.docked_placeholder {

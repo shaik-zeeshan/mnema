@@ -181,18 +181,45 @@ struct ScreensAsleep(bool);
 impl Global for ScreensAsleep {}
 
 pub fn set_screens_asleep(asleep: bool, cx: &mut App) {
+    let was_asleep = cx.try_global::<ScreensAsleep>().is_some_and(|s| s.0);
     cx.set_global(ScreensAsleep(asleep));
+    if was_asleep && !asleep {
+        match shell(cx) {
+            Some(shell) => shell.update(cx, |s, cx| s.woke(cx)),
+            None => cx.refresh_windows(),
+        }
+    }
 }
 
-/// Nothing of the main window can be seen (hidden, or every screen asleep):
-/// periodic repaints and polls skip their work.
+/// GPUI's occlusion report for the shell's window: fully covered, minimized,
+/// on another Space or on a sleeping display. Nothing reported yet reads as
+/// visible, so timers never idle for want of a first report.
+#[derive(Default)]
+struct Occluded(bool);
+
+impl Global for Occluded {}
+
+/// Record a visibility report; true when it uncovers the window.
+pub fn set_occluded(occluded: bool, cx: &mut App) -> bool {
+    let was = cx.try_global::<Occluded>().is_some_and(|o| o.0);
+    cx.set_global(Occluded(occluded));
+    was && !occluded
+}
+
+/// Nothing of the main window can be seen (hidden, covered, or every screen
+/// asleep): periodic repaints and polls skip their work.
 pub fn render_idle(cx: &mut App) -> bool {
     cx.try_global::<ScreensAsleep>().is_some_and(|s| s.0) || !main_visible(cx)
 }
 
-/// Whether the main window is on screen. Unknown (no main window, or called
-/// from inside its own update) reads as visible.
+/// Whether the main window can be seen: shown, and not fully covered per
+/// GPUI's occlusion report (`NSWindow.isVisible` alone is true for a covered
+/// window). Unknown (no main window, no report yet, or called from inside its
+/// own update) reads as visible.
 pub fn main_visible(cx: &mut App) -> bool {
+    if cx.try_global::<Occluded>().is_some_and(|o| o.0) {
+        return false;
+    }
     let Some(handle) = cx.try_global::<Main>().map(|m| m.handle) else {
         return true;
     };

@@ -141,6 +141,9 @@ pub struct Insights {
     pub ov_read: read::Read,
     pub day_read: read::Read,
     _subscriptions: Vec<Subscription>,
+    /// Renders so far: the shell caches this view (tests check it redraws).
+    #[cfg(test)]
+    pub(crate) renders: usize,
 }
 
 impl EventEmitter<InsightsEvent> for Insights {}
@@ -234,6 +237,8 @@ impl Insights {
             scroll: ScrollHandle::new(),
             gens: [0; 6],
             _subscriptions: subs,
+            #[cfg(test)]
+            renders: 0,
         }
     }
 
@@ -640,6 +645,10 @@ impl Insights {
 
 impl Render for Insights {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         let p = theme::tokens(cx);
         self.width = window.viewport_size().width;
         if self.status.loaded && !self.loaded_tab() {

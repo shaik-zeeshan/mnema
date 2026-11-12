@@ -260,6 +260,9 @@ pub struct Settings {
     backend: Arc<dyn Backend>,
     timer: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
+    /// Renders so far: the shell caches this view (tests check it redraws).
+    #[cfg(test)]
+    pub(crate) renders: usize,
 }
 
 fn input(window: &mut Window, cx: &mut App, placeholder: &str) -> Entity<InputState> {
@@ -474,6 +477,8 @@ impl Settings {
             backend,
             timer: None,
             _subscriptions: subs,
+            #[cfg(test)]
+            renders: 0,
         }
     }
 

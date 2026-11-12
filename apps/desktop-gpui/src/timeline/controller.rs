@@ -21,7 +21,8 @@ const EPISODE_EDGE_PAD_MS: i64 = 10 * 60_000;
 const AUDIO_FRAME_LOOKBACK_MS: i64 = 5 * 60_000;
 const AUDIO_FRAME_LOOKAHEAD_MS: i64 = 10_000;
 
-/// Run `f` with the source on the background executor, then `then` on the view.
+/// Run `f` with the source on the background executor, then `then` on the view
+/// (which notifies itself if it changed anything).
 fn fetch_with<T: Send + 'static>(
     src: Arc<dyn Source>,
     cx: &mut Context<TimelineView>,
@@ -33,11 +34,7 @@ fn fetch_with<T: Send + 'static>(
             .background_executor()
             .spawn(async move { f(src.as_ref()) })
             .await;
-        this.update(cx, |view, cx| {
-            then(view, out, cx);
-            cx.notify();
-        })
-        .ok();
+        this.update(cx, |view, cx| then(view, out, cx)).ok();
     })
     .detach();
 }
@@ -49,7 +46,10 @@ impl TimelineView {
         f: impl FnOnce(&dyn Source) -> T + Send + 'static,
         then: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
     ) {
-        fetch_with(self.source.clone(), cx, f, then);
+        fetch_with(self.source.clone(), cx, f, move |view, out, cx| {
+            then(view, out, cx);
+            cx.notify();
+        });
     }
 
     /// Recording settings changed: re-read follow-live and the retention window.
@@ -142,6 +142,13 @@ impl TimelineView {
                 self.poll(cx);
             }
             self.arm_poll(cx);
+        }
+    }
+
+    /// The window can be seen again: a shown Timeline checks its head now.
+    pub fn woke(&mut self, cx: &mut Context<Self>) {
+        if self._poll.is_some() {
+            self.poll(cx);
         }
     }
 
@@ -303,7 +310,10 @@ impl TimelineView {
         let Some((generation, head)) = self.paging.begin_poll() else {
             return;
         };
-        self.fetch(
+        // Quiet unless the head moved: an idle poll every 1.5 s must not
+        // rebuild the cached surface.
+        fetch_with(
+            self.source.clone(),
             cx,
             move |s| paging::walk_head(head, |before| s.list_frames(before, POLL_PAGE)),
             move |view, outcome, cx| {
@@ -315,9 +325,10 @@ impl TimelineView {
                         view.sync_scroll();
                         view.refresh_side_data(cx);
                     }
-                    AfterPoll::Reset => view.reload(cx),
-                    AfterPoll::Nothing => {}
+                    AfterPoll::Reset => return view.reload(cx),
+                    AfterPoll::Nothing => return,
                 }
+                cx.notify();
             },
         );
     }

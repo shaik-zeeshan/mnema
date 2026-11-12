@@ -3,6 +3,7 @@
 //! with the tail filling the rest of the tab. Warnings and errors are tinted.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
@@ -80,8 +81,16 @@ impl LogCache {
     }
 }
 
-/// A line's copy button, keyed by its text: its "Copied" state stays on that
-/// line when new lines push the tail up (an index would hand it to another).
+/// A log row, keyed by its text and how many identical lines sit above it:
+/// its state (the copy button's "Copied") stays on that line when new lines
+/// push the tail up (an index would hand it to another).
+pub fn line_id(raw: &str, occurrence: usize) -> ElementId {
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (raw, occurrence).hash(&mut h);
+    nid("dv-line", h.finish())
+}
+
+/// A line's copy button; it sits inside its [`line_id`] row.
 pub fn line_copy_id(raw: &str) -> ElementId {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     raw.hash(&mut h);
@@ -233,10 +242,13 @@ pub fn tab(
             "Try another level or feature.".into(),
         )]
     } else {
+        let mut seen: HashMap<&str, usize> = HashMap::new();
         let mut rows: Vec<AnyElement> = shown
             .iter()
-            .enumerate()
-            .map(|(i, e)| {
+            .map(|e| {
+                let n = seen.entry(e.raw.as_str()).or_default();
+                let row_id = line_id(&e.raw, *n);
+                *n += 1;
                 let tone = match e.head.as_ref().map(|h| h.level.as_str()) {
                     Some("WARN") => Some(Tone::Warn),
                     Some("ERROR") => Some(Tone::Danger),
@@ -251,7 +263,7 @@ pub fn tab(
                 let (on_click, on_hover, marked) = (raw.clone(), raw.clone(), raw.clone());
                 let me = cx.entity().downgrade();
                 div()
-                    .id(nid("dv-line", i as u64))
+                    .id(row_id)
                     .test_support()
                     .role(gpui_kit::Role::ListItem)
                     .relative()

@@ -92,6 +92,10 @@ impl gpui_kit::EventEmitter<SettingsEvent> for Settings {}
 
 impl Render for Settings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        #[cfg(test)]
+        {
+            self.renders += 1;
+        }
         theme::request_fade_frames(window, cx);
         self.ensure_provider_inputs(window, cx);
         self.sync_controls(window, cx);

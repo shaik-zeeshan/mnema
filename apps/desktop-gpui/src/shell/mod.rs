@@ -22,6 +22,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     div, AnyView, Context, Entity, FocusHandle, StyleRefinement, Subscription, Task, Window,
+    WindowVisibility,
 };
 
 use crate::keymap::{self, Bindings, HelpState};
@@ -66,7 +67,7 @@ pub struct Shell {
     /// The licence banner and the deep-link receipt.
     pub licence: Entity<crate::licence::Licence>,
     focus: FocusHandle,
-    _subscriptions: [Subscription; 8],
+    _subscriptions: [Subscription; 9],
     tick: Option<Task<()>>,
     /// The last failed start's message ("couldn't start · Retry"), until the next start.
     start_error: Option<String>,
@@ -146,7 +147,13 @@ impl Shell {
             // The focused element left the tree (Settings closed, a popover or the
             // drawer went away): focus the root again, or every shell key goes dead.
             cx.on_focus_lost(window, |this, window, cx| window.focus(&this.focus, cx)),
+            // Covered, minimized, another Space: GPUI stops drawing, our timers idle.
+            cx.observe_window_visibility(window, |this, visibility, _, cx| {
+                this.on_visibility(visibility, cx)
+            }),
         ];
+        // A new main window starts visible, whatever the last one reported.
+        crate::window::set_occluded(false, cx);
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         let mut shell = Self {
@@ -214,7 +221,11 @@ impl Shell {
         cx.set_global(DeveloperOptions(developer));
         // The surfaces are cached views: notify one only when what it shows
         // changed, or the 2 s live poll would rebuild it on every reading.
-        let status = self.model.status.clone();
+        // Settings never shows the health readings, so they don't count.
+        let status = model::StatusBarModel {
+            health: None,
+            ..self.model.status.clone()
+        };
         self.settings.update(cx, |s, cx| {
             if s.status != status {
                 s.status = status;
@@ -302,6 +313,23 @@ impl Shell {
     }
 
     /// Re-render the shown surface (a cached view: a shell notify alone reuses it).
+    pub fn on_visibility(&mut self, visibility: WindowVisibility, cx: &mut Context<Self>) {
+        if crate::window::set_occluded(!visibility.is_visible(), cx) {
+            self.woke(cx);
+        }
+    }
+
+    /// Main can be seen again after its timers idled: redraw every view (the
+    /// cached ones too, whose "3 min ago" labels went stale) and let the shown
+    /// Timeline check its head now.
+    pub fn woke(&mut self, cx: &mut Context<Self>) {
+        if crate::window::render_idle(cx) {
+            return;
+        }
+        cx.refresh_windows();
+        self.timeline.update(cx, |t, cx| t.woke(cx));
+    }
+
     fn notify_surface(&self, cx: &mut Context<Self>) {
         match self.surface {
             Surface::Timeline => self.timeline.update(cx, |_, cx| cx.notify()),
@@ -610,3 +638,7 @@ mod tests;
 #[cfg(test)]
 #[path = "flow_tests.rs"]
 mod flow_tests;
+
+#[cfg(test)]
+#[path = "cached_tests.rs"]
+mod cached_tests;
