@@ -114,7 +114,7 @@ impl QuickRecall {
         // scope belongs to `results.query`).
         let (fl, al) = (rules::FRAME_FETCH_LIMIT, rules::AUDIO_FETCH_LIMIT);
         let q = query.clone();
-        self.fetch(
+        self.timers.search = Some(self.fetch_task(
             cx,
             move |b| b.search(&q, fl, al),
             move |qr, res, cx| {
@@ -131,7 +131,7 @@ impl QuickRecall {
                     }
                 }
             },
-        );
+        ));
     }
 
     fn take_results(&mut self, query: String, r: SearchResponse, cx: &mut Context<Self>) {

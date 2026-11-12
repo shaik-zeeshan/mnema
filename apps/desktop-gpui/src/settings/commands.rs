@@ -40,7 +40,8 @@ impl Settings {
             return;
         };
         let work = cx.background_spawn(async move { job(&core) });
-        self.land_command(what, work, inline, cx).detach();
+        self.land_command(what, work, |s, o, _| inline(s, o), cx)
+            .detach();
     }
 
     /// `run_command_with` for a slow network call: `job` answers at once with
@@ -51,7 +52,7 @@ impl Settings {
         what: &'static str,
         cx: &mut Context<Self>,
         job: impl FnOnce(&Arc<AppCore>) -> Pending<Option<String>>,
-        inline: impl FnOnce(&mut Self, &Outcome) -> bool + 'static,
+        inline: impl FnOnce(&mut Self, &Outcome, &mut Context<Self>) -> bool + 'static,
     ) {
         let Some(core) = self.command_core(what, cx) else {
             return;
@@ -73,7 +74,7 @@ impl Settings {
         &mut self,
         what: &'static str,
         work: Task<Outcome>,
-        inline: impl FnOnce(&mut Self, &Outcome) -> bool + 'static,
+        inline: impl FnOnce(&mut Self, &Outcome, &mut Context<Self>) -> bool + 'static,
         cx: &mut Context<Self>,
     ) -> Task<()> {
         cx.notify();
@@ -81,7 +82,7 @@ impl Settings {
             let outcome = work.await;
             let _ = this.update(cx, |s, cx| {
                 s.ui.busy.remove(what);
-                if inline(s, &outcome) {
+                if inline(s, &outcome, cx) {
                     if let Err(e) = &outcome {
                         log::warn!("settings: {what} failed: {e}");
                     }
@@ -105,9 +106,12 @@ impl Settings {
     }
 
     /// Re-read every loader. Unsaved edits survive: only a clean page adopts
-    /// the re-read settings as its drafts.
+    /// the re-read settings as its drafts. Hidden, it waits: the shell's
+    /// `go(Settings)` re-reads everything on the next open.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
-        self.load(false, cx);
+        if self.shown {
+            self.load(false, cx);
+        }
     }
 
     /// Two landings: the local reads (mic, capture support, permissions…) at
@@ -134,7 +138,7 @@ impl Settings {
             c.spawn_blocking(move || super::data::load_local(&core))
                 .await
         });
-        cx.spawn(async move |this, cx| {
+        self.loading = Some(cx.spawn(async move |this, cx| {
             let Ok(Ok(local)) = local.await else { return };
             let Ok(rest) = this.update(cx, |s, cx| {
                 s.ui.models_loading = false;
@@ -158,8 +162,7 @@ impl Settings {
                     cx.notify();
                 });
             }
-        })
-        .detach();
+        }));
     }
 
     /// Adopt a re-read: the drafts follow it only on a clean page.

@@ -252,6 +252,9 @@ pub struct Settings {
     shown: bool,
     /// CLI Access's 30 s re-read while the Data group is on screen.
     access_poll: Option<Task<()>>,
+    /// The re-read in flight: a newer one replaces (cancels) it, so an older,
+    /// slower answer never lands over a newer one.
+    loading: Option<Task<()>>,
     /// Slow calls in flight, by what they are: a new attempt replaces (cancels) the old.
     jobs: HashMap<String, Task<()>>,
     backend: Arc<dyn Backend>,
@@ -466,6 +469,7 @@ impl Settings {
             kb_focus: cx.focus_handle(),
             shown: true,
             access_poll: None,
+            loading: None,
             jobs: HashMap::new(),
             backend,
             timer: None,

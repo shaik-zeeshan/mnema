@@ -106,7 +106,11 @@ impl Shell {
         let command = cx.new(|cx| CommandField::new(window, cx));
         let timeline = cx.new(|cx| crate::timeline::TimelineView::new(source, cx));
         let chat = cx.new(|cx| crate::chat::Chat::new(window, cx));
-        let settings = cx.new(|cx| crate::settings::Settings::new(window, cx));
+        let settings = cx.new(|cx| {
+            let mut s = crate::settings::Settings::new(window, cx);
+            s.set_shown(false); // the shell opens on the Timeline
+            s
+        });
         let backend: std::sync::Arc<dyn crate::insights::data::Backend> =
             match crate::chat::core(cx) {
                 Some(core) => std::sync::Arc::new(crate::insights::data::CoreBackend(core)),
@@ -356,10 +360,15 @@ impl Shell {
         cx: &mut Context<Self>,
     ) {
         match event {
-            crate::insights::InsightsEvent::Ask(q) => {
-                let q = Some(q.clone());
-                self.chat
-                    .update(cx, |chat, cx| chat.new_chat(q, true, window, cx));
+            crate::insights::InsightsEvent::Ask(q, scope) => {
+                let (q, scope) = (Some(q.clone()), *scope);
+                self.chat.update(cx, |chat, cx| {
+                    if let Some((a, b)) = scope {
+                        chat.scope.start = Some(a);
+                        chat.scope.end = Some(b);
+                    }
+                    chat.new_chat(q, true, window, cx)
+                });
                 self.go(Surface::Chat, cx);
             }
             crate::insights::InsightsEvent::OpenTimeline => self.go(Surface::Timeline, cx),

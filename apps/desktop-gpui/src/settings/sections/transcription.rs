@@ -150,7 +150,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                                             "Deepgram key",
                                             cx,
                                             move |core| live::deepgram_save(core, key),
-                                            |_, _| false,
+                                            |_, _, _| false,
                                         );
                                     }
                                 })),
@@ -164,7 +164,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                                             "Deepgram key",
                                             cx,
                                             live::deepgram_check,
-                                            |_, _| false,
+                                            |_, _, _| false,
                                         )
                                     })),
                             )

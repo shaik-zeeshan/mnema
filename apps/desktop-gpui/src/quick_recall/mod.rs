@@ -115,6 +115,8 @@ pub struct Recent {
 #[derive(Default)]
 struct Timers {
     debounce: Option<Task<()>>,
+    /// The search in flight: a newer one drops (cancels) it.
+    search: Option<Task<()>>,
     commit: Option<Task<()>>,
     reset: Option<Task<()>>,
     copied: Option<Task<()>>,
@@ -371,6 +373,16 @@ impl QuickRecall {
         f: impl FnOnce(&dyn Backend) -> T + Send + 'static,
         then: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
     ) {
+        self.fetch_task(cx, f, then).detach();
+    }
+
+    /// `fetch`, with the task kept by the caller (dropping it cancels the rest).
+    fn fetch_task<T: Send + 'static>(
+        &self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&dyn Backend) -> T + Send + 'static,
+        then: impl FnOnce(&mut Self, T, &mut Context<Self>) + 'static,
+    ) -> Task<()> {
         let backend = self.backend.clone();
         cx.spawn(async move |this, cx| {
             let out = cx.background_executor().spawn(async move { f(backend.as_ref()) }).await;
@@ -380,7 +392,6 @@ impl QuickRecall {
             })
             .ok();
         })
-        .detach();
     }
 
     /// A timer on the executor clock that runs `f` once it fires.

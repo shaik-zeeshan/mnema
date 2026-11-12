@@ -97,3 +97,24 @@ fn a_refused_start_from_the_reminder_keeps_the_row_and_the_popover(cx: &mut Test
         "the popover stays open"
     );
 }
+
+/// Hidden Settings doesn't re-read on a change event (a full read reaches the
+/// licence server); the next open re-reads, and a shown page follows events.
+#[gpui_kit::test]
+fn hidden_settings_waits_for_the_next_open_to_re_read(cx: &mut TestAppContext) {
+    let mut live = live();
+    let (_window, shell) = open_shell(cx, &live, None);
+    wait_for(cx, &mut live, &shell, "the first load", |_| true);
+    let settings = cx.read(|cx| shell.read(cx).settings.clone());
+    let reading = |cx: &mut TestAppContext| cx.read(|cx| settings.read(cx).ui.models_loading);
+    let changed = |cx: &mut TestAppContext| {
+        cx.update(|cx| settings.update(cx, |s, cx| s.on_event(&CoreEvent::UserContextChanged, cx)))
+    };
+    changed(cx);
+    assert!(!reading(cx), "hidden: no re-read");
+    cx.update(|cx| shell.update(cx, |s, cx| s.go(Surface::Settings, cx)));
+    assert!(reading(cx), "opening re-reads");
+    wait_for(cx, &mut live, &shell, "the open's read", |cx| !reading(cx));
+    changed(cx);
+    assert!(reading(cx), "shown: an event re-reads");
+}

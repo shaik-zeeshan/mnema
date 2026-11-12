@@ -147,7 +147,7 @@ impl Settings {
             ACTIVATE,
             cx,
             move |core| crate::settings::live::license_activate(core, key),
-            |s, outcome| {
+            |s, outcome, _| {
                 s.ui.lic_activate = Some(outcome.as_ref().map(|_| ()).map_err(Clone::clone));
                 s.ui.clear_license_key = outcome.is_ok();
                 true
@@ -162,35 +162,26 @@ impl Settings {
             REFRESH,
             cx,
             crate::settings::live::license_refresh,
-            |s, outcome| {
+            |s, outcome, cx| {
                 s.ui.lic_refresh = Some(outcome.is_ok());
                 s.ui.lic_refresh_gen += 1;
+                // Keep the line for 4 s; a newer check's line outlives this timer.
+                let gen = s.ui.lic_refresh_gen;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(4000))
+                        .await;
+                    let _ = this.update(cx, |s, cx| {
+                        if s.ui.lic_refresh_gen == gen {
+                            s.ui.lic_refresh = None;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
                 true
             },
         );
-        cx.spawn(async move |this, cx| {
-            let tick = std::time::Duration::from_millis(100);
-            // Wait for the check to land, then keep its line for 4 s.
-            let gen = loop {
-                match this.update(cx, |s, _| {
-                    (!s.ui.busy.contains(REFRESH)).then_some(s.ui.lic_refresh_gen)
-                }) {
-                    Ok(Some(gen)) => break gen,
-                    Ok(None) => cx.background_executor().timer(tick).await,
-                    Err(_) => return,
-                }
-            };
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(4000))
-                .await;
-            let _ = this.update(cx, |s, cx| {
-                if s.ui.lic_refresh_gen == gen {
-                    s.ui.lic_refresh = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
     }
 
     /// "Free up my devices…": asks, then resets the license's device list.

@@ -50,8 +50,9 @@ pub const DIGEST_DEBOUNCE: Duration = Duration::from_millis(500);
 /// What Insights asks the shell to do.
 #[derive(Clone, Debug, PartialEq)]
 pub enum InsightsEvent {
-    /// ⌘J / "Ask about …": a new chat with this question.
-    Ask(String),
+    /// ⌘J / "Ask about …": a new chat with this question, scoped to these
+    /// days when set (Overview's period; the shell owns Chat, so it applies them).
+    Ask(String, Option<(Date, Date)>),
     /// "Open Timeline" from an empty Journal.
     OpenTimeline,
     /// Overview's idle "Start recording" / "Resume recording".
@@ -620,15 +621,8 @@ impl Insights {
         let Some(q) = self.ask_query(cx) else {
             return;
         };
-        if let (Some((a, b)), Some(shell)) = (self.ask_scope(), crate::window::shell(cx)) {
-            let chat = shell.read(cx).chat.clone();
-            chat.update(cx, |c, cx| {
-                c.scope.start = Some(a);
-                c.scope.end = Some(b);
-                cx.notify();
-            });
-        }
-        cx.emit(InsightsEvent::Ask(q));
+        // No `window::shell` here: ⌘J calls this inside the shell's own update.
+        cx.emit(InsightsEvent::Ask(q, self.ask_scope()));
     }
 
     /// Typing in one of the tab's fields (the bare-key shortcuts stand down).

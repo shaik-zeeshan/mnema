@@ -485,3 +485,16 @@ fn a_long_answer_points_to_chat(cx: &mut TestAppContext) {
         "Chat opens the thread and the bar closes"
     );
 }
+
+/// A newer search drops the one still queued: only its fetch runs.
+#[gpui_kit::test]
+fn a_newer_search_cancels_the_one_still_in_flight(cx: &mut TestAppContext) {
+    let (_w, v, b) = open(cx, "results");
+    let before = searches(&b).len();
+    v.update(cx, |qr, cx| {
+        qr.run_search("pricing".into(), cx);
+        qr.run_search("pricing page".into(), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(searches(&b)[before..], ["pricing page".to_string()]);
+}

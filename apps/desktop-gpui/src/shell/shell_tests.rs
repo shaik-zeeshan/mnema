@@ -614,3 +614,41 @@ fn an_open_modal_blocks_the_titlebar_and_status_bar(cx: &mut TestAppContext) {
         "and only the modal"
     );
 }
+
+/// ⌘J on Insights › Overview with AI set up opens a new chat scoped to the
+/// period. It runs inside the shell's own update, so Insights must not read
+/// the shell back (that panicked "cannot read Shell while it is already being
+/// updated" while main was registered).
+#[gpui_kit::test]
+fn cmd_j_on_the_overview_asks_about_its_period(cx: &mut TestAppContext) {
+    use crate::insights::fixture::FixtureBackend;
+    let (window, shell) = open(cx);
+    let insights = cx.update(|cx| {
+        crate::window::adopt_main(window.into(), &shell, cx);
+        crate::ui::clock::freeze(Some(app_core::fixtures::fixture_now()), cx);
+        shell.update(cx, |s, cx| s.go(Surface::Insights, cx));
+        let i = shell.read(cx).insights.clone();
+        i.update(cx, |i, cx| {
+            i.backend = std::sync::Arc::new(FixtureBackend::load("populated").expect("fixture"));
+            i.reload(cx);
+        });
+        i
+    });
+    cx.run_until_parked();
+    let scope = cx.update(|cx| {
+        insights.update(cx, |i, cx| {
+            assert!(i.ask_query(cx).is_some(), "the fixture has AI ready");
+            i.ask_scope().expect("Overview scopes Ask")
+        })
+    });
+    press(cx, window, "cmd-j");
+    cx.read(|cx| {
+        let s = shell.read(cx);
+        assert_eq!(s.surface, Surface::Chat, "⌘J opened Chat");
+        let chat = s.chat.read(cx);
+        assert_eq!(
+            (chat.scope.start, chat.scope.end),
+            (Some(scope.0), Some(scope.1))
+        );
+    });
+}
