@@ -110,6 +110,24 @@ impl AppCore {
                 .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
         })
     }
+
+    /// Runs `future` on a runtime worker and parks the calling thread until it
+    /// finishes. The way for GPUI's libdispatch workers (512 KB stacks) to wait
+    /// on app-core: the future polls on a worker's stack, so no thread is
+    /// spawned per call, unlike `block_on`'s fallback. Panics if called from a
+    /// runtime worker (tokio refuses a nested `block_on`).
+    pub fn run<F>(&self, future: F) -> F::Output
+    where
+        F: Future + Send + 'static,
+        F::Output: Send + 'static,
+    {
+        // Only the JoinHandle polls here, which needs almost no stack.
+        match self.runtime.block_on(self.runtime.spawn(future)) {
+            Ok(output) => output,
+            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+            Err(e) => panic!("app-core task ended without an answer: {e}"),
+        }
+    }
 }
 
 /// A tokio worker's stack, where the Tauri host polls the same futures.
@@ -201,6 +219,34 @@ mod tests {
         assert_eq!(deep.unwrap(), 97);
 
         let panicked = small_thread(core, |core| core.block_on(async { panic!("boom") }));
+        let payload = panicked.expect_err("the future's panic reaches the caller");
+        assert_eq!(payload.downcast_ref::<&str>(), Some(&"boom"));
+    }
+
+    /// `run` polls on a worker, so a deep future works from a 512 KB thread
+    /// without the scoped-thread hop, and a panic still reaches the caller.
+    #[test]
+    fn run_from_a_small_stack_thread_polls_on_a_worker() {
+        let core = Arc::new(core_with(Arc::default()));
+        let small_thread = |core: Arc<AppCore>, run: fn(&AppCore) -> u32| {
+            std::thread::Builder::new()
+                .stack_size(512 * 1024)
+                .spawn(move || run(&core))
+                .unwrap()
+                .join()
+        };
+        let deep = small_thread(core.clone(), |core| {
+            core.run(async {
+                tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+                let name = std::thread::current().name().map(str::to_owned);
+                assert_ne!(name.as_deref(), Some("mnema-block-on"));
+                // ~768 KB: past a libdispatch worker, inside a tokio worker's 2 MB.
+                burn_stack(48)
+            })
+        });
+        assert_eq!(deep.unwrap(), 48);
+
+        let panicked = small_thread(core, |core| core.run(async { panic!("boom") }));
         let payload = panicked.expect_err("the future's panic reaches the caller");
         assert_eq!(payload.downcast_ref::<&str>(), Some(&"boom"));
     }
