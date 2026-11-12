@@ -12,12 +12,6 @@ pub enum AppInfraError {
     Migration(#[from] sqlx::migrate::MigrateError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
-    #[error("failed to build the CPU worker pool: {0}")]
-    WorkerPoolBuild(#[from] rayon::ThreadPoolBuildError),
-    #[error("background jobs require an active Tokio runtime")]
-    AsyncRuntimeUnavailable,
-    #[error("cpu job worker stopped before returning a result")]
-    WorkerTaskCancelled,
     #[error("background job {0} was not found")]
     JobNotFound(i64),
     #[error("invalid background job status: {0}")]

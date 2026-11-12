@@ -88,8 +88,8 @@ pub use hidden_segment_workspace::{
     SegmentWorkspaceCleanupDisposition,
 };
 pub use jobs::{
-    default_worker_thread_count, BackgroundJob, BackgroundJobStatus, CpuJobHandle, CpuJobResult,
-    CpuJobSuccess, JobCounts, JobDescriptor, JobRuntime, JobStore,
+    default_worker_thread_count, BackgroundJob, BackgroundJobStatus, JobCounts, JobDescriptor,
+    JobStore,
 };
 pub use license_token_store::{
     clear_trial_issuance, load_activation_receipt, load_first_seen, load_license_key,
@@ -344,7 +344,6 @@ pub struct AppInfra {
     conversation: ConversationStore,
     captured_frame_equivalence: CapturedFrameEquivalenceResolver,
     captured_frame_pipeline: CapturedFramePipeline,
-    runtime: JobRuntime,
     frame_batch_runtime: FrameBatchRuntime,
     processing_runtime: ProcessingRuntime,
     secret_vault: SecretVaultHandle,
@@ -428,7 +427,6 @@ impl AppInfra {
         let captured_frame_equivalence = CapturedFrameEquivalenceResolver::new(processing.clone());
         let captured_frame_pipeline =
             CapturedFramePipeline::new(processing.clone(), frame_batches.clone());
-        let runtime = JobRuntime::new(default_worker_thread_count())?;
         let frame_batch_runtime = FrameBatchRuntime::new(frame_batches.clone());
         let processing_runtime = ProcessingRuntime::new(processing.clone(), processing_registry);
         // Construction is cheap and touches no keychain: the vault unlocks at
@@ -456,7 +454,6 @@ impl AppInfra {
             conversation,
             captured_frame_equivalence,
             captured_frame_pipeline,
-            runtime,
             frame_batch_runtime,
             processing_runtime,
             secret_vault,
@@ -1978,20 +1975,6 @@ impl AppInfra {
         self.frame_batch_runtime.process_next_queued_job().await
     }
 
-    pub async fn spawn_cpu_job<F, T>(
-        &self,
-        descriptor: JobDescriptor,
-        payload_json: Option<&str>,
-        task: F,
-    ) -> Result<CpuJobHandle<T>>
-    where
-        F: FnOnce() -> CpuJobResult<T> + Send + 'static,
-        T: Send + 'static,
-    {
-        let job = self.jobs.enqueue(&descriptor, payload_json).await?;
-        self.runtime.spawn_cpu(self.jobs.clone(), job, task)
-    }
-
     pub async fn status(&self) -> Result<AppInfraStatus> {
         let database_path = self.database.database_path();
         Ok(AppInfraStatus {
@@ -2004,7 +1987,7 @@ impl AppInfra {
             .fetch_one(self.database.read_pool())
             .await
             .ok(),
-            worker_thread_count: self.runtime.worker_thread_count(),
+            worker_thread_count: default_worker_thread_count(),
             job_counts: self.jobs.counts().await?,
             frame_batch_counts: self.frame_batches.counts().await?,
         })
@@ -2105,7 +2088,7 @@ mod tests {
     use std::{
         fs,
         path::{Path, PathBuf},
-        sync::{mpsc, Arc, Mutex},
+        sync::{Arc, Mutex},
         time::{SystemTime, UNIX_EPOCH},
     };
 
@@ -2158,13 +2141,6 @@ mod tests {
             .build()
             .expect("test runtime should build")
             .block_on(test);
-    }
-
-    fn build_test_runtime() -> tokio::runtime::Runtime {
-        tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime should build")
     }
 
     fn test_frame(session_id: &str, file_name: &str) -> NewFrame {
@@ -2872,69 +2848,6 @@ mod tests {
     }
 
     #[test]
-    fn cpu_jobs_persist_running_and_completed_transitions() {
-        run_async_test(async {
-            let dir = TestDir::new("cpu-job-success");
-            let infra = AppInfra::initialize(dir.path())
-                .await
-                .expect("app infra should initialize");
-            let (started_tx, started_rx) = mpsc::channel();
-            let (release_tx, release_rx) = mpsc::channel();
-
-            let handle = infra
-                .spawn_cpu_job(
-                    JobDescriptor::new("ocr"),
-                    Some("{\"documentId\":1}"),
-                    move || {
-                        started_tx
-                            .send(())
-                            .expect("job should notify when it starts");
-                        release_rx
-                            .recv()
-                            .expect("job should wait until the test releases it");
-
-                        Ok(CpuJobSuccess::new("finished".to_string())
-                            .with_result_text("recognized text"))
-                    },
-                )
-                .await
-                .expect("cpu job should spawn");
-
-            started_rx.recv().expect("job should reach the worker pool");
-
-            let running = infra
-                .jobs()
-                .get(handle.job_id())
-                .await
-                .expect("running job should be readable")
-                .expect("running job should exist");
-            assert_eq!(running.status, BackgroundJobStatus::Running);
-            assert_eq!(running.attempt_count, 1);
-            assert!(running.started_at.is_some());
-            assert!(running.finished_at.is_none());
-
-            release_tx.send(()).expect("test should release the job");
-
-            let outcome = handle.join().await.expect("job join should succeed");
-            assert_eq!(
-                outcome,
-                Ok(CpuJobSuccess::new("finished".to_string()).with_result_text("recognized text"))
-            );
-
-            let completed = infra
-                .jobs()
-                .get(running.id)
-                .await
-                .expect("completed job should be readable")
-                .expect("completed job should exist");
-            assert_eq!(completed.status, BackgroundJobStatus::Completed);
-            assert_eq!(completed.result_text.as_deref(), Some("recognized text"));
-            assert!(completed.finished_at.is_some());
-            assert_eq!(completed.last_error, None);
-        });
-    }
-
-    #[test]
     fn enqueued_jobs_are_persisted_as_queued() {
         run_async_test(async {
             let dir = TestDir::new("queued-job");
@@ -2952,75 +2865,6 @@ mod tests {
             assert_eq!(queued.attempt_count, 0);
             assert!(queued.started_at.is_none());
             assert!(queued.finished_at.is_none());
-        });
-    }
-
-    #[test]
-    fn cpu_jobs_persist_failed_transitions() {
-        run_async_test(async {
-            let dir = TestDir::new("cpu-job-failure");
-            let infra = AppInfra::initialize(dir.path())
-                .await
-                .expect("app infra should initialize");
-
-            let handle: CpuJobHandle<String> = infra
-                .spawn_cpu_job(JobDescriptor::new("transcription"), None, || {
-                    Err("transcription failed".to_string())
-                })
-                .await
-                .expect("cpu job should spawn");
-
-            let job_id = handle.job_id();
-            let outcome = handle.join().await.expect("job join should complete");
-            assert_eq!(outcome, Err("transcription failed".to_string()));
-
-            let failed = infra
-                .jobs()
-                .get(job_id)
-                .await
-                .expect("failed job should be readable")
-                .expect("failed job should exist");
-            assert_eq!(failed.status, BackgroundJobStatus::Failed);
-            assert_eq!(failed.last_error.as_deref(), Some("transcription failed"));
-            assert!(failed.started_at.is_some());
-            assert!(failed.finished_at.is_some());
-            assert_eq!(failed.result_text, None);
-        });
-    }
-
-    #[test]
-    fn cpu_job_panics_are_persisted_as_failed() {
-        run_async_test(async {
-            let dir = TestDir::new("cpu-job-panic");
-            let infra = AppInfra::initialize(dir.path())
-                .await
-                .expect("app infra should initialize");
-
-            let handle: CpuJobHandle<String> = infra
-                .spawn_cpu_job(JobDescriptor::new("transcription"), None, || {
-                    panic!("worker panic");
-                })
-                .await
-                .expect("cpu job should spawn");
-
-            let job_id = handle.job_id();
-            let outcome = handle.join().await.expect("job join should complete");
-            assert_eq!(outcome, Err("cpu job panicked: worker panic".to_string()));
-
-            let failed = infra
-                .jobs()
-                .get(job_id)
-                .await
-                .expect("failed job should be readable")
-                .expect("failed job should exist");
-            assert_eq!(failed.status, BackgroundJobStatus::Failed);
-            assert_eq!(
-                failed.last_error.as_deref(),
-                Some("cpu job panicked: worker panic")
-            );
-            assert!(failed.started_at.is_some());
-            assert!(failed.finished_at.is_some());
-            assert_eq!(failed.result_text, None);
         });
     }
 
@@ -3349,52 +3193,6 @@ mod tests {
                 .await
                 .expect("subject results should list");
             assert_eq!(subject_results, vec![retried_completion.result]);
-        });
-    }
-
-    #[test]
-    fn spawn_setup_failures_mark_jobs_failed() {
-        let dir = TestDir::new("spawn-setup-failure");
-
-        let (jobs, job, runtime) = {
-            let setup_runtime = build_test_runtime();
-            setup_runtime.block_on(async {
-                let database = Database::initialize(dir.path())
-                    .await
-                    .expect("database should initialize");
-                let jobs = JobStore::new(database.handle().clone());
-                let job = jobs
-                    .enqueue(&JobDescriptor::new("ocr"), Some("{\"documentId\":1}"))
-                    .await
-                    .expect("job should enqueue");
-                let runtime = JobRuntime::new(1).expect("job runtime should initialize");
-
-                (jobs, job, runtime)
-            })
-        };
-
-        let error = runtime
-            .spawn_cpu(jobs.clone(), job.clone(), || {
-                Ok(CpuJobSuccess::new("done".to_string()))
-            })
-            .err()
-            .expect("spawning without a tokio runtime should fail");
-        assert!(matches!(error, AppInfraError::AsyncRuntimeUnavailable));
-
-        let verify_runtime = build_test_runtime();
-        verify_runtime.block_on(async {
-            let failed = jobs
-                .get(job.id)
-                .await
-                .expect("failed job should be readable")
-                .expect("failed job should exist");
-            assert_eq!(failed.status, BackgroundJobStatus::Failed);
-            assert_eq!(
-                failed.last_error.as_deref(),
-                Some("background jobs require an active Tokio runtime")
-            );
-            assert!(failed.started_at.is_none());
-            assert!(failed.finished_at.is_some());
         });
     }
 

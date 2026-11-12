@@ -418,7 +418,6 @@ dependencies = [
  "log",
  "ocr",
  "rand 0.8.5",
- "rayon",
  "regex",
  "secret-redaction",
  "security-framework",
