@@ -13,6 +13,7 @@
 
 mod activity_continuation;
 mod activity_meta;
+mod activity_window_write;
 mod capture_bounds;
 pub mod capture_source;
 pub mod conclusion_dedup;
@@ -24,6 +25,7 @@ pub mod recurrence;
 pub mod store;
 pub mod subject_vectors;
 
+pub use activity_window_write::ActivityWindowWrite;
 pub use capture_source::{CaptureWindow, CaptureWindowItem};
 pub use conclusion_dedup::ConclusionDedupSummary;
 pub use distillation_input::{DistillationInput, DistillationWatermark};

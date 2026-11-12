@@ -456,35 +456,26 @@ pub async fn run_forward_activity_window(
         };
     }
 
-    // Run the LLM segmentation, then stamp ONE derivation_run with the final
-    // outcome (status / count / estimated tokens / window). This single insert
-    // both records the result and advances the newest-covered cursor.
-    match derivation::derive_activities(
-        engine,
-        store,
-        window,
-        provider_label.clone(),
-        model_label.clone(),
-    )
-    .await
-    {
+    // Run the LLM segmentation; on success it writes ONE `completed`
+    // derivation_run (count / estimated tokens / window) in the same
+    // transaction as the Activities, which both records the result and
+    // advances the newest-covered cursor.
+    let completed_run = NewDerivationRun {
+        kind: "activity".to_string(),
+        window_start_ms: Some(start),
+        window_end_ms: Some(end),
+        status: "completed".to_string(),
+        activities_derived: 0,
+        conclusions_derived: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        provider: provider_label.clone(),
+        model: model_label.clone(),
+        error: None,
+        gate_drops: DistillationGateDrops::default(),
+    };
+    match derivation::derive_activities(engine, store, window, completed_run).await {
         Ok(outcome) => {
-            let _ = store
-                .insert_derivation_run(NewDerivationRun {
-                    kind: "activity".to_string(),
-                    window_start_ms: Some(start),
-                    window_end_ms: Some(end),
-                    status: "completed".to_string(),
-                    activities_derived: outcome.inserted as i64,
-                    conclusions_derived: 0,
-                    input_tokens: outcome.input_tokens,
-                    output_tokens: outcome.output_tokens,
-                    provider: provider_label,
-                    model: model_label,
-                    error: None,
-                    gate_drops: DistillationGateDrops::default(),
-                })
-                .await;
             let message = if outcome.inserted == 0 && outcome.extended > 0 {
                 format!(
                     "Extended {} ongoing {} from {} capture item(s).",

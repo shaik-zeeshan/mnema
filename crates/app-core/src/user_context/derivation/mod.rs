@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 use app_infra::user_context::{confidence, guardrail};
 use app_infra::{
     evidence_fingerprint, ActivityCorrection, CaptureWindow, NewActivity, NewActivityEvidence,
-    NewConclusion, NewConclusionEvidence, SubjectVectorStore, SupersedeOutcome, UserContextStore,
+    NewConclusion, NewConclusionEvidence, NewDerivationRun, SubjectVectorStore, SupersedeOutcome,
+    UserContextStore,
 };
 
 use super::activity_spans::{place, too_thin_for_summary, Placement, Span};
@@ -135,9 +136,8 @@ pub fn estimate_tokens(text: &str) -> i64 {
     (text.chars().count() as i64 + 3) / 4
 }
 
-/// The outcome of one [`derive_activities`] call. The caller stamps a single
-/// `derivation_run` ledger row from this (count + estimated tokens) in one shot,
-/// which is why `derive_activities` does not write the run itself.
+/// The outcome of one [`derive_activities`] call, whose `completed` run row
+/// (count + estimated tokens) is already written with the Activities.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ActivityDerivationOutcome {
     /// Number of Activities inserted into the store.
@@ -439,21 +439,22 @@ label.\n\n",
 /// Derive **Activity** episodes from one redacted capture window and persist
 /// them. Returns the count inserted plus best-effort token estimates.
 ///
-/// The caller (the worker / the run-now command) owns recording the single
-/// `derivation_run` ledger row from the returned [`ActivityDerivationOutcome`],
-/// which is why this fn does not write the run itself.
-///
-/// `provider_label` / `model_label` are accepted only so the signature matches
-/// the caller's run-row stamping; they are not sent to the engine (the engine
-/// selection lives in `engine`).
+/// `completed_run` is the caller's `completed` run row (kind, window,
+/// provider/model labels); this fn fills in the count and token estimates and
+/// writes it in the SAME transaction as the Activities, so a window is never
+/// half-saved (Activities without the run that marks it done). On `Err`
+/// nothing was written and the caller records the `failed` run.
 pub async fn derive_activities(
     engine: &ai_engine::EngineConfig,
     store: &UserContextStore,
     window: CaptureWindow,
-    _provider_label: Option<String>,
-    _model_label: Option<String>,
+    mut completed_run: NewDerivationRun,
 ) -> Result<ActivityDerivationOutcome, String> {
     if window.items.is_empty() {
+        store
+            .insert_derivation_run(completed_run)
+            .await
+            .map_err(|error| error.to_string())?;
         return Ok(ActivityDerivationOutcome {
             inserted: 0,
             extended: 0,
@@ -505,8 +506,17 @@ pub async fn derive_activities(
         .map(|json| estimate_tokens(&json))
         .unwrap_or(0);
 
-    let (inserted, extended) =
-        persist_batch(store, &window, &tag_to_captured_at, &neighbour_ids, &batch).await?;
+    completed_run.input_tokens = input_tokens;
+    completed_run.output_tokens = output_tokens;
+    let (inserted, extended) = persist_batch(
+        store,
+        &window,
+        &tag_to_captured_at,
+        &neighbour_ids,
+        &batch,
+        completed_run,
+    )
+    .await?;
     Ok(ActivityDerivationOutcome {
         inserted,
         extended,
@@ -515,16 +525,18 @@ pub async fn derive_activities(
     })
 }
 
-/// Persist one engine batch for a NON-EMPTY window, returning
-/// `(inserted, extended)`. A batch that grounds nothing (no activities, or all
-/// ungrounded) is an `Err`, so the worker records the window `failed` and the
-/// Retry pass re-derives it instead of a `completed` run hiding the hole.
+/// Persist one engine batch for a NON-EMPTY window plus its `completed_run`
+/// row in one transaction, returning `(inserted, extended)`. A batch that
+/// grounds nothing (no activities, or all ungrounded) is an `Err` with nothing
+/// written, so the worker records the window `failed` and the Retry pass
+/// re-derives it instead of a `completed` run hiding the hole.
 async fn persist_batch(
     store: &UserContextStore,
     window: &CaptureWindow,
     tag_to_captured_at: &HashMap<String, i64>,
     neighbour_ids: &std::collections::HashSet<i64>,
     batch: &DerivedActivityBatch,
+    mut completed_run: NewDerivationRun,
 ) -> Result<(usize, usize), String> {
     let mut drafts: Vec<(Option<i64>, NewActivity)> = Vec::new();
     for activity in &batch.activities {
@@ -611,6 +623,12 @@ async fn persist_batch(
         .into_iter()
         .map(|a| (a.id, (a.started_at_ms, a.ended_at_ms)))
         .collect();
+    // Every write below plus the run row commit together (dropped on `Err` or
+    // a quit mid-loop, it rolls back).
+    let mut write = store
+        .begin_activity_window_write()
+        .await
+        .map_err(|error| error.to_string())?;
     let mut inserted = 0usize;
     let mut extended = 0usize;
     for (continues, mut draft) in drafts {
@@ -620,8 +638,8 @@ async fn persist_batch(
         match place(span, continues, &claimed) {
             Placement::Insert(piece) => (draft.started_at_ms, draft.ended_at_ms) = piece,
             Placement::Extend(id) => {
-                if store
-                    .extend_activity_with_evidence(id, draft.clone())
+                if write
+                    .extend_activity(id, &draft)
                     .await
                     .map_err(|error| error.to_string())?
                 {
@@ -641,8 +659,8 @@ async fn persist_batch(
             draft.summary.clear();
         }
         let stored = (draft.started_at_ms, draft.ended_at_ms);
-        let id = store
-            .insert_activity_with_evidence(draft)
+        let id = write
+            .insert_activity(&draft)
             .await
             .map_err(|error| error.to_string())?;
         claimed.push((id, stored));
@@ -656,6 +674,11 @@ async fn persist_batch(
     if inserted + extended == 0 {
         return Err("The model returned no Activities grounded in this window.".to_string());
     }
+    completed_run.activities_derived = inserted as i64;
+    write
+        .commit_with_run(completed_run)
+        .await
+        .map_err(|error| error.to_string())?;
     Ok((inserted, extended))
 }
 

@@ -6,7 +6,7 @@
 //! The row keeps its `id`, so Conclusion evidence and the user's Category/Focus
 //! corrections stay attached to it.
 
-use super::store::{category_to_str, focus_to_str, NewActivity, UserContextStore};
+use super::store::{NewActivity, UserContextStore};
 use crate::Result;
 
 impl UserContextStore {
@@ -24,46 +24,11 @@ impl UserContextStore {
         draft: NewActivity,
     ) -> Result<bool> {
         let mut transaction = self.db.begin_write().await?;
-
-        let updated = sqlx::query(
-            "UPDATE user_context_activities SET \
-                title = COALESCE(NULLIF(?2, ''), title), summary = COALESCE(NULLIF(?3, ''), summary), \
-                category = COALESCE(?4, category), focus = COALESCE(?5, focus), \
-                started_at_ms = MIN(started_at_ms, ?6), ended_at_ms = MAX(ended_at_ms, ?7), \
-                updated_at_ms = ?8 \
-             WHERE id = ?1",
-        )
-        .bind(activity_id)
-        .bind(&draft.title)
-        .bind(&draft.summary)
-        .bind(draft.category.map(category_to_str))
-        .bind(draft.focus.map(focus_to_str))
-        .bind(draft.started_at_ms)
-        .bind(draft.ended_at_ms)
-        .bind(super::store::now_ms())
-        .execute(&mut *transaction)
-        .await?
-        .rows_affected();
-        if updated == 0 {
-            return Ok(false);
-        }
-
-        for evidence in &draft.evidence {
-            sqlx::query(
-                "INSERT OR IGNORE INTO user_context_activity_evidence \
-                    (activity_id, subject_type, subject_id, captured_at_ms, is_headline) \
-                 VALUES (?1, ?2, ?3, ?4, 0)",
-            )
-            .bind(activity_id)
-            .bind(&evidence.subject_type)
-            .bind(evidence.subject_id)
-            .bind(evidence.captured_at_ms)
-            .execute(&mut *transaction)
-            .await?;
-        }
-
+        let extended =
+            super::activity_window_write::extend_activity_tx(&mut transaction, activity_id, &draft)
+                .await?;
         transaction.commit().await?;
-        Ok(true)
+        Ok(extended)
     }
 }
 

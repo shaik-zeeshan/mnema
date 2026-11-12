@@ -356,41 +356,9 @@ impl UserContextStore {
     /// returning the new Activity id. Duplicate evidence (same
     /// `activity_id`/`subject_type`/`subject_id`) is ignored.
     pub async fn insert_activity_with_evidence(&self, draft: NewActivity) -> Result<i64> {
-        let created_at_ms = now_ms();
         let mut transaction = self.db.begin_write().await?;
-
-        let activity_id = sqlx::query(
-            "INSERT INTO user_context_activities \
-                (title, summary, category, focus, started_at_ms, ended_at_ms, derivation_run_id, created_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        )
-        .bind(&draft.title)
-        .bind(&draft.summary)
-        .bind(draft.category.map(category_to_str))
-        .bind(draft.focus.map(focus_to_str))
-        .bind(draft.started_at_ms)
-        .bind(draft.ended_at_ms)
-        .bind(draft.derivation_run_id)
-        .bind(created_at_ms)
-        .execute(&mut *transaction)
-        .await?
-        .last_insert_rowid();
-
-        for evidence in &draft.evidence {
-            sqlx::query(
-                "INSERT OR IGNORE INTO user_context_activity_evidence \
-                    (activity_id, subject_type, subject_id, captured_at_ms, is_headline) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-            )
-            .bind(activity_id)
-            .bind(&evidence.subject_type)
-            .bind(evidence.subject_id)
-            .bind(evidence.captured_at_ms)
-            .bind(evidence.is_headline as i64)
-            .execute(&mut *transaction)
-            .await?;
-        }
-
+        let activity_id =
+            super::activity_window_write::insert_activity_tx(&mut transaction, &draft).await?;
         transaction.commit().await?;
         Ok(activity_id)
     }
@@ -735,40 +703,7 @@ impl UserContextStore {
 
     /// Inserts a derivation-run ledger row, returning its id.
     pub async fn insert_derivation_run(&self, run: NewDerivationRun) -> Result<i64> {
-        let created_at_ms = now_ms();
-        let id = sqlx::query(
-            "INSERT INTO user_context_derivation_runs \
-                (kind, window_start_ms, window_end_ms, status, activities_derived, \
-                 conclusions_derived, input_tokens, output_tokens, provider, model, error, \
-                 ungrounded, guardrail_suppressed, below_formation_bar, resurface_blocked, \
-                 superseded, supersede_degraded, supersede_blocked, \
-                 created_at_ms) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, \
-                     ?16, ?17, ?18, ?19)",
-        )
-        .bind(&run.kind)
-        .bind(run.window_start_ms)
-        .bind(run.window_end_ms)
-        .bind(&run.status)
-        .bind(run.activities_derived)
-        .bind(run.conclusions_derived)
-        .bind(run.input_tokens)
-        .bind(run.output_tokens)
-        .bind(run.provider.as_deref())
-        .bind(run.model.as_deref())
-        .bind(run.error.as_deref())
-        .bind(run.gate_drops.ungrounded)
-        .bind(run.gate_drops.guardrail_suppressed)
-        .bind(run.gate_drops.below_formation_bar)
-        .bind(run.gate_drops.resurface_blocked)
-        .bind(run.gate_drops.superseded)
-        .bind(run.gate_drops.supersede_degraded)
-        .bind(run.gate_drops.supersede_blocked)
-        .bind(created_at_ms)
-        .execute(self.db.write())
-        .await?
-        .last_insert_rowid();
-        Ok(id)
+        super::activity_window_write::insert_derivation_run_with(self.db.write(), &run).await
     }
 
     /// The most recent **completed** Conclusion-distillation run (kind

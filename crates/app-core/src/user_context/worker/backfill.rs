@@ -87,32 +87,23 @@ pub(super) async fn derive_window_and_record(
         return BackfillStep::Advanced;
     }
 
-    match derivation::derive_activities(
-        engine,
-        store,
-        window,
-        provider_label.clone(),
-        model_label.clone(),
-    )
-    .await
-    {
+    // On success the `completed` run is written with the Activities, atomically.
+    let completed_run = NewDerivationRun {
+        kind: kind.to_string(),
+        window_start_ms: Some(start),
+        window_end_ms: Some(end),
+        status: "completed".to_string(),
+        activities_derived: 0,
+        conclusions_derived: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        provider: provider_label.clone(),
+        model: model_label.clone(),
+        error: None,
+        gate_drops: DistillationGateDrops::default(),
+    };
+    match derivation::derive_activities(engine, store, window, completed_run).await {
         Ok(outcome) => {
-            let _ = store
-                .insert_derivation_run(NewDerivationRun {
-                    kind: kind.to_string(),
-                    window_start_ms: Some(start),
-                    window_end_ms: Some(end),
-                    status: "completed".to_string(),
-                    activities_derived: outcome.inserted as i64,
-                    conclusions_derived: 0,
-                    input_tokens: outcome.input_tokens,
-                    output_tokens: outcome.output_tokens,
-                    provider: provider_label,
-                    model: model_label,
-                    error: None,
-                    gate_drops: DistillationGateDrops::default(),
-                })
-                .await;
             if outcome.inserted + outcome.extended > 0 {
                 BackfillStep::Derived
             } else {

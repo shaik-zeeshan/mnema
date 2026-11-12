@@ -518,8 +518,27 @@ fn derived(evidence_refs: &[&str]) -> DerivedActivity {
     }
 }
 
+fn completed_run() -> NewDerivationRun {
+    NewDerivationRun {
+        kind: "activity".to_string(),
+        window_start_ms: Some(0),
+        window_end_ms: Some(10),
+        status: "completed".to_string(),
+        activities_derived: 0,
+        conclusions_derived: 0,
+        input_tokens: 0,
+        output_tokens: 0,
+        provider: None,
+        model: None,
+        error: None,
+        gate_drops: app_infra::DistillationGateDrops::default(),
+    }
+}
+
 /// A batch that grounds nothing (no activities, or only refs the window never
-/// showed) must be an `Err` so the worker records `failed` and retries it.
+/// showed) must be an `Err` so the worker records `failed` and retries it —
+/// with neither Activities nor a `completed` run written; a grounded batch
+/// writes both together.
 #[tokio::test]
 async fn a_batch_that_grounds_nothing_is_an_error() {
     let unique = std::time::SystemTime::now()
@@ -541,26 +560,48 @@ async fn a_batch_that_grounds_nothing_is_an_error() {
 
     for batch in [vec![], vec![derived(&["f99", "a2"])]] {
         let batch = DerivedActivityBatch { activities: batch };
-        let result = persist_batch(infra.user_context(), &window, &tags, &neighbours, &batch).await;
+        let result = persist_batch(
+            infra.user_context(),
+            &window,
+            &tags,
+            &neighbours,
+            &batch,
+            completed_run(),
+        )
+        .await;
         assert!(
             result.is_err(),
             "ungrounded batch must fail, got {result:?}"
         );
     }
-    assert_eq!(
-        infra
-            .user_context()
-            .count_activities()
-            .await
-            .expect("count"),
-        0
-    );
+    let store = infra.user_context();
+    assert_eq!(store.count_activities().await.expect("count"), 0);
+    assert!(store
+        .list_derivation_runs(10)
+        .await
+        .expect("runs")
+        .is_empty());
 
     let grounded = DerivedActivityBatch {
         activities: vec![derived(&["a1"])],
     };
-    let result = persist_batch(infra.user_context(), &window, &tags, &neighbours, &grounded).await;
+    let result = persist_batch(
+        store,
+        &window,
+        &tags,
+        &neighbours,
+        &grounded,
+        completed_run(),
+    )
+    .await;
     assert_eq!(result, Ok((1, 0)));
+    assert_eq!(store.count_activities().await.expect("count"), 1);
+    let runs = store.list_derivation_runs(10).await.expect("runs");
+    assert_eq!(runs.len(), 1, "the window's run lands with its Activity");
+    assert_eq!(
+        (runs[0].status.as_str(), runs[0].activities_derived),
+        ("completed", 1)
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -600,6 +641,7 @@ async fn interleaved_activities_in_one_window_do_not_overlap() {
         &tags,
         &std::collections::HashSet::new(),
         &batch,
+        completed_run(),
     )
     .await;
     assert_eq!(result, Ok((3, 0)));

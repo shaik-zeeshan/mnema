@@ -8,6 +8,10 @@ use time::{format_description::well_known::Rfc3339, Date, Duration, OffsetDateTi
 use crate::db::CaptureDb;
 use crate::{processing::ProcessingJobStatus, Result};
 
+mod file_tombstones;
+#[cfg(test)]
+mod file_tombstones_tests;
+
 const SQLITE_BIND_CHUNK_SIZE: usize = 500;
 
 /// Capture segments deleted per write transaction during a retention sweep.
@@ -567,15 +571,41 @@ impl CaptureRetentionStore {
         // accumulation below counts actuals (the rest default to 0/empty).
         summary.deleted_frames = 0;
         summary.deleted_audio_segments = 0;
+        // Each batch tombstones its own files in its row-delete transaction and
+        // removes them right after commit, so a quit or crash between batches
+        // leaves `pending` tombstones (finished by the next worker pass), never
+        // files with no row pointing at them.
+        let mut file_delete_errors = 0_i64;
         for segment_chunk in segment_ids.chunks(RETENTION_SEGMENT_BATCH_SIZE) {
-            self.delete_eligible_batch(segment_chunk, &[], &[], &mut summary)
+            let batch_paths = file_paths
+                .iter()
+                .filter(|path| {
+                    path.capture_segment_id
+                        .is_some_and(|id| segment_chunk.contains(&id))
+                })
+                .collect::<Vec<_>>();
+            let tombstones = self
+                .delete_eligible_batch(segment_chunk, &[], &[], &batch_paths, &mut summary)
                 .await?;
+            file_delete_errors += self.remove_tombstoned_files(tombstones, context).await?;
         }
         // Orphan frames/audio belong to no still-deletable segment; clear them in
         // their own batch (still atomic, still short-locked).
         if !orphan_frame_ids.is_empty() || !orphan_audio_ids.is_empty() {
-            self.delete_eligible_batch(&[], &orphan_frame_ids, &orphan_audio_ids, &mut summary)
+            let orphan_paths = file_paths
+                .iter()
+                .filter(|path| path.capture_segment_id.is_none())
+                .collect::<Vec<_>>();
+            let tombstones = self
+                .delete_eligible_batch(
+                    &[],
+                    &orphan_frame_ids,
+                    &orphan_audio_ids,
+                    &orphan_paths,
+                    &mut summary,
+                )
                 .await?;
+            file_delete_errors += self.remove_tombstoned_files(tombstones, context).await?;
         }
         // Orphan speaker-cluster GC is global (not tied to any batch's rows), so
         // it runs ONCE per sweep in its own short tx instead of inside every
@@ -588,34 +618,20 @@ impl CaptureRetentionStore {
             gc_orphan_speaker_rows(&mut tx).await?;
             tx.commit().await?;
         }
-        // Run record is best-effort bookkeeping after the durable deletes (file
-        // tombstoning below keys off its id); a crash here only loses one
-        // latest_status row, never leaves raw-gone-dossier-left.
-        let cleanup_run_id = {
-            let mut tx = self.db.begin_write().await?;
-            let id = insert_cleanup_run(&mut tx, &summary, mode.as_str(), "completed").await?;
-            tx.commit().await?;
-            id
-        };
-        let file_delete_errors = self
-            .delete_segment_files_and_tombstone(cleanup_run_id, &file_paths, context)
-            .await?;
         if file_delete_errors > 0 {
             summary.file_delete_errors = file_delete_errors;
             summary.pending_file_tombstones = self.pending_file_tombstone_count().await?;
             summary.status = "completed_with_file_errors".to_string();
-            sqlx::query(
-                "UPDATE retention_cleanup_runs
-                 SET status = 'completed_with_file_errors', pending_file_tombstones = ?2
-                 WHERE id = ?1",
-            )
-            .bind(cleanup_run_id)
-            .bind(summary.pending_file_tombstones)
-            .execute(self.db.write())
-            .await?;
         } else {
             summary.status = "completed".to_string();
         }
+        // Run record is best-effort bookkeeping after the durable deletes; a
+        // crash here only loses one latest_status row, never leaves
+        // raw-gone-dossier-left (every deleted row's files are already
+        // tombstoned).
+        let mut tx = self.db.begin_write().await?;
+        insert_cleanup_run(&mut tx, &summary, mode.as_str(), &summary.status).await?;
+        tx.commit().await?;
         Ok(summary)
     }
 
@@ -626,17 +642,24 @@ impl CaptureRetentionStore {
     /// `frames` state inside each tx: a batch split across batches is deleted by
     /// whichever batch removes its last frame (earlier batches' frames are
     /// already committed-gone), so no batch row leaks.
+    ///
+    /// `file_paths` (this batch's files) get `pending` tombstones in the same
+    /// transaction, returned as `(tombstone id, path)` for the caller to delete
+    /// after commit.
     async fn delete_eligible_batch(
         &self,
         segment_ids: &[i64],
         orphan_frame_ids: &[i64],
         orphan_audio_ids: &[i64],
+        file_paths: &[&SegmentFilePath],
         summary: &mut RetentionCleanupSummary,
-    ) -> Result<()> {
+    ) -> Result<Vec<(i64, String)>> {
         let mut tx = self.db.begin_write().await?;
+        let tombstones = file_tombstones::insert_pending_tombstones(&mut tx, file_paths).await?;
         let mut frame_ids = ids_for_capture_segments(&mut tx, "frames", segment_ids).await?;
         frame_ids.extend_from_slice(orphan_frame_ids);
-        let mut audio_ids = ids_for_capture_segments(&mut tx, "audio_segments", segment_ids).await?;
+        let mut audio_ids =
+            ids_for_capture_segments(&mut tx, "audio_segments", segment_ids).await?;
         audio_ids.extend_from_slice(orphan_audio_ids);
         let frame_batch_ids = frame_batch_ids_deletable_with_frames(&mut tx, &frame_ids).await?;
         let background_job_ids =
@@ -660,7 +683,7 @@ impl CaptureRetentionStore {
         summary.deleted_capture_segments +=
             delete_by_ids(&mut tx, "capture_segments", segment_ids).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(tombstones)
     }
 
     pub async fn latest_status(&self, policy: RetentionPolicy) -> Result<RetentionCleanupSummary> {
@@ -707,50 +730,6 @@ impl CaptureRetentionStore {
         })
     }
 
-    pub async fn retry_pending_file_tombstones(
-        &self,
-        context: &RetentionCleanupContext,
-    ) -> Result<i64> {
-        let rows = sqlx::query(
-            "SELECT id, path, path_kind FROM retention_file_tombstones
-             WHERE status IN ('pending', 'failed')
-             ORDER BY id ASC",
-        )
-        .fetch_all(self.db.read())
-        .await?;
-        let mut resolved = 0_i64;
-        for row in rows {
-            let id: i64 = row.get("id");
-            let path: String = row.get("path");
-            match delete_path_if_safe(&path, context) {
-                Ok(()) => {
-                    resolved += 1;
-                    sqlx::query(
-                        "UPDATE retention_file_tombstones
-                         SET status = 'resolved', resolved_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                         WHERE id = ?1",
-                    )
-                    .bind(id)
-                    .execute(self.db.write())
-                    .await?;
-                }
-                Err(error) => {
-                    sqlx::query(
-                        "UPDATE retention_file_tombstones
-                         SET status = 'failed', last_error = ?2, attempt_count = attempt_count + 1,
-                             updated_at = CURRENT_TIMESTAMP
-                         WHERE id = ?1",
-                    )
-                    .bind(id)
-                    .bind(error)
-                    .execute(self.db.write())
-                    .await?;
-                }
-            }
-        }
-        Ok(resolved)
-    }
-
     async fn plan_cleanup(
         &self,
         policy: RetentionPolicy,
@@ -789,61 +768,6 @@ impl CaptureRetentionStore {
                 count_conversations_older_than(self.db.read(), cutoff_ms).await?;
         }
         Ok(summary)
-    }
-
-    pub async fn pending_file_tombstone_count(&self) -> Result<i64> {
-        Ok(sqlx::query(
-            "SELECT COUNT(*) AS count FROM retention_file_tombstones WHERE status IN ('pending', 'failed')",
-        )
-        .fetch_one(self.db.read())
-        .await?
-        .get("count"))
-    }
-
-    pub async fn insert_file_tombstone(
-        &self,
-        cleanup_run_id: Option<i64>,
-        capture_segment_id: Option<i64>,
-        path: &str,
-        path_kind: &str,
-        last_error: &str,
-    ) -> Result<()> {
-        sqlx::query(
-            "INSERT INTO retention_file_tombstones
-                (cleanup_run_id, capture_segment_id, path, path_kind, status, last_error, attempt_count)
-             VALUES (?1, ?2, ?3, ?4, 'failed', ?5, 1)",
-        )
-        .bind(cleanup_run_id)
-        .bind(capture_segment_id)
-        .bind(path)
-        .bind(path_kind)
-        .bind(last_error)
-        .execute(self.db.write())
-        .await?;
-        Ok(())
-    }
-
-    async fn delete_segment_files_and_tombstone(
-        &self,
-        cleanup_run_id: i64,
-        paths: &[SegmentFilePath],
-        context: &RetentionCleanupContext,
-    ) -> Result<i64> {
-        let mut failures = 0_i64;
-        for path in paths {
-            if let Err(error) = delete_path_if_safe(&path.path, context) {
-                failures += 1;
-                self.insert_file_tombstone(
-                    Some(cleanup_run_id),
-                    path.capture_segment_id,
-                    &path.path,
-                    &path.path_kind,
-                    &error,
-                )
-                .await?;
-            }
-        }
-        Ok(failures)
     }
 }
 
@@ -1684,7 +1608,7 @@ mod tests {
 
     static TEST_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-    fn rfc3339(value: &str) -> OffsetDateTime {
+    pub(super) fn rfc3339(value: &str) -> OffsetDateTime {
         OffsetDateTime::parse(value, &Rfc3339).expect("test timestamp should parse")
     }
 
@@ -1721,7 +1645,7 @@ mod tests {
         assert_eq!(cutoff.as_deref(), Some("2026-03-02T08:00:00Z"));
     }
 
-    async fn create_retention_cleanup_tables(pool: &SqlitePool) {
+    pub(super) async fn create_retention_cleanup_tables(pool: &SqlitePool) {
         for statement in [
             "CREATE TABLE capture_segments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1876,7 +1800,7 @@ mod tests {
         }
     }
 
-    fn create_test_dir(name: &str) -> PathBuf {
+    pub(super) fn create_test_dir(name: &str) -> PathBuf {
         let id = TEST_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
         let dir = std::env::temp_dir().join(format!(
             "mnema-retention-{name}-{}-{id}",

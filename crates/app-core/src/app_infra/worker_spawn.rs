@@ -308,10 +308,19 @@ pub(super) fn spawn_retention_cleanup_worker(
                 .map(|guard| guard.settings.retention_policy)
                 .unwrap_or(SettingsRetentionPolicy::Never);
             let context = retention_context_for_app(&core, &infra).await;
-            let _ = infra
-                .capture_retention()
-                .retry_pending_file_tombstones(&context)
-                .await;
+            // Quit stops the healer and the sweep at their next await: every
+            // batch commits its rows with their files' tombstones, so whatever
+            // is cut short resumes from the tombstones next launch.
+            let healed = until_shutdown(
+                &mut shutdown_rx,
+                infra
+                    .capture_retention()
+                    .retry_pending_file_tombstones(&context),
+            )
+            .await;
+            if healed.is_none() {
+                break;
+            }
             let mut retry_soon = false;
             if policy != SettingsRetentionPolicy::Never {
                 crate::debug_log::log(format!(
@@ -323,16 +332,20 @@ pub(super) fn spawn_retention_cleanup_worker(
                         "timer"
                     }
                 ));
-                match infra
-                    .capture_retention()
-                    .run_cleanup_with_mode(
+                let Some(outcome) = until_shutdown(
+                    &mut shutdown_rx,
+                    infra.capture_retention().run_cleanup_with_mode(
                         app_retention_policy(policy),
                         local_now_for_retention(),
                         &context,
                         ::app_infra::RetentionCleanupMode::Automatic,
-                    )
-                    .await
-                {
+                    ),
+                )
+                .await
+                else {
+                    break;
+                };
+                match outcome {
                     Ok(summary)
                         if summary.deleted_frames > 0
                             || summary.deleted_audio_segments > 0
