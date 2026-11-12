@@ -108,6 +108,27 @@ pub fn load_embedder(
     Ok(loaded)
 }
 
+/// The [`SHARED_EMBEDDER`] instance for `descriptor` if one is already alive and
+/// [reusable](shared_embedder_is_reusable); never loads. For the query path, which
+/// may embed on it only while holding [`BACKGROUND_EMBED_SLOT`] (see
+/// `semantic_search_query::borrow_when_free`).
+pub fn warm_shared_embedder(
+    descriptor: &SemanticSearchModelDescriptor,
+) -> Option<Arc<LoadedEmbedder>> {
+    SHARED_EMBEDDER
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+        .upgrade()
+        .filter(|existing| {
+            shared_embedder_is_reusable(
+                &existing.provider,
+                &existing.model_id,
+                existing.loaded_at.elapsed(),
+                descriptor,
+            )
+        })
+}
+
 /// Models above this download size are never loaded twice (founder ruling
 /// 2026-11-11): two copies of a 2 GB model is 4 GB. Every caller, search included,
 /// shares the one instance, and a live instance is reused even past the warm cap —
@@ -141,12 +162,14 @@ pub(super) fn shared_embedder_is_reusable(
 /// Load a **private** embedder instance — its own weights and, on macOS, its own
 /// candle `Device` — bypassing [`SHARED_EMBEDDER`] entirely.
 ///
-/// This is the query path's loader. A search is the one embed caller that
-/// deliberately does not take [`BACKGROUND_EMBED_SLOT`] ("making a search wait
-/// behind a backfill batch is the wrong trade"), so it is also the one caller for
-/// which sharing the background sweep's device turns that exclusion into a
-/// pessimisation: instead of two command queues the GPU can interleave, the query's
-/// kernels queue behind the sweep's on one `Commands` write lock, and its readback
+/// This is the query path's loader for when the background slot is busy (an idle
+/// slot lets a search borrow the warm shared instance via [`warm_shared_embedder`]).
+/// A search is the one embed caller that never waits for
+/// [`BACKGROUND_EMBED_SLOT`] ("making a search wait behind a backfill batch is the
+/// wrong trade"), so it is also the one caller for which embedding on the
+/// background sweep's device without the slot turns that into a pessimisation:
+/// instead of two command queues the GPU can interleave, the query's kernels queue
+/// behind the sweep's on one `Commands` write lock, and its readback
 /// `wait_until_completed()` waits on the sweep's outstanding command buffer too.
 ///
 /// Measured on an M4 Air, `nomic-embed-text-v1.5` on Metal, with one thread looping

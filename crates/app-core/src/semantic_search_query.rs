@@ -24,7 +24,8 @@ use semantic_search::EmbedKind;
 
 use crate::semantic_search_worker::{
     effective_semantic_search_settings, load_embedder, load_embedder_private,
-    resolve_selected_descriptor, selected_model_available, single_copy_only, LoadedEmbedder,
+    resolve_selected_descriptor, selected_model_available, single_copy_only, warm_shared_embedder,
+    LoadedEmbedder, BACKGROUND_EMBED_SLOT,
 };
 use crate::AppCore;
 
@@ -164,6 +165,35 @@ pub async fn embed_search_query(
     // in short, await-free sections (take below, restore after the await).
     let _load_guard = state.load_lock.lock().await;
 
+    // Borrow the indexer's copy when it is already loaded and the background GPU
+    // slot is free right now, so a search does not load a second copy (~450 MB of
+    // GPU memory for the default model). Holding the slot for this one embed keeps
+    // the device to one user at a time — sharing was slow only while a backfill
+    // batch ran on it (`load_embedder_private`'s table). A busy slot never waits:
+    // it falls through to the private copy below. Background embeds wait at most
+    // this one query (~30 ms). A single-copy model already shares below.
+    if !single_copy_only(&descriptor) {
+        let shared_descriptor = descriptor.clone();
+        let query = trimmed.to_string();
+        let borrowed = core
+            .spawn_blocking(move || {
+                borrow_when_free(
+                    &BACKGROUND_EMBED_SLOT,
+                    || warm_shared_embedder(&shared_descriptor),
+                    |shared| {
+                        shared
+                            .embedder
+                            .embed_text(&query, EmbedKind::Query)
+                            .map_err(|error| error.to_string())
+                    },
+                )
+            })
+            .await;
+        if let Ok(Some(vector)) = borrowed {
+            return usable(vector);
+        }
+    }
+
     // Take the cached embedder out of the std mutex for the blocking task (so we
     // never hold a std Mutex across an await), reloading if the selection changed,
     // then put it back. The async load lock above keeps the brief None window
@@ -192,8 +222,8 @@ pub async fn embed_search_query(
     let result = core.spawn_blocking(move || {
         let loaded = match cached {
             Some(loaded) => loaded,
-            // A PRIVATE instance, not the shared background one: a search does not
-            // take `BACKGROUND_EMBED_SLOT`, so sharing the sweep's candle device
+            // A PRIVATE instance, not the shared background one: the slot was busy
+            // (or nothing was warm), and sharing the sweep's candle device
             // would queue its kernels behind the sweep's on one device lock
             // (measured p50 92ms -> 310ms, p95 233ms -> 995ms). See
             // `load_embedder_private`. A model over 1 GB is the exception: it is
@@ -267,11 +297,15 @@ pub async fn embed_search_query(
         });
     }
 
+    usable(vector)
+}
+
+/// Mirror the write-path guard (`store_vector` rejects non-finite components): a
+/// NaN/inf component would yield non-deterministic KNN ordering, so drop the
+/// vector and fall back to the keyword-only path the function already takes when
+/// there is no usable semantic vector.
+fn usable(vector: Result<Vec<f32>, String>) -> Option<Vec<f32>> {
     match vector {
-        // Mirror the write-path guard (`store_vector` rejects non-finite
-        // components): a NaN/inf component would yield non-deterministic KNN
-        // ordering, so drop the vector and fall back to the keyword-only path the
-        // function already takes when there is no usable semantic vector.
         Ok(vector) if vector.iter().any(|component| !component.is_finite()) => {
             crate::debug_log::log_warn(
                 "semantic query embed produced a non-finite component; \
@@ -288,6 +322,19 @@ pub async fn embed_search_query(
             None
         }
     }
+}
+
+/// Run `embed` on `peek`'s instance while holding `slot`, or `None` without
+/// waiting when the slot is busy or `peek` finds nothing warm. The borrowed value
+/// is dropped when `embed` returns, so the owner's idle drop and warm-cap recycle
+/// still free it.
+fn borrow_when_free<T, R>(
+    slot: &tokio::sync::Semaphore,
+    peek: impl FnOnce() -> Option<T>,
+    embed: impl FnOnce(T) -> R,
+) -> Option<R> {
+    let _permit = slot.try_acquire().ok()?;
+    peek().map(embed)
 }
 
 #[cfg(test)]
@@ -376,6 +423,42 @@ mod tests {
         let in_flight = slot.value.take();
         assert_eq!(slot.release_if_idle(parked), None);
         assert_eq!(in_flight, Some("model"));
+    }
+
+    #[test]
+    fn a_search_borrows_the_warm_copy_only_while_the_background_slot_is_free() {
+        let slot = tokio::sync::Semaphore::new(1);
+        let indexer_copy = Arc::new("model");
+        let peeks = std::cell::Cell::new(0);
+        let peek = || {
+            peeks.set(peeks.get() + 1);
+            Some(Arc::clone(&indexer_copy))
+        };
+
+        // Slot free + copy warm: the query embeds on it (no load), holding the
+        // slot so no background batch shares the device mid-embed.
+        let used = borrow_when_free(&slot, peek, |model| {
+            assert_eq!(slot.available_permits(), 0);
+            *model
+        });
+        assert_eq!(used, Some("model"));
+        // Neither the borrow nor the permit outlives the embed, so the owner's
+        // idle drop still frees the model.
+        assert_eq!(Arc::strong_count(&indexer_copy), 1);
+        assert_eq!(slot.available_permits(), 1);
+
+        // A background batch holds the slot: no wait, no peek, private path.
+        let batch = slot.try_acquire().unwrap();
+        assert_eq!(borrow_when_free(&slot, peek, |model| *model), None);
+        assert_eq!(peeks.get(), 1);
+        drop(batch);
+
+        // Nothing warm: private path, and the slot is handed straight back.
+        assert_eq!(
+            borrow_when_free(&slot, || None::<Arc<&str>>, |model| *model),
+            None
+        );
+        assert_eq!(slot.available_permits(), 1);
     }
 
     #[test]

@@ -55,7 +55,9 @@ mod sweep;
 #[cfg(test)]
 mod tests;
 
-pub use embedder::{load_embedder, load_embedder_private, single_copy_only, LoadedEmbedder};
+pub use embedder::{
+    load_embedder, load_embedder_private, single_copy_only, warm_shared_embedder, LoadedEmbedder,
+};
 pub use sweep::run_sweep_pass;
 pub use spawn::spawn_semantic_index_backfill_worker;
 
@@ -224,10 +226,11 @@ const BACKFILL_BATCH_COOLDOWN_MAX: Duration = Duration::from_secs(30);
 /// background embedders effectively saturate the GPU. Serialising them removes that
 /// worst case; the pacing cooldowns then compose instead of stacking.
 ///
-/// The QUERY path (`semantic_search_query.rs`) deliberately does NOT take this
-/// permit: it is user-facing and latency-sensitive, and making a search wait behind
-/// a backfill batch (~3.5s) to save background watts is the wrong trade. Only the
-/// two background sweeps share the slot.
+/// The QUERY path (`semantic_search_query.rs`) never WAITS for this permit: it is
+/// user-facing and latency-sensitive, and making a search wait behind a backfill
+/// batch (~3.5s) to save background watts is the wrong trade. It only
+/// `try_acquire`s it, to borrow the background instance for one query embed while
+/// no background batch is running; a busy slot sends it to its private copy.
 pub static BACKGROUND_EMBED_SLOT: tokio::sync::Semaphore =
     tokio::sync::Semaphore::const_new(1);
 

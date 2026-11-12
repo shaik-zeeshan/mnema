@@ -1,13 +1,16 @@
 //! The app log: `<log dir>/rust.log`, rotated at 5 MB keeping 4 archives (5 files),
-//! plus stderr. Info and above globally; Debug for our own targets
-//! (`app_core::debug_log::APP_LOG_TARGET_PREFIXES` + this crate) in debug builds.
+//! plus stderr. Only our own targets (the shared
+//! `app_core::debug_log::APP_LOG_TARGET_PREFIXES` and this crate), as the Tauri
+//! host: Info and above, Debug in debug builds or with developer options on. Third-party targets (`ort`, `rig`, `sqlx`, `gpui`) are
+//! dropped at every level — `ort::logging` alone was ~90% of a run's lines, and
+//! `sqlx`'s slow-statement WARN prints the statement text, the DB key included.
 
 use std::fs::{File, OpenOptions};
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use log::{Level, LevelFilter, Log, Metadata, Record};
+use log::{LevelFilter, Log, Metadata, Record};
 
 const FILE_NAME: &str = "rust.log";
 const MAX_FILE_BYTES: u64 = 5 * 1024 * 1024;
@@ -38,17 +41,8 @@ fn allowed(metadata: &Metadata) -> bool {
     if cfg!(feature = "feel-metrics") && metadata.target() == "mnema_gpui::feel" {
         return true;
     }
-    let app_max = if cfg!(debug_assertions) {
-        Level::Debug
-    } else {
-        Level::Info
-    };
-    let max = if is_app_target(metadata.target()) {
-        app_max
-    } else {
-        Level::Info
-    };
-    metadata.level() <= max
+    is_app_target(metadata.target())
+        && app_core::debug_log::app_log_record_allowed(metadata.level())
 }
 
 impl FileLog {
@@ -141,6 +135,21 @@ mod tests {
         assert!(is_app_target("app_core"));
         assert!(!is_app_target("mnema_gpuix"));
         assert!(!is_app_target("sqlx::query"));
+    }
+
+    #[test]
+    fn only_app_targets_reach_the_log() {
+        use log::{Level, MetadataBuilder};
+        let at =
+            |target, level| allowed(&MetadataBuilder::new().target(target).level(level).build());
+        assert!(!at("ort::logging", Level::Info));
+        assert!(!at("rig::completions", Level::Info));
+        assert!(!at("sqlx::query", Level::Warn));
+        assert!(!at("gpui_apple::text_system", Level::Error));
+        assert!(at("app_core::semantic_search_query", Level::Info));
+        assert!(at("mnema_gpui", Level::Warn));
+        // Developer options are off in tests, so Debug follows the build alone.
+        assert_eq!(at("app_infra::jobs", Level::Debug), cfg!(debug_assertions));
     }
 
     #[test]
