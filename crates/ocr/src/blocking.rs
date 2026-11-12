@@ -69,4 +69,19 @@ mod tests {
         .join()
         .expect("qos thread");
     }
+
+    /// The quit-hang fix: aborting a task stuck in slow OCR returns at once,
+    /// because the slow call sits on the blocking pool, not in the task.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn aborting_a_slow_recognition_returns_at_once() {
+        let task = tokio::spawn(super::run_blocking(|| {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            Ok(())
+        }));
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        let started = std::time::Instant::now();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
 }
