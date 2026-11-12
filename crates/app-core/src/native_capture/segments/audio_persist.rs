@@ -416,7 +416,8 @@ pub(crate) fn persist_committed_audio_segments(
 
     let infra = Arc::clone(&*core.state::<crate::AppInfraState>());
     let core = core.clone();
-    let persistence = run_native_capture_async("audio-segment-persistence", async move {
+    let runtime = core.runtime_handle();
+    let persistence = run_native_capture_async(runtime, "audio-segment-persistence", async move {
         let mut persisted_any = false;
         let transcription_admission = transcription_admission_for_app_handle(&core);
         let speaker_admission = speaker_analysis_admission_for_app_handle(&core);
@@ -510,13 +511,14 @@ pub(crate) async fn close_frame_batches_for_stopped_screen_session_id_async(
 
 #[cfg(target_os = "macos")]
 pub(crate) fn close_frame_batches_for_stopped_screen_session_id(
+    runtime: tokio::runtime::Handle,
     infra: &crate::AppInfraState,
     session_id: &str,
 ) -> Result<(), CaptureErrorResponse> {
     let infra = Arc::clone(infra);
     let session_id = session_id.to_string();
 
-    match run_native_capture_async("frame-batch-close", async move {
+    match run_native_capture_async(runtime, "frame-batch-close", async move {
         close_frame_batches_for_stopped_screen_session_id_async(&infra, &session_id).await
     }) {
         Ok(result) => result,
@@ -541,7 +543,11 @@ pub(crate) fn close_frame_batches_for_stopped_screen_session(
     };
 
     let infra = Arc::clone(&*core.state::<crate::AppInfraState>());
-    close_frame_batches_for_stopped_screen_session_id(&infra, &screen_session.session_id)
+    close_frame_batches_for_stopped_screen_session_id(
+        core.runtime_handle(),
+        &infra,
+        &screen_session.session_id,
+    )
 }
 
 #[cfg(target_os = "macos")]

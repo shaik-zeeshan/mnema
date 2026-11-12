@@ -138,7 +138,8 @@ fn persist_capture_session_started(
             .map(|s| s.session_id.clone()),
         segment_duration_seconds: segment_duration_seconds.min(i64::MAX as u64) as i64,
     };
-    match run_native_capture_async("capture-session-persistence", async move {
+    let runtime = core.runtime_handle();
+    match run_native_capture_async(runtime, "capture-session-persistence", async move {
         infra
             .capture_retention()
             .create_capture_session(&session)
@@ -156,32 +157,27 @@ fn persist_capture_session_started(
     }
 }
 
+/// Runs `future` to completion on the core runtime (`runtime`), from a thread of
+/// its own: blocking on a runtime can't nest, and GPUI's 512 KB dispatch
+/// callers lack the stack.
 #[cfg(target_os = "macos")]
-fn run_native_capture_async<F, R>(context: &'static str, future: F) -> Result<R, String>
+fn run_native_capture_async<F, R>(
+    runtime: tokio::runtime::Handle,
+    context: &'static str,
+    future: F,
+) -> Result<R, String>
 where
     F: std::future::Future<Output = R> + Send + 'static,
     R: Send + 'static,
 {
-    let run_future = move || {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|error| {
-                format!("failed to initialize native capture {context} runtime: {error}")
-            })?;
-
-        Ok(runtime.block_on(future))
-    };
-
-    // Always its own thread: a runtime can't nest, and GPUI's 512 KB dispatch callers lack stack.
     let worker = thread::Builder::new()
         .name(format!("mnema-native-capture-{context}"))
-        .spawn(run_future)
+        .spawn(move || runtime.block_on(future))
         .map_err(|error| format!("failed to spawn native capture {context} worker: {error}"))?;
 
     worker
         .join()
-        .map_err(|_| format!("native capture {context} worker panicked"))?
+        .map_err(|_| format!("native capture {context} worker panicked"))
 }
 
 #[cfg(target_os = "macos")]

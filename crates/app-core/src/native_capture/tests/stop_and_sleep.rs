@@ -262,6 +262,9 @@ fn close_frame_batches_for_stopped_screen_session_id_closes_stale_open_batch() {
 #[cfg(target_os = "macos")]
 #[test]
 fn close_frame_batches_for_stopped_screen_session_id_closes_inside_runtime() {
+    // Stands in for the core runtime the closing future runs on.
+    let core_runtime = tokio::runtime::Runtime::new().expect("core runtime should build");
+    let core_handle = core_runtime.handle().clone();
     run_async_test(async {
         let dir = TestDir::new("close-frame-batches-stop-inside-runtime");
         let infra = Arc::new(
@@ -279,7 +282,9 @@ fn close_frame_batches_for_stopped_screen_session_id_closes_inside_runtime() {
         .await;
 
         crate::native_capture::segments::close_frame_batches_for_stopped_screen_session_id(
-            &infra, session_id,
+            core_handle,
+            &infra,
+            session_id,
         )
         .expect("sync stop cleanup should close frame batches inside an existing runtime");
 
