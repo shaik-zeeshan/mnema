@@ -528,6 +528,7 @@ dependencies = [
  "async-trait",
  "block",
  "block2",
+ "capture-writers",
  "cidre",
  "ndarray 0.17.2",
  "objc",
@@ -7851,6 +7852,7 @@ name = "speaker-analysis"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "capture-writers",
  "cidre",
  "serde",
  "serde_bytes",

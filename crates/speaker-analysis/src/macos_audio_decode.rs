@@ -86,13 +86,14 @@ fn avaudiofile_decode_audio_to_mono(path: &Path) -> SpeakerAnalysisResult<Decode
     let _pool = objc::autorelease_pool::AutoreleasePoolPage::push();
     let url = ns::Url::with_fs_path_str(path_str, false);
     let mut file =
-        av::AudioFile::open_read_common_format(&url, av::AudioCommonFormat::PcmF32, false)
-            .map_err(|error| {
+        capture_writers::AudioFileReader::open(&url, Some(av::AudioCommonFormat::PcmF32)).map_err(
+            |error| {
                 SpeakerAnalysisError::Analysis(format!(
                     "AVFoundation failed to open audio file {}: {error}",
                     path.display()
                 ))
-            })?;
+            },
+        )?;
     let format = file.processing_format();
     let sample_rate = format.absd().sample_rate;
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
