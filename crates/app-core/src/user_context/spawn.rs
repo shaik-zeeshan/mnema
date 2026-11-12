@@ -10,7 +10,7 @@ use super::subject_vector_worker::{
 use super::worker::{worker_tick, WorkerCadence};
 use crate::{AppCore, AppInfraState};
 
-use crate::app_infra::{shutdown_aware_sleep, BackgroundWorkersState};
+use crate::app_infra::{shutdown_aware_sleep, until_shutdown, BackgroundWorkersState};
 
 /// Spawn the background User Context derivation worker. Mirrors
 /// `spawn_retention_cleanup_worker`: tracks the handle for graceful shutdown and
@@ -45,7 +45,13 @@ pub fn spawn_user_context_worker(
 
                 // Every tick path is error-recording (no `?`, no `unwrap`), so a
                 // tick returns an idle/paced sleep rather than panicking the worker.
-                let next_sleep = worker_tick(&infra, &core, &mut cadence).await;
+                // Quit drops an in-flight tick (an AI call) at once: it re-runs next launch.
+                let Some(next_sleep) =
+                    until_shutdown(&mut shutdown_rx, worker_tick(&infra, &core, &mut cadence))
+                        .await
+                else {
+                    break;
+                };
 
                 if shutdown_aware_sleep(&mut shutdown_rx, next_sleep).await {
                     break;

@@ -254,6 +254,22 @@ pub async fn shutdown_aware_sleep(
     }
 }
 
+/// Runs `work` until it finishes or shutdown is requested, whichever is first;
+/// `None` means shutdown won and `work` was dropped mid-flight. For a worker
+/// whose unit of work (an AI call) is redone next launch, so quit never waits on it.
+pub async fn until_shutdown<T>(
+    shutdown_rx: &mut watch::Receiver<bool>,
+    work: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    if *shutdown_rx.borrow() {
+        return None;
+    }
+    tokio::select! {
+        output = work => Some(output),
+        _ = shutdown_rx.changed() => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RetentionSleepOutcome {
     Elapsed,
@@ -288,6 +304,27 @@ pub async fn retention_schedule_aware_sleep(
 mod tests {
     use super::*;
     use std::time::Instant;
+
+    #[test]
+    fn until_shutdown_drops_in_flight_work_at_once() {
+        tokio::runtime::Runtime::new()
+            .expect("test runtime starts")
+            .block_on(async {
+                let (tx, mut rx) = watch::channel(false);
+                assert_eq!(until_shutdown(&mut rx, async { 7 }).await, Some(7));
+
+                let started = Instant::now();
+                let stop = tokio::spawn(async move {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let _ = tx.send(true);
+                });
+                let hung = until_shutdown(&mut rx, std::future::pending::<()>()).await;
+                assert_eq!(hung, None);
+                assert!(started.elapsed() < Duration::from_secs(1));
+                stop.await.unwrap();
+                assert_eq!(until_shutdown(&mut rx, async { 7 }).await, None);
+            });
+    }
 
     // Quit must not stall while a processing worker finishes its current job.
     // An abortable (queue-backed) worker stuck in a long unit of work has to be
