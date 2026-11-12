@@ -49,7 +49,11 @@ impl DerefMut for AudioFileReader {
 impl Drop for AudioFileReader {
     fn drop(&mut self) {
         // Release the handle now even if something else still holds the object.
-        self.0.close();
+        // `-[AVAudioFile close]` is macOS 15+; below that the release that
+        // follows frees the object, which closes the file.
+        if cidre::api::version!(macos = 15.0) {
+            self.0.close();
+        }
     }
 }
 
@@ -79,6 +83,11 @@ mod tests {
             .args(["-p", &std::process::id().to_string(), "-Fn"])
             .output()
             .expect("lsof should run");
+        assert!(
+            output.status.success(),
+            "lsof failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let prefix = dir.to_string_lossy().to_string();
         String::from_utf8_lossy(&output.stdout)
             .lines()
@@ -98,6 +107,9 @@ mod tests {
         for _ in 0..50 {
             crate::decode_audio_file_to_mono_pcm(Path::new(&input)).expect("tone should decode");
         }
+        // A range past the end fails after the reader is open.
+        crate::trim_audio_file_to_m4a(&input, &output, 10.0, 11.0)
+            .expect_err("a range past the end should fail");
         // Covers the trim reader and the trimmed-output validation read.
         assert!(
             crate::trim_audio_file_to_m4a(&input, &output, 0.5, 1.0).expect("trim should succeed")
@@ -116,20 +128,28 @@ mod tests {
         let dir = unique_temp_dir("canary");
         let input = dir.join("tone.m4a").to_string_lossy().to_string();
         crate::tests::write_test_tone_m4a(&input, 0.5);
-
-        {
-            let _pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
-            let url = ns::Url::with_fs_path_str(&input, false);
-            let file = av::AudioFile::open_read(&url).expect("tone should open");
-            drop(file);
+        let _pool = cidre::objc::autorelease_pool::AutoreleasePoolPage::push();
+        let url = ns::Url::with_fs_path_str(&input, false);
+        for format in [None, Some(av::AudioCommonFormat::PcmF32)] {
+            let raw = match format {
+                Some(f) => av::AudioFile::open_read_common_format(&url, f, false),
+                None => av::AudioFile::open_read(&url),
+            }
+            .expect("tone should open");
+            assert_eq!(
+                raw.as_type_ref().retain_count(),
+                2,
+                "cidre no longer over-retains `initForReading:` ({format:?}), so delete the balancing \
+                 release in audio_read.rs (balance_extra_retain); otherwise it becomes a double free"
+            );
+            drop(balance_extra_retain(raw));
+            let reader = AudioFileReader::open(&url, format).expect("tone should open");
+            assert_eq!(
+                reader.0.as_type_ref().retain_count(),
+                1,
+                "reader must be the sole owner ({format:?})"
+            );
         }
-
-        let open = open_handles_under(&dir);
         let _ = std::fs::remove_dir_all(&dir);
-        assert!(
-            !open.is_empty(),
-            "cidre no longer over-retains `initForReading:`, so delete the balancing release \
-             in audio_read.rs (balance_extra_retain); otherwise it becomes a double free"
-        );
     }
 }

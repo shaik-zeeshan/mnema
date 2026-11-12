@@ -518,6 +518,11 @@ mod tests {
             .args(["-p", &std::process::id().to_string(), "-Fn"])
             .output()
             .expect("lsof should run");
+        assert!(
+            output.status.success(),
+            "lsof failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         let prefix = dir.to_string_lossy().to_string();
         String::from_utf8_lossy(&output.stdout)
             .lines()
