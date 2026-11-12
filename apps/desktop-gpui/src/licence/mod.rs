@@ -18,6 +18,7 @@ use app_core::AppCore;
 use capture_types::{LicenseStatus, ResetDevicesOutcome};
 use gpui_kit::{App, AppContext, Context, Entity, FocusHandle, Global, Task};
 
+use crate::settings::pending::Pending;
 use banner::{Action, Dismiss, Dismissed};
 use receipt::{Done, Flow, Receipt};
 pub use view::{banner as render_banner, receipt as render_receipt};
@@ -26,10 +27,10 @@ pub use view::{banner as render_banner, receipt as render_receipt};
 pub const LICENSE_CHECKOUT_URL: &str = "https://sandbox-api.polar.sh/v1/checkout-links/polar_cl_lMoTLnM0OegXGCtfDMzfFi54ZZ41zhfSL8mvP1BpK1L/redirect";
 
 /// What the banner and receipt ask of app-core. Sync; run on the background
-/// executor, never on the main thread.
+/// executor, never on the main thread. The network re-check runs on tokio.
 pub trait Backend: Send + Sync {
     /// `refresh_license_now` (Re-check license). The new status arrives as an event.
-    fn refresh(&self) -> Result<(), String>;
+    fn refresh(&self) -> Pending<()>;
     /// The "Free up my devices?" native confirm.
     fn confirm_reset(&self) -> bool;
     /// `reset_license_devices`; on success app-core already retried activation.
@@ -39,9 +40,8 @@ pub trait Backend: Send + Sync {
 pub struct CoreBackend(pub Arc<AppCore>);
 
 impl Backend for CoreBackend {
-    fn refresh(&self) -> Result<(), String> {
-        self.0
-            .block_on(app_core::licensing::refresh_license_now(self.0.clone()))
+    fn refresh(&self) -> Pending<()> {
+        Pending::later(app_core::licensing::refresh_license_now(self.0.clone()))
     }
     fn confirm_reset(&self) -> bool {
         self.0
@@ -58,7 +58,7 @@ impl Backend for CoreBackend {
     }
     fn reset_devices(&self) -> Result<ResetDevicesOutcome, String> {
         self.0
-            .block_on(app_core::licensing::reset::reset_license_devices(
+            .run(app_core::licensing::reset::reset_license_devices(
                 self.0.clone(),
             ))
     }
@@ -68,8 +68,8 @@ impl Backend for CoreBackend {
 pub struct NoBackend;
 
 impl Backend for NoBackend {
-    fn refresh(&self) -> Result<(), String> {
-        Err("no app core".into())
+    fn refresh(&self) -> Pending<()> {
+        Pending::Ready(Err("no app core".into()))
     }
     fn confirm_reset(&self) -> bool {
         false
@@ -88,9 +88,9 @@ pub struct FixtureBackend {
 }
 
 impl Backend for FixtureBackend {
-    fn refresh(&self) -> Result<(), String> {
+    fn refresh(&self) -> Pending<()> {
         self.calls.lock().unwrap().push("refresh");
-        Ok(())
+        Pending::Ready(Ok(()))
     }
     fn confirm_reset(&self) -> bool {
         self.calls.lock().unwrap().push("confirm_reset");
@@ -122,6 +122,8 @@ pub struct Licence {
     pub rechecking: bool,
     pub receipt: Receipt,
     backend: Arc<dyn Backend>,
+    /// The re-check in flight; dropping it (with the window) cancels the call.
+    recheck_task: Option<Task<()>>,
     slow_timer: Option<Task<()>>,
     /// The receipt's primary action (made on the first episode).
     primary: Option<FocusHandle>,
@@ -156,6 +158,7 @@ impl Licence {
             rechecking: false,
             receipt: Receipt::default(),
             backend,
+            recheck_task: None,
             slow_timer: None,
             primary: None,
             focused: None,
@@ -233,9 +236,8 @@ impl Licence {
         }
         self.rechecking = true;
         cx.notify();
-        let backend = self.backend.clone();
-        let task = cx.background_spawn(async move { backend.refresh() });
-        cx.spawn(async move |this, cx| {
+        let task = self.backend.refresh().spawn(cx);
+        self.recheck_task = Some(cx.spawn(async move |this, cx| {
             if task.await.is_err() {
                 log::warn!("license re-check could not reach the license server");
             }
@@ -243,8 +245,7 @@ impl Licence {
                 this.rechecking = false;
                 cx.notify();
             });
-        })
-        .detach();
+        }));
     }
 
     /// "Free up my devices": native confirm, then the reset; the note lands

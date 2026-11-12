@@ -45,10 +45,9 @@ fn load(s: &mut Settings, cx: &mut Context<Settings>) {
     list.loading = true;
     list.error = None;
     let id = list.id.clone();
-    let backend = s.backend.clone();
-    let job_id = id.clone();
-    let job = cx.background_spawn(async move { backend.mcp_tools(&job_id) });
-    cx.spawn(async move |this, cx| {
+    let job = s.backend.mcp_tools(&id).spawn(cx);
+    // Another list (or a retry) replaces this one, cancelling it.
+    let task = cx.spawn(async move |this, cx| {
         let listed = job.await;
         let _ = this.update(cx, |s, cx| {
             let Some(list) = s.ui.mcp.tools.as_mut().filter(|l| l.id == id) else {
@@ -68,8 +67,8 @@ fn load(s: &mut Settings, cx: &mut Context<Settings>) {
             }
             cx.notify();
         });
-    })
-    .detach();
+    });
+    s.jobs.insert("mcp-tools".into(), task);
     cx.notify();
 }
 
@@ -265,6 +264,7 @@ pub fn modal(s: &Settings, list: &ToolList, p: &Palette, cx: &mut Context<Settin
         .on_close(move |_, cx| {
             let _ = this.update(cx, |s, cx| {
                 s.ui.mcp.tools = None;
+                s.jobs.remove("mcp-tools");
                 cx.notify();
             });
         })

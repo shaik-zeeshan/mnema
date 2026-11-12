@@ -53,10 +53,9 @@ impl Settings {
         let providers = self.d().ai_runtime.providers;
         self.ui.reach.insert(id.clone(), Reach::Checking);
         cx.notify();
-        let backend = self.backend.clone();
-        let probe = id.clone();
-        let job = cx.background_spawn(async move { backend.verify_provider(&probe, &providers) });
-        cx.spawn(async move |this, cx| {
+        let job = self.backend.verify_provider(&id, &providers).spawn(cx);
+        let key = format!("verify:{id}");
+        let task = cx.spawn(async move |this, cx| {
             let verdict = match job.await {
                 Ok(()) => Reach::Reachable,
                 Err(e) => Reach::Failed(e),
@@ -67,8 +66,8 @@ impl Settings {
                     cx.notify();
                 }
             });
-        })
-        .detach();
+        });
+        self.jobs.insert(key, task);
     }
 
     /// Every row's reachability once per session (this entity lives as long as

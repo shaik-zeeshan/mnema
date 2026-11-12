@@ -13,6 +13,7 @@ use super::access::{AccessBackend, AccessRequest, Call, FixtureAccess, Phase};
 use super::debug::model::Tab;
 use super::tests::{click, debug_map, drill, init};
 use super::update::{RenewNote, UpdateWindow};
+use crate::settings::pending::Pending;
 
 fn request(id: &str, tool: &str) -> Value {
     json!({
@@ -82,7 +83,7 @@ fn expired(
 #[gpui_kit::test]
 fn refresh_license_says_what_it_found(cx: &mut TestAppContext) {
     // Still out of window: the line keeps the end date.
-    let (view, vcx) = expired(cx, Arc::new(|| Ok(Some(licensed(false)))));
+    let (view, vcx) = expired(cx, Arc::new(|| Pending::Ready(Ok(Some(licensed(false))))));
     click(vcx, "up-refresh".into());
     view.update(vcx, |w, _| {
         assert!(!w.refreshing);
@@ -97,7 +98,7 @@ fn refresh_license_says_what_it_found(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_found_renewal_says_so_and_a_failed_refresh_says_why(cx: &mut TestAppContext) {
-    let (view, vcx) = expired(cx, Arc::new(|| Ok(Some(licensed(true)))));
+    let (view, vcx) = expired(cx, Arc::new(|| Pending::Ready(Ok(Some(licensed(true))))));
     click(vcx, "up-refresh".into());
     let line = view.update(vcx, |w, cx| w.renew_line(cx));
     assert_eq!(
@@ -105,7 +106,10 @@ fn a_found_renewal_says_so_and_a_failed_refresh_says_why(cx: &mut TestAppContext
         Some("Renewal found \u{2014} checking for the update now.")
     );
 
-    let (view, vcx) = expired(cx, Arc::new(|| Err("license server unreachable".into())));
+    let (view, vcx) = expired(
+        cx,
+        Arc::new(|| Pending::Ready(Err("license server unreachable".into()))),
+    );
     click(vcx, "up-refresh".into());
     view.update(vcx, |w, _| {
         assert_eq!(

@@ -146,9 +146,12 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                                     let input = s.inputs.deepgram_key.clone();
                                     let key = commands::take_input(&input, window, cx);
                                     if !key.is_empty() {
-                                        s.run_command("Deepgram key", cx, move |core| {
-                                            live::deepgram_save(core, key)
-                                        });
+                                        s.run_slow_command_with(
+                                            "Deepgram key",
+                                            cx,
+                                            move |core| live::deepgram_save(core, key),
+                                            |_, _| false,
+                                        );
                                     }
                                 })),
                         )
@@ -157,7 +160,12 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                                 Button::new("deepgram-check", "Check connection")
                                     .ghost()
                                     .on_click(crate::settings::click(cx, |s, cx| {
-                                        s.run_command("Deepgram key", cx, live::deepgram_test)
+                                        s.run_slow_command_with(
+                                            "Deepgram key",
+                                            cx,
+                                            live::deepgram_check,
+                                            |_, _| false,
+                                        )
                                     })),
                             )
                             .child(

@@ -11,6 +11,7 @@ use serde_json::Value;
 use super::autosave::Unit;
 use super::data::Backend;
 use super::model::SettingsData;
+use super::pending::Pending;
 use crate::shell::fixture::{get, load};
 
 /// Parity states (and golden names): each group's top, then the deeper
@@ -407,16 +408,12 @@ impl Backend for FixtureBackend {
         })
     }
     /// Every provider answers live (the parity mock's `verify_ai_provider`), unless `fail`.
-    fn verify_provider(
-        &self,
-        _: &str,
-        _: &[capture_types::AiProviderConfig],
-    ) -> Result<(), String> {
-        if self.fail {
+    fn verify_provider(&self, _: &str, _: &[capture_types::AiProviderConfig]) -> Pending<()> {
+        Pending::Ready(if self.fail {
             Err("unreachable".into())
         } else {
             Ok(())
-        }
+        })
     }
 
     fn save_key(&self, provider: &str, _key: &str) -> Result<Option<String>, String> {
@@ -426,9 +423,11 @@ impl Backend for FixtureBackend {
     fn clear_key(&self, provider: &str) -> Result<(), String> {
         self.record(Call::ClearKey(provider.into()))
     }
-    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
-        self.record(Call::ChatgptBegin(provider.into()))?;
-        Ok((CHATGPT_CODE.into(), CHATGPT_URL.into()))
+    fn chatgpt_begin(&self, provider: &str) -> Pending<(String, String)> {
+        Pending::Ready(
+            self.record(Call::ChatgptBegin(provider.into()))
+                .map(|_| (CHATGPT_CODE.into(), CHATGPT_URL.into())),
+        )
     }
     fn chatgpt_cancel(&self, provider: &str) {
         self.calls
@@ -437,11 +436,12 @@ impl Backend for FixtureBackend {
             .push(Call::ChatgptCancel(provider.into()));
     }
     /// The default model answers (`ai_runtime_test_connection`'s shape).
-    fn test_connection(&self) -> Result<Value, String> {
-        self.record(Call::TestConnection)?;
-        Ok(serde_json::json!({
-            "ok": true, "provider": "anthropic", "model": "claude-sonnet-4-5",
-            "message": "Connection succeeded.", "rawJson": "{\"text\":\"OK\"}"
+    fn test_connection(&self) -> Pending<Value> {
+        Pending::Ready(self.record(Call::TestConnection).map(|_| {
+            serde_json::json!({
+                "ok": true, "provider": "anthropic", "model": "claude-sonnet-4-5",
+                "message": "Connection succeeded.", "rawJson": "{\"text\":\"OK\"}"
+            })
         }))
     }
     /// The parity map's `list_semantic_search_supported_models`.
@@ -484,10 +484,12 @@ impl Backend for FixtureBackend {
     ) -> Result<Box<dyn crate::timeline::audio::transport::Player + Send>, String> {
         Ok(Box::new(self.player.clone()))
     }
-    fn mcp_tools(&self, id: &str) -> Result<Vec<(String, Option<String>)>, String> {
-        self.record(Call::McpTools(id.into()))?;
-        self.mcp_failure()?;
-        Ok(self.mcp_tools.lock().unwrap().clone())
+    fn mcp_tools(&self, id: &str) -> Pending<Vec<(String, Option<String>)>> {
+        Pending::Ready(
+            self.record(Call::McpTools(id.into()))
+                .and_then(|_| self.mcp_failure())
+                .map(|_| self.mcp_tools.lock().unwrap().clone()),
+        )
     }
     fn mcp_set_secret(&self, id: &str, _secret: &str) -> Result<(), String> {
         self.record(Call::McpSetSecret(id.into()))?;

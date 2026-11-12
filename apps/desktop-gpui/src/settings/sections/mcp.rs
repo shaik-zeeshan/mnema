@@ -526,6 +526,7 @@ pub fn picker(
 /// flight, as the close button. True when something was open.
 pub(crate) fn escape(s: &mut Settings, cx: &mut Context<Settings>) -> bool {
     if s.ui.mcp.tools.take().is_some() {
+        s.jobs.remove("mcp-tools");
         cx.notify();
         return true;
     }

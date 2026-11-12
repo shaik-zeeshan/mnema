@@ -143,7 +143,7 @@ impl Settings {
             return;
         }
         self.ui.lic_activate = None;
-        self.run_command_with(
+        self.run_slow_command_with(
             ACTIVATE,
             cx,
             move |core| crate::settings::live::license_activate(core, key),
@@ -158,7 +158,7 @@ impl Settings {
     /// Refresh: "Checked just now" or "Failed to reach the server." for 4 s.
     fn refresh_license(&mut self, cx: &mut Context<Self>) {
         self.ui.lic_refresh = None;
-        self.run_command_with(
+        self.run_slow_command_with(
             REFRESH,
             cx,
             crate::settings::live::license_refresh,

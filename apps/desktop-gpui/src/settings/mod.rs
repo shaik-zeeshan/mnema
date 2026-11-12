@@ -14,6 +14,7 @@ pub mod fixture;
 pub mod groups;
 pub mod live;
 pub mod model;
+pub mod pending;
 pub mod privacy_prompt;
 mod rail;
 pub mod reload;
@@ -251,6 +252,8 @@ pub struct Settings {
     shown: bool,
     /// CLI Access's 30 s re-read while the Data group is on screen.
     access_poll: Option<Task<()>>,
+    /// Slow calls in flight, by what they are: a new attempt replaces (cancels) the old.
+    jobs: HashMap<String, Task<()>>,
     backend: Arc<dyn Backend>,
     timer: Option<Task<()>>,
     _subscriptions: Vec<Subscription>,
@@ -463,6 +466,7 @@ impl Settings {
             kb_focus: cx.focus_handle(),
             shown: true,
             access_poll: None,
+            jobs: HashMap::new(),
             backend,
             timer: None,
             _subscriptions: subs,

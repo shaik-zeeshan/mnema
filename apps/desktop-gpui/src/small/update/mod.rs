@@ -13,6 +13,7 @@ use serde_json::Value;
 
 use super::parts::{frame, h2, inset_panel, note, spec_row};
 use crate::settings::model::{format_bytes, Json};
+use crate::settings::pending::Pending;
 use crate::theme::{self, space, text, Palette, FONT_MONO};
 use crate::ui::app_icon::{app_icon, Src};
 use crate::ui::window_strip::WindowStrip;
@@ -50,10 +51,9 @@ pub enum RenewNote {
     Checked,
 }
 
-/// `refresh_license_now`, then the status it left. Tests pass a fake, so they
-/// never reach real licensing.
-pub type LicenseRefresh =
-    std::sync::Arc<dyn Fn() -> Result<Option<LicenseStatus>, String> + Send + Sync>;
+/// `refresh_license_now`, then the status it left (on tokio). Tests pass a
+/// fake, so they never reach real licensing.
+pub type LicenseRefresh = std::sync::Arc<dyn Fn() -> Pending<Option<LicenseStatus>> + Send + Sync>;
 
 pub struct UpdateWindow {
     pub status: Option<Value>,
@@ -65,6 +65,8 @@ pub struct UpdateWindow {
     pub refreshing: bool,
     pub renew_note: Option<RenewNote>,
     pub refresh_license: Option<LicenseRefresh>,
+    /// The refresh in flight; closing the window drops (cancels) it.
+    pub(super) refresh_task: Option<gpui_kit::Task<()>>,
 }
 
 impl UpdateWindow {
@@ -78,6 +80,7 @@ impl UpdateWindow {
             refreshing: false,
             renew_note: None,
             refresh_license: None,
+            refresh_task: None,
         }
     }
 
@@ -89,8 +92,8 @@ impl UpdateWindow {
         };
         self.refreshing = true;
         self.action_error = None;
-        let job = cx.background_spawn(async move { refresh() });
-        cx.spawn(async move |this, cx| {
+        let job = refresh().spawn(cx);
+        self.refresh_task = Some(cx.spawn(async move |this, cx| {
             let result = job.await;
             let _ = this.update(cx, |w, cx| {
                 w.refreshing = false;
@@ -103,8 +106,7 @@ impl UpdateWindow {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        }));
         cx.notify();
     }
 
@@ -775,8 +777,11 @@ pub fn open(cx: &mut App) {
     });
     let refresh = core.map(|core| -> LicenseRefresh {
         std::sync::Arc::new(move || {
-            core.block_on(app_core::licensing::refresh_license_now(core.clone()))?;
-            Ok(app_core::licensing::cached_status(&core))
+            let core = core.clone();
+            Pending::later(async move {
+                app_core::licensing::refresh_license_now(core.clone()).await?;
+                Ok(app_core::licensing::cached_status(&core))
+            })
         })
     });
     super::open_or_focus::<UpdateWindow>(

@@ -7,10 +7,11 @@ use std::sync::Arc;
 use app_core::AppCore;
 use capture_types::RecordingSettings;
 use gpui_kit::prelude::*;
-use gpui_kit::{AnyElement, Context, Window};
+use gpui_kit::{AnyElement, Context, Task, Window};
 
 use super::autosave::Unit;
 use super::live::{self, Outcome};
+use super::pending::Pending;
 use super::{icons, Settings, SettingsData};
 use crate::theme::Palette;
 use crate::ui::{notice, Button, Tone};
@@ -35,13 +36,47 @@ impl Settings {
         job: impl FnOnce(&Arc<AppCore>) -> Outcome + Send + 'static,
         inline: impl FnOnce(&mut Self, &Outcome) -> bool + 'static,
     ) {
-        let Some(core) = crate::chat::core(cx) else {
+        let Some(core) = self.command_core(what, cx) else {
             return;
         };
-        if !self.ui.busy.insert(what) {
-            return;
-        }
         let work = cx.background_spawn(async move { job(&core) });
+        self.land_command(what, work, inline, cx).detach();
+    }
+
+    /// `run_command_with` for a slow network call: `job` answers at once with
+    /// a [`Pending`] that runs on tokio, so no thread waits on it, and dropping
+    /// Settings cancels it.
+    pub fn run_slow_command_with(
+        &mut self,
+        what: &'static str,
+        cx: &mut Context<Self>,
+        job: impl FnOnce(&Arc<AppCore>) -> Pending<Option<String>>,
+        inline: impl FnOnce(&mut Self, &Outcome) -> bool + 'static,
+    ) {
+        let Some(core) = self.command_core(what, cx) else {
+            return;
+        };
+        let work = job(&core).spawn(cx);
+        let task = self.land_command(what, work, inline, cx);
+        self.jobs.insert(what.into(), task);
+    }
+
+    /// The core a command runs on, once `what` is marked busy (`None`: no
+    /// core, or `what` is already running).
+    fn command_core(&mut self, what: &'static str, cx: &Context<Self>) -> Option<Arc<AppCore>> {
+        let core = crate::chat::core(cx)?;
+        self.ui.busy.insert(what).then_some(core)
+    }
+
+    /// Show a command's outcome when `work` lands, then re-read the loaders.
+    fn land_command(
+        &mut self,
+        what: &'static str,
+        work: Task<Outcome>,
+        inline: impl FnOnce(&mut Self, &Outcome) -> bool + 'static,
+        cx: &mut Context<Self>,
+    ) -> Task<()> {
+        cx.notify();
         cx.spawn(async move |this, cx| {
             let outcome = work.await;
             let _ = this.update(cx, |s, cx| {
@@ -67,8 +102,6 @@ impl Settings {
                 cx.notify();
             });
         })
-        .detach();
-        cx.notify();
     }
 
     /// Re-read every loader. Unsaved edits survive: only a clean page adopts
@@ -95,9 +128,14 @@ impl Settings {
         let c = core.clone();
         self.ui.models_loading = true;
         cx.notify();
-        let local = Tokio::spawn(cx, async move { super::data::load_local(&c) });
+        // Blocking work (it walks the model folders): tokio's blocking pool, not a worker.
+        let local = Tokio::spawn(cx, async move {
+            let core = c.clone();
+            c.spawn_blocking(move || super::data::load_local(&core))
+                .await
+        });
         cx.spawn(async move |this, cx| {
-            let Ok(local) = local.await else { return };
+            let Ok(Ok(local)) = local.await else { return };
             let Ok(rest) = this.update(cx, |s, cx| {
                 s.ui.models_loading = false;
                 let first = local.clone();

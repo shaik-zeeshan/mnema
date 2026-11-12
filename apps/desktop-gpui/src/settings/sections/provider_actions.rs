@@ -384,10 +384,9 @@ impl Settings {
     pub(crate) fn chatgpt_begin(&mut self, id: String, cx: &mut Context<Self>) {
         self.ui.pv.login_error.remove(&id);
         self.ui.pv.login.insert(id.clone(), Login::Starting);
-        let backend = self.backend.clone();
-        let bid = id.clone();
-        let job = cx.background_spawn(async move { backend.chatgpt_begin(&bid) });
-        cx.spawn(async move |this, cx| {
+        let job = self.backend.chatgpt_begin(&id).spawn(cx);
+        let key = format!("chatgpt:{id}");
+        let task = cx.spawn(async move |this, cx| {
             let result = job.await;
             let _ = this.update(cx, |s, cx| {
                 // Cancelled (or superseded) while it was asking.
@@ -406,8 +405,8 @@ impl Settings {
                 }
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        self.jobs.insert(key, task);
         cx.notify();
     }
 
@@ -416,6 +415,8 @@ impl Settings {
     pub(crate) fn chatgpt_cancel(&mut self, id: String, cx: &mut Context<Self>) {
         self.ui.pv.login.remove(&id);
         self.ui.pv.login_error.remove(&id);
+        // A device-code request still asking is dropped (cancelled) too.
+        self.jobs.remove(&format!("chatgpt:{id}"));
         let backend = self.backend.clone();
         cx.background_spawn(async move { backend.chatgpt_cancel(&id) })
             .detach();
@@ -517,9 +518,8 @@ impl Settings {
         }
         self.ui.pv.test.running = true;
         self.reset_test();
-        let backend = self.backend.clone();
-        let job = cx.background_spawn(async move { backend.test_connection() });
-        cx.spawn(async move |this, cx| {
+        let job = self.backend.test_connection().spawn(cx);
+        let task = cx.spawn(async move |this, cx| {
             let result = job.await;
             let _ = this.update(cx, |s, cx| {
                 s.ui.pv.test.running = false;
@@ -527,8 +527,8 @@ impl Settings {
                 s.refresh(cx);
                 cx.notify();
             });
-        })
-        .detach();
+        });
+        self.jobs.insert("ai-test".into(), task);
         cx.notify();
     }
 }

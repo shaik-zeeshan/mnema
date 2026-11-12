@@ -1,6 +1,7 @@
 //! Settings' live commands: each one calls app-core directly, the way the
-//! Svelte page invokes its Tauri command. All are synchronous (`block_on` on
-//! AppCore's runtime), so callers run them on the background executor.
+//! Svelte page invokes its Tauri command. Most are synchronous (`AppCore::run`),
+//! so callers run them on the background executor; the slow network ones
+//! answer a [`Pending`] for tokio instead.
 //! `Ok(Some(text))` is a line worth showing; `Err` is the backend's own words.
 
 use std::sync::Arc;
@@ -20,6 +21,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 
 use super::autosave::Unit;
+use super::pending::Pending;
 
 pub type Outcome = Result<Option<String>, String>;
 
@@ -121,7 +123,10 @@ pub fn save_domain(
     let patch = patch(unit, draft).ok_or("not a recording settings domain")?;
     let saved = match patch {
         // Off the caller's thread too: a sources change asks the capture lock.
-        Patch::CaptureSources(r) => core.block_on(su::update_capture_source_settings(r, core)),
+        Patch::CaptureSources(r) => {
+            let c = core.clone();
+            core.run(async move { su::update_capture_source_settings(r, &c).await })
+        }
         Patch::CaptureTiming(r) => su::update_capture_timing_settings(r, core),
         Patch::Video(r) => su::update_video_settings(r, core),
         Patch::Storage(r) => su::update_storage_settings(r, core),
@@ -168,11 +173,13 @@ pub fn save_mic(
         preference: state.preference.clone(),
         disconnect_policy: state.disconnect_policy.clone(),
     };
-    core.block_on(
+    let c = core.clone();
+    core.run(async move {
         app_core::native_capture::microphone::controller::update_microphone_controller_async(
-            request, core,
-        ),
-    )
+            request, &c,
+        )
+        .await
+    })
     .map_err(|e| e.message)
 }
 
@@ -186,7 +193,7 @@ pub fn set_semantic_enabled(core: &Arc<AppCore>, on: bool) -> Result<RecordingSe
 // ── one-shot commands ───────────────────────────────────────────────────────
 
 pub fn install_cli(core: &Arc<AppCore>) -> Outcome {
-    let status = to_json(core.block_on(app_core::cli_access::install_cli_inner())?);
+    let status = to_json(core.run(app_core::cli_access::install_cli_inner())?);
     Ok(Some(format!(
         "Installed the mnema command at {}.",
         status["installPath"].as_str().unwrap_or("~/.local/bin")
@@ -195,18 +202,18 @@ pub fn install_cli(core: &Arc<AppCore>) -> Outcome {
 
 pub fn derive_now(core: &Arc<AppCore>) -> Outcome {
     let infra = infra(core)?;
-    let run = core.block_on(
-        app_core::user_context::commands::user_context_run_derivation_now(core, &infra),
-    )?;
+    let c = core.clone();
+    let run = core.run(async move {
+        app_core::user_context::commands::user_context_run_derivation_now(&c, &infra).await
+    })?;
     Ok(Some(run.message))
 }
 
 /// Stops the engine first (AI features go off), then clears what was derived.
 pub fn wipe_user_context(core: &Arc<AppCore>) -> Outcome {
     let infra = infra(core)?;
-    core.block_on(app_core::user_context::commands::wipe_user_context(
-        core, &infra,
-    ))?;
+    let c = core.clone();
+    core.run(async move { app_core::user_context::commands::wipe_user_context(&c, &infra).await })?;
     // Svelte says nothing on success: the emptied rows and the switched-off
     // master switch are the answer.
     Ok(None)
@@ -222,12 +229,10 @@ pub fn retention_preview(
     let request = app_core::app_infra::PreviewRetentionCleanupRequest {
         policy: Some(policy),
     };
-    let s = core.block_on(app_core::app_infra::preview_retention_cleanup(
-        Some(request),
-        core,
-        &infra,
-        &core.state::<RecordingSettingsState>(),
-    ))?;
+    let (c, settings) = (core.clone(), core.state::<RecordingSettingsState>());
+    let s = core.run(async move {
+        app_core::app_infra::preview_retention_cleanup(Some(request), &c, &infra, &settings).await
+    })?;
     Ok((
         s.eligible_capture_segments,
         s.deleted_frames,
@@ -239,11 +244,10 @@ pub fn retention_preview(
 /// `run_retention_cleanup_now`: `(segments, frames, audio segments)` deleted.
 pub fn retention_run(core: &Arc<AppCore>) -> Result<(i64, i64, i64), String> {
     let infra = infra(core)?;
-    let s = core.block_on(app_core::app_infra::run_retention_cleanup_now(
-        core,
-        &infra,
-        &core.state::<RecordingSettingsState>(),
-    ))?;
+    let (c, settings) = (core.clone(), core.state::<RecordingSettingsState>());
+    let s = core.run(async move {
+        app_core::app_infra::run_retention_cleanup_now(&c, &infra, &settings).await
+    })?;
     Ok((
         s.deleted_capture_segments,
         s.deleted_frames,
@@ -254,10 +258,10 @@ pub fn retention_run(core: &Arc<AppCore>) -> Result<(i64, i64, i64), String> {
 /// Finalizes the live segment, deletes every overlapping one, resumes capture.
 /// Answers how many files couldn't be removed from disk yet.
 pub fn delete_recent(core: &Arc<AppCore>, window_seconds: u64) -> Result<i64, String> {
-    let s = core.block_on(app_core::app_infra::delete_recent_capture_from_core(
-        core,
-        window_seconds as i64,
-    ))?;
+    let c = core.clone();
+    let s = core.run(async move {
+        app_core::app_infra::delete_recent_capture_from_core(&c, window_seconds as i64).await
+    })?;
     Ok(s.file_delete_errors)
 }
 
@@ -289,15 +293,19 @@ pub fn speaker_model_delete(core: &Arc<AppCore>, provider: String, model_id: Str
         provider,
         model_id,
     };
-    core.block_on(
-        app_core::speaker_analysis_models::delete_speaker_analysis_model(core, request, &infra),
-    )?;
+    let c = core.clone();
+    core.run(async move {
+        app_core::speaker_analysis_models::delete_speaker_analysis_model(&c, request, &infra).await
+    })?;
     Ok(Some("Speaker model files deleted.".into()))
 }
 
 /// `ai_runtime_test_connection` for the Developer window's Test AI.
 pub fn test_connection(core: &Arc<AppCore>) -> Outcome {
-    let r = to_json(core.block_on(app_core::ai_runtime::ai_runtime_test_connection(core))?);
+    let c = core.clone();
+    let r = to_json(
+        core.run(async move { app_core::ai_runtime::ai_runtime_test_connection(&c).await })?,
+    );
     let line = format!(
         "{} \u{b7} {}: {}",
         r["provider"].as_str().unwrap_or_default(),
@@ -311,21 +319,30 @@ pub fn test_connection(core: &Arc<AppCore>) -> Outcome {
     }
 }
 
-pub fn license_refresh(core: &Arc<AppCore>) -> Outcome {
-    core.block_on(app_core::licensing::refresh_license_now(core.clone()))?;
-    Ok(Some("License checked just now.".into()))
+pub fn license_refresh(core: &Arc<AppCore>) -> Pending<Option<String>> {
+    let core = core.clone();
+    Pending::later(async move {
+        app_core::licensing::refresh_license_now(core).await?;
+        Ok(Some("License checked just now.".into()))
+    })
 }
 
-pub fn license_activate(core: &Arc<AppCore>, key: String) -> Outcome {
-    let infra = infra(core)?;
-    core.block_on(app_core::licensing::activate_license(key, core, &infra))?;
-    Ok(Some("License activated on this device.".into()))
+pub fn license_activate(core: &Arc<AppCore>, key: String) -> Pending<Option<String>> {
+    let infra = match infra(core) {
+        Ok(infra) => infra,
+        Err(e) => return Pending::Ready(Err(e)),
+    };
+    let core = core.clone();
+    Pending::later(async move {
+        app_core::licensing::activate_license(key, &core, &infra).await?;
+        Ok(Some("License activated on this device.".into()))
+    })
 }
 
 pub fn license_reset_devices(
     core: &Arc<AppCore>,
 ) -> Result<capture_types::ResetDevicesOutcome, String> {
-    core.block_on(app_core::licensing::reset::reset_license_devices(
+    core.run(app_core::licensing::reset::reset_license_devices(
         core.clone(),
     ))
 }
@@ -338,11 +355,10 @@ fn deepgram(
 }
 
 /// `transcription_test_deepgram`: validates the saved key (no audio, no billing).
-pub fn deepgram_test(core: &Arc<AppCore>) -> Outcome {
-    let auth = deepgram(core)?;
-    let r = to_json(
-        core.block_on(app_core::transcription_deepgram::transcription_test_deepgram(&auth))?,
-    );
+async fn deepgram_verdict(
+    auth: Arc<app_core::transcription_deepgram::DeepgramAuthStatusState>,
+) -> Outcome {
+    let r = to_json(app_core::transcription_deepgram::transcription_test_deepgram(&auth).await?);
     let message = r["message"].as_str().unwrap_or_default().to_string();
     if r["ok"].as_bool() == Some(true) {
         Ok(Some(message))
@@ -351,24 +367,46 @@ pub fn deepgram_test(core: &Arc<AppCore>) -> Outcome {
     }
 }
 
-/// Save into the vault, then check it at once (as the Svelte field does).
-pub fn deepgram_save(core: &Arc<AppCore>, key: String) -> Outcome {
+/// Settings' Check connection, on tokio.
+pub fn deepgram_check(core: &Arc<AppCore>) -> Pending<Option<String>> {
+    match deepgram(core) {
+        Ok(auth) => Pending::later(deepgram_verdict(auth)),
+        Err(e) => Pending::Ready(Err(e)),
+    }
+}
+
+/// The Developer window's check (it runs on the background executor).
+pub fn deepgram_test(core: &Arc<AppCore>) -> Outcome {
     let auth = deepgram(core)?;
-    core.block_on(app_core::transcription_deepgram::transcription_set_deepgram_key(key, &auth))?;
-    deepgram_test(core)
+    core.run(deepgram_verdict(auth))
+}
+
+/// Save into the vault, then check it at once (as the Svelte field does).
+pub fn deepgram_save(core: &Arc<AppCore>, key: String) -> Pending<Option<String>> {
+    let auth = match deepgram(core) {
+        Ok(auth) => auth,
+        Err(e) => return Pending::Ready(Err(e)),
+    };
+    Pending::later(async move {
+        app_core::transcription_deepgram::transcription_set_deepgram_key(key, &auth).await?;
+        deepgram_verdict(auth).await
+    })
 }
 
 pub fn deepgram_clear(core: &Arc<AppCore>) -> Outcome {
     let auth = deepgram(core)?;
-    core.block_on(app_core::transcription_deepgram::transcription_clear_deepgram_key(&auth))?;
+    core.run(async move {
+        app_core::transcription_deepgram::transcription_clear_deepgram_key(&auth).await
+    })?;
     Ok(Some("Deepgram key removed.".into()))
 }
 
 /// Raise the macOS prompt for `screen` / `microphone` / `systemAudio`.
 pub fn request_permission(core: &Arc<AppCore>, kind: &str) -> Outcome {
-    core.block_on(
-        app_core::native_capture::permissions::request_capture_permission(kind.into(), core),
-    )?;
+    let (c, kind) = (core.clone(), kind.to_string());
+    core.run(async move {
+        app_core::native_capture::permissions::request_capture_permission(kind, &c).await
+    })?;
     Ok(None)
 }
 
@@ -405,43 +443,44 @@ pub fn open_speech_pane(core: &Arc<AppCore>) -> Outcome {
 }
 
 pub fn mcp_oauth_disconnect(core: &Arc<AppCore>, id: String) -> Outcome {
-    core.block_on(app_core::ask_ai::mcp::oauth_flow::mcp_oauth_disconnect(
-        core, id,
-    ))?;
+    let c = core.clone();
+    core.run(async move { app_core::ask_ai::mcp::oauth_flow::mcp_oauth_disconnect(&c, id).await })?;
     Ok(Some("Connector disconnected.".into()))
 }
 
 pub fn mcp_set_secret(core: &Arc<AppCore>, id: &str, secret: &str) -> Outcome {
     let request = req(json!({ "id": id, "secret": secret }))?;
-    core.block_on(app_core::ai_runtime::mcp_set_server_secret(request))?;
+    core.run(app_core::ai_runtime::mcp_set_server_secret(request))?;
     Ok(Some("Connector secret stored encrypted.".into()))
 }
 
 pub fn mcp_clear_secret(core: &Arc<AppCore>, id: &str) -> Outcome {
     let request = req(json!({ "id": id }))?;
-    core.block_on(app_core::ai_runtime::mcp_clear_server_secret(request))?;
+    core.run(app_core::ai_runtime::mcp_clear_server_secret(request))?;
     Ok(Some("Connector secret removed.".into()))
 }
 
 pub fn delete_person(core: &Arc<AppCore>, person_id: i64) -> Outcome {
     let infra = infra(core)?;
     let request = req(json!({ "personId": person_id }))?;
-    core.block_on(app_core::app_infra::delete_person_profile(request, &infra))?;
+    core.run(async move { app_core::app_infra::delete_person_profile(request, &infra).await })?;
     Ok(Some("Voiceprint deleted.".into()))
 }
 
 /// `delete_speaker_analysis_model` (Speakers › Delete).
 pub fn delete_speaker_model(core: &Arc<AppCore>, provider: String, model_id: String) -> Outcome {
     let infra = infra(core)?;
-    core.block_on(
+    let c = core.clone();
+    core.run(async move {
         app_core::speaker_analysis_models::delete_speaker_analysis_model(
-            core,
+            &c,
             app_core::speaker_analysis_models::SpeakerAnalysisModelDownloadRequestDto {
                 provider,
                 model_id,
             },
             &infra,
-        ),
-    )?;
+        )
+        .await
+    })?;
     Ok(None)
 }

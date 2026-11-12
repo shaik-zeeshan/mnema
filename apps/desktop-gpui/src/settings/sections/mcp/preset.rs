@@ -227,20 +227,19 @@ fn submit(s: &mut Settings, window: &mut Window, cx: &mut Context<Settings>) {
     c.error = None;
     let backend = s.backend.clone();
     let has_secret = secret.is_some();
-    let job_id = id.clone();
-    let job = cx.background_spawn(async move {
-        commit(
-            backend.as_ref(),
-            &before,
+    // Detached on purpose: a rollback must finish even if Settings goes away.
+    cx.spawn(async move |this, cx| {
+        let (saved, outcome) = commit(
+            cx,
+            backend,
+            before,
             next,
-            &job_id,
+            id.clone(),
             secret,
             verify,
             rollback,
         )
-    });
-    cx.spawn(async move |this, cx| {
-        let (saved, outcome) = job.await;
+        .await;
         let _ = this.update(cx, |s, cx| {
             if let Some(saved) = saved {
                 let ai = saved.ai_runtime;

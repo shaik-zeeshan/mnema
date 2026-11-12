@@ -4,14 +4,19 @@
 //! (persist → secret → list tools) and rolls back on failure; edit saves the
 //! fields, then re-verifies only when a new secret was pasted.
 
+use std::sync::Arc;
+
 use capture_types::RecordingSettings;
 use gpui_kit::component::input::{InputEvent, InputState};
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, AnyElement, Context, Entity, SharedString, Subscription, Window};
+use gpui_kit::{
+    div, px, AnyElement, AsyncApp, Context, Entity, SharedString, Subscription, Window,
+};
 
 use super::logic::Custom;
 use super::{close_picker, Step};
 use crate::settings::autosave::Unit;
+use crate::settings::data::Backend;
 use crate::settings::{click, commands, icons, Settings};
 use crate::theme::{space, text, Palette};
 use crate::ui::input::TextInput;
@@ -181,39 +186,54 @@ pub fn title(s: &Settings, f: &Form) -> String {
 /// either the verified tool count (`None` = verify skipped) or the reason.
 type Committed = (Option<RecordingSettings>, Result<Option<usize>, String>);
 
-/// Off the main thread: persist `next` (`flushAiRuntimeSave`: listing reads the
-/// persisted config), store the secret, list the tools. An add that fails after
-/// persisting rolls back: its secret is deleted and `before` is saved again.
-pub(super) fn commit(
-    backend: &dyn crate::settings::data::Backend,
-    before: &RecordingSettings,
+/// Persist `next` (`flushAiRuntimeSave`: listing reads the persisted config),
+/// store the secret, list the tools. The writes run on the background executor,
+/// the listing (an npx cold boot takes seconds) on tokio. An add that fails
+/// after persisting rolls back: its secret is deleted and `before` is saved again.
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn commit(
+    cx: &AsyncApp,
+    backend: Arc<dyn Backend>,
+    before: RecordingSettings,
     next: RecordingSettings,
-    id: &str,
+    id: String,
     secret: Option<String>,
     verify: bool,
     rollback: bool,
 ) -> Committed {
-    let saved = match backend.save_domain(Unit::AiRuntime, &next) {
-        Ok(s) => s,
+    let (b, sid, s) = (backend.clone(), id.clone(), secret.clone());
+    let stored = cx
+        .background_spawn(async move {
+            let saved = b.save_domain(Unit::AiRuntime, &next)?;
+            let checked = s.map_or(Ok(()), |s| b.mcp_set_secret(&sid, &s));
+            Ok::<_, String>((saved, checked.map(|_| None)))
+        })
+        .await;
+    let (saved, mut checked) = match stored {
+        Ok(stored) => stored,
         Err(e) => return (None, Err(e)),
     };
-    let checked = (|| {
-        if let Some(secret) = &secret {
-            backend.mcp_set_secret(id, secret)?;
-        }
-        if verify {
-            return backend.mcp_tools(id).map(|t| Some(t.len()));
-        }
-        Ok(None)
-    })();
+    if verify && checked.is_ok() {
+        checked = backend
+            .mcp_tools(&id)
+            .spawn(cx)
+            .await
+            .map(|t| Some(t.len()));
+    }
     match checked {
         Ok(n) => (Some(saved), Ok(n)),
         Err(e) if rollback => {
             log::warn!("settings: MCP connector {id} failed to verify; rolled back");
-            if secret.is_some() {
-                let _ = backend.mcp_clear_secret(id);
-            }
-            (backend.save_domain(Unit::AiRuntime, before).ok(), Err(e))
+            let had_secret = secret.is_some();
+            let restored = cx
+                .background_spawn(async move {
+                    if had_secret {
+                        let _ = backend.mcp_clear_secret(&id);
+                    }
+                    backend.save_domain(Unit::AiRuntime, &before).ok()
+                })
+                .await;
+            (restored, Err(e))
         }
         Err(e) => {
             log::warn!("settings: MCP connector {id} failed to verify");
@@ -276,20 +296,19 @@ fn submit(s: &mut Settings, window: &mut Window, cx: &mut Context<Settings>) {
     f.error = None;
     let backend = s.backend.clone();
     let has_secret = secret.is_some();
-    let job_id = id.clone();
-    let job = cx.background_spawn(async move {
-        commit(
-            backend.as_ref(),
-            &before,
+    // Detached on purpose: a rollback must finish even if Settings goes away.
+    cx.spawn(async move |this, cx| {
+        let (saved, outcome) = commit(
+            cx,
+            backend,
+            before,
             next,
-            &job_id,
+            id.clone(),
             secret,
             verify,
             rollback,
         )
-    });
-    cx.spawn(async move |this, cx| {
-        let (saved, outcome) = job.await;
+        .await;
         let _ = this.update(cx, |s, cx| {
             if let Some(saved) = saved {
                 let ai = saved.ai_runtime;

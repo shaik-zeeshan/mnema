@@ -16,6 +16,7 @@ use serde_json::{json, Value};
 
 use super::autosave::Unit;
 use super::model::SettingsData;
+use super::pending::Pending;
 use super::privacy_prompt::{Mark, PromptData};
 
 fn to_json(v: impl Serialize) -> Option<Value> {
@@ -354,7 +355,8 @@ pub fn start_download(
     }
 }
 
-/// Settings' writes. Synchronous: the view calls them off the main thread.
+/// Settings' writes. Synchronous: the view calls them off the main thread. The
+/// slow network ones answer a [`Pending`] the view runs on tokio instead.
 pub trait Backend: Send + Sync + 'static {
     /// One autosave unit's persist; answers the canonical settings.
     fn save_domain(
@@ -391,9 +393,9 @@ pub trait Backend: Send + Sync + 'static {
     ) -> Result<MicrophoneControllerState, String>;
     /// `verify_ai_provider`: list one provider's models live, against the
     /// draft list (an unsaved base URL counts). `Err` = the short reason.
-    fn verify_provider(&self, id: &str, providers: &[AiProviderConfig]) -> Result<(), String> {
+    fn verify_provider(&self, id: &str, providers: &[AiProviderConfig]) -> Pending<()> {
         let _ = (id, providers);
-        Err("no app core".into())
+        Pending::Ready(Err("no app core".into()))
     }
     /// `ai_runtime_set_provider_key` into the vault, by instance id; answers the
     /// stored key's last 4 (`ai_runtime_provider_key_ending`). Never logs the key.
@@ -408,17 +410,17 @@ pub trait Backend: Send + Sync + 'static {
     }
     /// `ai_runtime_chatgpt_begin_login`: `(user code, verify URL)`. The outcome
     /// arrives later as `CoreEvent::ChatgptLoginUpdate`.
-    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
+    fn chatgpt_begin(&self, provider: &str) -> Pending<(String, String)> {
         let _ = provider;
-        Err("no app core".into())
+        Pending::Ready(Err("no app core".into()))
     }
     /// `ai_runtime_chatgpt_cancel_login` (best effort).
     fn chatgpt_cancel(&self, provider: &str) {
         let _ = provider;
     }
     /// `ai_runtime_test_connection`: the `AiRuntimeTestResult` JSON.
-    fn test_connection(&self) -> Result<Value, String> {
-        Err("no app core".into())
+    fn test_connection(&self) -> Pending<Value> {
+        Pending::Ready(Err("no app core".into()))
     }
     /// `list_semantic_search_supported_models`: the whole embedding catalog (DTO JSON).
     fn semantic_catalog(&self) -> Result<Vec<Value>, String> {
@@ -458,9 +460,9 @@ pub trait Backend: Send + Sync + 'static {
     }
     /// `mcp_list_server_tools`: connects the connector (an npx cold boot takes
     /// seconds) and answers its tools as `(name, description)`.
-    fn mcp_tools(&self, id: &str) -> Result<Vec<(String, Option<String>)>, String> {
+    fn mcp_tools(&self, id: &str) -> Pending<Vec<(String, Option<String>)>> {
         let _ = id;
-        Err("no app core".into())
+        Pending::Ready(Err("no app core".into()))
     }
     /// `mcp_set_server_secret` into the vault, by connector id. Never logs the secret.
     fn mcp_set_secret(&self, id: &str, secret: &str) -> Result<(), String> {
@@ -501,9 +503,13 @@ impl Backend for CoreBackend {
         load_access(&self.0, &mut d);
         // A tool approved in the CLI Access Request window meanwhile: the list
         // has no change event, so focus re-reads it (`complete` = it was read).
-        let core = &self.0;
-        let grants = core.block_on(app_core::cli_access::list_cli_access_grants(core));
-        let history = core.block_on(app_core::cli_access::list_cli_access_history(core));
+        let core = self.0.clone();
+        let (grants, history) = self.0.run(async move {
+            (
+                app_core::cli_access::list_cli_access_grants(&core).await,
+                app_core::cli_access::list_cli_access_history(&core).await,
+            )
+        });
         if let (Ok(g), Ok(h)) = (grants, history) {
             d.grants = to_json(g)
                 .and_then(|v| v["grants"].as_array().cloned())
@@ -561,59 +567,68 @@ impl Backend for CoreBackend {
         super::live::save_mic(&self.0, state)
     }
 
-    fn verify_provider(&self, id: &str, providers: &[AiProviderConfig]) -> Result<(), String> {
-        let req = serde_json::from_value(json!({ "provider": id, "providers": providers }))
-            .map_err(|e| e.to_string())?;
-        self.0
-            .block_on(app_core::ai_runtime::verify_ai_provider(&self.0, req))
-            .map(|_| ())
+    fn verify_provider(&self, id: &str, providers: &[AiProviderConfig]) -> Pending<()> {
+        let req = match serde_json::from_value(json!({ "provider": id, "providers": providers })) {
+            Ok(req) => req,
+            Err(e) => return Pending::Ready(Err(e.to_string())),
+        };
+        let core = self.0.clone();
+        Pending::later(async move {
+            app_core::ai_runtime::verify_ai_provider(&core, req)
+                .await
+                .map(|_| ())
+        })
     }
 
     fn save_key(&self, provider: &str, key: &str) -> Result<Option<String>, String> {
         use app_core::ai_runtime::{ai_runtime_provider_key_ending, ai_runtime_set_provider_key};
         let request = serde_json::from_value(json!({ "provider": provider, "key": key }))
             .map_err(|_| "couldn't build the key request".to_string())?;
-        self.0.block_on(ai_runtime_set_provider_key(request))?;
-        let ending = serde_json::from_value(json!({ "provider": provider }))
-            .ok()
-            .and_then(|r| self.0.block_on(ai_runtime_provider_key_ending(r)).ok())
-            .flatten();
-        Ok(ending)
+        let ending = serde_json::from_value(json!({ "provider": provider })).ok();
+        self.0.run(async move {
+            ai_runtime_set_provider_key(request).await?;
+            Ok(match ending {
+                Some(r) => ai_runtime_provider_key_ending(r).await.ok().flatten(),
+                None => None,
+            })
+        })
     }
 
     fn clear_key(&self, provider: &str) -> Result<(), String> {
         let request =
             serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
         self.0
-            .block_on(app_core::ai_runtime::ai_runtime_clear_provider_key(request))
+            .run(app_core::ai_runtime::ai_runtime_clear_provider_key(request))
     }
 
-    fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
-        let request =
-            serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
-        let p = self
-            .0
-            .block_on(app_core::ai_runtime::ai_runtime_chatgpt_begin_login(
-                &self.0, request,
-            ))?;
-        Ok((p.user_code, p.verify_url))
+    fn chatgpt_begin(&self, provider: &str) -> Pending<(String, String)> {
+        let request = match serde_json::from_value(json!({ "provider": provider })) {
+            Ok(request) => request,
+            Err(e) => return Pending::Ready(Err(e.to_string())),
+        };
+        let core = self.0.clone();
+        Pending::later(async move {
+            let p = app_core::ai_runtime::ai_runtime_chatgpt_begin_login(&core, request).await?;
+            Ok((p.user_code, p.verify_url))
+        })
     }
 
     fn chatgpt_cancel(&self, provider: &str) {
         if let Ok(request) = serde_json::from_value(json!({ "provider": provider })) {
             let _ = self
                 .0
-                .block_on(app_core::ai_runtime::ai_runtime_chatgpt_cancel_login(
+                .run(app_core::ai_runtime::ai_runtime_chatgpt_cancel_login(
                     request,
                 ));
         }
     }
 
-    fn test_connection(&self) -> Result<Value, String> {
-        let r = self
-            .0
-            .block_on(app_core::ai_runtime::ai_runtime_test_connection(&self.0))?;
-        serde_json::to_value(r).map_err(|e| e.to_string())
+    fn test_connection(&self) -> Pending<Value> {
+        let core = self.0.clone();
+        Pending::later(async move {
+            let r = app_core::ai_runtime::ai_runtime_test_connection(&core).await?;
+            serde_json::to_value(r).map_err(|e| e.to_string())
+        })
     }
 
     fn semantic_catalog(&self) -> Result<Vec<Value>, String> {
@@ -631,12 +646,10 @@ impl Backend for CoreBackend {
             .0
             .try_state::<RecordingSettingsState>()
             .ok_or("settings aren't loaded")?;
-        self.0.block_on(select_semantic_search_model(
-            model_id.into(),
-            &self.0,
-            &infra,
-            &settings,
-        ))
+        let (core, model_id) = (self.0.clone(), model_id.to_string());
+        self.0.run(
+            async move { select_semantic_search_model(model_id, &core, &infra, &settings).await },
+        )
     }
 
     fn record_clip(&self, ms: u64) -> Result<Option<String>, String> {
@@ -667,19 +680,21 @@ impl Backend for CoreBackend {
             .map(|p| Box::new(p) as Box<dyn crate::timeline::audio::transport::Player + Send>)
     }
 
-    fn mcp_tools(&self, id: &str) -> Result<Vec<(String, Option<String>)>, String> {
+    fn mcp_tools(&self, id: &str) -> Pending<Vec<(String, Option<String>)>> {
         use app_core::ask_ai::mcp::{manager, node_check};
-        let core = &self.0;
-        match core.block_on(manager::mcp_list_server_tools(core, id.to_string())) {
-            Ok(tools) => Ok(tools.into_iter().map(|t| (t.name, t.description)).collect()),
-            // Local (stdio) connectors run through npx: say so when Node is missing.
-            Err(e) => Err(match core.block_on(node_check::mcp_check_node()) {
-                Some(_) => e,
-                None => {
-                    format!("{e} Node.js (npx) wasn't found on this Mac; local connectors need it.")
-                }
-            }),
-        }
+        let (core, id) = (self.0.clone(), id.to_string());
+        Pending::later(async move {
+            match manager::mcp_list_server_tools(&core, id).await {
+                Ok(tools) => Ok(tools.into_iter().map(|t| (t.name, t.description)).collect()),
+                // Local (stdio) connectors run through npx: say so when Node is missing.
+                Err(e) => Err(match node_check::mcp_check_node().await {
+                    Some(_) => e,
+                    None => format!(
+                        "{e} Node.js (npx) wasn't found on this Mac; local connectors need it."
+                    ),
+                }),
+            }
+        })
     }
 
     fn mcp_set_secret(&self, id: &str, secret: &str) -> Result<(), String> {
@@ -692,19 +707,24 @@ impl Backend for CoreBackend {
 
     fn mcp_oauth_begin(&self, id: &str) -> Result<(), String> {
         use app_core::ask_ai::mcp::oauth_flow::mcp_oauth_begin;
-        self.0.block_on(mcp_oauth_begin(&self.0, id.to_string()))
+        let (core, id) = (self.0.clone(), id.to_string());
+        self.0.run(async move { mcp_oauth_begin(&core, id).await })
     }
 
     fn mcp_oauth_statuses(&self) -> Option<Vec<Value>> {
         use app_core::ask_ai::mcp::oauth_flow::mcp_oauth_statuses;
-        let statuses = self.0.block_on(mcp_oauth_statuses(&self.0)).ok()?;
+        let core = self.0.clone();
+        let statuses = self
+            .0
+            .run(async move { mcp_oauth_statuses(&core).await })
+            .ok()?;
         to_json(statuses).and_then(|v| v.as_array().cloned())
     }
 
     fn mcp_check_node(&self) -> Result<Option<String>, String> {
         Ok(self
             .0
-            .block_on(app_core::ask_ai::mcp::node_check::mcp_check_node()))
+            .run(app_core::ask_ai::mcp::node_check::mcp_check_node()))
     }
 }
 
