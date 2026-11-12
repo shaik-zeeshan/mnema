@@ -147,9 +147,14 @@ pub struct Tray {
     core: Arc<AppCore>,
     operation: StatusBarOperation,
     last: Capture,
+    /// A look-again is scheduled: the last refresh found the capture lock busy.
+    retrying: bool,
 }
 
 impl Global for Tray {}
+
+/// How soon a refresh that found the capture lock busy looks again.
+const BUSY_RETRY: std::time::Duration = std::time::Duration::from_millis(250);
 
 /// What the tray shows of the capture session.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -257,6 +262,7 @@ pub fn create(
         core: core.clone(),
         operation: StatusBarOperation::Idle,
         last,
+        retrying: false,
     })
 }
 
@@ -265,12 +271,28 @@ pub fn refresh(cx: &mut App) {
     let Some(core) = cx.try_global::<Tray>().map(|t| t.core.clone()) else {
         return;
     };
-    let session = live_capture(&core, cx);
+    let fresh = try_session(&core);
+    let busy = fresh.is_none();
+    let session = capture(fresh, &mut cx.global_mut::<Tray>().last);
     let tray = cx.global::<Tray>();
     let model = current_model(&core, tray.operation, session, cx);
     tray.icon.set_menu(Some(Box::new(build(&model))));
     if let Err(e) = tray.icon.set_tooltip(Some(model.tooltip)) {
         log::warn!("failed to set the status-bar tooltip: {e}");
+    }
+    // Busy lock: this menu shows the last session seen, and the change that
+    // asked for this refresh may be the one it missed, so look again shortly.
+    if busy && !std::mem::replace(&mut cx.global_mut::<Tray>().retrying, true) {
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(BUSY_RETRY).await;
+            let _ = cx.update(|cx| {
+                if cx.has_global::<Tray>() {
+                    cx.global_mut::<Tray>().retrying = false;
+                    refresh(cx);
+                }
+            });
+        })
+        .detach();
     }
 }
 
@@ -495,7 +517,7 @@ fn exclude_current_app(core: Arc<AppCore>) {
         else {
             return;
         };
-    match result {
+        match result {
             Err(e) => show_error(&core, "Could not exclude app", e.message),
             Ok(_) => core.host().message(MessageDialog {
                 title: "App Excluded".into(),
