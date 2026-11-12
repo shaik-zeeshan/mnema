@@ -12,10 +12,22 @@ impl RecordingLifecycle {
     /// — the resume trigger is "sound detected", which a wedged tap can never
     /// deliver. That is how the ScreenCaptureKit bug trapped a live session for
     /// 34 minutes (ADR 0052).
+    ///
+    /// The one exception is the Mac being away: the tap is torn down and held
+    /// down, then rebuilt on return (ruling 2026-11-12).
     #[cfg(target_os = "macos")]
-    fn tick_system_audio(&mut self, core: &Arc<AppCore>) {
+    fn tick_system_audio(&mut self, core: &Arc<AppCore>, away: bool) {
+        let came_back = apply_system_audio_away(&mut self.runtime, away, Some(core));
+        if self.runtime.system_audio_away_hold {
+            return;
+        }
+        if came_back {
+            // Rebuild now, not on a backoff left from before the Mac went away.
+            self.system_audio_start_retry_at_ms = None;
+            self.system_audio_start_retry_delay_ms = 0;
+        }
         let Some(session) = self.runtime.active_system_audio_session.as_mut() else {
-            self.retry_system_audio_start(core);
+            self.retry_system_audio_start(core, came_back);
             return;
         };
         // A rebuild rotates onto a fresh file mid-segment; track it so the next
@@ -26,12 +38,9 @@ impl RecordingLifecycle {
         // while the user is still recording, not once they happen to stop
         // (ADR 0052). It settles after the first judgement and costs an atomic
         // load thereafter.
-        let session_age_ms = self
-            .runtime
-            .recording_started_at_unix_ms
-            .map(|started| crate::native_capture::runtime::now_unix_ms().saturating_sub(started))
-            .unwrap_or(0);
-        crate::native_capture::system_audio::note_permission_evidence(core, session_age_ms);
+        let tap_age_ms =
+            system_audio_tap_age_ms(&self.runtime, crate::native_capture::runtime::now_unix_ms());
+        crate::native_capture::system_audio::note_permission_evidence(core, tap_age_ms);
 
         let Some(system_audio_output_file) = rotated_output_file else {
             return;
@@ -49,7 +58,8 @@ impl RecordingLifecycle {
         );
     }
 
-    /// Retries a tap that never started.
+    /// Starts a tap that is missing: one that never started, or the one the
+    /// away hold tore down (`came_back`, the tick the Mac returned).
     ///
     /// A start failure costs only system audio, so it is logged rather than
     /// failing the session — but with `requested_sources.system_audio` still true
@@ -59,12 +69,10 @@ impl RecordingLifecycle {
     /// (coreaudiod restarting, an aggregate-UID collision), so the tick retries on
     /// the watchdog's own shape (ADR 0052).
     ///
-    /// `start_system_audio_family_for_runtime` refuses on its own unless system
-    /// audio is requested, unpaused and tap-less; only low disk — the one
-    /// suspension that stops the tap and restarts it itself (ADR 0040) — has to be
-    /// excluded here.
+    /// A family paused for inactivity comes back paused: alive and listening,
+    /// writing nothing, so sound can resume it.
     #[cfg(target_os = "macos")]
-    fn retry_system_audio_start(&mut self, core: &Arc<AppCore>) {
+    fn retry_system_audio_start(&mut self, core: &Arc<AppCore>, came_back: bool) {
         if !should_retry_system_audio_start(&self.runtime) {
             return;
         }
@@ -77,29 +85,40 @@ impl RecordingLifecycle {
             return;
         }
 
-        let segment_index = self.runtime.current_segment_index;
-        match start_system_audio_family_for_runtime(
+        let (started, failed) = if came_back {
+            (
+                "restarted system audio after the Mac came back",
+                "failed to restart system audio after the Mac came back",
+            )
+        } else {
+            (
+                "tap started on retry after an earlier start failure",
+                "tap start retry failed",
+            )
+        };
+        match start_system_audio_family_mid_segment(
             &mut self.runtime,
             crate::native_capture::privacy::collect_initial_privacy_filter(core)
                 .excluded_bundle_ids(),
-            segment_index,
             "retrying system audio start",
         ) {
             Ok(output_file) => {
                 self.system_audio_start_retry_at_ms = None;
                 self.system_audio_start_retry_delay_ms = 0;
-                if let Some(output_file) = output_file {
+                if self.runtime.active_system_audio_session.is_some() {
                     crate::debug_log::log_info(format!(
-                        "{} tap started on retry after an earlier start failure",
+                        "{} {started}",
                         capture_system_audio::LOG_PREFIX
                     ));
+                }
+                if let Some(output_file) = output_file {
                     self.track_live_system_audio_output_file(output_file);
                 }
             }
             Err(error) => {
                 self.schedule_system_audio_start_retry(now);
                 crate::debug_log::log_warn(format!(
-                    "{} tap start retry failed; next attempt in {}ms: [{}] {}",
+                    "{} {failed}; next attempt in {}ms: [{}] {}",
                     capture_system_audio::LOG_PREFIX,
                     self.system_audio_start_retry_delay_ms,
                     error.code,
@@ -131,8 +150,11 @@ impl RecordingLifecycle {
             return TickOutcome::SkipRotation;
         }
 
-        self.tick_system_audio(core);
-        tick_microphone_away(&mut self.runtime, Some(core));
+        // The user-pause return above needs no away check: a user pause stopped
+        // every source, the tap included.
+        let away = tick_mac_is_away(&self.runtime);
+        self.tick_system_audio(core, away);
+        tick_microphone_away(&mut self.runtime, away, Some(core));
 
         if let Some(error) = capture_screen::take_screen_capture_session_stop_error(
             self.runtime.active_screen_session.as_mut(),

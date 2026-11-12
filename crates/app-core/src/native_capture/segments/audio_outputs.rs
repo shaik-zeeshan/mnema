@@ -265,11 +265,14 @@ pub(crate) fn next_reanchored_microphone_output_file(
 }
 
 /// Brings the system-audio tap up for a session that requests it, seeding its
-/// planner and opening the first segment at `segment_index`.
+/// planner and opening the first segment at `segment_index`, a segment that
+/// holds no system audio yet.
 ///
 /// Callable with no screen session and no display: that is the whole point of the
 /// family (ADR 0052). A start failure is returned to the caller, which decides
-/// whether the session can go on without system audio.
+/// whether the session can go on without system audio. While the Mac is away it
+/// starts nothing and sets the away hold instead; the tick brings the tap up once
+/// the Mac is back (ruling 2026-11-12).
 #[cfg(target_os = "macos")]
 pub(crate) fn start_system_audio_family_for_runtime(
     runtime: &mut NativeCaptureRuntime,
@@ -277,13 +280,69 @@ pub(crate) fn start_system_audio_family_for_runtime(
     segment_index: u64,
     context: &str,
 ) -> Result<Option<String>, CaptureErrorResponse> {
-    if !runtime
+    if system_audio_tap_wanted(runtime)
+        && (runtime.system_audio_away_hold
+            || crate::native_capture::microphone_away::mac_is_away(runtime))
+    {
+        runtime.system_audio_away_hold = true;
+        return Ok(None);
+    }
+    start_system_audio_tap(runtime, excluded_bundle_ids, segment_index, false, context)
+}
+
+/// The tick's start: a retry after a failed start, or the rebuild after the Mac
+/// came back. It lands inside the current segment, which may already hold a
+/// system-audio file, and the tick has just judged the Mac not away itself.
+#[cfg(target_os = "macos")]
+pub(crate) fn start_system_audio_family_mid_segment(
+    runtime: &mut NativeCaptureRuntime,
+    excluded_bundle_ids: Vec<String>,
+    context: &str,
+) -> Result<Option<String>, CaptureErrorResponse> {
+    let segment_index = runtime.current_segment_index;
+    start_system_audio_tap(runtime, excluded_bundle_ids, segment_index, true, context)
+}
+
+#[cfg(target_os = "macos")]
+fn system_audio_tap_wanted(runtime: &NativeCaptureRuntime) -> bool {
+    runtime
         .requested_sources
         .as_ref()
         .is_some_and(|sources| sources.system_audio)
-        || runtime.inactivity.is_system_audio_paused()
-        || runtime.active_system_audio_session.is_some()
-    {
+        && runtime.active_system_audio_session.is_none()
+}
+
+/// The file a new tap opens first. None while system audio is paused for
+/// inactivity: the tap comes up listening, so sound can resume it. Mid-segment
+/// a collision-safe resume name, because the segment's canonical name may
+/// already hold the audio recorded before the tap went down.
+#[cfg(target_os = "macos")]
+pub(crate) fn first_system_audio_output_file(
+    planner: &SegmentPlanner,
+    segment_index: u64,
+    mid_segment: bool,
+    paused: bool,
+) -> Option<PathBuf> {
+    if paused {
+        None
+    } else if mid_segment {
+        Some(planner.system_audio_resume_file(segment_index, now_unix_ms()))
+    } else {
+        Some(planner.system_audio_file(segment_index))
+    }
+}
+
+/// Returns the file the tap is writing, or `None` when it declined to start or
+/// started paused (check `active_system_audio_session` to tell them apart).
+#[cfg(target_os = "macos")]
+fn start_system_audio_tap(
+    runtime: &mut NativeCaptureRuntime,
+    excluded_bundle_ids: Vec<String>,
+    segment_index: u64,
+    mid_segment: bool,
+    context: &str,
+) -> Result<Option<String>, CaptureErrorResponse> {
+    if !system_audio_tap_wanted(runtime) {
         return Ok(None);
     }
 
@@ -294,7 +353,12 @@ pub(crate) fn start_system_audio_family_for_runtime(
         }
     })?;
     ensure_audio_dir_exists(&planner.audio_dir())?;
-    let first_output_file = planner.system_audio_file(segment_index);
+    let first_output_file = first_system_audio_output_file(
+        &planner,
+        segment_index,
+        mid_segment,
+        runtime.inactivity.is_system_audio_paused(),
+    );
 
     let family = crate::native_capture::system_audio::SystemAudioFamily::start(
         planner,
@@ -304,6 +368,7 @@ pub(crate) fn start_system_audio_family_for_runtime(
     )?;
     let output_file = family.live_output_file();
     runtime.active_system_audio_session = Some(family);
+    runtime.system_audio_tap_started_at_unix_ms = Some(now_unix_ms());
 
     Ok(output_file)
 }

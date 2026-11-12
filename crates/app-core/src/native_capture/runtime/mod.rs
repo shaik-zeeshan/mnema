@@ -52,7 +52,8 @@ pub enum CaptureSuspensionKind {
     /// close, monitor disconnect). This is a transient liveness condition, not an
     /// error, so recovery never gives up: it waits for a display to return and
     /// then resumes capture automatically. Screen-only: system audio runs on a
-    /// process tap and records straight through it (ADR 0021, amended).
+    /// process tap and stops only while the Mac is away (locked, or every
+    /// display asleep), under its own hold (ADR 0021, amended).
     DisplayUnavailable,
     /// The recordings volume is too low on free space to safely open the next
     /// segment file. Like [`CaptureSuspensionKind::DisplayUnavailable`] this is a
@@ -164,6 +165,14 @@ pub struct NativeCaptureRuntime {
     /// meanwhile. A running device is stopped with its output paused for
     /// inactivity, so activity resumes it afterwards.
     pub microphone_away_hold: bool,
+    /// Set while the Mac is away and system audio is requested: the tap is torn
+    /// down (its running IOProc keeps the Mac from idle-sleeping) and nothing
+    /// starts one until the tick sees the Mac back and rebuilds it.
+    pub system_audio_away_hold: bool,
+    /// Wall-clock start of the current tap; `None` with no tap. Silence is
+    /// judged over this, not the recording's age: time without a tap gave it
+    /// nothing to hear.
+    pub system_audio_tap_started_at_unix_ms: Option<u64>,
     /// Set while a `WaitForSameDevice` microphone's device is gone, by the
     /// device-change notifier, which clears it when the device returns.
     pub microphone_waiting_for_device: bool,
@@ -435,6 +444,7 @@ pub fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
     runtime.inactivity = InactivityState::default();
     runtime.user_capture_paused = false;
     runtime.microphone_away_hold = false;
+    runtime.system_audio_away_hold = false;
     runtime.microphone_waiting_for_device = false;
     // A lend that never came back (its recording panicked) must not hold the
     // next session's microphone.
@@ -468,6 +478,7 @@ pub fn mark_runtime_session_stopped(runtime: &mut NativeCaptureRuntime) {
 /// Tears the tap down, closing its in-flight segment. Terminal for the session.
 #[cfg(target_os = "macos")]
 pub fn stop_system_audio_session(runtime: &mut NativeCaptureRuntime) {
+    runtime.system_audio_tap_started_at_unix_ms = None;
     if let Some(session) = runtime.active_system_audio_session.take() {
         session.stop();
     }

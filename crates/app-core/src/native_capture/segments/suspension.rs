@@ -71,9 +71,9 @@ pub(crate) fn active_sources_for_runtime_pause_state(
 }
 
 /// Suspends screen capture. Despite the name, system audio no longer rides
-/// along: it runs on a process tap with no display dependency, so a display
-/// sleeping, locking or disconnecting leaves it recording exactly as it leaves
-/// the microphone recording (ADR 0021, amended by ADR 0052).
+/// along: it runs on a process tap with no display dependency, so this leaves it
+/// alone exactly as it leaves the microphone alone (ADR 0021, amended by ADR
+/// 0052). Lock and display sleep stop both through their away holds instead.
 ///
 /// Low disk is the exception, and it is not about the screen: every source writes
 /// to the same volume, so [`CaptureSuspensionKind::LowDisk`] still stops the

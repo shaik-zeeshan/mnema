@@ -138,9 +138,10 @@ fn mark_runtime_session_stopped_clears_current_segment_sources() {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn stopping_the_session_clears_the_microphone_away_hold() {
+fn stopping_the_session_clears_the_away_holds() {
     let mut runtime = NativeCaptureRuntime {
         microphone_away_hold: true,
+        system_audio_away_hold: true,
         microphone_waiting_for_device: true,
         ..Default::default()
     };
@@ -148,6 +149,7 @@ fn stopping_the_session_clears_the_microphone_away_hold() {
     mark_runtime_session_stopped(&mut runtime);
 
     assert!(!runtime.microphone_away_hold);
+    assert!(!runtime.system_audio_away_hold);
     assert!(!runtime.microphone_waiting_for_device);
 }
 

@@ -12,7 +12,9 @@ use crate::native_capture::microphone_away::{
     mac_is_away, should_resume_microphone_after_activity,
 };
 #[cfg(target_os = "macos")]
-use crate::native_capture::microphone_away::{reopen_unwakeable_microphone, tick_microphone_away};
+use crate::native_capture::microphone_away::{
+    reopen_unwakeable_microphone, tick_mac_is_away, tick_microphone_away,
+};
 use crate::native_capture::runtime::{
     active_sources_for_inactivity_paused_state, apply_runtime_signal,
     current_segment_sources_for_runtime, ensure_system_audio_planner_for_runtime,
@@ -33,9 +35,11 @@ use crate::native_capture::segments::{
     recover_from_segment_finalize_error, recover_screen_capture_after_wake,
     resume_microphone_from_inactivity, resume_runtime_from_inactivity,
     resume_screen_from_inactivity, resume_system_audio_from_inactivity, start_capture_runtime,
-    start_segment_with_current_privacy_filter, start_system_audio_family_for_runtime,
+    start_segment_with_current_privacy_filter, start_system_audio_family_mid_segment,
     stop_active_sessions_after_failure, stop_capture_runtime,
 };
+#[cfg(target_os = "macos")]
+use crate::native_capture::system_audio_away::{apply_system_audio_away, system_audio_tap_age_ms};
 use crate::native_capture_output::{
     append_committed_segment_output_files, cleanup_unusable_segment_artifacts,
     finalize_capture_outputs, set_current_microphone_output_file, set_current_screen_output_file,
@@ -63,10 +67,12 @@ const SYSTEM_AUDIO_START_RETRY_MAX_MS: u64 = 600_000;
 
 /// Whether the tick should try to bring a missing tap up.
 ///
-/// Low disk is the carve-out: it is the one suspension that deliberately stops
-/// the tap, and it restarts it itself once space returns (ADR 0040). Every other
-/// suspension leaves the tap alone, so a tap-less runtime under one is a tap that
-/// failed to start — exactly the case worth retrying.
+/// Two things stop the tap on purpose and bring it back themselves: low disk,
+/// once space returns (ADR 0040), and the away hold, once the Mac is back
+/// (ruling 2026-11-12). Every other suspension leaves the tap alone, so a
+/// tap-less runtime under one is a tap that failed to start — exactly the case
+/// worth retrying. A family paused for inactivity is retried too, into a paused
+/// tap: only a live tap can hear the sound that resumes it.
 #[cfg(target_os = "macos")]
 pub(super) fn should_retry_system_audio_start(runtime: &NativeCaptureRuntime) -> bool {
     runtime.is_running
@@ -74,7 +80,7 @@ pub(super) fn should_retry_system_audio_start(runtime: &NativeCaptureRuntime) ->
             .requested_sources
             .as_ref()
             .is_some_and(|sources| sources.system_audio)
-        && !runtime.inactivity.is_system_audio_paused()
+        && !runtime.system_audio_away_hold
         && !system_audio_stops_with_suspension(runtime)
         && runtime.active_system_audio_session.is_none()
 }
@@ -147,9 +153,9 @@ impl RecordingLifecycle {
             return false;
         }
 
-        // Screen state only. The tap has no display dependency, so a sleep leaves
-        // it recording — and clearing its file here would orphan the segment it is
-        // still writing (ADR 0052).
+        // Screen state only. The tap is the away hold's to stop (it commits the
+        // file), and clearing its file here would orphan the segment it is still
+        // writing (ADR 0052).
         self.runtime.active_screen_session = None;
         self.runtime.recording_file = None;
         self.runtime.current_segment_sources = active_sources_for_inactivity_paused_state(
@@ -439,7 +445,8 @@ impl RecordingLifecycle {
             self.runtime.current_segment_index = next_index;
 
             // A user pause stopped the tap with everything else, so a user resume
-            // starts it again — including for a session with no screen at all.
+            // starts it again — including for a session with no screen at all —
+            // unless the Mac is away, which leaves it held for the tick.
             match crate::native_capture::segments::start_system_audio_family_for_runtime(
                 &mut self.runtime,
                 crate::native_capture::privacy::collect_initial_privacy_filter(core)

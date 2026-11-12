@@ -189,7 +189,6 @@ pub(crate) fn pause_system_audio_for_inactivity_with_app_handle(
     // would be self-defeating — the resume trigger is "sound detected", and a
     // stopped tap can never deliver it.
     if runtime.active_system_audio_session.is_some() {
-        let system_audio_recording_file = runtime.system_audio_recording_file.clone();
         let planner = ensure_system_audio_planner_for_runtime(
             runtime,
             "pausing system audio for inactivity",
@@ -201,48 +200,14 @@ pub(crate) fn pause_system_audio_for_inactivity_with_app_handle(
             session.advance_segment(&planner, segment_index, None);
         }
 
-        let mut finalized_system_audio_outputs = None;
-        if let Some(output_files) = runtime.current_segment_output_files.as_ref() {
-            let mut system_audio_outputs = empty_output_files();
-            system_audio_outputs.system_audio_file = output_files.system_audio_file.clone();
-            system_audio_outputs.system_audio_files = output_files.system_audio_files.clone();
-            finalize_capture_outputs(
-                Some(&mut system_audio_outputs),
-                None,
-                None,
-                system_audio_recording_file.as_deref(),
-                Some(&CaptureSources {
-                    screen: false,
-                    microphone: false,
-                    system_audio: true,
-                }),
-            )?;
-            finalized_system_audio_outputs = Some(system_audio_outputs);
-        }
-
-        if let Some(finalized) = finalized_system_audio_outputs.as_ref() {
-            if let Some(committed) = runtime.output_files.as_mut() {
-                append_committed_segment_output_files(committed, finalized);
-            }
-            persist_committed_system_audio_segments(
-                core,
-                runtime.source_sessions.as_ref(),
-                runtime.segment_schedule.as_ref(),
-                runtime.current_segment_index,
-                Some(finalized),
-            );
-        }
+        commit_closed_system_audio_outputs(runtime, core)?;
     }
 
     // The finished system-audio file has already been appended to the committed
     // output list and persisted. Remove it from the live segment bookkeeping so a
     // later pause/rotation/stop cannot upsert the same audio path again with the
     // later segment clock.
-    if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
-        output_files.system_audio_file = None;
-        output_files.system_audio_files.clear();
-    }
-    runtime.system_audio_recording_file = None;
+    clear_live_system_audio_outputs(runtime);
 
     runtime.inactivity.set_family_paused_states(
         runtime.inactivity.screen_paused,
@@ -259,6 +224,56 @@ pub(crate) fn pause_system_audio_for_inactivity_with_app_handle(
     );
 
     Ok(())
+}
+
+/// Commits the system-audio files the live segment has booked, once the tap
+/// has closed them (an inactivity pause, the Mac going away), against the
+/// current segment. The caller then clears them from the live bookkeeping
+/// ([`clear_live_system_audio_outputs`]).
+#[cfg(target_os = "macos")]
+pub(crate) fn commit_closed_system_audio_outputs(
+    runtime: &mut NativeCaptureRuntime,
+    core: Option<&Arc<AppCore>>,
+) -> Result<(), CaptureErrorResponse> {
+    let Some(output_files) = runtime.current_segment_output_files.as_ref() else {
+        return Ok(());
+    };
+    let mut finalized = empty_output_files();
+    finalized.system_audio_file = output_files.system_audio_file.clone();
+    finalized.system_audio_files = output_files.system_audio_files.clone();
+    finalize_capture_outputs(
+        Some(&mut finalized),
+        None,
+        None,
+        runtime.system_audio_recording_file.as_deref(),
+        Some(&CaptureSources {
+            screen: false,
+            microphone: false,
+            system_audio: true,
+        }),
+    )?;
+
+    if let Some(committed) = runtime.output_files.as_mut() {
+        append_committed_segment_output_files(committed, &finalized);
+    }
+    persist_committed_system_audio_segments(
+        core,
+        runtime.source_sessions.as_ref(),
+        runtime.segment_schedule.as_ref(),
+        runtime.current_segment_index,
+        Some(&finalized),
+    );
+    Ok(())
+}
+
+/// Drops system audio from the live segment's bookkeeping: nothing is being
+/// written, and what was is committed already.
+#[cfg(target_os = "macos")]
+pub(crate) fn clear_live_system_audio_outputs(runtime: &mut NativeCaptureRuntime) {
+    if let Some(output_files) = runtime.current_segment_output_files.as_mut() {
+        crate::native_capture_output::clear_current_system_audio_output_file(output_files);
+    }
+    runtime.system_audio_recording_file = None;
 }
 
 #[cfg(target_os = "macos")]

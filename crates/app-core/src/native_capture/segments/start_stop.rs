@@ -263,11 +263,13 @@ pub(crate) fn start_capture_runtime(
             runtime.active_screen_session = active_screen_session;
             runtime.active_microphone_session = active_microphone_session;
             runtime.microphone_away_hold = microphone_held_away;
+            runtime.system_audio_away_hold = false;
             runtime.capture_suspension = None;
 
             // The tap starts last and on its own terms: a session with screen and
             // microphone both off is a valid system-audio-only recording, and a
-            // tap that fails to start costs only system audio (ADR 0052).
+            // tap that fails to start costs only system audio (ADR 0052). A start
+            // while the Mac is away holds it down until the tick sees it back.
             match start_system_audio_family_for_runtime(
                 runtime,
                 initial_privacy_filter_excluded_bundle_ids,
@@ -354,8 +356,9 @@ pub(crate) fn stop_capture_runtime(
             }
             runtime.active_microphone_session = None;
         }
-        // An away hold belongs to the session just stopped.
+        // Away holds belong to the session just stopped.
         runtime.microphone_away_hold = false;
+        runtime.system_audio_away_hold = false;
         // So do the inactivity pauses: every family stops here. One left
         // standing would keep the fresh file a user resume opens out of rotation
         // (past the 5-minute cap) until the next activity resume closed it and

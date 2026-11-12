@@ -366,7 +366,9 @@ pub fn read_locked(runtime: &NativeCaptureRuntime) -> Locked {
             Source::SystemAudio,
             requested(|s| s.system_audio),
             sys_live,
-            runtime.inactivity.is_system_audio_paused(),
+            // Held down while the Mac is away, as a paused source like the
+            // microphone's hold, never a failed one.
+            runtime.inactivity.is_system_audio_paused() || runtime.system_audio_away_hold,
             system_audio_reconnecting,
             capture_system_audio::peek_system_audio_activity_window_peak_level(),
             capture_system_audio::system_audio_activity_idle_ms(),
@@ -529,6 +531,34 @@ mod tests {
         assert_eq!(
             source_state(Source::Microphone, lost, None),
             CaptureSourceState::Failed
+        );
+    }
+
+    // The away hold tears the tap down on purpose; a tap-less session must read
+    // as paused, not as a failed source the health rules would raise.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn system_audio_held_while_away_reads_as_paused_not_failed() {
+        let mut runtime = NativeCaptureRuntime {
+            is_running: true,
+            requested_sources: Some(capture_types::CaptureSources {
+                screen: false,
+                microphone: false,
+                system_audio: true,
+            }),
+            system_audio_away_hold: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            read_locked(&runtime).dto.system_audio.state,
+            CaptureSourceState::Paused
+        );
+
+        runtime.system_audio_away_hold = false;
+        assert_eq!(
+            read_locked(&runtime).dto.system_audio.state,
+            CaptureSourceState::Failed,
+            "a tap that is missing for no reason still reads as failed"
         );
     }
 

@@ -374,21 +374,37 @@ fn a_microphone_whose_device_died_unheld_is_reopened() {
     assert!(microphone_open_was_attempted(&runtime));
 }
 
-// The away probe (a CGSession dictionary and a display list, 2-3×/s) is the
-// microphone's alone: a session that never records it does not pay for it.
+// The away probe (a CGSession dictionary and a display list, 2-3×/s) belongs to
+// the audio families: a session that records neither does not pay for it.
 #[cfg(target_os = "macos")]
 #[test]
-fn the_away_tick_does_not_probe_without_a_requested_microphone() {
+fn the_away_tick_does_not_probe_without_a_requested_audio_family() {
+    let mut runtime = stranded_microphone_runtime_fixture();
+    runtime.requested_sources = Some(CaptureSources {
+        screen: true,
+        microphone: false,
+        system_audio: false,
+    });
+    runtime.away_probe = Some(|| panic!("probed the Mac's away state"));
+
+    assert!(!tick_mac_is_away(&runtime));
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn the_away_tick_probes_for_system_audio_alone_and_leaves_no_microphone_hold() {
     let mut runtime = stranded_microphone_runtime_fixture();
     runtime.requested_sources = Some(CaptureSources {
         screen: true,
         microphone: false,
         system_audio: true,
     });
-    runtime.away_probe = Some(|| panic!("probed the Mac's away state"));
+    runtime.away_probe = Some(|| true);
 
-    tick_microphone_away(&mut runtime, None);
+    let away = tick_mac_is_away(&runtime);
+    tick_microphone_away(&mut runtime, away, None);
 
+    assert!(away);
     assert!(!runtime.microphone_away_hold);
 }
 
@@ -398,7 +414,8 @@ fn the_away_tick_holds_a_requested_microphone() {
     let mut runtime = stranded_microphone_runtime_fixture();
     runtime.away_probe = Some(|| true);
 
-    tick_microphone_away(&mut runtime, None);
+    let away = tick_mac_is_away(&runtime);
+    tick_microphone_away(&mut runtime, away, None);
 
     assert!(runtime.microphone_away_hold);
 }

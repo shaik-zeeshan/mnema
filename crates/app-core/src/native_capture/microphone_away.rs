@@ -194,16 +194,28 @@ pub(super) fn apply_microphone_away(
     runtime.microphone_away_hold = false;
 }
 
+/// The tick's one away probe, shared by both audio families. The probe runs
+/// 2-3×/s and is not free, so a session recording neither skips it.
+#[cfg(target_os = "macos")]
+pub(super) fn tick_mac_is_away(runtime: &NativeCaptureRuntime) -> bool {
+    runtime
+        .requested_sources
+        .as_ref()
+        .is_some_and(|sources| sources.microphone || sources.system_audio)
+        && mac_is_away(runtime)
+}
+
 /// Stop the microphone device while the Mac is locked or every display is
 /// asleep, and restart it once neither holds (founder ruling 2026-10-23: lock
-/// is away, so speech said while locked is not recorded).
+/// is away, so speech said while locked is not recorded). `away` is the tick's
+/// [`tick_mac_is_away`].
 ///
-/// The probe runs 2-3×/s, so a session without the microphone skips it. Its
-/// sources are fixed for the session, and every path that sets the hold wants
-/// the microphone, so there is no hold to clear here.
+/// A session's sources are fixed, and every path that sets the hold wants the
+/// microphone, so a session without it has no hold to clear here.
 #[cfg(target_os = "macos")]
 pub(super) fn tick_microphone_away(
     runtime: &mut NativeCaptureRuntime,
+    away: bool,
     core: Option<&Arc<AppCore>>,
 ) {
     if !runtime
@@ -213,7 +225,6 @@ pub(super) fn tick_microphone_away(
     {
         return;
     }
-    let away = mac_is_away(runtime);
     apply_microphone_away(runtime, away, core);
 }
 

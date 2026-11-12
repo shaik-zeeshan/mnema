@@ -62,14 +62,20 @@ fn a_low_disk_suspension_is_never_retried_back_into_a_tap() {
     );
 }
 
+// A tap-less family paused for inactivity could never resume: the resume is
+// "sound detected", and only a live tap hears sound. So the retry brings it up
+// paused (listening, writing nothing) rather than leaving it stuck.
 #[test]
-fn a_paused_or_unrequested_system_audio_family_is_never_started_by_the_retry() {
+fn a_paused_tapless_family_is_retried_into_a_listening_tap() {
     let mut paused = tapless_system_audio_runtime();
     paused
         .inactivity
         .set_family_paused_states(false, false, true);
-    assert!(!should_retry_system_audio_start(&paused));
+    assert!(should_retry_system_audio_start(&paused));
+}
 
+#[test]
+fn an_unrequested_or_stopped_system_audio_family_is_never_started_by_the_retry() {
     let mut unrequested = tapless_system_audio_runtime();
     unrequested.requested_sources = Some(screen_only_sources());
     assert!(!should_retry_system_audio_start(&unrequested));

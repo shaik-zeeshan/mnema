@@ -3,8 +3,11 @@
 //! The sibling of `microphone.rs`: a thin adapter between the segment machinery
 //! and `capture-system-audio`'s tap session. Nothing here knows about the screen,
 //! and that is the point — the tap has no display dependency, so system audio
-//! records through display sleep, lock and disconnect exactly like the microphone,
-//! and a session may request system audio with no screen at all.
+//! records through a display disconnect, and a session may request system audio
+//! with no screen at all. Like the microphone it stops while the Mac is away
+//! (locked, another user at the console, every display asleep): a running tap
+//! holds coreaudiod's idle-sleep assertion (ruling 2026-11-12,
+//! `system_audio_away.rs`).
 //!
 //! The one shape worth explaining is the bus. `SystemAudioCaptureSession` owns
 //! callbacks that ask for the next output file and hand back the finished one,
@@ -97,20 +100,21 @@ fn lock_bus(bus: &Mutex<SegmentBus>) -> std::sync::MutexGuard<'_, SegmentBus> {
 }
 
 impl SystemAudioFamily {
-    /// Starts the tap and opens the first segment. `excluded_bundle_ids` is the
-    /// privacy list, which the tap excludes exactly as ScreenCaptureKit's content
-    /// filter used to.
+    /// Starts the tap and opens the first segment, or none: a tap started with
+    /// no first file is paused for inactivity, alive and listening so sound can
+    /// resume it. `excluded_bundle_ids` is the privacy list, which the tap
+    /// excludes exactly as ScreenCaptureKit's content filter used to.
     pub fn start(
         planner: SegmentPlanner,
         segment_index: u64,
-        first_output_file: PathBuf,
+        first_output_file: Option<PathBuf>,
         excluded_bundle_ids: Vec<String>,
     ) -> Result<Self, CaptureErrorResponse> {
         let bus = Arc::new(Mutex::new(SegmentBus {
             planner: Some(planner),
             segment_index,
-            paused: false,
-            pending_output_file: Some(first_output_file),
+            paused: first_output_file.is_none(),
+            pending_output_file: first_output_file,
             live_output_file: None,
         }));
 

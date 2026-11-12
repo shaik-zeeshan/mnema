@@ -29,6 +29,8 @@ pub mod settings;
 pub mod settings_update;
 #[cfg(target_os = "macos")]
 pub mod system_audio;
+#[cfg(target_os = "macos")]
+mod system_audio_away;
 pub mod system_wake;
 #[cfg(test)]
 mod tests;

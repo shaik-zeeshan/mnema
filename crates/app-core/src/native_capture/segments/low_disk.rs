@@ -545,8 +545,8 @@ pub(crate) fn resume_all_sources_after_low_disk(
 
     // --- System audio (its own tap) ---
     // Low disk is the one suspension that stops the tap, so it is the one that
-    // restarts it. A failure here only costs system audio; the other sources
-    // recover regardless.
+    // restarts it — unless the Mac is away, which holds it for the tick. A
+    // failure here only costs system audio; the other sources recover regardless.
     let next_system_audio_recording_file = match start_system_audio_family_for_runtime(
         runtime,
         privacy::collect_initial_privacy_filter(core).excluded_bundle_ids(),

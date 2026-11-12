@@ -56,18 +56,20 @@ fn stop_capture_runtime_clears_inactivity_pauses_so_a_resume_rotates_the_microph
 
 #[cfg(target_os = "macos")]
 #[test]
-fn stop_capture_runtime_clears_the_microphone_away_hold() {
+fn stop_capture_runtime_clears_the_away_holds() {
     let mut runtime = NativeCaptureRuntime {
         is_running: true,
         runtime_controller: RuntimeController::default(),
         runtime_state: RuntimeState::Idle,
         microphone_away_hold: true,
+        system_audio_away_hold: true,
         ..Default::default()
     };
 
     stop_capture_runtime(&mut runtime, None).expect("idle stop should succeed");
 
     assert!(!runtime.microphone_away_hold);
+    assert!(!runtime.system_audio_away_hold);
 }
 
 #[cfg(target_os = "macos")]

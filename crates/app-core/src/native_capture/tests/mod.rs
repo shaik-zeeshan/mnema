@@ -9,7 +9,7 @@ use super::lifecycle::RecordingLifecycle;
 #[cfg(target_os = "macos")]
 use super::microphone_away::{
     apply_microphone_away, reopen_unwakeable_microphone, settle_microphone_reopen,
-    tick_microphone_away,
+    tick_mac_is_away, tick_microphone_away,
 };
 use super::segments::next_emitted_segment_index;
 #[cfg(target_os = "macos")]
@@ -686,4 +686,6 @@ mod screen_pause;
 mod settings;
 mod soft_pause;
 mod stop_and_sleep;
+#[cfg(target_os = "macos")]
+mod system_audio_away;
 mod wake_recovery;
