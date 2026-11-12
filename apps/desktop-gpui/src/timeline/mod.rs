@@ -103,6 +103,8 @@ pub struct Ocr {
     pub from_frame: Option<i64>,
     /// `ocrRerunLoading`.
     pub rerun_loading: bool,
+    /// The load and its re-checks: dropped (cancelled) with the frame's OCR.
+    task: Option<Task<()>>,
 }
 
 /// What the empty stage says depends on capture (set by the shell).
@@ -138,6 +140,8 @@ pub struct TimelineView {
     pub(crate) hovered: Option<(usize, Pixels)>,
     pub audio: Vec<AudioSegment>,
     pub audio_loading: bool,
+    /// Bumped per side-data fetch: an older answer never lands over a newer one.
+    side_gen: u64,
     pub audio_error: Option<String>,
     pub episodes: Vec<Activity>,
     pub icons: HashMap<String, PathBuf>,
@@ -206,6 +210,7 @@ impl TimelineView {
             hovered: None,
             audio: Vec::new(),
             audio_loading: false,
+            side_gen: 0,
             audio_error: None,
             episodes: Vec::new(),
             icons: HashMap::new(),

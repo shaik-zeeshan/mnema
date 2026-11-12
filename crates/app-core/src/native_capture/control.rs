@@ -415,6 +415,20 @@ pub fn current_native_capture_session(core: &AppCore) -> capture_types::NativeCa
     runtime.session()
 }
 
+/// The session without waiting: `None` while another caller holds the capture
+/// lock (a stop holds it for seconds). For main-thread readers like the tray.
+pub fn try_current_native_capture_session(
+    core: &AppCore,
+) -> Option<capture_types::NativeCaptureSession> {
+    let state = core.state::<NativeCaptureState>();
+    let runtime = match state.try_lock() {
+        Ok(runtime) => runtime,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return None,
+    };
+    Some(runtime.session())
+}
+
 pub fn current_recording_settings_from_core(core: &AppCore) -> RecordingSettings {
     let state = core.state::<RecordingSettingsState>();
     current_recording_settings(&state)
@@ -593,4 +607,26 @@ pub async fn stop_native_capture(
     emit_native_capture_session_changed(core, &response.session);
     core.host().refresh_tray();
     Ok(response)
+}
+
+#[cfg(test)]
+mod try_current_tests {
+    use super::*;
+    use crate::test_support::{core_in, FakeHost};
+
+    #[test]
+    fn try_current_session_is_none_only_while_the_lock_is_held() {
+        let dir = std::env::temp_dir().join(format!("try-current-session-{}", std::process::id()));
+        let core = core_in(Arc::new(FakeHost::default()), &dir);
+        let state = NativeCaptureState::default();
+        core.manage(state.clone());
+        state.lock().unwrap().runtime_mut().is_running = true;
+
+        assert!(try_current_native_capture_session(&core).is_some_and(|s| s.is_running));
+        let held = state.lock().unwrap();
+        assert!(try_current_native_capture_session(&core).is_none());
+        drop(held);
+        assert!(try_current_native_capture_session(&core).is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

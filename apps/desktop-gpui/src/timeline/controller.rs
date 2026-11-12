@@ -129,6 +129,23 @@ impl TimelineView {
                 None => view.reload(cx),
             },
         );
+        self.arm_poll(cx);
+    }
+
+    /// The shell shows (or leaves) the Timeline: the head poll only runs while
+    /// it's on screen, and a return checks the head at once.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if !shown {
+            self._poll = None;
+        } else if self._poll.is_none() {
+            if !crate::window::render_idle(cx) {
+                self.poll(cx);
+            }
+            self.arm_poll(cx);
+        }
+    }
+
+    fn arm_poll(&mut self, cx: &mut Context<Self>) {
         self._poll = Some(cx.spawn(async move |this, cx| loop {
             cx.background_executor().timer(HEAD_POLL).await;
             // Nothing to show while the window is hidden or every screen sleeps.
@@ -504,6 +521,8 @@ impl TimelineView {
         missing.sort();
         missing.dedup();
         self.audio_loading = true;
+        self.side_gen += 1;
+        let generation = self.side_gen;
         self.fetch(
             cx,
             move |s| {
@@ -516,7 +535,10 @@ impl TimelineView {
                 };
                 (audio, episodes, icons)
             },
-            |view, (audio, episodes, icons), cx| {
+            move |view, (audio, episodes, icons), cx| {
+                if generation != view.side_gen {
+                    return; // a newer window's fetch is in flight
+                }
                 view.audio_loading = false;
                 match audio {
                     Ok(mut segs) => {

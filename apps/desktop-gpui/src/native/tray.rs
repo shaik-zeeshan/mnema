@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use app_core::status_bar_model::*;
 use app_core::{AppCore, ConfirmDialog, DialogKind, MessageDialog};
-use capture_types::CaptureSources;
+use capture_types::{CaptureSources, NativeCaptureSession};
 use gpui_kit::{App, Global};
 use tray_icon::menu::{
     CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu,
@@ -146,21 +146,57 @@ pub struct Tray {
     icon: TrayIcon,
     core: Arc<AppCore>,
     operation: StatusBarOperation,
+    last: Capture,
 }
 
 impl Global for Tray {}
 
+/// What the tray shows of the capture session.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct Capture {
+    running: bool,
+    paused: bool,
+    low_disk: bool,
+}
+
+/// The fresh session when the capture lock was free, else the last one seen:
+/// the main thread never waits on that lock (a stop holds it for seconds).
+fn capture(fresh: Option<NativeCaptureSession>, last: &mut Capture) -> Capture {
+    if let Some(s) = fresh {
+        *last = Capture {
+            running: s.is_running,
+            paused: s.is_user_paused,
+            low_disk: s.is_low_disk_suspended,
+        };
+    }
+    *last
+}
+
+fn try_session(core: &AppCore) -> Option<NativeCaptureSession> {
+    app_core::native_capture::control::try_current_native_capture_session(core)
+}
+
+/// `capture` against the tray's cache. Requires the `Tray` global.
+fn live_capture(core: &AppCore, cx: &mut App) -> Capture {
+    let fresh = try_session(core);
+    capture(fresh, &mut cx.global_mut::<Tray>().last)
+}
+
 /// The live model: capture, settings, licensing and the update row.
-fn current_model(core: &AppCore, operation: StatusBarOperation, cx: &App) -> StatusBarMenuModel {
+fn current_model(
+    core: &AppCore,
+    operation: StatusBarOperation,
+    session: Capture,
+    cx: &App,
+) -> StatusBarMenuModel {
     use app_core::native_capture::{control, permissions};
     let settings = control::current_recording_settings_from_core(core);
     let support = permissions::get_capture_support().supported_sources;
-    let session = control::current_native_capture_session(core);
     let mut model = build_menu_model(
         super::onboarding_complete(core),
-        session.is_running,
-        session.is_user_paused,
-        session.is_low_disk_suspended,
+        session.running,
+        session.paused,
+        session.low_disk,
         &settings,
         &support,
         operation,
@@ -195,7 +231,8 @@ pub fn create(
     clicks: async_channel::Sender<String>,
     cx: &App,
 ) -> Result<Tray, String> {
-    let model = current_model(core, StatusBarOperation::Idle, cx);
+    let last = capture(try_session(core), &mut Capture::default());
+    let model = current_model(core, StatusBarOperation::Idle, last, cx);
     let icon = TrayIconBuilder::new()
         .with_id(TRAY_ID)
         .with_icon_templated(template_icon()?)
@@ -219,15 +256,18 @@ pub fn create(
         icon,
         core: core.clone(),
         operation: StatusBarOperation::Idle,
+        last,
     })
 }
 
 /// Rebuild the menu and tooltip from live state (`Host::refresh_tray`).
 pub fn refresh(cx: &mut App) {
-    let Some(tray) = cx.try_global::<Tray>() else {
+    let Some(core) = cx.try_global::<Tray>().map(|t| t.core.clone()) else {
         return;
     };
-    let model = current_model(&tray.core, tray.operation, cx);
+    let session = live_capture(&core, cx);
+    let tray = cx.global::<Tray>();
+    let model = current_model(&core, tray.operation, session, cx);
     tray.icon.set_menu(Some(Box::new(build(&model))));
     if let Err(e) = tray.icon.set_tooltip(Some(model.tooltip)) {
         log::warn!("failed to set the status-bar tooltip: {e}");
@@ -289,8 +329,8 @@ fn recording_toggle(core: Arc<AppCore>, cx: &mut App) {
     if busy {
         return;
     }
-    let recording =
-        app_core::native_capture::control::current_native_capture_session(&core).is_running;
+    // Only picks the label: the worker re-reads the session before it acts.
+    let recording = live_capture(&core, cx).running;
     set_operation(
         if recording {
             StatusBarOperation::Stopping
@@ -416,36 +456,36 @@ fn delete_recent(core: Arc<AppCore>, seconds: i64) {
 }
 
 fn exclude_current_app(core: Arc<AppCore>) {
-    let snapshot = app_core::native_capture::metadata::collect_native_active_window_snapshot();
-    let bundle_id = snapshot.bundle_id.unwrap_or_default();
-    let name = snapshot.app_name.unwrap_or_else(|| bundle_id.clone());
-    let info = |message: &str, title: &str| {
-        core.host().message(MessageDialog {
-            title: title.into(),
-            message: message.into(),
-            kind: DialogKind::Info,
-        })
-    };
-    // Mnema itself (either app) is never a candidate.
-    if bundle_id.trim().is_empty() || bundle_id == "day.mnema" || bundle_id == crate::BUNDLE_ID {
-        info(
-            "Mnema could not identify a frontmost app to exclude from screen capture.",
-            "Exclude Current App",
-        );
-        return;
-    }
-    let answer = confirm(
-        &core,
-        "Exclude Current App",
-        format!("Exclude {name} from screen content capture from now on? This does not delete historical capture."),
-        "Exclude",
-    );
     let task_core = core.clone();
     core.spawn(async move {
+        let core = task_core;
+        // Reads the on-screen window list: never on the main thread.
+        let read = app_core::native_capture::metadata::collect_native_active_window_snapshot;
+        let Ok(snapshot) = core.spawn_blocking(read).await else {
+            return;
+        };
+        let bundle_id = snapshot.bundle_id.unwrap_or_default();
+        let name = snapshot.app_name.unwrap_or_else(|| bundle_id.clone());
+        // Mnema itself (either app) is never a candidate.
+        if bundle_id.trim().is_empty() || bundle_id == "day.mnema" || bundle_id == crate::BUNDLE_ID
+        {
+            core.host().message(MessageDialog {
+                title: "Exclude Current App".into(),
+                message: "Mnema could not identify a frontmost app to exclude from screen capture."
+                    .into(),
+                kind: DialogKind::Info,
+            });
+            return;
+        }
+        let answer = confirm(
+            &core,
+            "Exclude Current App",
+            format!("Exclude {name} from screen content capture from now on? This does not delete historical capture."),
+            "Exclude",
+        );
         if answer.await != Ok(true) {
             return;
         }
-        let core = task_core;
         use app_core::privacy_redaction_sources::apply::add_or_enable_privacy_excluded_app_from_core as exclude;
         // Applying the filter reaches the capture runtime: off the async workers.
         let apply_core = core.clone();
@@ -455,7 +495,7 @@ fn exclude_current_app(core: Arc<AppCore>) {
         else {
             return;
         };
-        match result {
+    match result {
             Err(e) => show_error(&core, "Could not exclude app", e.message),
             Ok(_) => core.host().message(MessageDialog {
                 title: "App Excluded".into(),

@@ -13,7 +13,9 @@ use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
 
-use super::data::{ocr_provider_label, parse_ocr_payload, OcrLoad, Res, Source, TimelineSettings};
+use super::data::{
+    ocr_provider_label, parse_ocr_payload, OcrCheck, OcrLoad, Res, Source, TimelineSettings,
+};
 use super::model::{
     AudioSegment, AudioSource, FocusedWindow, Frame, Landing, OcrBox, Preview, ScrubInterval,
     SourceKind,
@@ -32,6 +34,7 @@ pub enum Call {
     MatchBoxes(i64),
     Ocr(i64),
     RerunOcr(i64),
+    OcrJob(i64),
 }
 
 #[derive(Default)]
@@ -40,6 +43,8 @@ pub struct FixtureSource {
     preview_kind: Option<(String, SourceKind)>,
     /// `list_audio_segments` (tests drop rows to mimic a refresh).
     pub audio: Mutex<Vec<AudioSegment>>,
+    /// List only the segments overlapping the asked range (off: all of them).
+    pub audio_in_range: bool,
     episodes: Vec<Activity>,
     boxes: Vec<MatchBox>,
     landing: Mutex<Option<Landing>>,
@@ -52,6 +57,8 @@ pub struct FixtureSource {
     /// The OCR read the map's `list_processing_jobs` / `get_processing_result` give.
     /// `None` = never OCR'd.
     pub ocr: Mutex<Option<Res<OcrLoad>>>,
+    /// How many OCR checks answer "job 1 still running" before `ocr` does.
+    pub ocr_pending: Mutex<u32>,
     /// Make `list_audio_segments` fail with this (the map's `{ "__reject": .. }`).
     pub fail_audio: Mutex<Option<String>>,
     settings: TimelineSettings,
@@ -280,6 +287,27 @@ impl FixtureSource {
     fn log(&self, c: Call) {
         self.calls.lock().unwrap().push(c);
     }
+
+    fn ocr_result(&self) -> Res<OcrLoad> {
+        self.ocr
+            .lock()
+            .unwrap()
+            .clone()
+            .unwrap_or(Ok(OcrLoad::default()))
+    }
+
+    /// `ocr_pending` "still running" answers first, then the OCR read.
+    fn ocr_check(&self) -> Res<OcrCheck> {
+        let mut pending = self.ocr_pending.lock().unwrap();
+        if *pending > 0 {
+            *pending -= 1;
+            return Ok(OcrCheck::Pending {
+                job_id: 1,
+                from_frame: None,
+            });
+        }
+        self.ocr_result().map(OcrCheck::Done)
+    }
 }
 
 impl Source for FixtureSource {
@@ -379,12 +407,16 @@ impl Source for FixtureSource {
         self.log(Call::Cancel);
     }
 
-    fn audio_segments(&self, _: i64, _: i64) -> Res<Vec<AudioSegment>> {
+    fn audio_segments(&self, start_ms: i64, end_ms: i64) -> Res<Vec<AudioSegment>> {
         self.log(Call::Audio);
         if let Some(e) = self.fail_audio.lock().unwrap().clone() {
             return Err(e);
         }
-        Ok(self.audio.lock().unwrap().clone())
+        let mut audio = self.audio.lock().unwrap().clone();
+        if self.audio_in_range {
+            audio.retain(|a| a.end_ms > start_ms && a.start_ms < end_ms);
+        }
+        Ok(audio)
     }
 
     fn audio_segment(&self, id: i64) -> Res<Option<AudioSegment>> {
@@ -412,25 +444,23 @@ impl Source for FixtureSource {
     }
 
     fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>> {
-        self.ocr_load(frame_id).map(|l| l.boxes)
-    }
-
-    fn ocr_load(&self, frame_id: i64) -> Res<OcrLoad> {
         self.log(Call::Ocr(frame_id));
-        self.ocr
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or(Ok(OcrLoad::default()))
+        self.ocr_result().map(|l| l.boxes)
     }
 
-    fn rerun_ocr(&self, frame_id: i64, _: Option<PathBuf>) -> Res<OcrLoad> {
+    fn ocr_load(&self, frame_id: i64) -> Res<OcrCheck> {
+        self.log(Call::Ocr(frame_id));
+        self.ocr_check()
+    }
+
+    fn ocr_job(&self, job_id: i64) -> Res<OcrCheck> {
+        self.log(Call::OcrJob(job_id));
+        self.ocr_check()
+    }
+
+    fn rerun_ocr(&self, frame_id: i64, _: Option<PathBuf>) -> Res<OcrCheck> {
         self.log(Call::RerunOcr(frame_id));
-        self.ocr
-            .lock()
-            .unwrap()
-            .clone()
-            .unwrap_or(Ok(OcrLoad::default()))
+        self.ocr_check()
     }
 
     fn settings(&self) -> TimelineSettings {

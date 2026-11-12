@@ -144,3 +144,38 @@ fn read_only_greys_start_and_sources_follow_the_model() {
         );
     }
 }
+
+fn session(running: bool, paused: bool) -> capture_types::NativeCaptureSession {
+    capture_types::NativeCaptureSession {
+        is_running: running,
+        is_inactivity_paused: false,
+        is_user_paused: paused,
+        is_low_disk_suspended: false,
+        requested_sources: None,
+        output_files: None,
+        source_sessions: None,
+        recording_started_at_unix_ms: None,
+    }
+}
+
+#[test]
+fn a_busy_capture_lock_reads_the_last_session_seen() {
+    use super::{capture, Capture};
+    let mut last = Capture::default();
+    let fresh = capture(Some(session(true, true)), &mut last);
+    let held = Capture {
+        running: true,
+        paused: true,
+        low_disk: false,
+    };
+    assert_eq!((fresh, last), (held, held));
+    // Busy: the cache answers and stays as it was.
+    assert_eq!(capture(None, &mut last), held);
+    assert_eq!(last, held);
+    // Free again: the fresh read replaces it.
+    assert_eq!(
+        capture(Some(session(false, false)), &mut last),
+        Capture::default()
+    );
+    assert_eq!(last, Capture::default());
+}

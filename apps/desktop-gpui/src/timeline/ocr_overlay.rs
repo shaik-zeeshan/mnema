@@ -10,7 +10,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, AnyElement, App, Bounds, Context, Pixels, Role, SharedString};
 
-use super::data::OcrLoad;
+use super::data::{OcrCheck, OcrLoad, OCR_POLL, OCR_STILL_RUNNING, OCR_WAIT};
 use super::model::OcrBox;
 use super::Ocr;
 use super::{OcrStatus, TimelineView};
@@ -75,10 +75,35 @@ impl TimelineView {
         &mut self,
         id: i64,
         cx: &mut Context<Self>,
-        f: impl FnOnce() -> super::data::Res<OcrLoad> + Send + 'static,
+        f: impl FnOnce() -> super::data::Res<OcrCheck> + Send + 'static,
     ) {
-        cx.spawn(async move |this, cx| {
-            let res = cx.background_executor().spawn(async move { f() }).await;
+        let src = self.source.clone();
+        self.ocr.task = Some(cx.spawn(async move |this, cx| {
+            let ex = cx.background_executor().clone();
+            let started = ex.now();
+            let mut check = ex.spawn(async move { f() }).await;
+            let mut from = None;
+            // A queued / running job: re-check on a timer, never a sleeping thread.
+            let res = loop {
+                match check {
+                    Ok(OcrCheck::Done(l)) => {
+                        break Ok(OcrLoad {
+                            from_frame: l.from_frame.or(from),
+                            ..l
+                        })
+                    }
+                    Ok(OcrCheck::Pending { job_id, from_frame }) => {
+                        from = from_frame.or(from);
+                        if ex.now().duration_since(started) > OCR_WAIT {
+                            break Err(OCR_STILL_RUNNING.to_string());
+                        }
+                        ex.timer(OCR_POLL).await;
+                        let src = src.clone();
+                        check = ex.spawn(async move { src.ocr_job(job_id) }).await;
+                    }
+                    Err(e) => break Err(e),
+                }
+            };
             this.update(cx, |view, cx| {
                 if view.ocr.frame_id != Some(id) {
                     return; // the playhead moved on
@@ -93,8 +118,7 @@ impl TimelineView {
                 cx.notify();
             })
             .ok();
-        })
-        .detach();
+        }));
     }
 
     /// `ocrRerunDisabled`.

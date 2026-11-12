@@ -301,7 +301,9 @@ impl Backend for CoreBackend {
         let req = ai::GetAudioSegmentRequest {
             audio_segment_id: id,
         };
-        let dto = self.0.block_on(ai::get_audio_segment(req, &i))?;
+        let dto = self
+            .0
+            .run(async move { ai::get_audio_segment(req, &i).await })?;
         Ok(dto
             .and_then(|d| serde_json::to_value(d).ok())
             .and_then(|v| model::segment(&v)))
@@ -312,30 +314,45 @@ impl Backend for CoreBackend {
             subject_type: model::SUBJECT_TYPE.into(),
             subject_id: segment,
         };
-        view(self.0.block_on(ai::list_processing_jobs(req, &i))?)
+        view(
+            self.0
+                .run(async move { ai::list_processing_jobs(req, &i).await })?,
+        )
     }
     fn result(&self, job: i64) -> Res<Option<ProcResult>> {
         let i = self.infra()?;
         let req = ai::GetProcessingResultRequest { job_id: job };
-        view(self.0.block_on(ai::get_processing_result(req, &i))?)
+        view(
+            self.0
+                .run(async move { ai::get_processing_result(req, &i).await })?,
+        )
     }
     fn turns(&self, segment: i64) -> Res<Vec<Turn>> {
         let i = self.infra()?;
         let req = ai::ListSpeakerTurnsRequest {
             audio_segment_id: segment,
         };
-        view(self.0.block_on(ai::list_speaker_turns(req, &i))?)
+        view(
+            self.0
+                .run(async move { ai::list_speaker_turns(req, &i).await })?,
+        )
     }
     fn clusters(&self, session: &str) -> Res<Vec<Cluster>> {
         let i = self.infra()?;
         let req = ai::ListSpeakerClustersRequest {
             session_id: session.into(),
         };
-        view(self.0.block_on(ai::list_speaker_clusters(req, &i))?)
+        view(
+            self.0
+                .run(async move { ai::list_speaker_clusters(req, &i).await })?,
+        )
     }
     fn profiles(&self) -> Res<Vec<Profile>> {
         let i = self.infra()?;
-        view(self.0.block_on(ai::list_person_profiles(&i))?)
+        view(
+            self.0
+                .run(async move { ai::list_person_profiles(&i).await })?,
+        )
     }
     fn peaks(&self, segment: i64, buckets: usize) -> Vec<f32> {
         let Ok(i) = self.infra() else {
@@ -346,7 +363,7 @@ impl Backend for CoreBackend {
             bucket_count: buckets as u32,
         };
         self.0
-            .block_on(ai::get_audio_segment_waveform_peaks(req, &i))
+            .run(async move { ai::get_audio_segment_waveform_peaks(req, &i).await })
             .unwrap_or_default()
     }
     fn write(&self, w: &Write) -> Res<()> {
@@ -357,7 +374,8 @@ impl Backend for CoreBackend {
                 person_id,
                 add_embedding: true,
             };
-            core.block_on(ai::link_speaker_cluster_to_person(req, &i))
+            let i = i.clone();
+            core.run(async move { ai::link_speaker_cluster_to_person(req, &i).await })
                 .map(drop)
         };
         let cluster = |cluster_id| ai::SpeakerClusterRequest { cluster_id };
@@ -367,7 +385,8 @@ impl Backend for CoreBackend {
                     display_name: name.trim().into(),
                     notes: None,
                 };
-                let person = core.block_on(ai::create_person_profile(req, &i))?;
+                let i = i.clone();
+                let person = core.run(async move { ai::create_person_profile(req, &i).await })?;
                 link(*cluster, person.id)
             }
             Write::Link { cluster, person } => link(*cluster, *person),
@@ -376,49 +395,64 @@ impl Backend for CoreBackend {
                     cluster_id: *cluster,
                     add_embedding: true,
                 };
-                core.block_on(ai::confirm_speaker_recognition_suggestion(req, &i))
+                core.run(async move { ai::confirm_speaker_recognition_suggestion(req, &i).await })
                     .map(drop)
             }
-            Write::Reject { cluster: c } => core
-                .block_on(ai::reject_speaker_recognition_suggestion(cluster(*c), &i))
-                .map(drop),
-            Write::Unlink { cluster: c } => core
-                .block_on(ai::unlink_speaker_cluster_from_person(cluster(*c), &i))
-                .map(drop),
+            Write::Reject { cluster: c } => {
+                let req = cluster(*c);
+                core.run(async move { ai::reject_speaker_recognition_suggestion(req, &i).await })
+                    .map(drop)
+            }
+            Write::Unlink { cluster: c } => {
+                let req = cluster(*c);
+                core.run(async move { ai::unlink_speaker_cluster_from_person(req, &i).await })
+                    .map(drop)
+            }
             Write::Merge { source, target } => {
                 let req = ai::MergeSpeakerClustersRequest {
                     source_cluster_id: *source,
                     target_cluster_id: *target,
                 };
-                core.block_on(ai::merge_speaker_clusters(req, &i)).map(drop)
+                core.run(async move { ai::merge_speaker_clusters(req, &i).await })
+                    .map(drop)
             }
             Write::MoveTurns { turns, target } => turns.iter().try_for_each(|turn| {
                 let req = ai::MoveSpeakerTurnRequest {
                     turn_id: *turn,
                     target_cluster_id: *target,
                 };
-                core.block_on(ai::move_speaker_turn_to_cluster(req, &i))
+                let i = i.clone();
+                core.run(async move { ai::move_speaker_turn_to_cluster(req, &i).await })
                     .map(drop)
             }),
             Write::Rerun { segment, src } => {
                 let req = ai::ReprocessAudioSegmentTranscriptionRequest {
                     audio_segment_id: *segment,
                 };
+                let c = core.clone();
                 match src {
                     Src::Sys => core
-                        .block_on(ai::reprocess_system_audio_speech_activity(req, &i, core))
+                        .run(async move {
+                            ai::reprocess_system_audio_speech_activity(req, &i, &c).await
+                        })
                         .map(drop),
-                    Src::Mic => core
-                        .block_on(ai::reprocess_audio_segment_transcription(req, &i, core))
-                        .map(drop),
+                    Src::Mic => {
+                        core.run(async move {
+                            ai::reprocess_audio_segment_transcription(req, &i, &c).await
+                        })
+                        .map(drop)
+                    }
                 }
             }
             Write::RetrySpeakers { segment } => {
                 let req = ai::ReprocessAudioSegmentTranscriptionRequest {
                     audio_segment_id: *segment,
                 };
-                core.block_on(ai::reprocess_audio_segment_speaker_analysis(req, &i, core))
-                    .map(drop)
+                let c = core.clone();
+                core.run(
+                    async move { ai::reprocess_audio_segment_speaker_analysis(req, &i, &c).await },
+                )
+                .map(drop)
             }
         }
     }

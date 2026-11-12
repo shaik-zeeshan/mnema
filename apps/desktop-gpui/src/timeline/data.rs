@@ -54,19 +54,24 @@ pub trait Source: Send + Sync + 'static {
     fn match_boxes(&self, frame_id: i64, query: &str, by_meaning: bool) -> Res<Vec<MatchBox>>;
     /// The active frame's OCR (`loadOcrForFrame`): `None` = never OCR'd.
     fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>>;
-    /// [`Source::ocr`] with the provider label and, when the frame was never
-    /// OCR'd, the identical earlier frame whose result it reuses.
-    fn ocr_load(&self, frame_id: i64) -> Res<OcrLoad> {
-        Ok(OcrLoad {
+    /// One look at [`Source::ocr`] with the provider label and, when the frame
+    /// was never OCR'd, the identical earlier frame whose result it reuses. A
+    /// queued / running job is `Pending`: the view re-checks it with [`Source::ocr_job`].
+    fn ocr_load(&self, frame_id: i64) -> Res<OcrCheck> {
+        Ok(OcrCheck::Done(OcrLoad {
             boxes: self.ocr(frame_id)?,
             ..Default::default()
-        })
+        }))
+    }
+    /// One look at a pending OCR job (`get_processing_job`, then its result).
+    fn ocr_job(&self, _job_id: i64) -> Res<OcrCheck> {
+        Err("OCR job not found".into())
     }
     /// `drain_pending_broker_open_capture_results` (a Quick Recall hit).
     fn take_landing(&self) -> Option<Landing>;
-    /// `reprocess_captured_frame_ocr`, then the new job's result. `source_image`
+    /// `reprocess_captured_frame_ocr`, then one look at the new job. `source_image`
     /// is the frame's own preview (never another frame's fallback image).
-    fn rerun_ocr(&self, _frame_id: i64, _source_image: Option<PathBuf>) -> Res<OcrLoad> {
+    fn rerun_ocr(&self, _frame_id: i64, _source_image: Option<PathBuf>) -> Res<OcrCheck> {
         Err("OCR can't be rerun here.".into())
     }
     /// `get_earliest_earlier_equivalent_frame`: the frame this one duplicates.
@@ -112,6 +117,17 @@ pub struct OcrLoad {
     pub provider: Option<String>,
     /// The identical earlier frame whose OCR this frame reuses (`ocrSourceFrame`).
     pub from_frame: Option<i64>,
+}
+
+/// One OCR check: done (or never OCR'd), or a job still queued / running.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OcrCheck {
+    Done(OcrLoad),
+    Pending {
+        job_id: i64,
+        /// The identical earlier frame the job belongs to (`ocrSourceFrame`).
+        from_frame: Option<i64>,
+    },
 }
 
 /// `formatOcrProviderLabel`.
@@ -195,14 +211,15 @@ impl Source for NoSource {
     }
 }
 
-/// The real app: every command is app-core's, run with `block_on` (the view
+/// The real app: every command is app-core's, run with `AppCore::run` (the view
 /// calls a `Source` on the background executor, never the main thread).
 pub struct CoreSource(pub Arc<AppCore>);
 
-/// How long `ocr` waits on a queued / running job before giving up.
-// ponytail: a blocking poll on a background thread; a job-finished event is the upgrade.
-const OCR_WAIT: Duration = Duration::from_secs(30);
-const OCR_POLL: Duration = Duration::from_millis(750);
+/// How long the Timeline re-checks a queued / running OCR job before giving up.
+pub const OCR_WAIT: Duration = Duration::from_secs(30);
+pub const OCR_POLL: Duration = Duration::from_millis(750);
+/// What the Timeline says when [`OCR_WAIT`] runs out.
+pub const OCR_STILL_RUNNING: &str = "OCR is still running. Try again in a moment.";
 
 fn audio_segment(a: ai::AudioSegmentDto) -> AudioSegment {
     AudioSegment {
@@ -288,6 +305,88 @@ pub fn parse_ocr_payload(json: &str) -> Option<Vec<OcrBox>> {
     )
 }
 
+/// One look at an OCR job (`loadOcrFromJob`): `Pending` while queued / running,
+/// else its error or its result.
+async fn check_ocr_job(job: ai::ProcessingJobDto, infra: &AppInfraState) -> Res<OcrCheck> {
+    use ::app_infra::ProcessingJobStatus as S;
+    if matches!(job.status, S::Queued | S::Running) {
+        return Ok(OcrCheck::Pending {
+            job_id: job.id,
+            from_frame: None,
+        });
+    }
+    if job.status == S::Failed {
+        return Err(job.last_error.unwrap_or_else(|| "OCR job failed".into()));
+    }
+    let request = ai::GetProcessingResultRequest { job_id: job.id };
+    let result = ai::get_processing_result(request, infra)
+        .await?
+        .ok_or("OCR result not available")?;
+    let payload = result.structured_payload_json.as_deref();
+    let boxes = payload
+        .and_then(parse_ocr_payload)
+        .ok_or_else(|| "OCR result payload is missing or invalid".to_string())?;
+    Ok(OcrCheck::Done(OcrLoad {
+        boxes: Some(boxes),
+        provider: ocr_provider_label(
+            job.payload_json.as_deref(),
+            payload,
+            result.processor_version.as_deref(),
+        ),
+        from_frame: None,
+    }))
+}
+
+/// `loadOcrForFrame`: the newest completed OCR job, else the newest one.
+async fn ocr_for_frame(frame_id: i64, infra: &AppInfraState) -> Res<OcrCheck> {
+    let request = ai::ListProcessingJobsRequest {
+        subject_type: "frame".into(),
+        subject_id: frame_id,
+    };
+    let mut jobs = ai::list_processing_jobs(request, infra).await?;
+    jobs.retain(|j| j.processor == "ocr");
+    jobs.sort_by_key(|j| {
+        (
+            j.status != ::app_infra::ProcessingJobStatus::Completed,
+            std::cmp::Reverse(j.id),
+        )
+    });
+    match jobs.into_iter().next() {
+        Some(job) => check_ocr_job(job, infra).await,
+        None => Ok(OcrCheck::Done(OcrLoad::default())),
+    }
+}
+
+/// The frame's own OCR, else (never OCR'd) an identical earlier frame's.
+async fn ocr_load(frame_id: i64, infra: AppInfraState) -> Res<OcrCheck> {
+    let own = ocr_for_frame(frame_id, &infra).await?;
+    if !matches!(&own, OcrCheck::Done(l) if l.boxes.is_none()) {
+        return Ok(own);
+    }
+    let request = ai::GetEarliestEarlierEquivalentFrameRequest { frame_id };
+    let Some(f) = ai::get_earliest_earlier_equivalent_frame(request, &infra).await? else {
+        return Ok(own);
+    };
+    Ok(match ocr_for_frame(f.id, &infra).await? {
+        OcrCheck::Done(l) => OcrCheck::Done(OcrLoad {
+            from_frame: Some(f.id),
+            ..l
+        }),
+        OcrCheck::Pending { job_id, .. } => OcrCheck::Pending {
+            job_id,
+            from_frame: Some(f.id),
+        },
+    })
+}
+
+async fn ocr_job(job_id: i64, infra: AppInfraState) -> Res<OcrCheck> {
+    let request = ai::GetProcessingJobRequest { job_id };
+    let job = ai::get_processing_job(request, &infra)
+        .await?
+        .ok_or("OCR job not found")?;
+    check_ocr_job(job, &infra).await
+}
+
 impl CoreSource {
     fn infra(&self) -> Res<AppInfraState> {
         self.0
@@ -303,66 +402,6 @@ impl CoreSource {
             exclude_lock_screen: false,
         }
     }
-
-    /// `loadOcrFromJob`: wait out a queued / running job, then read its result.
-    fn ocr_from_job(&self, mut job: ai::ProcessingJobDto) -> Res<OcrLoad> {
-        use ::app_infra::ProcessingJobStatus as S;
-        let infra = self.infra()?;
-        let started = std::time::Instant::now();
-        while matches!(job.status, S::Queued | S::Running) {
-            if started.elapsed() > OCR_WAIT {
-                return Err("OCR is still running. Try again in a moment.".into());
-            }
-            std::thread::sleep(OCR_POLL);
-            let request = ai::GetProcessingJobRequest { job_id: job.id };
-            job = self
-                .0
-                .block_on(ai::get_processing_job(request, &infra))?
-                .ok_or("OCR job not found")?;
-        }
-        if job.status == S::Failed {
-            return Err(job.last_error.unwrap_or_else(|| "OCR job failed".into()));
-        }
-        let request = ai::GetProcessingResultRequest { job_id: job.id };
-        let result = self
-            .0
-            .block_on(ai::get_processing_result(request, &infra))?
-            .ok_or("OCR result not available")?;
-        let payload = result.structured_payload_json.as_deref();
-        let boxes = payload
-            .and_then(parse_ocr_payload)
-            .ok_or_else(|| "OCR result payload is missing or invalid".to_string())?;
-        Ok(OcrLoad {
-            boxes: Some(boxes),
-            provider: ocr_provider_label(
-                job.payload_json.as_deref(),
-                payload,
-                result.processor_version.as_deref(),
-            ),
-            from_frame: None,
-        })
-    }
-
-    /// `loadOcrForFrame`: the newest completed OCR job, else the newest one.
-    fn ocr_for_frame(&self, frame_id: i64) -> Res<OcrLoad> {
-        let infra = self.infra()?;
-        let request = ai::ListProcessingJobsRequest {
-            subject_type: "frame".into(),
-            subject_id: frame_id,
-        };
-        let mut jobs = self.0.block_on(ai::list_processing_jobs(request, &infra))?;
-        jobs.retain(|j| j.processor == "ocr");
-        jobs.sort_by_key(|j| {
-            (
-                j.status != ::app_infra::ProcessingJobStatus::Completed,
-                std::cmp::Reverse(j.id),
-            )
-        });
-        match jobs.into_iter().next() {
-            Some(job) => self.ocr_from_job(job),
-            None => Ok(OcrLoad::default()),
-        }
-    }
 }
 
 impl Source for CoreSource {
@@ -373,9 +412,10 @@ impl Source for CoreSource {
             limit: Some(limit as u32),
             offset: None,
         };
+        let infra = self.infra()?;
         let rows = self
             .0
-            .block_on(ai::list_frames(Some(request), &self.infra()?))?;
+            .run(async move { ai::list_frames(Some(request), &infra).await })?;
         Ok(rows.into_iter().map(frame).collect())
     }
 
@@ -385,10 +425,10 @@ impl Source for CoreSource {
             newer_limit: newer as u32,
             older_limit: older as u32,
         };
-        let w = self.0.block_on(ai::get_timeline_window_around_frame(
-            request,
-            &self.infra()?,
-        ))?;
+        let infra = self.infra()?;
+        let w = self
+            .0
+            .run(async move { ai::get_timeline_window_around_frame(request, &infra).await })?;
         Ok(FocusedWindow {
             frames: w.frames.into_iter().map(frame).collect(),
             target_index: w.target_index,
@@ -399,17 +439,19 @@ impl Source for CoreSource {
 
     fn latest_in_range(&self, start_ms: i64, end_ms: i64) -> Res<Option<Frame>> {
         let request = Self::range(start_ms, end_ms);
+        let infra = self.infra()?;
         let found = self
             .0
-            .block_on(ai::get_latest_frame_in_range(request, &self.infra()?))?;
+            .run(async move { ai::get_latest_frame_in_range(request, &infra).await })?;
         Ok(found.map(frame))
     }
 
     fn frame_times(&self, start_ms: i64, end_ms: i64) -> Res<Vec<i64>> {
         let request = Self::range(start_ms, end_ms);
+        let infra = self.infra()?;
         let rows = self
             .0
-            .block_on(ai::list_frame_summaries_in_range(request, &self.infra()?))?;
+            .run(async move { ai::list_frame_summaries_in_range(request, &infra).await })?;
         Ok(rows.iter().map(|f| ms(&f.captured_at)).collect())
     }
 
@@ -422,7 +464,10 @@ impl Source for CoreSource {
             frame_id,
             video_scope: Some(FramePreviewVideoScopeDto::ActiveFrame),
         };
-        let preview = self.0.block_on(get_frame_preview(&self.0, request))?;
+        let core = self.0.clone();
+        let preview = self
+            .0
+            .run(async move { get_frame_preview(&core, request).await })?;
         Ok(preview.map(|p| Preview {
             file_path: Arc::from(Path::new(&p.file_path)),
             mime_type: p.mime_type,
@@ -447,9 +492,10 @@ impl Source for CoreSource {
             end_unix_ms: end_ms,
             enqueue_missing: Some(enqueue),
         };
+        let core = self.0.clone();
         let dto = self
             .0
-            .block_on(get_scrub_preview_availability(&self.0, request))?;
+            .run(async move { get_scrub_preview_availability(&core, request).await })?;
         Ok(dto
             .intervals
             .into_iter()
@@ -480,9 +526,10 @@ impl Source for CoreSource {
             captured_at_start: iso(start_ms),
             captured_at_end: iso(end_ms),
         };
+        let infra = self.infra()?;
         let rows = self
             .0
-            .block_on(ai::list_audio_segments(request, &self.infra()?))?;
+            .run(async move { ai::list_audio_segments(request, &infra).await })?;
         Ok(rows.into_iter().map(audio_segment).collect())
     }
 
@@ -490,22 +537,19 @@ impl Source for CoreSource {
         let request = ai::GetAudioSegmentRequest {
             audio_segment_id: id,
         };
+        let infra = self.infra()?;
         let found = self
             .0
-            .block_on(ai::get_audio_segment(request, &self.infra()?))?;
+            .run(async move { ai::get_audio_segment(request, &infra).await })?;
         Ok(found.map(audio_segment))
     }
 
     fn episodes(&self, start_ms: i64, end_ms: i64) -> Res<Vec<Activity>> {
-        self.0.block_on(
-            app_core::user_context::commands::list_user_context_activities(
-                &self.infra()?,
-                None,
-                None,
-                Some(start_ms),
-                Some(end_ms),
-            ),
-        )
+        use app_core::user_context::commands::list_user_context_activities;
+        let infra = self.infra()?;
+        self.0.run(async move {
+            list_user_context_activities(&infra, None, None, Some(start_ms), Some(end_ms)).await
+        })
     }
 
     fn app_icons(&self, bundle_ids: &[String]) -> Vec<(String, PathBuf)> {
@@ -513,8 +557,9 @@ impl Source for CoreSource {
         let request = ResolveAppIconsRequest {
             bundle_ids: bundle_ids.to_vec(),
         };
+        let core = self.0.clone();
         self.0
-            .block_on(resolve_app_icons(&self.0, request))
+            .run(async move { resolve_app_icons(&core, request).await })
             .unwrap_or_default()
             .into_iter()
             .filter_map(|r| Some((r.bundle_id, PathBuf::from(r.icon_path?))))
@@ -528,35 +573,42 @@ impl Source for CoreSource {
             query: query.into(),
             by_meaning,
         };
+        let infra = self.infra()?;
         self.0
-            .block_on(get_frame_match_boxes(request, &self.infra()?))
+            .run(async move { get_frame_match_boxes(request, &infra).await })
     }
 
+    /// Chat's peek: waits out a queued / running job here, on its own thread.
+    // shortcut: a blocking poll on Chat's background thread; move it to the
+    // Timeline's timer re-check (`ocr_overlay`) when Chat's peek owns one.
     fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>> {
-        self.ocr_load(frame_id).map(|l| l.boxes)
-    }
-
-    fn ocr_load(&self, frame_id: i64) -> Res<OcrLoad> {
-        let own = self.ocr_for_frame(frame_id)?;
-        if own.boxes.is_some() {
-            return Ok(own);
-        }
-        // Never OCR'd: an identical earlier frame carries the text (frame dedupe).
-        let request = ai::GetEarliestEarlierEquivalentFrameRequest { frame_id };
-        let earlier = self.0.block_on(ai::get_earliest_earlier_equivalent_frame(
-            request,
-            &self.infra()?,
-        ))?;
-        match earlier {
-            Some(f) => Ok(OcrLoad {
-                from_frame: Some(f.id),
-                ..self.ocr_for_frame(f.id)?
-            }),
-            None => Ok(own),
+        let started = std::time::Instant::now();
+        let mut check = self.ocr_load(frame_id)?;
+        loop {
+            match check {
+                OcrCheck::Done(l) => return Ok(l.boxes),
+                OcrCheck::Pending { job_id, .. } => {
+                    if started.elapsed() > OCR_WAIT {
+                        return Err(OCR_STILL_RUNNING.into());
+                    }
+                    std::thread::sleep(OCR_POLL);
+                    check = self.ocr_job(job_id)?;
+                }
+            }
         }
     }
 
-    fn rerun_ocr(&self, frame_id: i64, source_image: Option<PathBuf>) -> Res<OcrLoad> {
+    fn ocr_load(&self, frame_id: i64) -> Res<OcrCheck> {
+        let infra = self.infra()?;
+        self.0.run(ocr_load(frame_id, infra))
+    }
+
+    fn ocr_job(&self, job_id: i64) -> Res<OcrCheck> {
+        let infra = self.infra()?;
+        self.0.run(ocr_job(job_id, infra))
+    }
+
+    fn rerun_ocr(&self, frame_id: i64, source_image: Option<PathBuf>) -> Res<OcrCheck> {
         let settings = self
             .0
             .try_state::<app_core::recording_settings::RecordingSettingsState>()
@@ -572,28 +624,26 @@ impl Source for CoreSource {
             frame_id,
             payload_json,
         };
-        let result = self.0.block_on(ai::reprocess_captured_frame_ocr(
-            request,
-            &self.infra()?,
-            &settings,
-        ))?;
-        self.ocr_from_job(result.job)
+        let infra = self.infra()?;
+        self.0.run(async move {
+            let result = ai::reprocess_captured_frame_ocr(request, &infra, &settings).await?;
+            check_ocr_job(result.job, &infra).await
+        })
     }
 
     fn earlier_equivalent(&self, frame_id: i64) -> Res<Option<Frame>> {
         let request = ai::GetEarliestEarlierEquivalentFrameRequest { frame_id };
-        Ok(self
+        let infra = self.infra()?;
+        let found = self
             .0
-            .block_on(ai::get_earliest_earlier_equivalent_frame(
-                request,
-                &self.infra()?,
-            ))?
-            .map(frame))
+            .run(async move { ai::get_earliest_earlier_equivalent_frame(request, &infra).await })?;
+        Ok(found.map(frame))
     }
 
     fn open_captured_url(&self, frame_id: i64) -> Res<bool> {
+        let (core, infra) = (self.0.clone(), self.infra()?);
         self.0
-            .block_on(ai::open_captured_url(frame_id, &self.0, &self.infra()?))
+            .run(async move { ai::open_captured_url(frame_id, &core, &infra).await })
     }
 
     fn settings(&self) -> TimelineSettings {

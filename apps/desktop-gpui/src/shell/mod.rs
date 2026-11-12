@@ -259,6 +259,11 @@ impl Shell {
             self.last_main = surface;
         }
         let leaving_settings = self.surface == Surface::Settings;
+        // `go` returns early on the same surface, so one side is the Timeline here.
+        if self.surface == Surface::Timeline || surface == Surface::Timeline {
+            let shown = surface == Surface::Timeline;
+            self.timeline.update(cx, |t, cx| t.set_shown(shown, cx));
+        }
         self.surface = surface;
         self.overlay = None;
         if leaving_settings {

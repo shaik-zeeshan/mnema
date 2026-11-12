@@ -39,7 +39,7 @@ pub(super) fn mic_segment() -> Value {
 }
 
 /// One completed Apple Vision job with two lines.
-fn ocr_done() -> Value {
+pub(super) fn ocr_done() -> Value {
     let payload = json!({
         "provider": "apple_vision",
         "observations": [
