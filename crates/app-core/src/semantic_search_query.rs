@@ -17,13 +17,14 @@
 //! forward is synchronous model work (Metal GPU on macOS / candle-CPU elsewhere)
 //! that must stay off the tokio reactor (ADR 0037).
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use semantic_search::EmbedKind;
 
 use crate::semantic_search_worker::{
-    effective_semantic_search_settings, load_embedder_private, resolve_selected_descriptor,
-    selected_model_available, LoadedEmbedder,
+    effective_semantic_search_settings, load_embedder, load_embedder_private,
+    resolve_selected_descriptor, selected_model_available, single_copy_only, LoadedEmbedder,
 };
 use crate::AppCore;
 
@@ -41,8 +42,48 @@ use crate::AppCore;
 /// await point).
 #[derive(Default)]
 pub struct SemanticQueryEmbedderState {
-    cached: Mutex<Option<std::sync::Arc<LoadedEmbedder>>>,
+    cached: Arc<Mutex<IdleSlot<Arc<LoadedEmbedder>>>>,
     load_lock: tokio::sync::Mutex<()>,
+}
+
+/// How long the query embedder stays loaded after the last search. For a model
+/// under 1 GB it is a PRIVATE second copy (see `load_embedder_private`), so holding
+/// it costs the full weights again — ~450 MB of GPU memory for the default model
+/// (measured 2026-11-11: one search pinned it for the process lifetime). Short
+/// enough to return that soon after a search session, long enough that typing
+/// and follow-up questions never reload; the next search pays one model load.
+const QUERY_EMBEDDER_IDLE_RELEASE: Duration = Duration::from_secs(180);
+
+/// A cached value plus a counter of how many times it was parked, so a timer
+/// started at one park can tell whether a later search has used it since.
+struct IdleSlot<T> {
+    value: Option<T>,
+    parks: u64,
+}
+
+impl<T> Default for IdleSlot<T> {
+    fn default() -> Self {
+        Self { value: None, parks: 0 }
+    }
+}
+
+impl<T> IdleSlot<T> {
+    /// Store `value` and return the park number its idle timer must present.
+    fn park(&mut self, value: T) -> u64 {
+        self.value = Some(value);
+        self.parks += 1;
+        self.parks
+    }
+
+    /// Take the value if nothing was parked after `park`. A search in flight has
+    /// already taken it, so this finds `None` and that search re-arms on restore.
+    fn release_if_idle(&mut self, park: u64) -> Option<T> {
+        if self.parks == park {
+            self.value.take()
+        } else {
+            None
+        }
+    }
 }
 
 impl SemanticQueryEmbedderState {
@@ -55,9 +96,9 @@ impl SemanticQueryEmbedderState {
 /// provider/model AND still inside the shared warm cap
 /// ([`MAX_EMBEDDER_WARM_LIFETIME`](crate::semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME)).
 ///
-/// The staleness half is not an optimization: this cache is the only holder of the
-/// process-wide `Arc` with no idle-drop and no per-pass recycle, so a stale `Arc`
-/// kept here pins the instance — and, on macOS, candle's never-swept Metal buffer
+/// The staleness half is not an optimization: a search every few minutes keeps
+/// resetting [`QUERY_EMBEDDER_IDLE_RELEASE`] and this holder has no per-pass
+/// recycle, so a stale `Arc` kept here pins the instance — and, on macOS, candle's never-swept Metal buffer
 /// pool — for the whole process lifetime, which makes both workers' recycle free
 /// nothing and leaves a second full model resident once they reload.
 /// `warm_for` is a `Duration` (`loaded_at.elapsed()`), not the `Instant`, so the
@@ -129,7 +170,7 @@ pub async fn embed_search_query(
     // between take and restore from racing a concurrent cold load.
     let cached = {
         let mut guard = state.cached.lock().unwrap_or_else(|poison| poison.into_inner());
-        match guard.take() {
+        match guard.value.take() {
             Some(loaded)
                 if cached_embedder_is_reusable(
                     &loaded.provider,
@@ -155,8 +196,13 @@ pub async fn embed_search_query(
             // take `BACKGROUND_EMBED_SLOT`, so sharing the sweep's candle device
             // would queue its kernels behind the sweep's on one device lock
             // (measured p50 92ms -> 310ms, p95 233ms -> 995ms). See
-            // `load_embedder_private`.
-            None => match load_embedder_private(&app_data_dir, &descriptor) {
+            // `load_embedder_private`. A model over 1 GB is the exception: it is
+            // never loaded twice, so the search shares the indexer's instance.
+            None => match if single_copy_only(&descriptor) {
+                load_embedder(&app_data_dir, &descriptor)
+            } else {
+                load_embedder_private(&app_data_dir, &descriptor)
+            } {
                 Ok(loaded) => loaded,
                 Err(error) => {
                     crate::debug_log::log_warn(format!(
@@ -192,17 +238,33 @@ pub async fn embed_search_query(
     };
 
     // Restore the embedder for the next search — unless it is already warm past the
-    // shared cap, in which case drop the `Arc` here instead of parking it. This
-    // holder has no idle timer of its own, so a cached stale `Arc` would otherwise
-    // sit until the *next* search (which may never come) and pin the process-wide
-    // instance, making both workers' recycle free nothing.
+    // shared cap, in which case drop the `Arc` here instead of parking it — and arm
+    // the idle release: with no further search inside
+    // `QUERY_EMBEDDER_IDLE_RELEASE` the private copy is dropped.
     //
-    // ponytail: only re-checked around a search. A model loaded for one search and
-    // never searched again stays resident until the next search; add an idle sweep
-    // if that shows up in a real footprint measurement.
+    // ponytail: one sleeping timer per search rather than one re-armed timer; each
+    // is a few hundred bytes for three minutes and all but the last are no-ops.
     if !loaded.is_stale() {
-        let mut guard = state.cached.lock().unwrap_or_else(|poison| poison.into_inner());
-        *guard = Some(loaded);
+        let park = state
+            .cached
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+            .park(loaded);
+        let cached = state.cached.clone();
+        core.spawn(async move {
+            tokio::time::sleep(QUERY_EMBEDDER_IDLE_RELEASE).await;
+            let released = cached
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner())
+                .release_if_idle(park);
+            if released.is_some() {
+                crate::debug_log::log(format!(
+                    "semantic query embedder released after {}s without a search \
+                     (model weights returned to the OS; reloads on next search)",
+                    QUERY_EMBEDDER_IDLE_RELEASE.as_secs()
+                ));
+            }
+        });
     }
 
     match vector {
@@ -233,7 +295,6 @@ mod tests {
     use super::*;
     use crate::semantic_search_worker::MAX_EMBEDDER_WARM_LIFETIME;
     use capture_types::default_semantic_search_settings;
-    use std::time::Duration;
 
     fn nomic_descriptor() -> semantic_search::SemanticSearchModelDescriptor {
         resolve_selected_descriptor(&default_semantic_search_settings())
@@ -261,8 +322,9 @@ mod tests {
             &descriptor
         ));
 
-        // ...and so is an instance warm past the shared cap. This holder has no
-        // idle-drop and no per-pass recycle, so keeping its `Arc` past the cap pins
+        // ...and so is an instance warm past the shared cap. Steady searching keeps
+        // resetting the idle release and there is no per-pass recycle, so keeping
+        // its `Arc` past the cap pins
         // the process-wide embedder (and candle's never-swept Metal buffer pool) for
         // the process lifetime: both workers' recycle then frees nothing, and their
         // reload leaves a SECOND full model resident.
@@ -292,6 +354,28 @@ mod tests {
             Duration::ZERO,
             &descriptor
         ));
+    }
+
+    #[test]
+    fn the_idle_release_only_fires_when_no_search_came_after_its_park() {
+        let mut slot = IdleSlot::default();
+
+        // One search, then silence: its timer releases the model.
+        let first = slot.park("model");
+        assert_eq!(slot.release_if_idle(first), Some("model"));
+
+        // A second search re-parks before the first timer fires: the first timer
+        // must leave the model alone, and only the latest one releases it.
+        let first = slot.park("model");
+        let second = slot.park("model");
+        assert_eq!(slot.release_if_idle(first), None);
+        assert_eq!(slot.release_if_idle(second), Some("model"));
+
+        // A search in flight has taken the model out; the timer finds nothing.
+        let parked = slot.park("model");
+        let in_flight = slot.value.take();
+        assert_eq!(slot.release_if_idle(parked), None);
+        assert_eq!(in_flight, Some("model"));
     }
 
     #[test]

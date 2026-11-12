@@ -55,7 +55,7 @@ mod sweep;
 #[cfg(test)]
 mod tests;
 
-pub use embedder::{load_embedder, load_embedder_private, LoadedEmbedder};
+pub use embedder::{load_embedder, load_embedder_private, single_copy_only, LoadedEmbedder};
 pub use sweep::run_sweep_pass;
 pub use spawn::spawn_semantic_index_backfill_worker;
 

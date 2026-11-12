@@ -101,6 +101,33 @@ fn the_shared_embedder_is_reused_only_for_the_exact_selection() {
     ));
 }
 
+/// A model over 1 GB must never be resident twice. A live instance past the warm
+/// cap is still handed out, because loading a fresh one while another holder has
+/// the old one IS the second copy. Small models keep the private search copy.
+#[test]
+fn a_model_over_one_gb_is_only_ever_loaded_once() {
+    let resolve = |id| {
+        resolve_descriptor(semantic_search::SEMANTIC_SEARCH_PROVIDER_ID, id)
+            .unwrap_or_else(|| panic!("{id} must resolve"))
+    };
+    for id in ["bge-m3", "stella_en_400M_v5", "snowflake-arctic-embed-l-v2.0"] {
+        let big = resolve(id);
+        assert!(super::single_copy_only(&big), "{id}");
+        assert!(
+            shared_embedder_is_reusable(
+                &big.provider,
+                &big.model_id,
+                MAX_EMBEDDER_WARM_LIFETIME,
+                &big
+            ),
+            "{id}: a live instance past the warm cap must be reused, not duplicated"
+        );
+    }
+    for id in ["nomic-embed-text-v1.5", "multilingual-e5-small", "gte-modernbert-base"] {
+        assert!(!super::single_copy_only(&resolve(id)), "{id}");
+    }
+}
+
 #[test]
 fn idle_drop_releases_the_embedder_exactly_once_after_the_grace_period() {
     // The "decay to idle" lever: a caught-up worker holds the model weights

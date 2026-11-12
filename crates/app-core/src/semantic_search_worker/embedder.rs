@@ -73,7 +73,9 @@ pub(super) static SHARED_EMBEDDER: Mutex<Weak<LoadedEmbedder>> = Mutex::new(Weak
 /// threads embedding on one instance serialize at the device, not merely at the
 /// GPU. That is free between holders the permit already serializes, and a hard
 /// latency regression for one that does not. The user-facing query path therefore
-/// uses [`load_embedder_private`]; see its docs for the measurement.
+/// uses [`load_embedder_private`]; see its docs for the measurement. The exception
+/// is a [single-copy](single_copy_only) model, where a search shares this instance
+/// and accepts that latency rather than loading the weights twice.
 ///
 /// Callers must keep holding the returned `Arc` for exactly as long as they want
 /// the model resident — dropping every `Arc` is what frees the weights and, on
@@ -106,9 +108,23 @@ pub fn load_embedder(
     Ok(loaded)
 }
 
-/// Whether the [`SHARED_EMBEDDER`] instance can be handed to a background caller
-/// asking for `descriptor`: same provider AND same model id AND not
-/// [stale](LoadedEmbedder::stale_after). Mirrors the query cache's
+/// Models above this download size are never loaded twice (founder ruling
+/// 2026-11-11): two copies of a 2 GB model is 4 GB. Every caller, search included,
+/// shares the one instance, and a live instance is reused even past the warm cap —
+/// a fresh load while another holder still has the old one would be the second
+/// copy. The price is a search queueing behind a backfill batch on the one device
+/// (see [`load_embedder_private`]) and a recycle that waits for all holders to let go.
+pub const SINGLE_COPY_MODEL_BYTES: u64 = 1_000_000_000;
+
+/// Whether `descriptor` is big enough that only one loaded copy may ever exist.
+pub fn single_copy_only(descriptor: &SemanticSearchModelDescriptor) -> bool {
+    descriptor.approx_download_bytes > SINGLE_COPY_MODEL_BYTES
+}
+
+/// Whether the [`SHARED_EMBEDDER`] instance can be handed to a caller asking for
+/// `descriptor`: same provider AND same model id AND (not
+/// [stale](LoadedEmbedder::stale_after) OR a [single-copy](single_copy_only)
+/// model). Mirrors the query cache's
 /// `cached_embedder_is_reusable` (semantic_search_query.rs) — `warm_for` is the
 /// elapsed `Duration`, not the load `Instant`, for the same testability reason.
 pub(super) fn shared_embedder_is_reusable(
@@ -119,7 +135,7 @@ pub(super) fn shared_embedder_is_reusable(
 ) -> bool {
     provider == descriptor.provider
         && model_id == descriptor.model_id
-        && !LoadedEmbedder::stale_after(warm_for)
+        && (!LoadedEmbedder::stale_after(warm_for) || single_copy_only(descriptor))
 }
 
 /// Load a **private** embedder instance — its own weights and, on macOS, its own
@@ -143,7 +159,8 @@ pub(super) fn shared_embedder_is_reusable(
 /// | shared with sweep  | 310 ms | 995 ms |
 ///
 /// The cost is one extra resident copy of the weights while a search is warm — the
-/// query cache drops it at [`MAX_EMBEDDER_WARM_LIFETIME`], and the two background
+/// query cache drops it three minutes after the last search (and at
+/// [`MAX_EMBEDDER_WARM_LIFETIME`] under steady use), and the two background
 /// workers still share one instance between them, so the four-devices-resident peak
 /// the shared cache was added to fix does not come back.
 pub fn load_embedder_private(
