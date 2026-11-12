@@ -2,6 +2,11 @@ use capture_types::CaptureErrorResponse;
 use std::path::Path;
 
 #[cfg(target_os = "macos")]
+mod audio_file;
+#[cfg(target_os = "macos")]
+pub use audio_file::{open_audio_file_for_reading, open_audio_file_for_writing};
+
+#[cfg(target_os = "macos")]
 #[link(name = "AVFoundation", kind = "framework")]
 unsafe extern "C" {
     static AVVideoAverageBitRateKey: &'static cidre::ns::String;
@@ -57,11 +62,10 @@ pub fn trim_audio_file_to_m4a(
 
     let input_url = ns::Url::with_fs_path_str(input, false);
     let mut reader =
-        av::AudioFile::open_read_common_format(&input_url, av::AudioCommonFormat::PcmF32, false)
-            .map_err(|error| CaptureErrorResponse {
-                code: "audio_trim_failed".to_string(),
-                message: format!("Failed to open audio for trim {input}: {error}"),
-            })?;
+        open_audio_file_for_reading(&input_url).map_err(|error| CaptureErrorResponse {
+            code: "audio_trim_failed".to_string(),
+            message: format!("Failed to open audio for trim {input}: {error}"),
+        })?;
 
     let processing_format = reader.processing_format();
     let sample_rate = processing_format.absd().sample_rate;
@@ -124,16 +128,13 @@ pub fn trim_audio_file_to_m4a(
                 channel_count_value.as_id_ref(),
             ],
         );
-    let mut writer = av::AudioFile::open_write_common_format(
-        &output_url,
-        &output_settings,
-        av::AudioCommonFormat::PcmF32,
-        false,
-    )
-    .map_err(|error| CaptureErrorResponse {
-        code: "audio_trim_failed".to_string(),
-        message: format!("Failed to open trimmed audio output {output}: {error}"),
-    })?;
+    let mut writer =
+        open_audio_file_for_writing(&output_url, &output_settings).map_err(|error| {
+            CaptureErrorResponse {
+                code: "audio_trim_failed".to_string(),
+                message: format!("Failed to open trimmed audio output {output}: {error}"),
+            }
+        })?;
 
     if frames_to_copy > 0 {
         reader.set_frame_pos(start_frame);
@@ -196,12 +197,7 @@ pub fn decode_audio_file_to_mono_pcm(path: &Path) -> Result<DecodedMonoPcm, Capt
     })?;
     let _autorelease_pool = AutoreleasePoolPage::push();
     let url = cidre::ns::Url::with_fs_path_str(path_str, false);
-    let mut file = cidre::av::AudioFile::open_read_common_format(
-        &url,
-        cidre::av::AudioCommonFormat::PcmF32,
-        false,
-    )
-    .map_err(|error| CaptureErrorResponse {
+    let mut file = open_audio_file_for_reading(&url).map_err(|error| CaptureErrorResponse {
         code: "audio_decode_failed".to_string(),
         message: format!("Failed to open audio file {}: {error}", path.display()),
     })?;
@@ -297,7 +293,7 @@ fn append_downmixed_f32(
 fn validate_trimmed_audio_output_file(output: &str) -> Result<(), CaptureErrorResponse> {
     let _autorelease_pool = AutoreleasePoolPage::push();
     let url = cidre::ns::Url::with_fs_path_str(output, false);
-    let file = cidre::av::AudioFile::open_read(&url).map_err(|error| CaptureErrorResponse {
+    let file = open_audio_file_for_reading(&url).map_err(|error| CaptureErrorResponse {
         code: "audio_trim_failed".to_string(),
         message: format!("Trimmed audio output is not readable: {error}"),
     })?;
@@ -1762,13 +1758,8 @@ mod tests {
                     channel_count_value.as_id_ref(),
                 ],
             );
-        let mut file = av::AudioFile::open_write_common_format(
-            &url,
-            &settings,
-            av::AudioCommonFormat::PcmF32,
-            false,
-        )
-        .expect("test tone file should open for writing");
+        let mut file = open_audio_file_for_writing(&url, &settings)
+            .expect("test tone file should open for writing");
         let processing_format = file.processing_format();
         let total_frames = (duration_secs * sample_rate).round().max(0.0) as u32;
         let mut written = 0_u32;

@@ -5,6 +5,11 @@
 //! This crate intentionally does not depend on app-infra or Tauri. The desktop
 //! app supplies the app data directory and owns download orchestration.
 
+#[cfg(all(
+    target_os = "macos",
+    any(feature = "local-whisper", feature = "parakeet-onnx")
+))]
+mod avaudio_file;
 mod core;
 mod macos_audio_decode;
 pub mod providers;

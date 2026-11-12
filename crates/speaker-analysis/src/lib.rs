@@ -5,6 +5,8 @@
 //! local person embeddings and return anonymous speaker clusters, turns, and
 //! cautious recognition suggestions.
 
+#[cfg(all(target_os = "macos", feature = "speakrs"))]
+mod avaudio_file;
 mod core;
 // Voice enrollment judgment (audio path -> voiceprint or typed rejection). It
 // drives the speakrs provider, so it is gated with it.

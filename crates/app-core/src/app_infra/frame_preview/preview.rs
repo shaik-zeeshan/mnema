@@ -261,6 +261,15 @@ pub(super) async fn get_frame_preview_inner_with_logging(
             "[DEBUG-frame-preview] frame_id={} missing elapsed_ms={}",
             frame_id, elapsed_ms,
         )),
+        // A superseded request is an expected outcome, not a failure.
+        Err(::app_infra::AppInfraError::Io(error))
+            if error.kind() == std::io::ErrorKind::Interrupted =>
+        {
+            crate::debug_log::log(format!(
+                "[DEBUG-frame-preview] frame_id={} cancelled elapsed_ms={}",
+                frame_id, elapsed_ms,
+            ))
+        }
         Err(error) => crate::debug_log::log_error(format!(
             "[DEBUG-frame-preview] frame_id={} failed elapsed_ms={} error={}",
             frame_id, elapsed_ms, error,
