@@ -106,7 +106,19 @@ impl super::ProcessorBackend for SystemAudioSpeechActivityProcessorBackend {
             )));
         }
 
-        let detection = detect_system_audio_speech(&segment.file_path, payload.detector)?;
+        // Off the runtime: decoding up to 5 min of audio plus Silero is slow
+        // synchronous work, and a quit's abort only lands at an `.await`.
+        let file_path = segment.file_path.clone();
+        let detector = payload.detector;
+        let detection = tokio::task::spawn_blocking(move || {
+            with_utility_qos(|| detect_system_audio_speech(&file_path, detector))
+        })
+        .await
+        .map_err(|error| {
+            AppInfraError::AudioTranscriptionEngine(format!(
+                "system-audio speech activity worker failed to join: {error}"
+            ))
+        })??;
         let speech_detected = detection.speech_detected;
         let result = SystemAudioSpeechActivityResult {
             speech_detected,
@@ -140,6 +152,37 @@ impl super::ProcessorBackend for SystemAudioSpeechActivityProcessorBackend {
     }
 }
 
+/// Runs `work` at utility QoS on this thread, then puts the thread's previous
+/// class back: blocking-pool threads are reused by latency-sensitive work.
+#[cfg(target_os = "macos")]
+fn with_utility_qos<T>(work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<(libc::qos_class_t, libc::c_int)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some((class, relative_priority)) = self.0 {
+                // SAFETY: changes only the calling thread's QoS.
+                unsafe { libc::pthread_set_qos_class_self_np(class, relative_priority) };
+            }
+        }
+    }
+
+    let mut class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+    let mut relative_priority = 0;
+    // SAFETY: per-thread QoS FFI; the out-pointers are valid stack locals.
+    let read = unsafe {
+        libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut relative_priority)
+    };
+    let _restore = Restore((read == 0).then_some((class, relative_priority)));
+    // SAFETY: changes only the calling thread's QoS.
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) };
+    work()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn with_utility_qos<T>(work: impl FnOnce() -> T) -> T {
+    work()
+}
+
 #[cfg(target_os = "macos")]
 fn detect_system_audio_speech(
     file_path: &str,
@@ -163,4 +206,32 @@ fn detect_system_audio_speech(
         "system-audio speech detection with {} is only available on macOS",
         capture_vad::configured_adapter_as_str(detector)
     )))
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use libc::qos_class_t::{QOS_CLASS_UNSPECIFIED, QOS_CLASS_USER_INITIATED, QOS_CLASS_UTILITY};
+
+    fn current_qos() -> u32 {
+        let mut class = QOS_CLASS_UNSPECIFIED;
+        let mut relative_priority = 0;
+        unsafe {
+            libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut relative_priority)
+        };
+        class as u32
+    }
+
+    #[test]
+    fn utility_qos_lasts_only_for_the_work() {
+        std::thread::spawn(|| {
+            unsafe { libc::pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0) };
+            assert_eq!(
+                super::with_utility_qos(current_qos),
+                QOS_CLASS_UTILITY as u32
+            );
+            assert_eq!(current_qos(), QOS_CLASS_USER_INITIATED as u32);
+        })
+        .join()
+        .expect("qos thread");
+    }
 }

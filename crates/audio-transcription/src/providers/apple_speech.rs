@@ -102,7 +102,17 @@ impl TranscriptionProvider for AppleSpeechOnDeviceProvider {
 
         #[cfg(target_os = "macos")]
         {
-            transcribe_with_apple_speech(request)
+            // Off the runtime: recognition blocks up to 300 s, and a quit's
+            // abort only lands at an `.await`.
+            tokio::task::spawn_blocking(move || {
+                with_utility_qos(|| transcribe_with_apple_speech(request))
+            })
+            .await
+            .map_err(|error| {
+                TranscriptionError::Transcription(format!(
+                    "Apple Speech worker failed to join: {error}"
+                ))
+            })?
         }
 
         #[cfg(not(target_os = "macos"))]
@@ -118,6 +128,32 @@ impl TranscriptionProvider for AppleSpeechOnDeviceProvider {
 #[cfg(target_os = "macos")]
 #[link(name = "Speech", kind = "framework")]
 unsafe extern "C" {}
+
+/// Runs `work` at utility QoS on this thread, then puts the thread's previous
+/// class back: blocking-pool threads are reused by latency-sensitive work.
+#[cfg(target_os = "macos")]
+fn with_utility_qos<T>(work: impl FnOnce() -> T) -> T {
+    struct Restore(Option<(libc::qos_class_t, libc::c_int)>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            if let Some((class, relative_priority)) = self.0 {
+                // SAFETY: changes only the calling thread's QoS.
+                unsafe { libc::pthread_set_qos_class_self_np(class, relative_priority) };
+            }
+        }
+    }
+
+    let mut class = libc::qos_class_t::QOS_CLASS_UNSPECIFIED;
+    let mut relative_priority = 0;
+    // SAFETY: per-thread QoS FFI; the out-pointers are valid stack locals.
+    let read = unsafe {
+        libc::pthread_get_qos_class_np(libc::pthread_self(), &mut class, &mut relative_priority)
+    };
+    let _restore = Restore((read == 0).then_some((class, relative_priority)));
+    // SAFETY: changes only the calling thread's QoS.
+    unsafe { libc::pthread_set_qos_class_self_np(libc::qos_class_t::QOS_CLASS_UTILITY, 0) };
+    work()
+}
 
 #[cfg(target_os = "macos")]
 fn transcribe_with_apple_speech(
@@ -568,6 +604,36 @@ mod tests {
                     .expect_err("mismatched provider should fail");
                 assert!(matches!(error, TranscriptionError::InvalidRequest(_)));
             });
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn utility_qos_lasts_only_for_the_work() {
+        use libc::qos_class_t::{
+            QOS_CLASS_UNSPECIFIED, QOS_CLASS_USER_INITIATED, QOS_CLASS_UTILITY,
+        };
+        fn current_qos() -> u32 {
+            let mut class = QOS_CLASS_UNSPECIFIED;
+            let mut relative_priority = 0;
+            unsafe {
+                libc::pthread_get_qos_class_np(
+                    libc::pthread_self(),
+                    &mut class,
+                    &mut relative_priority,
+                )
+            };
+            class as u32
+        }
+        std::thread::spawn(|| {
+            unsafe { libc::pthread_set_qos_class_self_np(QOS_CLASS_USER_INITIATED, 0) };
+            assert_eq!(
+                super::with_utility_qos(current_qos),
+                QOS_CLASS_UTILITY as u32
+            );
+            assert_eq!(current_qos(), QOS_CLASS_USER_INITIATED as u32);
+        })
+        .join()
+        .expect("qos thread");
     }
 
     #[cfg(target_os = "macos")]

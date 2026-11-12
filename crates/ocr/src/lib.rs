@@ -20,6 +20,7 @@ use std::thread_local;
 #[cfg(target_os = "macos")]
 use std::{cell::OnceCell, ffi::c_void};
 
+mod blocking;
 mod paddle;
 mod tesseract;
 
@@ -354,7 +355,7 @@ impl OcrProvider for AppleVisionProvider {
     }
 
     async fn recognize(&self, request: OcrRequest) -> OcrResult<OcrOutput> {
-        recognize_apple_vision(request)
+        blocking::run_blocking(move || recognize_apple_vision(request)).await
     }
 }
 
@@ -378,7 +379,8 @@ impl OcrProvider for TesseractProvider {
     }
 
     async fn recognize(&self, request: OcrRequest) -> OcrResult<OcrOutput> {
-        tesseract::recognize(Some(&self.models_dir), request)
+        let models_dir = self.models_dir.clone();
+        blocking::run_blocking(move || tesseract::recognize(Some(&models_dir), request)).await
     }
 }
 
