@@ -185,6 +185,67 @@ fn the_peek_loads_the_frame_then_its_ocr_only_when_asked(cx: &mut TestAppContext
     assert_eq!(count(&src, "ocr"), 1, "shown again without a reload");
 }
 
+fn advance(cx: &mut TestAppContext, d: std::time::Duration) {
+    cx.executor().advance_clock(d);
+    cx.run_until_parked();
+}
+
+/// Opens the peek's OCR over a job that answers "still running" `pending`
+/// times, then re-checks every 750 ms up to 30 s on the test clock.
+fn peek_ocr_after(cx: &mut TestAppContext, pending: u32) -> (Entity<Chat>, Arc<FixtureSources>) {
+    use crate::timeline::data::{OCR_POLL, OCR_WAIT};
+    let (w, chat, src, _) = setup(cx, fixture(), SEG);
+    *src.ocr_pending.lock().unwrap() = pending;
+    click(cx, w, nid("chat-src-0-f", 0));
+    click(cx, w, "chat-frame-ocr".into());
+    for _ in 0..(OCR_WAIT.as_millis() / OCR_POLL.as_millis()) {
+        advance(cx, OCR_POLL);
+    }
+    let status = chat.read_with(cx, |c, _| c.peek_data.ocr.status);
+    assert_eq!(status, OcrStatus::Running, "30 s");
+    assert_eq!(count(&src, "recheck"), 40);
+    advance(cx, OCR_POLL);
+    (chat, src)
+}
+
+/// The peek's OCR waits out a running job like the Timeline's (a timer, not a
+/// sleeping thread), on both sides of the 30 s cap.
+#[gpui_kit::test]
+fn a_running_peek_ocr_job_is_rechecked_on_a_timer_up_to_30s(cx: &mut TestAppContext) {
+    use crate::timeline::data::OCR_STILL_RUNNING;
+    // The first look and 40 re-checks (0.75 … 30 s) are pending; 30.75 s lands.
+    let (chat, _) = peek_ocr_after(cx, 41);
+    chat.read_with(cx, |c, _| {
+        assert_eq!(c.peek_data.ocr.status, OcrStatus::Success);
+        assert_eq!(c.peek_data.ocr.boxes.len(), 2);
+    });
+
+    let (chat, _) = peek_ocr_after(cx, 42);
+    chat.read_with(cx, |c, _| {
+        assert_eq!(c.peek_data.ocr.status, OcrStatus::Error);
+        assert_eq!(c.peek_data.ocr.error.as_deref(), Some(OCR_STILL_RUNNING));
+    });
+}
+
+/// Closing the peek drops the pending OCR's re-checks with it.
+#[gpui_kit::test]
+fn closing_the_peek_stops_the_ocr_rechecks(cx: &mut TestAppContext) {
+    use crate::timeline::data::OCR_POLL;
+    let (w, chat, src, _) = setup(cx, fixture(), SEG);
+    *src.ocr_pending.lock().unwrap() = u32::MAX;
+    click(cx, w, nid("chat-src-0-f", 0));
+    click(cx, w, "chat-frame-ocr".into());
+    advance(cx, OCR_POLL);
+    assert_eq!(count(&src, "recheck"), 1);
+    chat.update(cx, |c, cx| c.close_peek(cx));
+    advance(cx, OCR_POLL * 4);
+    assert_eq!(
+        count(&src, "recheck"),
+        1,
+        "no re-check after the peek closed"
+    );
+}
+
 #[gpui_kit::test]
 fn a_removed_or_unreadable_frame_says_so_and_offers_no_ocr(cx: &mut TestAppContext) {
     let mut f = fixture();

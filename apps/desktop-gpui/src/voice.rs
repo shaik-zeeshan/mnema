@@ -254,7 +254,8 @@ pub mod live {
         use app_core::native_capture::microphone::bounded_clip::{
             record_bounded_microphone_clip_or_cancel, BoundedClip,
         };
-        match core.block_on(record_bounded_microphone_clip_or_cancel(ms, core)) {
+        let c = core.clone();
+        match core.run(async move { record_bounded_microphone_clip_or_cancel(ms, &c).await }) {
             Ok(BoundedClip::Recorded(path)) => Ok(Some(path)),
             Ok(BoundedClip::Cancelled) => Ok(None),
             Err(e) => Err(error_words(&e.code, e.message)),
@@ -280,8 +281,9 @@ pub mod live {
             clip_path: clip.into(),
             display_name: None,
         };
+        let (c, infra) = (core.clone(), infra.clone());
         Ok(
-            match core.block_on(enroll_account_owner_voice(request, core, infra))? {
+            match core.run(async move { enroll_account_owner_voice(request, &c, &infra).await })? {
                 O::Enrolled { .. } => Enrollment::Enrolled,
                 O::TooShort { duration_ms } => Enrollment::TooShort { duration_ms },
                 O::NoSpeech => Enrollment::NoSpeech,

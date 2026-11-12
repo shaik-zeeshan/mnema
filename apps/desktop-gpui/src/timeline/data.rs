@@ -52,16 +52,12 @@ pub trait Source: Send + Sync + 'static {
     fn app_icons(&self, bundle_ids: &[String]) -> Vec<(String, PathBuf)>;
     /// `get_frame_match_boxes`.
     fn match_boxes(&self, frame_id: i64, query: &str, by_meaning: bool) -> Res<Vec<MatchBox>>;
-    /// The active frame's OCR (`loadOcrForFrame`): `None` = never OCR'd.
-    fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>>;
-    /// One look at [`Source::ocr`] with the provider label and, when the frame
-    /// was never OCR'd, the identical earlier frame whose result it reuses. A
-    /// queued / running job is `Pending`: the view re-checks it with [`Source::ocr_job`].
-    fn ocr_load(&self, frame_id: i64) -> Res<OcrCheck> {
-        Ok(OcrCheck::Done(OcrLoad {
-            boxes: self.ocr(frame_id)?,
-            ..Default::default()
-        }))
+    /// One look at the active frame's OCR (`loadOcrForFrame`; `boxes: None` =
+    /// never OCR'd) with the provider label and, when the frame was never
+    /// OCR'd, the identical earlier frame whose result it reuses. A queued /
+    /// running job is `Pending`: the view re-checks it with [`Source::ocr_job`].
+    fn ocr_load(&self, _frame_id: i64) -> Res<OcrCheck> {
+        Ok(OcrCheck::Done(OcrLoad::default()))
     }
     /// One look at a pending OCR job (`get_processing_job`, then its result).
     fn ocr_job(&self, _job_id: i64) -> Res<OcrCheck> {
@@ -202,9 +198,6 @@ impl Source for NoSource {
     }
     fn match_boxes(&self, _: i64, _: &str, _: bool) -> Res<Vec<MatchBox>> {
         Ok(Vec::new())
-    }
-    fn ocr(&self, _: i64) -> Res<Option<Vec<OcrBox>>> {
-        Ok(None)
     }
     fn take_landing(&self) -> Option<Landing> {
         None
@@ -576,26 +569,6 @@ impl Source for CoreSource {
         let infra = self.infra()?;
         self.0
             .run(async move { get_frame_match_boxes(request, &infra).await })
-    }
-
-    /// Chat's peek: waits out a queued / running job here, on its own thread.
-    // shortcut: a blocking poll on Chat's background thread; move it to the
-    // Timeline's timer re-check (`ocr_overlay`) when Chat's peek owns one.
-    fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>> {
-        let started = std::time::Instant::now();
-        let mut check = self.ocr_load(frame_id)?;
-        loop {
-            match check {
-                OcrCheck::Done(l) => return Ok(l.boxes),
-                OcrCheck::Pending { job_id, .. } => {
-                    if started.elapsed() > OCR_WAIT {
-                        return Err(OCR_STILL_RUNNING.into());
-                    }
-                    std::thread::sleep(OCR_POLL);
-                    check = self.ocr_job(job_id)?;
-                }
-            }
-        }
     }
 
     fn ocr_load(&self, frame_id: i64) -> Res<OcrCheck> {

@@ -232,19 +232,20 @@ pub fn health(core: &AppCore) -> Option<Health> {
 }
 
 /// The popover's "Catching up" reads; each one that fails reads as `None`, as
-/// StatusPop.svelte's `.catch(() => null)`. Blocks on app-core's runtime.
-pub fn backlog(core: &AppCore, deepgram: bool) -> Backlog {
+/// StatusPop.svelte's `.catch(() => null)`. Waits on app-core's runtime.
+pub fn backlog(core: &Arc<AppCore>, deepgram: bool) -> Backlog {
     let Some(infra) = core.try_state::<AppInfraState>() else {
         return Backlog::default();
     };
+    let (c, i) = (core.clone(), infra.clone());
     let index = core
-        .block_on(app_core::app_infra::quick_recall::get_quick_recall_index_status(core, &infra))
+        .run(async move {
+            app_core::app_infra::quick_recall::get_quick_recall_index_status(&c, &i).await
+        })
         .ok()
         .and_then(crate::quick_recall::data::reshape);
     let pipeline = core
-        .block_on(app_core::debug_pipeline::get_processing_pipeline_status(
-            &infra,
-        ))
+        .run(async move { app_core::debug_pipeline::get_processing_pipeline_status(&infra).await })
         .ok();
     // Key rejected vs unreachable: only asked while Deepgram jobs are retrying.
     let retrying = pipeline.as_ref().is_some_and(|lanes| {
@@ -256,7 +257,9 @@ pub fn backlog(core: &AppCore, deepgram: bool) -> Backlog {
         .try_state::<app_core::transcription_deepgram::DeepgramAuthStatusState>()
     {
         Some(auth) if deepgram && retrying => core
-            .block_on(app_core::transcription_deepgram::transcription_deepgram_auth_status(&auth))
+            .run(async move {
+                app_core::transcription_deepgram::transcription_deepgram_auth_status(&auth).await
+            })
             .ok()
             .flatten(),
         _ => None,

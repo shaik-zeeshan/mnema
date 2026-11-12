@@ -357,6 +357,7 @@ impl Chat {
         self.pending_send = false;
         self.peek = None;
         self.peek_gen += 1;
+        self.peek_data = Default::default();
         self.close_clip(cx);
         self.thumbs.clear();
         self.thumbs_asked.clear();

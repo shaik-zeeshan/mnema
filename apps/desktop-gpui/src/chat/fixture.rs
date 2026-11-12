@@ -6,6 +6,7 @@ use capture_types::{Conversation, ConversationSummary, RecordingSettings, TurnSn
 
 use super::model::{Availability, ChatData, History};
 use crate::shell::fixture::{get, load};
+use crate::timeline::data::{OcrCheck, OcrLoad};
 
 /// The Chat parity states (and golden names), in `surfaces.ts` order.
 pub const STATES: [&str; 5] = ["empty", "list", "mid-stream", "done", "error"];
@@ -51,6 +52,8 @@ pub struct FixtureSources {
     pub frame_error: Option<String>,
     pub previews: std::collections::HashMap<i64, std::path::PathBuf>,
     pub ocr: std::collections::HashMap<i64, Vec<crate::timeline::model::OcrBox>>,
+    /// How many OCR looks answer "still running" (job id = the frame id) first.
+    pub ocr_pending: std::sync::Mutex<u32>,
     /// `get_frame_preview`'s secret-redaction count and `get_frame`'s app bundle.
     pub redactions: std::collections::HashMap<i64, u32>,
     pub bundles: std::collections::HashMap<i64, String>,
@@ -75,6 +78,21 @@ impl FixtureSources {
 
     fn log(&self, call: String) {
         self.calls.lock().unwrap().push(call);
+    }
+
+    fn ocr_check(&self, id: i64) -> super::source_data::Res<OcrCheck> {
+        let mut pending = self.ocr_pending.lock().unwrap();
+        if *pending > 0 {
+            *pending -= 1;
+            return Ok(OcrCheck::Pending {
+                job_id: id,
+                from_frame: None,
+            });
+        }
+        Ok(OcrCheck::Done(OcrLoad {
+            boxes: self.ocr.get(&id).cloned(),
+            ..Default::default()
+        }))
     }
 }
 
@@ -115,9 +133,13 @@ impl super::source_data::SourceBackend for FixtureSources {
             self.bundles.get(&id).cloned(),
         )
     }
-    fn ocr(&self, id: i64) -> super::source_data::Res<Option<Vec<crate::timeline::model::OcrBox>>> {
+    fn ocr_load(&self, id: i64) -> super::source_data::Res<OcrCheck> {
         self.log(format!("ocr {id}"));
-        Ok(self.ocr.get(&id).cloned())
+        self.ocr_check(id)
+    }
+    fn ocr_job(&self, job_id: i64) -> super::source_data::Res<OcrCheck> {
+        self.log(format!("recheck {job_id}"));
+        self.ocr_check(job_id)
     }
     fn frames(&self, start: i64, end: i64) -> super::source_data::Res<Vec<(i64, i64)>> {
         self.log(format!("frames {start}..{end}"));

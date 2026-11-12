@@ -268,19 +268,21 @@ impl Backend for CoreBackend {
             .infra()
             .ok()
             .and_then(|infra| {
-                core.block_on(app_core::voice_enrollment::get_account_owner_person_id(
-                    &infra,
-                ))
+                core.run(async move {
+                    app_core::voice_enrollment::get_account_owner_person_id(&infra).await
+                })
                 .ok()
             })
             .flatten()
             .is_some();
+        let c = core.clone();
         let recommended = core
-            .block_on(
+            .run(async move {
                 app_core::sensitive_capture_recommendations::sensitive_capture_recommendations_now(
-                    core,
-                ),
-            )
+                    &c,
+                )
+                .await
+            })
             .map(|r| {
                 r.recommended_apps
                     .into_iter()
@@ -313,13 +315,11 @@ impl Backend for CoreBackend {
     }
 
     fn request_permission(&self, kind: &str) -> Result<CapturePermissions, String> {
+        let (core, kind) = (self.0.clone(), kind.to_string());
         self.0
-            .block_on(
-                app_core::native_capture::permissions::request_capture_permission(
-                    kind.into(),
-                    &self.0,
-                ),
-            )
+            .run(async move {
+                app_core::native_capture::permissions::request_capture_permission(kind, &core).await
+            })
             .map(|r| r.permissions)
     }
 
@@ -336,11 +336,13 @@ impl Backend for CoreBackend {
     }
 
     fn start_sys_audio_probe(&self) {
-        if let Err(e) = self.0.block_on(
+        let core = self.0.clone();
+        if let Err(e) = self.0.run(async move {
             app_core::native_capture::microphone::bounded_clip::start_system_audio_level_probe(
-                &self.0,
-            ),
-        ) {
+                &core,
+            )
+            .await
+        }) {
             log::warn!("onboarding: the system-audio level probe didn't start: {e:?}");
         }
     }
@@ -361,7 +363,7 @@ impl Backend for CoreBackend {
 
     fn app_candidates(&self) -> Vec<(String, String)> {
         self.0
-            .block_on(app_core::native_capture::app_candidates::list_privacy_app_candidates())
+            .run(app_core::native_capture::app_candidates::list_privacy_app_candidates())
             .map(|c| {
                 c.into_iter()
                     .map(|a| (a.bundle_id, a.display_name))
@@ -504,7 +506,7 @@ impl Backend for CoreBackend {
         let request = serde_json::from_value(json!({ "limit": 1 })).ok()?;
         let frames = self
             .0
-            .block_on(app_core::app_infra::list_frames(Some(request), &infra))
+            .run(async move { app_core::app_infra::list_frames(Some(request), &infra).await })
             .ok()?;
         frames.first().map(|f| f.id)
     }
@@ -512,9 +514,10 @@ impl Backend for CoreBackend {
     fn evidence(&self, after: Option<i64>) -> Option<Evidence> {
         let infra = self.infra().ok()?;
         let request = serde_json::from_value(json!({ "limit": 1 })).ok()?;
+        let i = infra.clone();
         let frame = self
             .0
-            .block_on(app_core::app_infra::list_frames(Some(request), &infra))
+            .run(async move { app_core::app_infra::list_frames(Some(request), &i).await })
             .ok()?
             .into_iter()
             .next()
@@ -525,11 +528,16 @@ impl Backend for CoreBackend {
         )
         .map(|t| (t.unix_timestamp_nanos() / 1_000_000) as i64)
         .unwrap_or(0);
+        let frame_id = frame.id;
         let ocr = self
             .0
-            .block_on(infra.list_processing_results_for_subject(
-                &app_infra::ProcessingSubject::frame(frame.id),
-            ))
+            .run(async move {
+                infra
+                    .list_processing_results_for_subject(&app_infra::ProcessingSubject::frame(
+                        frame_id,
+                    ))
+                    .await
+            })
             .ok()
             .and_then(|results| {
                 results
@@ -539,10 +547,11 @@ impl Backend for CoreBackend {
         let preview = serde_json::from_value(json!({ "frameId": frame.id })).ok();
         let image = preview
             .and_then(|req| {
+                let core = self.0.clone();
                 self.0
-                    .block_on(app_core::app_infra::frame_preview::get_frame_preview(
-                        &self.0, req,
-                    ))
+                    .run(async move {
+                        app_core::app_infra::frame_preview::get_frame_preview(&core, req).await
+                    })
                     .ok()
             })
             .flatten()
@@ -563,14 +572,14 @@ impl Backend for CoreBackend {
         let request = serde_json::from_value(json!({ "provider": provider, "key": key }))
             .map_err(|_| "couldn't build the key request".to_string())?;
         self.0
-            .block_on(app_core::ai_runtime::ai_runtime_set_provider_key(request))
+            .run(app_core::ai_runtime::ai_runtime_set_provider_key(request))
     }
 
     fn clear_key(&self, provider: &str) -> Result<(), String> {
         let request =
             serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
         self.0
-            .block_on(app_core::ai_runtime::ai_runtime_clear_provider_key(request))
+            .run(app_core::ai_runtime::ai_runtime_clear_provider_key(request))
     }
 
     fn has_key(&self, provider: &str) -> bool {
@@ -578,7 +587,7 @@ impl Backend for CoreBackend {
             .ok()
             .is_some_and(|r| {
                 self.0
-                    .block_on(app_core::ai_runtime::ai_runtime_has_provider_key(r))
+                    .run(app_core::ai_runtime::ai_runtime_has_provider_key(r))
                     == Ok(true)
             })
     }
@@ -591,20 +600,20 @@ impl Backend for CoreBackend {
         let request =
             serde_json::from_value(json!({ "provider": provider, "providers": providers }))
                 .map_err(|e| e.to_string())?;
+        let core = self.0.clone();
         let result = self
             .0
-            .block_on(app_core::ai_runtime::verify_ai_provider(&self.0, request))?;
+            .run(async move { app_core::ai_runtime::verify_ai_provider(&core, request).await })?;
         Ok(verified_from(&to_json(result)))
     }
 
     fn chatgpt_begin(&self, provider: &str) -> Result<(String, String), String> {
         let request =
             serde_json::from_value(json!({ "provider": provider })).map_err(|e| e.to_string())?;
-        let p = self
-            .0
-            .block_on(app_core::ai_runtime::ai_runtime_chatgpt_begin_login(
-                &self.0, request,
-            ))?;
+        let core = self.0.clone();
+        let p = self.0.run(async move {
+            app_core::ai_runtime::ai_runtime_chatgpt_begin_login(&core, request).await
+        })?;
         Ok((p.user_code, p.verify_url))
     }
 
@@ -612,7 +621,7 @@ impl Backend for CoreBackend {
         if let Ok(request) = serde_json::from_value(json!({ "provider": provider })) {
             let _ = self
                 .0
-                .block_on(app_core::ai_runtime::ai_runtime_chatgpt_cancel_login(
+                .run(app_core::ai_runtime::ai_runtime_chatgpt_cancel_login(
                     request,
                 ));
         }

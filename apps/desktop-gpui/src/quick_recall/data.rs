@@ -126,9 +126,10 @@ impl Backend for CoreBackend {
             snapshot_document_id: None,
             refinements: Some(Default::default()),
         };
+        let core = self.0.clone();
         let res = self
             .0
-            .block_on(search_capture(request, &self.0, &infra, &embedder))?;
+            .run(async move { search_capture(request, &core, &infra, &embedder).await })?;
         reshape(res).ok_or_else(|| "unreadable search response".into())
     }
 
@@ -140,7 +141,11 @@ impl Backend for CoreBackend {
             frame_ids: ids.to_vec(),
             max_pixel_size: max_px,
         };
-        let Ok(res) = self.0.block_on(get_frame_scrub_previews(&self.0, request)) else {
+        let core = self.0.clone();
+        let Ok(res) = self
+            .0
+            .run(async move { get_frame_scrub_previews(&core, request).await })
+        else {
             return Vec::new();
         };
         res.previews
@@ -167,7 +172,7 @@ impl Backend for CoreBackend {
             exclude_lock_screen: false,
         };
         self.0
-            .block_on(list_frame_summaries_in_range(request, &infra))
+            .run(async move { list_frame_summaries_in_range(request, &infra).await })
             .unwrap_or_default()
             .into_iter()
             .map(|f| (f.id, super::model::ms(&f.captured_at)))
@@ -184,7 +189,7 @@ impl Backend for CoreBackend {
         };
         let mut rows = self
             .0
-            .block_on(list_processing_results(request, &infra))
+            .run(async move { list_processing_results(request, &infra).await })
             .ok()?;
         rows.retain(|r| r.processor == "ocr" && r.result_text.is_some());
         rows.sort_by_key(|r| std::cmp::Reverse(r.id));
@@ -203,7 +208,7 @@ impl Backend for CoreBackend {
             by_meaning,
         };
         self.0
-            .block_on(get_frame_match_boxes(request, &infra))
+            .run(async move { get_frame_match_boxes(request, &infra).await })
             .unwrap_or_default()
     }
 
@@ -214,7 +219,7 @@ impl Backend for CoreBackend {
         };
         let request = ListSpeakerTurnsRequest { audio_segment_id };
         self.0
-            .block_on(list_speaker_turns(request, &infra))
+            .run(async move { list_speaker_turns(request, &infra).await })
             .unwrap_or_default()
             .into_iter()
             .filter_map(|t| {
@@ -233,7 +238,7 @@ impl Backend for CoreBackend {
         let infra = self.infra()?;
         let apps = self
             .0
-            .block_on(app_core::app_infra::list_searchable_apps(&infra))
+            .run(async move { app_core::app_infra::list_searchable_apps(&infra).await })
             .ok()?;
         Some(dedupe_names(apps.into_iter().filter_map(|a| a.name)))
     }
@@ -243,8 +248,9 @@ impl Backend for CoreBackend {
         let request = ResolveAppIconsRequest {
             bundle_ids: ids.to_vec(),
         };
+        let core = self.0.clone();
         self.0
-            .block_on(resolve_app_icons(&self.0, request))
+            .run(async move { resolve_app_icons(&core, request).await })
             .unwrap_or_default()
             .into_iter()
             .filter_map(|r| Some((r.bundle_id, PathBuf::from(r.icon_path?))))
@@ -254,16 +260,19 @@ impl Backend for CoreBackend {
     fn recent(&self) -> Option<Vec<RecentQuery>> {
         let infra = self.infra()?;
         self.0
-            .block_on(app_core::app_infra::quick_recall::get_quick_recall_recent_queries(&infra))
+            .run(async move {
+                app_core::app_infra::quick_recall::get_quick_recall_recent_queries(&infra).await
+            })
             .ok()
     }
 
     fn set_recent(&self, queries: Vec<RecentQuery>) -> Option<Vec<RecentQuery>> {
         let infra = self.infra()?;
         self.0
-            .block_on(
-                app_core::app_infra::quick_recall::set_quick_recall_recent_queries(queries, &infra),
-            )
+            .run(async move {
+                app_core::app_infra::quick_recall::set_quick_recall_recent_queries(queries, &infra)
+                    .await
+            })
             .ok()
     }
 
@@ -278,18 +287,21 @@ impl Backend for CoreBackend {
             refinements: None,
             facet,
         };
+        let core = self.0.clone();
         self.0
-            .block_on(count_search_facet(request, &self.0, &infra, &embedder))
+            .run(async move { count_search_facet(request, &core, &infra, &embedder).await })
             .ok()
     }
 
     fn index_status(&self) -> Option<IndexStatus> {
         let infra = self.infra()?;
+        let core = self.0.clone();
         let s = self
             .0
-            .block_on(
-                app_core::app_infra::quick_recall::get_quick_recall_index_status(&self.0, &infra),
-            )
+            .run(async move {
+                app_core::app_infra::quick_recall::get_quick_recall_index_status(&core, &infra)
+                    .await
+            })
             .ok()?;
         reshape(s)
     }
@@ -301,9 +313,10 @@ impl Backend for CoreBackend {
     }
 
     fn availability(&self) -> Availability {
+        let core = self.0.clone();
         match self
             .0
-            .block_on(app_core::ask_ai::ask_ai_availability(&self.0))
+            .run(async move { app_core::ask_ai::ask_ai_availability(&core).await })
         {
             Ok(a) => reshape(a).unwrap_or_default(),
             Err(e) => Availability {
@@ -335,8 +348,9 @@ impl Backend for CoreBackend {
                 "utcOffsetMinutes": offset,
             }))
             .map_err(|e| e.to_string())?;
+        let core = self.0.clone();
         self.0
-            .block_on(app_core::ask_ai::ask_ai_start(&self.0, request))
+            .run(async move { app_core::ask_ai::ask_ai_start(&core, request).await })
     }
 
     fn ask_cancel(&self, id: &str, discard: bool) {
@@ -344,7 +358,9 @@ impl Backend for CoreBackend {
             conversation_id: id.into(),
             discard,
         };
-        let _ = self.0.block_on(app_core::ask_ai::ask_ai_cancel(request));
+        let _ = self
+            .0
+            .run(async move { app_core::ask_ai::ask_ai_cancel(request).await });
     }
 
     fn ask_snapshot(&self, id: &str) -> Option<TurnSnapshot> {
@@ -352,16 +368,17 @@ impl Backend for CoreBackend {
             conversation_id: id.into(),
         };
         self.0
-            .block_on(app_core::ask_ai::ask_ai_snapshot(request))
+            .run(async move { app_core::ask_ai::ask_ai_snapshot(request).await })
             .ok()
             .flatten()
     }
 
     fn open_url(&self, frame_id: i64) -> Res<bool> {
         let infra = self.infra().ok_or("not ready")?;
-        self.0.block_on(app_core::app_infra::open_captured_url(
-            frame_id, &self.0, &infra,
-        ))
+        let core = self.0.clone();
+        self.0.run(
+            async move { app_core::app_infra::open_captured_url(frame_id, &core, &infra).await },
+        )
     }
 }
 

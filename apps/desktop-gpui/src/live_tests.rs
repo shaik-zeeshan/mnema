@@ -230,7 +230,7 @@ fn the_timeline_source_reads_the_seeded_frames_and_a_preview() {
     assert!(source.scrub_availability(span.0, span.1, false).is_ok());
     // The seed's OCR jobs finished with text but no boxes: the Svelte loader
     // calls that an invalid payload too.
-    assert!(source.ocr(newest.id).is_err());
+    assert!(source.ocr_load(newest.id).is_err());
     // No captured page behind a fixture frame: a benign "nothing to open".
     assert_eq!(source.open_captured_url(newest.id), Ok(false));
     let settings = source.settings();

@@ -187,8 +187,11 @@ impl CoreBackend {
             .try_state::<AppInfraState>()
             .ok_or_else(|| "app infrastructure isn't ready".into())
     }
-    fn run<T: Send>(&self, f: impl std::future::Future<Output = Res<T>> + Send) -> Res<T> {
-        self.0.block_on(f)
+    fn run<T: Send + 'static>(
+        &self,
+        f: impl std::future::Future<Output = Res<T>> + Send + 'static,
+    ) -> Res<T> {
+        self.0.run(f)
     }
 }
 
@@ -217,17 +220,24 @@ impl Backend for CoreBackend {
     fn status(&self) -> Status {
         let core = &self.0;
         let infra = core.try_state::<AppInfraState>();
+        let c = core.clone();
         let ai = core
-            .block_on(app_core::ai_runtime::get_ai_runtime_status(core))
+            .run(async move { app_core::ai_runtime::get_ai_runtime_status(&c).await })
             .ok()
             .and_then(|s| serde_json::to_value(s).ok())
             .and_then(|v| serde_json::from_value::<AiStatus>(v).ok());
-        let ctx = infra
-            .as_ref()
-            .and_then(|i| core.block_on(uc::get_user_context_status(core, i)).ok());
+        let ctx = infra.as_ref().and_then(|i| {
+            let (c, i) = (core.clone(), i.clone());
+            core.run(async move { uc::get_user_context_status(&c, &i).await })
+                .ok()
+        });
         let authored = infra
             .as_ref()
-            .and_then(|i| core.block_on(uc::list_user_context_authored(i)).ok())
+            .and_then(|i| {
+                let i = i.clone();
+                core.run(async move { uc::list_user_context_authored(&i).await })
+                    .ok()
+            })
             .map(|v| v.len());
         Status {
             loaded: true,
@@ -241,15 +251,13 @@ impl Backend for CoreBackend {
     }
     fn usage(&self, start: i64, end: i64) -> Res<UsageChartsResponse> {
         let i = self.infra()?;
-        self.run(app_core::usage_charts::get_usage_charts(
-            &i,
-            Some(start),
-            Some(end),
-        ))
+        self.run(async move {
+            app_core::usage_charts::get_usage_charts(&i, Some(start), Some(end)).await
+        })
     }
     fn presence(&self, start: i64, end: i64) -> Option<(bool, bool)> {
         let i = self.infra().ok()?;
-        self.run(app_core::usage_charts::capture_presence(&i, start, end))
+        self.run(async move { app_core::usage_charts::capture_presence(&i, start, end).await })
             .ok()
             .map(|p| (p.screen, p.audio))
     }
@@ -257,56 +265,51 @@ impl Backend for CoreBackend {
         let Ok(i) = self.infra() else {
             return Vec::new();
         };
-        self.run(app_core::usage_charts::get_capture_hours(
-            &i, start, end, offset_min,
-        ))
+        self.run(async move {
+            app_core::usage_charts::get_capture_hours(&i, start, end, offset_min).await
+        })
         .unwrap_or_default()
     }
     fn activities(&self, start: i64, end: i64) -> Res<Vec<Activity>> {
         let i = self.infra()?;
-        self.run(uc::list_user_context_activities(
-            &i,
-            None,
-            None,
-            Some(start),
-            Some(end),
-        ))
+        self.run(async move {
+            uc::list_user_context_activities(&i, None, None, Some(start), Some(end)).await
+        })
     }
     fn recent_activities(&self, limit: i64, offset: i64) -> Vec<Activity> {
         let Ok(i) = self.infra() else {
             return Vec::new();
         };
-        self.run(uc::list_user_context_activities(
-            &i,
-            Some(limit),
-            Some(offset),
-            None,
-            None,
-        ))
+        self.run(async move {
+            uc::list_user_context_activities(&i, Some(limit), Some(offset), None, None).await
+        })
         .unwrap_or_default()
     }
     fn activity_meta(&self, start: i64, end: i64) -> Vec<capture_types::ActivityMeta> {
         let Ok(i) = self.infra() else {
             return Vec::new();
         };
-        self.run(uc::list_user_context_activity_meta(&i, start, end))
+        self.run(async move { uc::list_user_context_activity_meta(&i, start, end).await })
             .unwrap_or_default()
     }
     fn failed_windows(&self, start: i64, end: i64) -> Vec<(i64, i64)> {
         let Ok(i) = self.infra() else {
             return Vec::new();
         };
-        self.run(uc::list_failed_derivation_windows(&i, start, end))
+        self.run(async move { uc::list_failed_derivation_windows(&i, start, end).await })
             .unwrap_or_default()
     }
     fn conclusions(&self, range: Option<(i64, i64)>) -> Res<Vec<Conclusion>> {
         let i = self.infra()?;
-        self.run(uc::list_user_context_conclusions(
-            &i,
-            Some(true),
-            range.map(|r| r.0),
-            range.map(|r| r.1),
-        ))
+        self.run(async move {
+            uc::list_user_context_conclusions(
+                &i,
+                Some(true),
+                range.map(|r| r.0),
+                range.map(|r| r.1),
+            )
+            .await
+        })
     }
     fn digest(
         &self,
@@ -315,28 +318,28 @@ impl Backend for CoreBackend {
         end: i64,
         force: bool,
     ) -> Res<UserContextDigestResult> {
-        let (core, i) = (&self.0, self.infra()?);
+        let (core, i) = (self.0.clone(), self.infra()?);
         let kind = kind.to_string();
         if force {
-            self.run(uc::regenerate_user_context_digest(
-                core, &i, kind, start, end,
-            ))
+            self.run(async move {
+                uc::regenerate_user_context_digest(&core, &i, kind, start, end).await
+            })
         } else {
-            self.run(uc::get_user_context_digest(core, &i, kind, start, end))
+            self.run(async move { uc::get_user_context_digest(&core, &i, kind, start, end).await })
         }
     }
     fn subject(&self, subject: &str) -> Res<SubjectView> {
-        let i = self.infra()?;
-        self.run(uc::get_user_context_subject(&i, subject.to_string()))
+        let (i, subject) = (self.infra()?, subject.to_string());
+        self.run(async move { uc::get_user_context_subject(&i, subject).await })
     }
     fn frames(&self, start: i64, end: i64) -> Res<Vec<StripFrame>> {
         let i = self.infra()?;
         let request = req(
             json!({ "capturedAtStart": iso(start), "capturedAtEnd": iso(end), "excludeLockScreen": true }),
         )?;
-        let list = self.run(app_core::app_infra::list_frame_summaries_in_range(
-            request, &i,
-        ))?;
+        let list = self.run(async move {
+            app_core::app_infra::list_frame_summaries_in_range(request, &i).await
+        })?;
         Ok(list
             .into_iter()
             .filter_map(|f| Some((f.id, parse_ms(&f.captured_at)?)))
@@ -351,7 +354,7 @@ impl Backend for CoreBackend {
             return Vec::new();
         };
         let list = self
-            .run(app_core::app_infra::list_audio_segments(request, &i))
+            .run(async move { app_core::app_infra::list_audio_segments(request, &i).await })
             .unwrap_or_default();
         list.iter()
             .filter_map(|a| {
@@ -366,7 +369,8 @@ impl Backend for CoreBackend {
     fn audio_segments(&self, start: i64, end: i64) -> Res<Vec<super::journal::audio::SegRow>> {
         let i = self.infra()?;
         let request = req(json!({ "capturedAtStart": iso(start), "capturedAtEnd": iso(end) }))?;
-        let list = self.run(app_core::app_infra::list_audio_segments(request, &i))?;
+        let list =
+            self.run(async move { app_core::app_infra::list_audio_segments(request, &i).await })?;
         Ok(list
             .iter()
             .filter_map(|a| {
@@ -382,65 +386,55 @@ impl Backend for CoreBackend {
     }
     fn frame_preview(&self, frame_id: i64) -> Option<PathBuf> {
         let request = req(json!({ "frameId": frame_id, "videoScope": null })).ok()?;
+        let core = self.0.clone();
         let dto = self
             .0
-            .block_on(app_core::app_infra::frame_preview::get_frame_preview(
-                &self.0, request,
-            ))
+            .run(async move {
+                app_core::app_infra::frame_preview::get_frame_preview(&core, request).await
+            })
             .ok()??;
         Some(PathBuf::from(dto.file_path))
     }
     fn authored(&self) -> Res<Vec<AuthoredContextRow>> {
         let i = self.infra()?;
-        self.run(uc::list_user_context_authored(&i))
+        self.run(async move { uc::list_user_context_authored(&i).await })
     }
     fn dismissed(&self) -> Res<Vec<capture_types::DismissedView>> {
         let i = self.infra()?;
-        self.run(uc::user_context_list_dismissed(&i))
+        self.run(async move { uc::user_context_list_dismissed(&i).await })
     }
     fn dismiss(&self, id: i64) -> Res<()> {
-        let (core, i) = (&self.0, self.infra()?);
-        self.run(uc::user_context_dismiss_conclusion(core, &i, id))
+        let (core, i) = (self.0.clone(), self.infra()?);
+        self.run(async move { uc::user_context_dismiss_conclusion(&core, &i, id).await })
             .map(drop)
     }
     fn set_pinned(&self, id: i64, pinned: bool) -> Res<()> {
-        let (core, i) = (&self.0, self.infra()?);
-        self.run(uc::user_context_set_pinned(core, &i, id, pinned))
+        let (core, i) = (self.0.clone(), self.infra()?);
+        self.run(async move { uc::user_context_set_pinned(&core, &i, id, pinned).await })
             .map(drop)
     }
     fn add_authored(&self, text: &str, topic: Option<&str>) -> Res<AuthoredContext> {
-        let (core, i) = (&self.0, self.infra()?);
-        self.run(uc::user_context_add_authored(
-            core,
-            &i,
-            text.into(),
-            topic.map(Into::into),
-        ))
+        let (core, i) = (self.0.clone(), self.infra()?);
+        let (text, topic) = (text.to_string(), topic.map(String::from));
+        self.run(async move { uc::user_context_add_authored(&core, &i, text, topic).await })
     }
     fn update_authored(&self, id: i64, text: &str, topic: Option<&str>) -> Res<()> {
-        let (core, i) = (&self.0, self.infra()?);
-        self.run(uc::user_context_update_authored(
-            core,
-            &i,
-            id,
-            text.into(),
-            topic.map(Into::into),
-        ))
-        .map(drop)
+        let (core, i) = (self.0.clone(), self.infra()?);
+        let (text, topic) = (text.to_string(), topic.map(String::from));
+        self.run(async move { uc::user_context_update_authored(&core, &i, id, text, topic).await })
+            .map(drop)
     }
     fn delete_authored(&self, id: i64) -> Res<()> {
-        let (core, i) = (&self.0, self.infra()?);
-        self.run(uc::user_context_delete_authored(core, &i, id))
+        let (core, i) = (self.0.clone(), self.infra()?);
+        self.run(async move { uc::user_context_delete_authored(&core, &i, id).await })
             .map(drop)
     }
     fn restore_dismissed(&self, subject: &str, statement: &str) -> Res<()> {
-        let (core, i) = (&self.0, self.infra()?);
-        self.run(uc::user_context_restore_dismissed(
-            core,
-            &i,
-            subject.into(),
-            statement.into(),
-        ))
+        let (core, i) = (self.0.clone(), self.infra()?);
+        let (subject, statement) = (subject.to_string(), statement.to_string());
+        self.run(
+            async move { uc::user_context_restore_dismissed(&core, &i, subject, statement).await },
+        )
         .map(drop)
     }
     fn correct_category(
@@ -448,10 +442,10 @@ impl Backend for CoreBackend {
         id: i64,
         category: Option<capture_types::ActivityCategory>,
     ) -> Res<()> {
-        let (core, i) = (&self.0, self.infra()?);
-        self.run(uc::user_context_correct_activity_category(
-            core, &i, id, category,
-        ))
+        let (core, i) = (self.0.clone(), self.infra()?);
+        self.run(async move {
+            uc::user_context_correct_activity_category(&core, &i, id, category).await
+        })
         .map(drop)
     }
     fn app_icons(&self, apps: &[String]) -> Vec<(String, PathBuf)> {
@@ -459,8 +453,8 @@ impl Backend for CoreBackend {
         crate::timeline::data::CoreSource(self.0.clone()).app_icons(apps)
     }
     fn correct_focus(&self, id: i64, focus: Option<capture_types::FocusLevel>) -> Res<()> {
-        let (core, i) = (&self.0, self.infra()?);
-        self.run(uc::user_context_correct_activity_focus(core, &i, id, focus))
+        let (core, i) = (self.0.clone(), self.infra()?);
+        self.run(async move { uc::user_context_correct_activity_focus(&core, &i, id, focus).await })
             .map(drop)
     }
 }

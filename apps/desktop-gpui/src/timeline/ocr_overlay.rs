@@ -8,7 +8,9 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, AnyElement, App, Bounds, Context, Pixels, Role, SharedString};
+use gpui_kit::{
+    div, px, AnyElement, App, BackgroundExecutor, Bounds, Context, Pixels, Role, SharedString,
+};
 
 use super::data::{OcrCheck, OcrLoad, OCR_POLL, OCR_STILL_RUNNING, OCR_WAIT};
 use super::model::OcrBox;
@@ -80,30 +82,7 @@ impl TimelineView {
         let src = self.source.clone();
         self.ocr.task = Some(cx.spawn(async move |this, cx| {
             let ex = cx.background_executor().clone();
-            let started = ex.now();
-            let mut check = ex.spawn(async move { f() }).await;
-            let mut from = None;
-            // A queued / running job: re-check on a timer, never a sleeping thread.
-            let res = loop {
-                match check {
-                    Ok(OcrCheck::Done(l)) => {
-                        break Ok(OcrLoad {
-                            from_frame: l.from_frame.or(from),
-                            ..l
-                        })
-                    }
-                    Ok(OcrCheck::Pending { job_id, from_frame }) => {
-                        from = from_frame.or(from);
-                        if ex.now().duration_since(started) > OCR_WAIT {
-                            break Err(OCR_STILL_RUNNING.to_string());
-                        }
-                        ex.timer(OCR_POLL).await;
-                        let src = src.clone();
-                        check = ex.spawn(async move { src.ocr_job(job_id) }).await;
-                    }
-                    Err(e) => break Err(e),
-                }
-            };
+            let res = wait(ex, f, move |job| src.ocr_job(job)).await;
             this.update(cx, |view, cx| {
                 if view.ocr.frame_id != Some(id) {
                     return; // the playhead moved on
@@ -211,6 +190,40 @@ pub fn next_hover(current: Option<usize>, i: usize, on: bool) -> Option<usize> {
 }
 
 /// `(status, boxes, error)` from an OCR load (`None` = never OCR'd).
+/// One OCR load (`first`), then a queued / running job re-checked with `job`
+/// every [`OCR_POLL`] on the executor's timer (never a sleeping thread) until
+/// [`OCR_WAIT`] runs out. Shared with Chat's frame peek.
+pub async fn wait(
+    ex: BackgroundExecutor,
+    first: impl FnOnce() -> super::data::Res<OcrCheck> + Send + 'static,
+    job: impl Fn(i64) -> super::data::Res<OcrCheck> + Send + Sync + 'static,
+) -> super::data::Res<OcrLoad> {
+    let job = std::sync::Arc::new(job);
+    let started = ex.now();
+    let mut check = ex.spawn(async move { first() }).await;
+    let mut from = None;
+    loop {
+        match check {
+            Ok(OcrCheck::Done(l)) => {
+                return Ok(OcrLoad {
+                    from_frame: l.from_frame.or(from),
+                    ..l
+                })
+            }
+            Ok(OcrCheck::Pending { job_id, from_frame }) => {
+                from = from_frame.or(from);
+                if ex.now().duration_since(started) > OCR_WAIT {
+                    return Err(OCR_STILL_RUNNING.to_string());
+                }
+                ex.timer(OCR_POLL).await;
+                let job = job.clone();
+                check = ex.spawn(async move { job(job_id) }).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}
+
 pub fn outcome(
     res: super::data::Res<Option<Vec<OcrBox>>>,
 ) -> (OcrStatus, Vec<OcrBox>, Option<String>) {

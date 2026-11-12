@@ -23,9 +23,10 @@ pub fn mcp_warm_wanted(s: &RecordingSettings) -> bool {
 
 /// `mcp_warm_connectors`: returns at once; each connect runs on app-core's
 /// runtime and logs its own failure. Call it off the main thread.
-pub fn warm_mcp(core: &AppCore) {
+pub fn warm_mcp(core: &Arc<AppCore>) {
+    let c = core.clone();
     if core
-        .block_on(app_core::ask_ai::mcp::manager::mcp_warm_connectors(core))
+        .run(async move { app_core::ask_ai::mcp::manager::mcp_warm_connectors(&c).await })
         .is_err()
     {
         log::warn!("Ask AI: MCP connector warm-up didn't start");

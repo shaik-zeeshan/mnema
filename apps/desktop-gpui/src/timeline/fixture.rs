@@ -17,8 +17,7 @@ use super::data::{
     ocr_provider_label, parse_ocr_payload, OcrCheck, OcrLoad, Res, Source, TimelineSettings,
 };
 use super::model::{
-    AudioSegment, AudioSource, FocusedWindow, Frame, Landing, OcrBox, Preview, ScrubInterval,
-    SourceKind,
+    AudioSegment, AudioSource, FocusedWindow, Frame, Landing, Preview, ScrubInterval, SourceKind,
 };
 
 /// One recorded call.
@@ -57,7 +56,7 @@ pub struct FixtureSource {
     /// The OCR read the map's `list_processing_jobs` / `get_processing_result` give.
     /// `None` = never OCR'd.
     pub ocr: Mutex<Option<Res<OcrLoad>>>,
-    /// How many OCR checks answer "job 1 still running" before `ocr` does.
+    /// How many OCR checks answer "job 1 still running" before the OCR read does.
     pub ocr_pending: Mutex<u32>,
     /// Make `list_audio_segments` fail with this (the map's `{ "__reject": .. }`).
     pub fail_audio: Mutex<Option<String>>,
@@ -441,11 +440,6 @@ impl Source for FixtureSource {
     fn match_boxes(&self, frame_id: i64, _: &str, _: bool) -> Res<Vec<MatchBox>> {
         self.log(Call::MatchBoxes(frame_id));
         Ok(self.boxes.clone())
-    }
-
-    fn ocr(&self, frame_id: i64) -> Res<Option<Vec<OcrBox>>> {
-        self.log(Call::Ocr(frame_id));
-        self.ocr_result().map(|l| l.boxes)
     }
 
     fn ocr_load(&self, frame_id: i64) -> Res<OcrCheck> {

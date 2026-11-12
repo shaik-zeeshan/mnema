@@ -230,9 +230,10 @@ impl DebugBackend for CoreDebug {
                     d.health_error = Some("the app is still starting".into());
                     return d;
                 };
-                match core.block_on(app_core::debug_health::get_debug_health(
-                    core, &infra, &worker, &settings,
-                )) {
+                let c = core.clone();
+                match core.run(async move {
+                    app_core::debug_health::get_debug_health(&c, &infra, &worker, &settings).await
+                }) {
                     Ok(rows) => {
                         d.health = list(rows);
                         d.fetched_at_ms = Some(now_ms);
@@ -248,9 +249,10 @@ impl DebugBackend for CoreDebug {
                     d.pipeline_error = Some("app infrastructure isn't ready".into());
                     return d;
                 };
-                match core.block_on(app_core::debug_pipeline::get_processing_pipeline_status(
-                    &infra,
-                )) {
+                let i = infra.clone();
+                match core.run(async move {
+                    app_core::debug_pipeline::get_processing_pipeline_status(&i).await
+                }) {
                     Ok(l) => d.lanes = list(l),
                     Err(e) => d.pipeline_error = Some(e),
                 }
@@ -258,9 +260,9 @@ impl DebugBackend for CoreDebug {
                     core.try_state::<app_core::debug_status::SemanticWorkerHealthState>()
                 {
                     d.semantic = core
-                        .block_on(app_core::debug_status::get_semantic_index_status(
-                            &infra, &h,
-                        ))
+                        .run(async move {
+                            app_core::debug_status::get_semantic_index_status(&infra, &h).await
+                        })
                         .ok()
                         .and_then(json);
                 }
@@ -269,19 +271,23 @@ impl DebugBackend for CoreDebug {
                 d.settings = settings();
                 let Some(infra) = infra else { return d };
                 if let Some(s) = core.try_state::<RecordingSettingsState>() {
+                    let i = infra.clone();
                     d.retention = core
-                        .block_on(app_core::app_infra::get_retention_cleanup_status(
-                            &infra, &s,
-                        ))
+                        .run(async move {
+                            app_core::app_infra::get_retention_cleanup_status(&i, &s).await
+                        })
                         .ok()
                         .and_then(json);
                 }
-                d.batches = core
-                    .block_on(app_core::debug_status::list_frame_batches(&infra, Some(50)))
+                let i = infra.clone();
+                d.batches =
+                    core.run(async move {
+                        app_core::debug_status::list_frame_batches(&i, Some(50)).await
+                    })
                     .map(list)
                     .unwrap_or_default();
                 d.app_jobs = core
-                    .block_on(app_core::app_infra::list_app_jobs(&infra))
+                    .run(async move { app_core::app_infra::list_app_jobs(&infra).await })
                     .map(list)
                     .unwrap_or_default();
             }
@@ -293,12 +299,16 @@ impl DebugBackend for CoreDebug {
                 d.capture = capture(core);
             }
             Section::Ai => {
+                let c = core.clone();
                 d.ai_status = core
-                    .block_on(app_core::ai_runtime::get_ai_runtime_status(core))
+                    .run(async move { app_core::ai_runtime::get_ai_runtime_status(&c).await })
                     .ok()
                     .and_then(json);
                 d.usage = app_core::ask_ai::get_ask_ai_last_turn_usage().and_then(json);
-                match core.block_on(app_core::cli_access::list_cli_access_history(core)) {
+                let c = core.clone();
+                match core
+                    .run(async move { app_core::cli_access::list_cli_access_history(&c).await })
+                {
                     Ok(h) => {
                         d.cli_history = json(h)
                             .and_then(|v| v["events"].as_array().cloned())
@@ -306,32 +316,35 @@ impl DebugBackend for CoreDebug {
                     }
                     Err(e) => d.cli_error = Some(e.to_string()),
                 }
+                let c = core.clone();
                 d.grants = core
-                    .block_on(app_core::cli_access::list_cli_access_grants(core))
+                    .run(async move { app_core::cli_access::list_cli_access_grants(&c).await })
                     .ok()
                     .and_then(json)
                     .and_then(|v| v["grants"].as_array().cloned())
                     .unwrap_or_default();
                 if let Some(infra) = infra {
-                    match core.block_on(app_core::debug_status::list_user_context_derivation_runs(
-                        &infra,
-                        Some(5),
-                    )) {
+                    let i = infra.clone();
+                    match core.run(async move {
+                        app_core::debug_status::list_user_context_derivation_runs(&i, Some(5)).await
+                    }) {
                         Ok(runs) => d.runs = list(runs),
                         Err(e) => d.runs_error = Some(e.to_string()),
                     }
+                    let c = core.clone();
                     d.uc_status = core
-                        .block_on(app_core::user_context::commands::get_user_context_status(
-                            core, &infra,
-                        ))
+                        .run(async move {
+                            app_core::user_context::commands::get_user_context_status(&c, &infra)
+                                .await
+                        })
                         .ok()
                         .and_then(json);
                 }
             }
-            Section::Logs => match core.block_on(app_core::debug_status::tail_app_log(
-                core,
-                Some(LOG_TAIL_LINES),
-            )) {
+            Section::Logs => match core.run({
+                let c = core.clone();
+                async move { app_core::debug_status::tail_app_log(&c, Some(LOG_TAIL_LINES)).await }
+            }) {
                 Ok(t) => d.log_tail = json(t),
                 Err(e) => d.log_error = Some(e),
             },
@@ -369,14 +382,17 @@ impl DebugBackend for CoreDebug {
                     limit: Some(*limit),
                     offset: Some(0),
                 };
-                core.block_on(app_core::debug_pipeline::list_processing_jobs_by_processor(
-                    request, &infra,
-                ))
+                let i = infra.clone();
+                core.run(async move {
+                    app_core::debug_pipeline::list_processing_jobs_by_processor(request, &i).await
+                })
                 .map(|page| json(page).unwrap_or_default())
             }
-            JobCall::RetryNow(id) => core
-                .block_on(app_core::app_infra::retry_processing_job_now(*id, &infra))
-                .map(|job| json(job).unwrap_or_default()),
+            JobCall::RetryNow(id) => {
+                let (id, i) = (*id, infra.clone());
+                core.run(async move { app_core::app_infra::retry_processing_job_now(id, &i).await })
+                    .map(|job| json(job).unwrap_or_default())
+            }
             JobCall::Reprocess {
                 processor,
                 subject_id,
@@ -415,23 +431,26 @@ impl CoreDebug {
                     frame_id: subject_id,
                     payload_json: None,
                 };
-                core.block_on(ai::reprocess_captured_frame_ocr(request, infra, &settings))
-                    .map(|_| Value::Null)
+                let infra = infra.clone();
+                core.run(async move {
+                    ai::reprocess_captured_frame_ocr(request, &infra, &settings).await
+                })
+                .map(|_| Value::Null)
             }
-            "audio_transcription" => core
-                .block_on(ai::reprocess_audio_segment_transcription(
-                    segment(),
-                    infra,
-                    core,
-                ))
-                .map(|_| Value::Null),
-            "speaker_analysis" => core
-                .block_on(ai::reprocess_audio_segment_speaker_analysis(
-                    segment(),
-                    infra,
-                    core,
-                ))
-                .map(|_| Value::Null),
+            "audio_transcription" => {
+                let (request, infra, c) = (segment(), infra.clone(), core.clone());
+                core.run(async move {
+                    ai::reprocess_audio_segment_transcription(request, &infra, &c).await
+                })
+                .map(|_| Value::Null)
+            }
+            "speaker_analysis" => {
+                let (request, infra, c) = (segment(), infra.clone(), core.clone());
+                core.run(async move {
+                    ai::reprocess_audio_segment_speaker_analysis(request, &infra, &c).await
+                })
+                .map(|_| Value::Null)
+            }
             other => Err(format!("{other} has no reprocess command")),
         }
     }

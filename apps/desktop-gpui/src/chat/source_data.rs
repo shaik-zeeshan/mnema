@@ -10,7 +10,7 @@ use std::sync::Arc;
 use app_core::{AppCore, AppInfraState};
 
 use crate::quick_recall::model::Preview;
-use crate::timeline::model::OcrBox;
+use crate::timeline::data::{OcrCheck, OcrLoad};
 
 pub type Res<T> = Result<T, String>;
 
@@ -40,9 +40,14 @@ pub trait SourceBackend: Send + Sync + 'static {
     ) -> Option<(Option<String>, Option<String>, String, Option<String>)> {
         None
     }
-    /// `loadOcrForFrame`: `None` = never OCR'd.
-    fn ocr(&self, _id: i64) -> Res<Option<Vec<OcrBox>>> {
-        Ok(None)
+    /// One look at the frame's OCR (`loadOcrForFrame`, `boxes: None` = never
+    /// OCR'd); a queued / running job is `Pending`, re-checked with [`Self::ocr_job`].
+    fn ocr_load(&self, _id: i64) -> Res<OcrCheck> {
+        Ok(OcrCheck::Done(OcrLoad::default()))
+    }
+    /// One look at a pending OCR job.
+    fn ocr_job(&self, _job_id: i64) -> Res<OcrCheck> {
+        Err("OCR job not found".into())
     }
     /// `list_frame_summaries_in_range`: `(id, captured ms)`, the receipt's strip.
     fn frames(&self, _start_ms: i64, _end_ms: i64) -> Res<Vec<(i64, i64)>> {
@@ -87,7 +92,7 @@ impl SourceBackend for CoreSources {
             .ok_or("The capture index isn't open yet.")?;
         let dto = self
             .0
-            .block_on(get_frame(GetFrameRequest { frame_id: id }, &infra))?;
+            .run(async move { get_frame(GetFrameRequest { frame_id: id }, &infra).await })?;
         let dim = |v: Option<i64>| v.and_then(|v| u32::try_from(v).ok());
         Ok(dto.map(|f| (dim(f.width), dim(f.height))))
     }
@@ -100,7 +105,7 @@ impl SourceBackend for CoreSources {
         let infra = self.0.try_state::<AppInfraState>()?;
         let f = self
             .0
-            .block_on(get_frame(GetFrameRequest { frame_id: id }, &infra))
+            .run(async move { get_frame(GetFrameRequest { frame_id: id }, &infra).await })
             .ok()??;
         Some((f.app_name, f.window_title, f.captured_at, f.url))
     }
@@ -122,16 +127,21 @@ impl SourceBackend for CoreSources {
             use app_core::app_infra::{get_frame, GetFrameRequest};
             let f = self
                 .0
-                .block_on(get_frame(GetFrameRequest { frame_id: id }, &infra))
+                .run(async move { get_frame(GetFrameRequest { frame_id: id }, &infra).await })
                 .ok()??;
             f.app_bundle_id.filter(|b| !b.trim().is_empty())
         });
         (redactions, bundle)
     }
 
-    fn ocr(&self, id: i64) -> Res<Option<Vec<OcrBox>>> {
+    fn ocr_load(&self, id: i64) -> Res<OcrCheck> {
         use crate::timeline::data::Source as _;
-        crate::timeline::data::CoreSource(self.0.clone()).ocr(id)
+        crate::timeline::data::CoreSource(self.0.clone()).ocr_load(id)
+    }
+
+    fn ocr_job(&self, job_id: i64) -> Res<OcrCheck> {
+        use crate::timeline::data::Source as _;
+        crate::timeline::data::CoreSource(self.0.clone()).ocr_job(job_id)
     }
 
     fn frames(&self, start_ms: i64, end_ms: i64) -> Res<Vec<(i64, i64)>> {

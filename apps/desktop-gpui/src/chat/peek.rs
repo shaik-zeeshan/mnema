@@ -66,6 +66,8 @@ pub struct PeekData {
     pub bundle: Option<String>,
     pub icon: Option<PathBuf>,
     copy_revert: Option<gpui_kit::Task<()>>,
+    /// The OCR load and its re-checks: dropped (cancelled) with the peek.
+    ocr_task: Option<gpui_kit::Task<()>>,
 }
 
 /// A view that shows the frame peek over itself (Chat's sources, Insights'
@@ -246,19 +248,21 @@ pub trait PeekOps: PeekHost {
         if ocr.visible && ocr.status == OcrStatus::Idle {
             ocr.status = OcrStatus::Running;
             ocr.frame_id = Some(id);
-            let task = cx.background_spawn(async move { b.ocr(id) });
-            cx.spawn(async move |this, cx| {
-                let res = task.await;
+            let job = b.clone();
+            let task = cx.spawn(async move |this, cx| {
+                let ex = cx.background_executor().clone();
+                let res =
+                    ocr_overlay::wait(ex, move || b.ocr_load(id), move |j| job.ocr_job(j)).await;
                 let _ = this.update(cx, |this, cx| {
                     if *this.peek_gen() != gen {
                         return;
                     }
                     let o = &mut this.peek_data_mut().ocr;
-                    (o.status, o.boxes, o.error) = outcome(res);
+                    (o.status, o.boxes, o.error) = outcome(res.map(|l| l.boxes));
                     cx.notify();
                 });
-            })
-            .detach();
+            });
+            self.peek_data_mut().ocr_task = Some(task);
         }
         cx.notify();
     }
