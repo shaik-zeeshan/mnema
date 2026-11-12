@@ -264,12 +264,15 @@ fn avaudiofile_decode_mono_streaming(
 
     let _pool = objc::autorelease_pool::AutoreleasePoolPage::push();
     let url = ns::Url::with_fs_path_str(path_str, false);
-    let mut file = crate::avaudio_file::open_audio_file_for_reading(&url).map_err(|error| {
-        TranscriptionError::Transcription(format!(
-            "AVFoundation failed to open audio file {}: {error}",
-            path.display()
-        ))
-    })?;
+    let mut file =
+        capture_writers::AudioFileReader::open(&url, Some(av::AudioCommonFormat::PcmF32)).map_err(
+            |error| {
+                TranscriptionError::Transcription(format!(
+                    "AVFoundation failed to open audio file {}: {error}",
+                    path.display()
+                ))
+            },
+        )?;
     let format = file.processing_format();
     let sample_rate = sample_rate_override.unwrap_or(format.absd().sample_rate);
     if !sample_rate.is_finite() || sample_rate <= 0.0 {

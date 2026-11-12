@@ -1,33 +1,12 @@
-//! `AVAudioFile` open helpers that own exactly one reference.
+//! Opens an `AVAudioFile` for writing with exactly one reference.
 //!
-//! cidre 0.15's `msg_send` macro treats only `new*`/`initWith*` selectors as
-//! returning an owned (+1) object. `AVAudioFile`'s `initForReading:…` and
-//! `initForWriting:…` are init-family too, so cidre's `open_read*`/`open_write*`
-//! retain the already-owned result again and the `arc::R` they return never
-//! reaches zero: every open leaked the AVAudioFile, its ExtAudioFile and, for a
-//! reader, its file descriptor. These call the raw `_ar` binding and adopt its
-//! +1 as-is, so dropping the `arc::R` deallocates the file and closes the fd.
-//!
-//! Identical copies live in audio-transcription and speaker-analysis (neither
-//! depends on this crate); keep them in sync.
+//! cidre 0.15 over-retains `initForWriting:` the same way it does
+//! `initForReading:` (see `audio_read.rs`), so cidre's `open_write*` never frees
+//! the file. This calls the raw `_ar` binding and adopts its +1 as-is, so
+//! dropping the `arc::R` deallocates the file and closes its descriptor even on
+//! an early error return before `close()`.
 
 use cidre::{arc, av, ns};
-
-/// Opens `url` for reading with a deinterleaved f32 processing format.
-pub fn open_audio_file_for_reading<'ear>(url: &ns::Url) -> ns::Result<'ear, arc::R<av::AudioFile>> {
-    ns::if_none(|err| unsafe {
-        let owned = av::AudioFile::alloc().init_for_reading_common_format_err_ar(
-            url,
-            av::AudioCommonFormat::PcmF32,
-            false,
-            err,
-        );
-        // SAFETY: an init-family method returns +1. `Rar` and `R` are both a
-        // transparent non-null pointer; adopting it without a retain leaves
-        // exactly the one release `R`'s Drop performs.
-        std::mem::transmute::<Option<arc::Rar<av::AudioFile>>, Option<arc::R<av::AudioFile>>>(owned)
-    })
-}
 
 /// Opens `url` for writing `settings`, fed deinterleaved f32 buffers.
 pub fn open_audio_file_for_writing<'ear>(
@@ -42,7 +21,9 @@ pub fn open_audio_file_for_writing<'ear>(
             false,
             err,
         );
-        // SAFETY: as in `open_audio_file_for_reading`.
+        // SAFETY: an init-family method returns +1. `Rar` and `R` are both a
+        // transparent non-null pointer; adopting it without a retain leaves
+        // exactly the one release `R`'s Drop performs.
         std::mem::transmute::<Option<arc::Rar<av::AudioFile>>, Option<arc::R<av::AudioFile>>>(owned)
     })
 }
@@ -87,26 +68,6 @@ mod tests {
     }
 
     #[test]
-    fn reader_is_deallocated_exactly_once_on_drop() {
-        let input = fixture("fd-reader");
-        for _ in 0..200 {
-            let _pool = AutoreleasePoolPage::push();
-            let url = ns::Url::with_fs_path_str(&input.to_string_lossy(), false);
-            let file = open_audio_file_for_reading(&url).expect("fixture opens");
-            assert!(file.len() > 0);
-            let weak = arc::downgrade(&file);
-            drop(file);
-            // Still alive here = leaked; an over-release would crash instead.
-            assert!(
-                weak.upgrade().is_none(),
-                "AVAudioFile outlived its last owner"
-            );
-        }
-        assert_eq!(open_fds_for(&input), 0);
-        let _ = std::fs::remove_file(&input);
-    }
-
-    #[test]
     fn writer_is_deallocated_exactly_once_on_drop() {
         use cidre::cat;
         let output = fixture("fd-writer").with_extension("m4a");
@@ -144,12 +105,6 @@ mod tests {
         }
         assert_eq!(open_fds_for(&output), 0);
         let _ = std::fs::remove_file(&output);
-    }
-
-    #[test]
-    fn missing_file_is_an_error_not_a_crash() {
-        let url = ns::Url::with_fs_path_str("/nope/missing.m4a", false);
-        assert!(open_audio_file_for_reading(&url).is_err());
     }
 
     #[test]

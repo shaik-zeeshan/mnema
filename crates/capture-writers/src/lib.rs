@@ -4,7 +4,11 @@ use std::path::Path;
 #[cfg(target_os = "macos")]
 mod audio_file;
 #[cfg(target_os = "macos")]
-pub use audio_file::{open_audio_file_for_reading, open_audio_file_for_writing};
+pub use audio_file::open_audio_file_for_writing;
+#[cfg(target_os = "macos")]
+mod audio_read;
+#[cfg(target_os = "macos")]
+pub use audio_read::AudioFileReader;
 
 #[cfg(target_os = "macos")]
 #[link(name = "AVFoundation", kind = "framework")]
@@ -61,8 +65,8 @@ pub fn trim_audio_file_to_m4a(
     let _autorelease_pool = AutoreleasePoolPage::push();
 
     let input_url = ns::Url::with_fs_path_str(input, false);
-    let mut reader =
-        open_audio_file_for_reading(&input_url).map_err(|error| CaptureErrorResponse {
+    let mut reader = AudioFileReader::open(&input_url, Some(av::AudioCommonFormat::PcmF32))
+        .map_err(|error| CaptureErrorResponse {
             code: "audio_trim_failed".to_string(),
             message: format!("Failed to open audio for trim {input}: {error}"),
         })?;
@@ -197,10 +201,11 @@ pub fn decode_audio_file_to_mono_pcm(path: &Path) -> Result<DecodedMonoPcm, Capt
     })?;
     let _autorelease_pool = AutoreleasePoolPage::push();
     let url = cidre::ns::Url::with_fs_path_str(path_str, false);
-    let mut file = open_audio_file_for_reading(&url).map_err(|error| CaptureErrorResponse {
-        code: "audio_decode_failed".to_string(),
-        message: format!("Failed to open audio file {}: {error}", path.display()),
-    })?;
+    let mut file = AudioFileReader::open(&url, Some(cidre::av::AudioCommonFormat::PcmF32))
+        .map_err(|error| CaptureErrorResponse {
+            code: "audio_decode_failed".to_string(),
+            message: format!("Failed to open audio file {}: {error}", path.display()),
+        })?;
     let format = file.processing_format();
     let sample_rate = format.absd().sample_rate;
     if !sample_rate.is_finite() || sample_rate <= 0.0 {
@@ -293,7 +298,7 @@ fn append_downmixed_f32(
 fn validate_trimmed_audio_output_file(output: &str) -> Result<(), CaptureErrorResponse> {
     let _autorelease_pool = AutoreleasePoolPage::push();
     let url = cidre::ns::Url::with_fs_path_str(output, false);
-    let file = open_audio_file_for_reading(&url).map_err(|error| CaptureErrorResponse {
+    let file = AudioFileReader::open(&url, None).map_err(|error| CaptureErrorResponse {
         code: "audio_trim_failed".to_string(),
         message: format!("Trimmed audio output is not readable: {error}"),
     })?;
@@ -1057,6 +1062,12 @@ fn append_audio_sample_to_writer_untrimmed(
     writer_state: &mut AudioAssetWriterState,
     sample_buf: &cidre::cm::SampleBuf,
 ) -> Result<AudioSampleAppendDisposition, CaptureErrorResponse> {
+    // startWriting and appendSampleBuffer: autorelease the writer and its
+    // helpers, which hold the output file open. System audio appends on Core
+    // Audio's IO thread, which never drains a pool until the tap stops, so
+    // without this every finished segment stays open for the whole session.
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     if !sample_buf.data_is_ready() {
         return Ok(AudioSampleAppendDisposition::Dropped);
     }
@@ -1736,7 +1747,7 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 
-    fn write_test_tone_m4a(path: &str, duration_secs: f64) {
+    pub(crate) fn write_test_tone_m4a(path: &str, duration_secs: f64) {
         use cidre::{av, cat, ns};
 
         let _autorelease_pool = AutoreleasePoolPage::push();
