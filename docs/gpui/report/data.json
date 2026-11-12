@@ -1,5 +1,5 @@
 {
- "updated": "2026-11-12 05:10",
+ "updated": "2026-11-12 09:30",
  "verdict": "Every screen is built and connected to the real backend. Using the real app on 11 Nov showed that flows behind a click were often thinner than the Tauri app's, so every part of the app was checked control by control against it: Settings, the date control, the Timeline, Chat and Quick Recall, the main window chrome with onboarding and small windows, and Insights. Roughly 250 differences were found and fixed, among them several actions that deleted or lost data without asking. On 12 Nov the dev build crashed after six hours: opening Insights started writing the week's summary with the AI model on a thread with too little room, and it ran out. That is fixed for every backend call the app makes, with a test that crashed before the fix. Everything is in local commits; nothing is pushed. Every screenshot is approved. What needs you: a hands-on pass in the real app, since none of this has been used by hand yet.",
  "metrics": [
   {
@@ -19,8 +19,8 @@
   },
   {
    "label": "Tests passing",
-   "value": "2,175",
-   "note": "1,354 shared backend + 671 GPUI + 6 wiring run on 12 Nov after the crash fix, with no failures; 141 activity-source + 3 engines last run on 11 Nov; the Tauri app compiles; its own 71 tests were last run before 10 Nov"
+   "value": "2,186",
+   "note": "1,361 shared backend + 678 GPUI + 6 wiring + 141 activity-source + 3 engines + 17 OCR; backend, GPUI, wiring and the screenshot suite run on 12 Nov after the review fix, with no failures; the Tauri app compiles"
   },
   {
    "label": "Screenshots approved",
@@ -523,6 +523,12 @@
    "title": "The crash on 12 Nov: backend calls ran out of room on small threads",
    "what": "Opening Insights started writing the week's summary with the AI model on one of macOS's small background threads (512 KB), and the request ran out of room, which killed the app. Every backend call from the app now gets a large thread when the caller's is small; calls from the main thread run as before. The same weakness was closed where recording starts from onboarding's last step and from the developer window, and where recording saves its audio. A test crashed before the fix and passes after. Built and wired; not tried in the real app yet.",
    "commit": "8d78c45a"
+  },
+  {
+   "id": "Fix 23",
+   "title": "This morning's speed and quit work reviewed; one tray bug fixed",
+   "what": "Eleven commits made on 12 Nov in another session (backend calls on the engine's threads, OCR and speech at lower priority, a 60-second limit on quit, quit not waiting for an AI call, the Timeline polling only when shown, cancellable Settings calls, the search model's memory) were reviewed by two reviewers. One real bug: after Pause or Stop the tray menu could keep the old state for minutes; it now looks again shortly after. Everything else was found correct. Not tried in the real app yet.",
+   "commit": "dd87c817"
   }
  ],
  "next": [
