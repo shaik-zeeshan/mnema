@@ -1061,6 +1061,12 @@ fn append_audio_sample_to_writer_untrimmed(
     writer_state: &mut AudioAssetWriterState,
     sample_buf: &cidre::cm::SampleBuf,
 ) -> Result<AudioSampleAppendDisposition, CaptureErrorResponse> {
+    // startWriting and appendSampleBuffer: autorelease the writer and its
+    // helpers, which hold the output file open. System audio appends on Core
+    // Audio's IO thread, which never drains a pool until the tap stops, so
+    // without this every finished segment stays open for the whole session.
+    let _autorelease_pool = AutoreleasePoolPage::push();
+
     if !sample_buf.data_is_ready() {
         return Ok(AudioSampleAppendDisposition::Dropped);
     }

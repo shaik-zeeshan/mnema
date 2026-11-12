@@ -511,6 +511,90 @@ mod tests {
         assert!(context.finalize().is_none());
     }
 
+    /// Paths under `dir` this process still holds open, per lsof. Looks only
+    /// inside `dir`, so tests running in parallel do not affect it.
+    fn open_handles_under(dir: &std::path::Path) -> Vec<String> {
+        let output = std::process::Command::new("/usr/sbin/lsof")
+            .args(["-p", &std::process::id().to_string(), "-Fn"])
+            .output()
+            .expect("lsof should run");
+        let prefix = dir.to_string_lossy().to_string();
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .filter_map(|line| line.strip_prefix('n'))
+            .filter(|name| name.starts_with(&prefix))
+            .map(str::to_string)
+            .collect()
+    }
+
+    // Field bug: every finished segment's m4a stayed open read-write until the
+    // session stopped. Core Audio runs the IOProc block synchronously on its own
+    // IO thread, which has no per-callback autorelease pool (the queue's
+    // per-work-item pool only wraps async submissions) and lives as long as the
+    // tap. So: appends on a long-lived pool-less thread, finalize from another
+    // (the capture tick), and the check runs while the "IO thread" is alive.
+    #[test]
+    fn finalized_segments_release_their_files_while_the_tap_lives() {
+        use std::sync::{mpsc, Arc, Mutex};
+
+        let dir = std::env::temp_dir().join(format!(
+            "mnema-sysaudio-handles-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        // lsof reports resolved paths (/private/var/...).
+        let dir = std::fs::canonicalize(&dir).expect("temp dir canonicalizes");
+        let segment_path = |segment: u32| dir.join(format!("sysaudio-segment-{segment:04}.m4a"));
+
+        let output = Arc::new(Mutex::new(SystemAudioOutputContext::new(Some(
+            segment_path(1),
+        ))));
+        let (deliver_tx, deliver_rx) = mpsc::channel::<bool>();
+        let (delivered_tx, delivered_rx) = mpsc::channel::<()>();
+        let io_output = Arc::clone(&output);
+        let io_thread = std::thread::spawn(move || {
+            let mut builder =
+                SystemAudioSampleBuilder::new(asbd(48_000.0, 2)).expect("builder starts");
+            let mut pcm = vec![0.25_f32; 1024];
+            let mut sample_time = 0.0;
+            // `true` = deliver one segment's worth; `false` = the tap stops.
+            while deliver_rx.recv().expect("tick drives the io thread") {
+                for _ in 0..50 {
+                    let sample = deliver(&mut builder, sample_time, &mut pcm, 2)
+                        .expect("delivery becomes a sample");
+                    sample_time += 512.0;
+                    io_output.lock().unwrap().append(&sample);
+                }
+                delivered_tx.send(()).unwrap();
+            }
+        });
+
+        for next_segment in 2..=4 {
+            deliver_tx.send(true).unwrap();
+            delivered_rx.recv().unwrap();
+            let next = (next_segment <= 3).then(|| segment_path(next_segment));
+            let finished = std::mem::replace(
+                &mut *output.lock().unwrap(),
+                SystemAudioOutputContext::new(next),
+            );
+            let finalization = finished.finalize().expect("an opened segment finalizes");
+            finalization.result.expect("segment finalizes cleanly");
+        }
+
+        let open = open_handles_under(&dir);
+        deliver_tx.send(false).unwrap();
+        io_thread.join().expect("io thread exits");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            open.is_empty(),
+            "finalized system audio segments are still open: {open:?}"
+        );
+    }
+
     #[test]
     fn a_segment_that_never_got_a_sample_finalizes_to_an_error() {
         let path = std::env::temp_dir().join("mnema-system-audio-never-got-a-sample.m4a");
