@@ -56,6 +56,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 mod agent_loop;
+mod http;
 
 pub use agent_loop::{
     run_agent_loop, AgentHistoryTurn, AgentLoopEvent, AgentRole, AgentTool, ToolExecutor,
@@ -487,11 +488,17 @@ where
 
             match provider {
                 CloudProvider::Anthropic => {
-                    let client = anthropic::Client::builder().api_key(api_key).build()?;
+                    let client = anthropic::Client::builder()
+                        .api_key(api_key)
+                        .http_client(crate::http::client()?)
+                        .build()?;
                     anthropic_extract(&client, model, preamble, prompt).await
                 }
                 CloudProvider::Openai => {
-                    let client = openai::Client::builder().api_key(api_key).build()?;
+                    let client = openai::Client::builder()
+                        .api_key(api_key)
+                        .http_client(crate::http::client()?)
+                        .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)
@@ -506,6 +513,7 @@ where
                     // own OAuth path, not on the `AccessToken` path).
                     let client = chatgpt::Client::builder()
                         .api_key(chatgpt_auth_for(api_key))
+                        .http_client(crate::http::client()?)
                         .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
@@ -527,6 +535,7 @@ where
                     let client = openai::CompletionsClient::builder()
                         .api_key(api_key)
                         .base_url(base_url)
+                        .http_client(crate::http::client()?)
                         .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
@@ -573,6 +582,7 @@ where
                     let client = ollama::Client::builder()
                         .api_key(rig_core::client::Nothing)
                         .base_url(endpoint)
+                        .http_client(crate::http::client()?)
                         .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
@@ -582,7 +592,11 @@ where
                     Ok(extractor.extract(prompt).await?)
                 }
                 LocalKind::Llamafile => {
-                    let client = llamafile::Client::from_url(endpoint)?;
+                    let client = llamafile::Client::builder()
+                        .api_key(rig_core::client::Nothing)
+                        .base_url(endpoint)
+                        .http_client(crate::http::client()?)
+                        .build()?;
                     let extractor = client
                         .extractor::<T>(model.as_str())
                         .preamble(preamble)

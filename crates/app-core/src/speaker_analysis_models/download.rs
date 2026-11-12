@@ -1,4 +1,5 @@
 use super::*;
+use crate::model_download_stream::{self, next_chunk, NextChunk};
 
 pub(super) fn build_download_plan(
     core: &AppCore,
@@ -142,7 +143,12 @@ pub(super) async fn download_and_install_model(
             download_model_file(core, plan, file, downloaded_total, cancel_requested).await?;
         downloaded_total = downloaded_total.saturating_add(bytes.len() as u64);
         let destination = safe_relative_model_file_path(&file.relative_path)?;
-        install_downloaded_model_file(&plan.install_dir, file, &destination, &bytes)?;
+        // Hashing, unpacking and writing the model is blocking work: keep it off the runtime workers.
+        let (install_dir, file) = (plan.install_dir.clone(), file.clone());
+        core.run_blocking(move || {
+            install_downloaded_model_file(&install_dir, &file, &destination, &bytes)
+        })
+        .await?;
     }
 
     emit_download_progress(
@@ -183,10 +189,8 @@ pub(super) async fn download_model_file(
     const DOWNLOAD_SIZE_SLACK_BYTES: u64 = 64 * 1024;
     let size_limit = file.byte_size.saturating_add(DOWNLOAD_SIZE_SLACK_BYTES);
 
-    let response = reqwest::get(&file.url)
+    let response = model_download_stream::get(&file.url)
         .await
-        .map_err(ModelDownloadError::Http)?
-        .error_for_status()
         .map_err(ModelDownloadError::Http)?;
     // Reject up front when the server advertises a body larger than we will ever
     // accept, so a hostile `Content-Length` never gets the chance to stream.
@@ -202,11 +206,12 @@ pub(super) async fn download_model_file(
     }
     let mut stream = response.bytes_stream();
     let mut bytes = Vec::new();
-    while let Some(chunk) = stream.next().await {
-        if cancel_requested.load(Ordering::SeqCst) {
-            return Err(ModelDownloadTaskError::Cancelled);
-        }
-        let chunk = chunk.map_err(ModelDownloadError::Http)?;
+    loop {
+        let chunk = match next_chunk(&mut stream, cancel_requested).await {
+            NextChunk::Chunk(chunk) => chunk.map_err(ModelDownloadError::Http)?,
+            NextChunk::End => break,
+            NextChunk::Cancelled => return Err(ModelDownloadTaskError::Cancelled),
+        };
         // Enforce the running-total cap before retaining the chunk so we never
         // grow `bytes` past the limit even if `Content-Length` was absent or lied.
         if bytes.len() as u64 + chunk.len() as u64 > size_limit {

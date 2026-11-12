@@ -30,6 +30,7 @@ pub mod keyboard_bindings;
 pub mod licensing;
 pub mod managed_storage_layout;
 pub mod model_download_lock;
+mod model_download_stream;
 pub mod native_capture;
 pub mod native_capture_inactivity;
 pub mod native_capture_output;

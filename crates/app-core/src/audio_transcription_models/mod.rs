@@ -17,7 +17,6 @@ use audio_transcription::{
     ModelManagement, ModelStatusError, ModelStatusKind, DOWNLOADING_MARKER_FILE_NAME,
 };
 use capture_types::{AudioTranscriptionProvider, AudioTranscriptionSettings};
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::{AppCore, AppInfraState, CoreEvent};

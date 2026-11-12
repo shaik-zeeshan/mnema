@@ -1,5 +1,8 @@
 //! Delete Recent Capture's storage half: the rows (and the derived User Context
-//! cascade) deleted in one transaction, then the files and their tombstones.
+//! cascade) deleted in one transaction with a `pending` tombstone per file, then
+//! the files. Like a retention batch, a quit or crash between the commit and
+//! the file delete leaves tombstones the retention healer finishes, never
+//! files no row points at.
 //! The recording boundary around it is the host's (it pauses live capture).
 
 use super::*;
@@ -35,7 +38,9 @@ pub struct DeleteRecentCaptureSummaryDto {
 pub struct DeleteRecentCaptureDeletion {
     pub frame_ids: Vec<i64>,
     pub audio_segment_ids: Vec<i64>,
-    pub(super) paths: Vec<DeleteRecentCapturePath>,
+    /// `(tombstone id, path)` for every file the deleted rows named, written
+    /// `pending` in the deleting transaction.
+    pub(super) file_tombstones: Vec<(i64, String)>,
     pub capture_segment_media_paths: Vec<String>,
     pub deleted_capture_segments: i64,
     pub deleted_frames: i64,
@@ -492,6 +497,24 @@ pub async fn delete_recent_capture_rows(
             .await
             .map_err(|error| format!("failed to cascade user-context deletion: {error}"))?;
 
+    let tombstone_paths: Vec<_> = paths
+        .iter()
+        .filter(|path| !path.path.trim().is_empty())
+        .map(|path| {
+            (
+                path.capture_segment_id,
+                path.path.as_str(),
+                path.path_kind.as_str(),
+            )
+        })
+        .collect();
+    let file_tombstones = ::app_infra::CaptureRetentionStore::insert_pending_file_tombstones(
+        &mut tx,
+        &tombstone_paths,
+    )
+    .await
+    .map_err(|error| format!("failed to record delete recent file tombstones: {error}"))?;
+
     tx.commit()
         .await
         .map_err(|error| format!("failed to commit delete transaction: {error}"))?;
@@ -499,7 +522,7 @@ pub async fn delete_recent_capture_rows(
     Ok(DeleteRecentCaptureDeletion {
         frame_ids,
         audio_segment_ids,
-        paths,
+        file_tombstones,
         capture_segment_media_paths,
         deleted_capture_segments,
         deleted_frames,
@@ -514,37 +537,19 @@ pub async fn delete_recent_capture_rows(
     })
 }
 
+/// Deletes the files the committed delete tombstoned (off the async worker);
+/// a removed file's tombstone is dropped, a failure stays `failed` for the
+/// retention healer. Returns the failure count.
 pub async fn delete_recent_capture_files_and_tombstone(
     infra: &::app_infra::AppInfra,
     deletion: &DeleteRecentCaptureDeletion,
     context: &::app_infra::RetentionCleanupContext,
 ) -> Result<i64, String> {
-    let mut file_delete_errors = 0_i64;
-    for path in &deletion.paths {
-        if path.path.trim().is_empty() {
-            continue;
-        }
-        if let Err(error) = ::app_infra::delete_capture_artifact_path_if_safe(&path.path, context) {
-            file_delete_errors += 1;
-            infra
-                .capture_retention()
-                .insert_file_tombstone(
-                    None,
-                    path.capture_segment_id,
-                    &path.path,
-                    &path.path_kind,
-                    &error,
-                )
-                .await
-                .map_err(|insert_error| {
-                    format!(
-                        "failed to record delete recent file tombstone for {}: {insert_error}",
-                        path.path
-                    )
-                })?;
-        }
-    }
-    Ok(file_delete_errors)
+    infra
+        .capture_retention()
+        .remove_tombstoned_files(deletion.file_tombstones.clone(), context)
+        .await
+        .map_err(|error| format!("failed to delete recent capture files: {error}"))
 }
 
 pub fn complete_delete_recent_capture_boundary<T>(

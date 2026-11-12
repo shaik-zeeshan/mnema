@@ -543,21 +543,26 @@ fn delete_recent_capture_files_guard_save_directory_and_tombstone_failures() {
         let outside_file = outside_dir.path().join("outside-frame.jpg");
         fs::write(&outside_file, b"outside").expect("outside file should be written");
 
+        let (inside, outside) = (
+            inside_file.to_string_lossy().to_string(),
+            outside_file.to_string_lossy().to_string(),
+        );
+        let mut tx = infra.begin_write().await.expect("tx should begin");
+        let file_tombstones = ::app_infra::CaptureRetentionStore::insert_pending_file_tombstones(
+            &mut tx,
+            &[
+                (Some(1), inside.as_str(), "media_file"),
+                (Some(2), outside.as_str(), "media_file"),
+            ],
+        )
+        .await
+        .expect("tombstones should insert");
+        tx.commit().await.expect("tombstones should commit");
+
         let deletion = DeleteRecentCaptureDeletion {
             frame_ids: Vec::new(),
             audio_segment_ids: Vec::new(),
-            paths: vec![
-                DeleteRecentCapturePath {
-                    capture_segment_id: Some(1),
-                    path: inside_file.to_string_lossy().to_string(),
-                    path_kind: "media_file".to_string(),
-                },
-                DeleteRecentCapturePath {
-                    capture_segment_id: Some(2),
-                    path: outside_file.to_string_lossy().to_string(),
-                    path_kind: "media_file".to_string(),
-                },
-            ],
+            file_tombstones,
             capture_segment_media_paths: Vec::new(),
             deleted_capture_segments: 0,
             deleted_frames: 0,
@@ -594,5 +599,71 @@ fn delete_recent_capture_files_guard_save_directory_and_tombstone_failures() {
                 .await
                 .expect("tombstone count should load");
         assert_eq!(tombstone_count, 1);
+    });
+}
+
+/// The kill point: Delete Recent's rows are committed gone but its files were
+/// never touched (quit/crash before the file delete). The files must stay
+/// findable as `pending` tombstones the retention healer then removes.
+#[test]
+fn delete_recent_capture_rows_tombstones_files_in_the_deleting_transaction() {
+    run_async_test(async {
+        let dir = TestDir::new("delete-recent-tombstones-in-tx");
+        let infra = ::app_infra::AppInfra::initialize(dir.path())
+            .await
+            .expect("app infra should initialize");
+        let pool = infra.pool();
+        let media = dir.path().join("recordings/segment-0001.mov");
+        fs::create_dir_all(media.parent().expect("media parent")).expect("media dir");
+        fs::write(&media, b"media").expect("media should be written");
+        let media_path = media.to_string_lossy().to_string();
+        sqlx::query(
+            "INSERT INTO capture_sessions (
+                capture_session_id, started_at, stopped_at, status,
+                requested_screen, requested_microphone, requested_system_audio,
+                screen_source_session_id, segment_duration_seconds
+             ) VALUES ('cap-tomb', '2026-05-19T10:00:00Z', NULL, 'recording', 1, 0, 0, 'screen-tomb', 60)",
+        )
+        .execute(pool)
+        .await
+        .expect("capture session should insert");
+        sqlx::query(
+            "INSERT INTO capture_segments (
+                capture_session_id, source_kind, source_session_id, segment_index,
+                media_file_path, started_at, ended_at, status
+             ) VALUES ('cap-tomb', 'screen', 'screen-tomb', 1, ?1,
+                '2026-05-19T10:00:00Z', '2026-05-19T10:00:30Z', 'completed')",
+        )
+        .bind(&media_path)
+        .execute(pool)
+        .await
+        .expect("capture segment should insert");
+
+        let deletion =
+            delete_recent_capture_rows(&infra, "2026-05-19T09:59:00Z", "2026-05-19T10:01:00Z")
+                .await
+                .expect("delete recent rows should complete");
+
+        assert_eq!(deletion.deleted_capture_segments, 1);
+        assert!(media.exists(), "the row delete alone never touches files");
+        let pending: Vec<String> = sqlx::query_scalar(
+            "SELECT path FROM retention_file_tombstones WHERE status = 'pending'",
+        )
+        .fetch_all(pool)
+        .await
+        .expect("tombstones should load");
+        assert_eq!(pending, vec![media_path]);
+
+        let context = ::app_infra::RetentionCleanupContext {
+            save_directory: Some(dir.path().display().to_string()),
+            ..Default::default()
+        };
+        let resolved = infra
+            .capture_retention()
+            .retry_pending_file_tombstones(&context)
+            .await
+            .expect("healer should run");
+        assert_eq!(resolved, 1);
+        assert!(!media.exists(), "the healer removes the stranded file");
     });
 }

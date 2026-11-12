@@ -7,7 +7,6 @@ use std::{
     },
 };
 
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use speaker_analysis::{
     builtin_model_manifest, detect_model_status, find_model_descriptor, install_model_file,

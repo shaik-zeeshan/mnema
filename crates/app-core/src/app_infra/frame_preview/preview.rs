@@ -337,12 +337,19 @@ pub(super) async fn prepare_frame_scrub_preview(
                 },
             ));
         };
-        let derivative_path = generate_scrub_preview_derivative_in_dir(
-            cache_dir,
-            frame_id,
-            max_pixel_size,
-            &frame_file_path,
-        )?;
+        // Decoding a full PNG, resizing and JPEG-encoding is blocking work: keep it
+        // off the runtime workers.
+        let (cache_dir_owned, source_path) = (cache_dir.to_path_buf(), frame_file_path.clone());
+        let derivative_path = core
+            .run_blocking(move || {
+                generate_scrub_preview_derivative_in_dir(
+                    &cache_dir_owned,
+                    frame_id,
+                    max_pixel_size,
+                    &source_path,
+                )
+            })
+            .await?;
         allow_preview_file(core, &derivative_path);
         return Ok(PreparedFrameScrubPreview::Ready(
             FrameScrubPreviewResultDto {

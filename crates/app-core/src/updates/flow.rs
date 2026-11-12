@@ -209,7 +209,15 @@ pub async fn install_app_update(core: &Arc<AppCore>) -> Option<AppUpdateStatus> 
         Ok(bytes) => bytes,
         Err(error) => return Some(fail(core, &updater, error)),
     };
-    if !signature_is_valid(&bytes, &release.signature, updater.config.pubkey) {
+    // Verifying hashes the whole archive: blocking work, off the runtime workers.
+    let (signature, pubkey) = (release.signature.clone(), updater.config.pubkey);
+    let (bytes, signed) = core
+        .run_blocking(move || {
+            let signed = signature_is_valid(&bytes, &signature, pubkey);
+            (bytes, signed)
+        })
+        .await;
+    if !signed {
         log::error!("update install refused: SignatureInvalid");
         let error = AppUpdateError::new(AppUpdateErrorKind::Verification, NOT_SIGNED_BY_MNEMA);
         return Some(fail(core, &updater, error));

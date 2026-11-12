@@ -20,6 +20,10 @@ pub const GPUI_PLATFORM_KEY: &str = "darwin-aarch64-gpui";
 /// A feed response or archive that takes longer than this is a network failure.
 const FEED_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// The archive download fails after this long with no bytes, so a stalled
+/// stream ends in `Failed` (retryable) instead of `Downloading` until relaunch.
+const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+
 /// A release the feed names for this app that is newer than the running one.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RemoteRelease {
@@ -91,6 +95,7 @@ pub fn newer_release(
 pub(crate) fn client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(FEED_TIMEOUT)
+        .read_timeout(READ_IDLE_TIMEOUT)
         .build()
         .unwrap_or_default()
 }

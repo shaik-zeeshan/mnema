@@ -8,7 +8,6 @@ use std::{
 };
 
 use capture_types::{OcrProvider, OcrSettings};
-use futures_util::StreamExt;
 use ocr::{
     builtin_model_manifest, detect_model_status, find_model_descriptor,
     install_downloaded_model_artifact, model_install_dir, ocr_models_dir,

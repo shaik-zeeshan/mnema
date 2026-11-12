@@ -239,7 +239,10 @@ pub async fn run_agent_loop(
 
             match provider {
                 CloudProvider::Anthropic => {
-                    let client = anthropic::Client::builder().api_key(api_key).build()?;
+                    let client = anthropic::Client::builder()
+                        .api_key(api_key)
+                        .http_client(crate::http::client()?)
+                        .build()?;
                     let agent = client
                         .agent(model.as_str())
                         .preamble(preamble)
@@ -250,7 +253,10 @@ pub async fn run_agent_loop(
                         .await
                 }
                 CloudProvider::Openai => {
-                    let client = openai::Client::builder().api_key(api_key).build()?;
+                    let client = openai::Client::builder()
+                        .api_key(api_key)
+                        .http_client(crate::http::client()?)
+                        .build()?;
                     let agent = client
                         .agent(model.as_str())
                         .preamble(preamble)
@@ -270,6 +276,7 @@ pub async fn run_agent_loop(
                     // this provider, so today the ceiling never reaches the wire.
                     let client = chatgpt::Client::builder()
                         .api_key(crate::chatgpt_auth_for(api_key))
+                        .http_client(crate::http::client()?)
                         .build()?;
                     let agent = client
                         .agent(model.as_str())
@@ -292,6 +299,7 @@ pub async fn run_agent_loop(
                     let client = openai::CompletionsClient::builder()
                         .api_key(api_key)
                         .base_url(base_url)
+                        .http_client(crate::http::client()?)
                         .build()?;
                     let agent = client
                         .agent(model.as_str())
@@ -318,6 +326,7 @@ pub async fn run_agent_loop(
                     let client = ollama::Client::builder()
                         .api_key(rig_core::client::Nothing)
                         .base_url(endpoint)
+                        .http_client(crate::http::client()?)
                         .build()?;
                     let agent = client
                         .agent(model.as_str())
@@ -329,7 +338,11 @@ pub async fn run_agent_loop(
                         .await
                 }
                 LocalKind::Llamafile => {
-                    let client = llamafile::Client::from_url(endpoint)?;
+                    let client = llamafile::Client::builder()
+                        .api_key(rig_core::client::Nothing)
+                        .base_url(endpoint)
+                        .http_client(crate::http::client()?)
+                        .build()?;
                     let agent = client
                         .agent(model.as_str())
                         .preamble(preamble)

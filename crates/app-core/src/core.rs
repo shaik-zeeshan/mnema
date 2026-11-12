@@ -89,6 +89,20 @@ impl AppCore {
         self.runtime.spawn_blocking(func)
     }
 
+    /// Runs `func` on the blocking pool and waits for it, so slow synchronous work
+    /// (hashing, decoding, capture start/stop) never holds a runtime worker. A
+    /// panic in `func` resumes here, as if it had run inline.
+    pub async fn run_blocking<F, R>(&self, func: F) -> R
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        match self.spawn_blocking(func).await {
+            Ok(value) => value,
+            Err(error) => std::panic::resume_unwind(error.into_panic()),
+        }
+    }
+
     /// Polls `future` to completion on the calling thread, or, when that thread's
     /// stack is smaller than a tokio worker's, on a scoped thread with a large one.
     pub fn block_on<F>(&self, future: F) -> F::Output
@@ -183,6 +197,7 @@ mod tests {
         let blocking = core.spawn_blocking(|| 3);
         assert_eq!(core.block_on(task).unwrap(), 4);
         assert_eq!(core.block_on(blocking).unwrap(), 3);
+        assert_eq!(core.block_on(core.run_blocking(|| 6)), 6);
         let handle = core.runtime_handle();
         assert_eq!(core.block_on(handle.spawn(async { 5 })).unwrap(), 5);
     }

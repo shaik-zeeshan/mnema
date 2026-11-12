@@ -194,7 +194,12 @@ pub(super) async fn delete_recent_capture_inner(
     let should_resume_after_boundary =
         should_resume_delete_recent_capture_boundary(&session_before_delete);
     if should_resume_after_boundary {
-        crate::native_capture::control::pause_native_capture_from_core(core).map_err(|error| {
+        let task_core = Arc::clone(core);
+        core.run_blocking(move || {
+            crate::native_capture::control::pause_native_capture_from_core(&task_core)
+        })
+        .await
+        .map_err(|error| {
             format!(
                 "failed to create recording boundary before deletion: {}",
                 error.message
@@ -207,14 +212,11 @@ pub(super) async fn delete_recent_capture_inner(
     let deletion = match delete_recent_capture_rows(infra, &started_at, &ended_at).await {
         Ok(deletion) => deletion,
         Err(error) => {
+            let resumed = resume_capture_if(should_resume_after_boundary, core).await;
             return complete_delete_recent_capture_boundary(
                 should_resume_after_boundary,
                 Err(error),
-                || {
-                    crate::native_capture::control::resume_native_capture_from_core(core)
-                        .map(|_| ())
-                        .map_err(|error| error.message)
-                },
+                || resumed,
             );
         }
     };
@@ -256,14 +258,11 @@ pub(super) async fn delete_recent_capture_inner(
         Ok((file_delete_errors, pending_file_tombstones))
     }
     .await;
+    let resumed = resume_capture_if(should_resume_after_boundary, core).await;
     let (file_delete_errors, pending_file_tombstones) = complete_delete_recent_capture_boundary(
         should_resume_after_boundary,
         post_delete_result,
-        || {
-            crate::native_capture::control::resume_native_capture_from_core(core)
-                .map(|_| ())
-                .map_err(|error| error.message)
-        },
+        || resumed,
     )?;
 
     Ok(DeleteRecentCaptureSummaryDto {
@@ -281,6 +280,21 @@ pub(super) async fn delete_recent_capture_inner(
         pending_file_tombstones,
         file_delete_errors,
     })
+}
+
+/// Resumes the capture Delete Recent paused. Resuming restarts the streams
+/// under the std capture mutex (seconds), so it runs on the blocking pool.
+async fn resume_capture_if(should_resume: bool, core: &Arc<AppCore>) -> Result<(), String> {
+    if !should_resume {
+        return Ok(());
+    }
+    let task_core = Arc::clone(core);
+    core.run_blocking(move || {
+        crate::native_capture::control::resume_native_capture_from_core(&task_core)
+            .map(|_| ())
+            .map_err(|error| error.message)
+    })
+    .await
 }
 
 pub async fn delete_recent_capture(

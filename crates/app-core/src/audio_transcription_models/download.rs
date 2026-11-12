@@ -1,4 +1,5 @@
 use super::*;
+use crate::model_download_stream::{self, next_chunk, NextChunk};
 
 pub(super) fn build_download_plan(
     core: &AppCore,
@@ -163,11 +164,19 @@ pub(super) async fn download_and_install_model(
         ),
     );
 
-    validate_artifact_sha256(&plan.temp_file_path, &plan.artifact.sha256)
-        .map_err(ModelDownloadError::Install)?;
-    install_downloaded_model_artifact(&plan.models_dir, &plan.descriptor, &plan.temp_file_path)
-        .map_err(ModelDownloadError::Install)?;
-    remove_model_file_if_exists(&plan.temp_file_path).map_err(ModelDownloadError::Install)?;
+    // Hashing and unpacking hundreds of MB is blocking work: keep it off the runtime workers.
+    let install = plan.clone();
+    core.run_blocking(move || {
+        validate_artifact_sha256(&install.temp_file_path, &install.artifact.sha256)?;
+        install_downloaded_model_artifact(
+            &install.models_dir,
+            &install.descriptor,
+            &install.temp_file_path,
+        )?;
+        remove_model_file_if_exists(&install.temp_file_path)
+    })
+    .await
+    .map_err(ModelDownloadError::Install)?;
 
     Ok(())
 }
@@ -213,7 +222,10 @@ pub(super) async fn download_and_install_multi_file_artifact(
         )
         .await?;
         downloaded_total = downloaded_total.saturating_add(downloaded);
-        validate_artifact_sha256(&temp_path, &file.sha256).map_err(ModelDownloadError::Install)?;
+        let (hashed_path, sha256) = (temp_path.clone(), file.sha256.clone());
+        core.run_blocking(move || validate_artifact_sha256(&hashed_path, &sha256))
+            .await
+            .map_err(ModelDownloadError::Install)?;
         staged_files.push((temp_path, plan.install_dir.join(relative_path)));
     }
 
@@ -282,10 +294,8 @@ pub(super) async fn download_model_file_to_temp(
     total_bytes: u64,
     cancel_requested: &AtomicBool,
 ) -> Result<u64, ModelDownloadTaskError> {
-    let response = reqwest::get(&file.url)
+    let response = model_download_stream::get(&file.url)
         .await
-        .map_err(ModelDownloadError::Http)?
-        .error_for_status()
         .map_err(ModelDownloadError::Http)?;
     let mut stream = response.bytes_stream();
     let mut output =
@@ -294,11 +304,12 @@ pub(super) async fn download_model_file_to_temp(
             source,
         })?;
     let mut file_downloaded = 0_u64;
-    while let Some(chunk) = stream.next().await {
-        if cancel_requested.load(Ordering::SeqCst) {
-            return Err(ModelDownloadTaskError::Cancelled);
-        }
-        let chunk = chunk.map_err(ModelDownloadError::Http)?;
+    loop {
+        let chunk = match next_chunk(&mut stream, cancel_requested).await {
+            NextChunk::Chunk(chunk) => chunk.map_err(ModelDownloadError::Http)?,
+            NextChunk::End => break,
+            NextChunk::Cancelled => return Err(ModelDownloadTaskError::Cancelled),
+        };
         std::io::Write::write_all(&mut output, &chunk).map_err(|source| {
             ModelDownloadError::WriteFile {
                 path: temp_file_path.to_path_buf(),
@@ -343,10 +354,8 @@ pub(super) async fn download_artifact_to_temp(
     plan: &DownloadPlan,
     cancel_requested: &AtomicBool,
 ) -> Result<(), ModelDownloadTaskError> {
-    let response = reqwest::get(&plan.artifact.url)
+    let response = model_download_stream::get(&plan.artifact.url)
         .await
-        .map_err(ModelDownloadError::Http)?
-        .error_for_status()
         .map_err(ModelDownloadError::Http)?;
     let total_bytes = response.content_length().or(Some(plan.artifact.byte_size));
     let mut stream = response.bytes_stream();
@@ -358,11 +367,12 @@ pub(super) async fn download_artifact_to_temp(
     })?;
     let mut downloaded_bytes = 0_u64;
 
-    while let Some(chunk) = stream.next().await {
-        if cancel_requested.load(Ordering::SeqCst) {
-            return Err(ModelDownloadTaskError::Cancelled);
-        }
-        let chunk = chunk.map_err(ModelDownloadError::Http)?;
+    loop {
+        let chunk = match next_chunk(&mut stream, cancel_requested).await {
+            NextChunk::Chunk(chunk) => chunk.map_err(ModelDownloadError::Http)?,
+            NextChunk::End => break,
+            NextChunk::Cancelled => return Err(ModelDownloadTaskError::Cancelled),
+        };
         std::io::Write::write_all(&mut file, &chunk).map_err(|source| {
             ModelDownloadError::WriteFile {
                 path: plan.temp_file_path.clone(),
