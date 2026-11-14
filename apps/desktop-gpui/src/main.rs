@@ -50,6 +50,7 @@ fn main() {
 
     app.run(move |cx| {
         gpui_kit::init(cx);
+        native::dock::set_dev_icon();
         // The OS appearance until `AppCore::start` has read the saved settings
         // (`events::apply_display_settings`, before any window opens).
         theme::init(AppearanceSetting::System, cx.window_appearance(), cx);
