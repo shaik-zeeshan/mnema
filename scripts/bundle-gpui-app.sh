@@ -129,8 +129,9 @@ unset RUSTUP_TOOLCHAIN # rust-toolchain.toml pins the toolchain
 # shellcheck source=/dev/null
 . "$repo/scripts/openblas-build-env.sh"
 if [[ "$mode" == dev ]]; then
-  # Debug: MNEMA_DEV_MASTER_KEY_FILE is compiled out of release builds.
-  cargo build -p mnema-gpui --bin mnema-gpui
+  # Debug: MNEMA_DEV_MASTER_KEY_FILE is compiled out of release builds. Optimised, or
+  # most screens drop frames (see scripts/dev-gpui.sh).
+  cargo build --config 'profile.dev.opt-level=3' -p mnema-gpui --bin mnema-gpui
 else
   # A build you hand out runs on every Apple Silicon generation (AGENTS.md).
   export OPENBLAS_DYNAMIC_ARCH=1

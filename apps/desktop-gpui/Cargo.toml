@@ -56,6 +56,11 @@ name = "scrub-bench"
 path = "examples/scrub_bench.rs"
 required-features = ["fixtures", "feel-metrics"]
 
+[[example]]
+name = "surface-bench"
+path = "examples/surface_bench.rs"
+required-features = ["fixtures", "feel-metrics"]
+
 [[test]]
 name = "visual"
 harness = false

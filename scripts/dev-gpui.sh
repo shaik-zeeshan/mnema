@@ -73,4 +73,7 @@ cd "$repo"
 unset RUSTUP_TOOLCHAIN # rust-toolchain.toml pins the toolchain
 # shellcheck source=/dev/null
 . "$repo/scripts/openblas-build-env.sh"
-exec cargo run -p mnema-gpui --features feel-metrics "$@"
+# Optimised (still a debug-assertions dev build: dev identity, file-backed keys). At
+# opt-level 0 every screen but the Timeline drops frames: 12-27 ms of work per scroll
+# frame against 3-5 ms optimised (scripts/gpui-surface-bench.sh, 2026-11-14).
+exec cargo run --config 'profile.dev.opt-level=3' -p mnema-gpui --bin mnema-gpui --features feel-metrics "$@"
