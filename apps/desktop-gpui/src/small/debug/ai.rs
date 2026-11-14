@@ -9,9 +9,11 @@ use super::tabs::{clock, h, list, sec};
 use super::DebugWindow;
 use crate::settings::model::Json;
 use crate::small::parts::dot;
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
+use crate::ui::Tracking as _;
 use crate::ui::{Button, Tone};
 
 pub(super) fn compact_empty(title: &str, failed: bool, p: &Palette) -> AnyElement {
@@ -135,26 +137,20 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                         .text_color(p.text_subtle)
                         .child(label),
                 )
+                // `.mx-stat__value small`: the unit on the value's baseline.
                 .child(
-                    div()
-                        .flex()
-                        .items_end()
-                        .gap(px(2.))
-                        .child(
-                            div()
-                                .font_family(FONT_MONO)
-                                .text_size(text::LG)
-                                .line_height(relative(1.))
-                                .text_color(p.text_strong)
-                                .child(v),
-                        )
-                        .child(
-                            div()
-                                .text_size(text::SM)
-                                .line_height(relative(1.))
-                                .text_color(p.text_subtle)
-                                .child(unit),
+                    baseline::row_top(vec![
+                        (
+                            Line::new(FONT_MONO, text::LG, 1.),
+                            // `.dv-stats .mx-stat__value`.
+                            div().text_color(p.text_strong).tracking(-0.03).child(v),
                         ),
+                        (
+                            Line::new(FONT_UI, text::SM, 1.),
+                            div().text_color(p.text_subtle).child(unit),
+                        ),
+                    ])
+                    .gap(px(2.)),
                 )
         };
         let n = |k: &str| u.num_at(&[k]).unwrap_or(0.);
@@ -327,7 +323,7 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                     ]))
                     .into_any_element(),
                 chip(label.to_string(), chip_kind, p).into_any_element(),
-                cell(None, div().whitespace_nowrap().overflow_hidden())
+                cell(None, div().truncate())
                     .child(result)
                     .into_any_element(),
                 mono(meta, p.text_subtle).into_any_element(),

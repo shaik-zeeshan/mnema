@@ -12,15 +12,17 @@ use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role};
 use super::day::{self, Card, DayModel, Row};
 use crate::insights::charts::{bar, spec_rows, swatch};
 use crate::insights::model::JournalData;
-use crate::insights::parts::{h2, label, mono_label, sec, split};
+use crate::insights::parts::{h2, label, mono_label, sec, sec_line, split, H2, KICKER, LABEL, PHI};
 use crate::insights::stats::{
     self, category_color, category_label, focus_color, focus_label, humanize_ms,
 };
 use crate::insights::Insights;
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::ui::baseline::{row, Line};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
-use crate::ui::{clock, icon, kbd, kicker, nid, Button, Tone};
+use crate::ui::Tracking as _;
+use crate::ui::{clock, icon, kbd, kicker, nid, ring_box, Button, Tone};
 
 #[allow(clippy::too_many_arguments)]
 pub fn render(
@@ -37,27 +39,37 @@ pub fn render(
     let rows = day::river(cards, &model.gaps, &model.failed);
     let n = cards.len();
     let day_label = stats::day_label(day_start, off);
+    // `.in-gap`: a hairline-topped line, indented past the time column, the
+    // label then a dashed rule filling the rest.
     let gap_row = |s: String| {
         div()
-            .py(space::S3)
-            .px(space::S4)
-            .my(space::S2)
-            .rounded(radius::SM)
-            .border_1()
-            .border_dashed()
-            .border_color(p.border)
-            .font_family(FONT_MONO)
-            .text_size(text::SM)
-            .text_color(p.text_subtle)
-            .child(s)
-    };
-    let mut col = div().flex().flex_col().child(sec(
-        div()
             .flex()
-            .items_end()
+            .items_center()
             .gap(space::S3)
-            .child(h2("What you did", p))
-            .child(label(
+            .pt(px(10.))
+            .pb(px(10.))
+            .pl(px(92.))
+            .border_t_1()
+            .border_color(p.hairline)
+            .font_family(FONT_MONO)
+            .text_size(text::XS)
+            .font_weight(theme::W_MEDIUM)
+            .line_height(relative(1.))
+            .text_color(p.text_faint)
+            .child(div().flex_none().child(s))
+            .child(
+                div()
+                    .flex_1()
+                    .border_t_1()
+                    .border_dashed()
+                    .border_color(p.border),
+            )
+    };
+    let mut col = div().flex().flex_col().child(sec_line(vec![
+        (H2, h2("What you did", p).into_any_element()),
+        (
+            LABEL,
+            label(
                 if why.is_some() {
                     "nothing written up".to_string()
                 } else {
@@ -67,9 +79,10 @@ pub fn render(
                     )
                 },
                 p,
-            )),
-        None,
-    ));
+            )
+            .into_any_element(),
+        ),
+    ]));
     if let Some(why) = why {
         let side = side(this, j, shown, day_start, false, p, cx);
         let body = col.child(empty(
@@ -112,7 +125,7 @@ pub fn render(
                             .into_any_element(),
                         Button::new("insights-pending-settings", "Open engine settings")
                             .ghost()
-                            .sm()
+                            .inline()
                             .on_click(|_, _, cx| crate::window::open_settings(Some("intelligence"), cx))
                             .into_any_element(),
                     ],
@@ -122,7 +135,7 @@ pub fn render(
                 .flex()
                 .flex_col()
                 .gap(space::S2)
-                .child(kicker(&format!("Writing up {s} → now"), p).text_color(p.accent))
+                .child(live_kicker(&format!("Writing up {s} → now"), p))
                 .child(crate::ui::skeleton::skel(p).w(relative(0.46)).h(px(12.)))
                 .child(crate::ui::skeleton::skel(p).w(relative(0.72)).h(px(10.)))
                 .child(label(
@@ -152,7 +165,19 @@ pub fn render(
                 .flex()
                 .gap(space::S4)
                 .py(space::S3)
-                .child(div().w(px(64.)).flex_none().child(mono_label(s.clone(), p)))
+                // `.in-pending time`: 500 MD mono in the accent, 2 px down.
+                .child(
+                    div()
+                        .w(TIME_W)
+                        .flex_none()
+                        .pt(px(2.))
+                        .font_family(FONT_MONO)
+                        .text_size(text::MD)
+                        .font_weight(theme::W_MEDIUM)
+                        .line_height(relative(1.))
+                        .text_color(p.accent)
+                        .child(s.clone()),
+                )
                 .child(body.flex_1().min_w_0()),
         );
     }
@@ -189,6 +214,45 @@ pub fn render(
         .items_start()
         .into_any_element()
 }
+
+/// `.mx-kicker--live`: the kicker with a glowing accent dot in place of `//`.
+fn live_kicker(s: &str, p: &Palette) -> Div {
+    div()
+        .flex()
+        .items_center()
+        .gap(space::S2)
+        .font_family(FONT_MONO)
+        .text_size(text::XS)
+        .font_weight(theme::W_MEDIUM)
+        .text_color(p.text_subtle)
+        .tracking(0.12)
+        .child(
+            div()
+                .relative()
+                .flex_none()
+                .size(px(6.))
+                .rounded_full()
+                .bg(p.accent)
+                .child(ring_box(p.accent_glow, px(3.), px(3.))),
+        )
+        .child(s.to_uppercase())
+}
+
+/// The time column, `.in-act`'s `76px` grid column.
+const TIME_W: gpui_kit::Pixels = px(76.);
+
+/// The card's start time (`.in-act__t time`): mono MD, inherited line height.
+const TIME: Line = Line {
+    family: FONT_MONO,
+    size: text::MD,
+    lh: PHI,
+};
+/// Its duration (`.in-act__t span.num`): mono XS, inherited line height.
+const DUR: Line = Line {
+    family: FONT_MONO,
+    size: text::XS,
+    lh: PHI,
+};
 
 fn card(
     this: &mut Insights,
@@ -248,14 +312,23 @@ fn card(
     let head = div()
         .flex()
         .items_center()
-        .gap(space::S2)
-        .child(swatch(col, 8.))
+        .gap(px(9.))
+        .child(swatch(col, 9.))
         .child(
-            div()
-                .text_size(text::MD)
-                .font_weight(theme::W_SEMIBOLD)
-                .text_color(p.text_strong)
-                .child(a.title.clone()),
+            // `.in-act h4`: 600 LG strong; `.in-act--slim h4`: 500 MD.
+            if slim {
+                div()
+                    .text_size(text::MD)
+                    .font_weight(theme::W_MEDIUM)
+                    .text_color(p.text)
+            } else {
+                div()
+                    .text_size(text::LG)
+                    .font_weight(theme::W_SEMIBOLD)
+                    .text_color(p.text_strong)
+            }
+            .tracking(-0.01)
+            .child(a.title.clone()),
         )
         .when(slim, |d| d.child(div().flex_1()).child(receipt_btn()));
     let open_sub = this.receipt.as_ref().map(|r| r.activity_id);
@@ -276,20 +349,22 @@ fn card(
                 .ml(px(-6.))
                 .rounded(radius::SM)
                 .cursor_pointer()
-                .hover(|d| d.bg(p.wash))
+                // `.in-sub:hover, .in-sub[aria-expanded="true"]`.
+                .when(sub_open, |d| d.bg(p.wash_strong).text_color(p.text_strong))
+                .when(!sub_open, |d| d.text_color(p.text_muted))
+                .hover(|d| d.bg(p.wash_strong).text_color(p.text_strong))
                 .text_size(text::SM)
                 .font_weight(theme::W_MEDIUM)
-                .text_color(p.text_muted)
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_receipt(sid, sspan, cx)))
                 .child(icon(IconName::CornerDownRight.path(), px(12.)))
-                .child(mono_label(stats::clock(*st, off), p))
+                .child(mono_label(stats::clock(*st, off), p).text_size(text::XS))
                 .child(
                     div()
                         .truncate()
                         .text_color(p.text)
                         .child(s.activity.title.clone()),
                 )
-                .child(mono_label(format!("· {}", humanize_ms(en - st)), p)),
+                .child(mono_label(format!("· {}", humanize_ms(en - st)), p).text_size(text::XS)),
         );
         if sub_open {
             subs = subs.child(super::receipt::render(this, p, cx));
@@ -323,25 +398,41 @@ fn card(
         )
         .flex()
         .gap(space::S4)
-        .py(space::S4)
-        .border_b_1()
+        // `.in-act`: the fill reaches 12 px past the content, which stays put;
+        // `.in-act--slim` pads S3 top and bottom.
+        .py(if slim { space::S3 } else { space::S4 })
+        .px(space::S3)
+        .mx(-space::S3)
+        .rounded(radius::SM)
+        .border_t_1()
         .border_color(p.hairline)
-        .child(
-            div()
-                .w(px(64.))
-                .flex_none()
-                .flex()
-                .flex_col()
-                .gap(px(4.))
-                .child(
-                    div()
-                        .font_family(FONT_MONO)
-                        .text_size(text::BASE)
-                        .text_color(p.text)
-                        .child(stats::clock(c.start, off)),
+        .child({
+            let time = div()
+                .font_family(FONT_MONO)
+                .text_size(text::MD)
+                .font_weight(theme::W_MEDIUM)
+                .text_color(p.text_strong)
+                .child(stats::clock(c.start, off));
+            let dur = div()
+                .font_family(FONT_MONO)
+                .text_size(text::XS)
+                .text_color(p.text_subtle)
+                .child(humanize_ms(c.end - c.start));
+            let col = div().w(TIME_W).flex_none().pt(px(2.));
+            // `.in-act--slim .in-act__t`: time and duration side by side on one baseline.
+            if slim {
+                col.child(
+                    row(vec![
+                        (TIME, time.into_any_element()),
+                        (DUR, dur.into_any_element()),
+                    ])
+                    // 8, not Svelte's 12: "12:45 PM" + "45s" at 12 runs into the colour dot.
+                    .gap(space::S2),
                 )
-                .child(mono_label(humanize_ms(c.end - c.start), p)),
-        )
+            } else {
+                col.flex().flex_col().gap(px(5.)).child(time).child(dur)
+            }
+        })
         .child(
             div()
                 .flex_1()
@@ -505,6 +596,7 @@ fn side(
             .gap(space::S3)
             .py(px(6.))
             .text_size(text::BASE)
+            .font_weight(theme::W_MEDIUM)
             .child(swatch(category_color(*c, p), 8.))
             .child(
                 div()
@@ -565,20 +657,26 @@ fn side(
         .when(with_mix && !mix.is_empty(), |d| {
             d.child(
                 div()
-                    .child(sec(
-                        kicker("Day mix", p),
-                        Some(label("activity time", p).into_any_element()),
-                    ))
+                    .child(
+                        sec_line(vec![
+                            (KICKER, kicker("Day mix", p).into_any_element()),
+                            (LABEL, label("activity time", p).into_any_element()),
+                        ])
+                        .justify_between(),
+                    )
                     .child(mix_rows),
             )
         })
         .when(!apps.is_empty(), |d| {
             d.child(
                 div()
-                    .child(sec(
-                        kicker("Apps", p),
-                        Some(label("app time", p).into_any_element()),
-                    ))
+                    .child(
+                        sec_line(vec![
+                            (KICKER, kicker("Apps", p).into_any_element()),
+                            (LABEL, label("app time", p).into_any_element()),
+                        ])
+                        .justify_between(),
+                    )
                     .child(spec_rows(
                         apps.iter()
                             .map(|a| {
@@ -590,7 +688,10 @@ fn side(
                             })
                             .collect(),
                         p.chart_grey_3,
+                        // `.in-apps`: an 82 px name column.
+                        Some(px(82.)),
                         p,
+                        cx,
                     )),
             )
         })

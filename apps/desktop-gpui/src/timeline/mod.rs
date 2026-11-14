@@ -599,7 +599,7 @@ impl Render for TimelineView {
             .child(top_bar::render(self, &p, cx))
             .child(stage::render(self, &p, window, cx))
             .child(rail::render(self, &p, window, cx))
-            .children(jumper::render(self, &p, cx))
+            .children(jumper::render(self, &p, window, cx))
             .children(self.drawer.clone())
             .test_support()
     }

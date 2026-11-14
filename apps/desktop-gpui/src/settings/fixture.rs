@@ -16,7 +16,7 @@ use crate::shell::fixture::{get, load};
 
 /// Parity states (and golden names): each group's top, then the deeper
 /// sections of the tall groups, as `(state, ?tab= value)`.
-pub const STATES: [(&str, &str); 12] = [
+pub const STATES: [(&str, &str); 14] = [
     ("general", "appearance"),
     ("general-shortcuts", "shortcuts"),
     ("capture", "capture"),
@@ -29,6 +29,8 @@ pub const STATES: [(&str, &str); 12] = [
     ("data", "storage"),
     ("data-access", "access"),
     ("about", "license"),
+    ("about-updates", "about"),
+    ("about-developer", "developer"),
 ];
 
 /// MCP golden states over Intelligence: `(state, the modal to open)`.

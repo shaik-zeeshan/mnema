@@ -6,8 +6,7 @@
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    div, img, px, relative, Context, Div, HighlightStyle, ObjectFit, Resource, Role, StyledText,
-    Window,
+    div, img, px, relative, Context, Div, ObjectFit, Resource, Role, StyledText, Window,
 };
 
 use super::look::{
@@ -19,6 +18,7 @@ use super::results::match_box;
 use super::QuickRecall;
 use crate::theme::{self, radius, size, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
+use crate::ui::Tracking as _;
 use crate::ui::{alpha, icon, spread, Tone};
 
 pub(super) const SIDE_W: f32 = 256.;
@@ -30,14 +30,7 @@ pub(super) fn marked_text(segs: Vec<(String, bool)>, p: &Palette) -> StyledText 
         let start = s.len();
         s.push_str(&t);
         if m {
-            hl.push((
-                start..s.len(),
-                HighlightStyle {
-                    color: Some(p.accent),
-                    background_color: Some(p.accent_bg),
-                    ..Default::default()
-                },
-            ));
+            hl.push((start..s.len(), super::results::mark_style(p)));
         }
     }
     StyledText::new(s).with_highlights(hl)
@@ -171,11 +164,13 @@ impl QuickRecall {
                             .flex()
                             .items_center()
                             .gap(px(6.))
+                            // A 14×8 swatch with a 1.5 px *outline* (outside it, no layout space).
                             .child(
                                 div()
-                                    .w(px(14.))
-                                    .h(px(8.))
-                                    .rounded(px(2.))
+                                    .w(px(17.))
+                                    .h(px(11.))
+                                    .m(px(-1.5))
+                                    .rounded(px(3.5))
                                     .bg(p.accent_bg)
                                     .border(px(1.5))
                                     .border_color(p.accent),
@@ -191,9 +186,10 @@ impl QuickRecall {
                             .gap(px(6.))
                             .child(
                                 div()
-                                    .w(px(14.))
-                                    .h(px(8.))
-                                    .rounded(px(2.))
+                                    .w(px(16.))
+                                    .h(px(10.))
+                                    .m(px(-1.))
+                                    .rounded(px(3.))
                                     .border_1()
                                     .border_dashed()
                                     .border_color(p.text_subtle),
@@ -255,6 +251,7 @@ impl QuickRecall {
                         img(path)
                             .image_cache(&self.images)
                             .size_full()
+                            .rounded(radius::MD)
                             .object_fit(ObjectFit::Fill),
                     )
                     .children(boxes.iter().map(|b| match_box(b, p))),
@@ -296,6 +293,7 @@ impl QuickRecall {
                             img(t)
                                 .image_cache(&self.images)
                                 .size_full()
+                                .rounded(px(4.))
                                 .object_fit(ObjectFit::Cover),
                         )
                     });
@@ -520,6 +518,7 @@ impl QuickRecall {
                             .relative()
                             .pl(px(38.))
                             .text_size(px(24.))
+                            .tracking(-0.018)
                             .line_height(relative(1.34))
                             .font_weight(theme::W_MEDIUM)
                             .text_color(p.text_strong)
@@ -584,12 +583,16 @@ impl QuickRecall {
                     .cursor_pointer()
                     .when(current, |d| d.bg(p.wash_strong))
                     .child(
+                        // `box-shadow: 0 0 0 1px` as a real border just outside the 52 px
+                        // cell: a shadow under an unfilled box paints it solid.
                         div()
-                            .h(px(52.))
+                            .h(px(54.))
+                            .m(px(-1.))
                             .py(px(6.))
                             .px(px(8.))
-                            .rounded(px(4.))
-                            .shadow(vec![spread(p.border, px(1.))])
+                            .rounded(px(5.))
+                            .border_1()
+                            .border_color(p.border)
                             .overflow_hidden()
                             .text_size(text::SM)
                             .line_height(relative(1.35))

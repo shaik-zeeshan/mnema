@@ -12,6 +12,7 @@ use crate::insights::stats;
 use crate::settings::model::Json;
 use crate::small::parts::{dot, spec_row};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::ui::Tracking as _;
 use crate::ui::{icon, mix, nid, ring_box, CopyButton, Tone};
 
 pub(super) fn clock(ms: i64, cx: &gpui_kit::App) -> String {
@@ -214,12 +215,25 @@ fn flow(w: &DebugWindow, p: &Palette) -> AnyElement {
     div()
         .flex()
         .gap(px(8.))
-        .children(nodes.into_iter().map(|n| {
+        .children(nodes.into_iter().enumerate().map(|(i, n)| {
             let (t, bg, bd) = n
                 .tone
                 .map_or((p.text_muted, p.surface_subtle, p.border), |t| t.colors(p));
             let loud = matches!(n.tone, Some(Tone::Warn | Tone::Danger));
             div()
+                .relative()
+                // `.dv-node + .dv-node::before`: the 8 px connector across the gap.
+                .when(i > 0, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .left(px(-9.))
+                            .top(relative(0.5))
+                            .w(px(8.))
+                            .h(px(1.))
+                            .bg(p.border_strong),
+                    )
+                })
                 .flex_1()
                 .min_w_0()
                 .flex()
@@ -256,6 +270,7 @@ fn flow(w: &DebugWindow, p: &Palette) -> AnyElement {
                         .mt(px(5.))
                         .font_family(FONT_MONO)
                         .text_size(text::XL)
+                        .tracking(-0.04)
                         .line_height(relative(1.))
                         .text_color(p.text_strong)
                         .child(n.big),

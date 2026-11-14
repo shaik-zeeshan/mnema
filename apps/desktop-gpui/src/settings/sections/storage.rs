@@ -9,8 +9,10 @@ use super::ix;
 use crate::settings::model::{format_bytes, format_measured, Json};
 use crate::settings::row::{line, row, section};
 use crate::settings::{click, icons, on, Settings};
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::segmented::Segmented;
+use crate::ui::Tracking as _;
 use crate::ui::{notice, skeleton, Button, Tone};
 
 const RETENTION: [RetentionPolicy; 4] = [
@@ -96,52 +98,65 @@ fn meter(s: &Settings, p: &Palette) -> AnyElement {
         .py(space::S4)
         .border_b_1()
         .border_color(p.hairline)
-        .child(
-            div()
-                .flex()
-                .items_baseline()
-                .gap(space::S3)
-                .child(
+        // `.st-meter__top`: value, unit and the used/free line on one baseline.
+        .child({
+            let big = Line::new(FONT_MONO, text::XL, baseline::PHI);
+            let total = baseline::row(vec![
+                (
+                    big,
+                    // `.mx-stat__value`.
                     div()
-                        .flex()
-                        .items_baseline()
-                        .gap(px(3.))
-                        .font_family(FONT_MONO)
-                        .text_color(p.text_strong)
-                        .child(
-                            div()
-                                .text_size(text::XL)
-                                .font_weight(theme::W_SEMIBOLD)
-                                .child(value.to_string()),
-                        )
-                        .child(
-                            div()
-                                .text_size(text::BASE)
-                                .text_color(p.text_muted)
-                                .child(unit.to_string()),
-                        ),
-                )
-                .child(
-                    div()
-                        .text_size(text::SM)
-                        .text_color(p.text_subtle)
-                        .child(meta.join(" \u{b7} ")),
+                        .font_weight(theme::W_SEMIBOLD)
+                        .tracking(-0.05)
+                        .child(value.to_string())
+                        .into_any_element(),
                 ),
-        )
+                (
+                    Line::new(FONT_MONO, text::BASE, baseline::PHI),
+                    div()
+                        .text_color(p.text_muted)
+                        .child(unit.to_string())
+                        .into_any_element(),
+                ),
+            ])
+            .gap(px(3.))
+            .text_color(p.text_strong);
+            // The larger mono line sets the pair's baseline.
+            baseline::row(vec![
+                (big, total.into_any_element()),
+                (
+                    Line::new(FONT_UI, text::SM, baseline::PHI),
+                    div()
+                        .text_color(p.text_subtle)
+                        .child(meta.join(" \u{b7} "))
+                        .into_any_element(),
+                ),
+            ])
+            .gap(space::S3)
+        })
         .child(
+            // `.st-meter__bar`: GPUI clips to a rectangle, so the end segments
+            // round themselves.
             div()
                 .flex()
-                .h(px(8.))
+                .gap(px(2.))
+                .h(px(10.))
                 .w_full()
-                .rounded(radius::PILL)
+                .rounded(radius::XS)
                 .overflow_hidden()
-                .bg(p.wash)
-                .children(parts.iter().filter(|(_, b, _)| *b > 0.).map(|(_, b, c)| {
-                    div()
-                        .h_full()
-                        .w(gpui_kit::relative((*b / total.max(1.)) as f32))
-                        .bg(*c)
-                })),
+                .bg(p.surface_hover)
+                .children({
+                    let segs: Vec<_> = parts.iter().filter(|(_, b, _)| *b > 0.).collect();
+                    let last = segs.len().saturating_sub(1);
+                    segs.into_iter().enumerate().map(move |(i, (_, b, c))| {
+                        div()
+                            .h_full()
+                            .w(gpui_kit::relative((*b / total.max(1.)) as f32))
+                            .bg(*c)
+                            .when(i == 0, |d| d.rounded_l(radius::XS))
+                            .when(i == last, |d| d.rounded_r(radius::XS))
+                    })
+                }),
         )
         .child(
             div()
@@ -285,7 +300,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 d.child(
                     Button::new("storage-location-retry", "Retry")
                         .ghost()
-                        .sm()
+                        .inline()
                         .on_click(click(cx, |s, cx| s.refresh(cx))),
                 )
             })
@@ -318,7 +333,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 .child(
                     Button::new("retention-retry", "Retry")
                         .ghost()
-                        .sm()
+                        .inline()
                         .disabled(running)
                         .on_click(click(cx, |s, cx| s.ask_retention_cleanup(cx))),
                 )

@@ -170,7 +170,7 @@ impl QuickRecall {
             parts.push(
                 Button::new("qr-meaning-settings", "Turn on in Settings →")
                     .ghost()
-                    .sm()
+                    .inline()
                     .on_click(act(cx, |qr, cx| {
                         super::panel::open_settings("semanticSearch", cx);
                         qr.dismiss(cx);
@@ -375,7 +375,7 @@ impl QuickRecall {
                 .map(|(_, n)| n.clone());
             let lead: AnyElement = match &o.pill {
                 None => icon("icons/x.svg", size::ICON_SM).into_any_element(),
-                Some(Pill::App(a)) => self.app_glyph(None, a, 15., p),
+                Some(Pill::App(a)) => self.app_glyph(None, a, 15., None, p),
                 Some(Pill::Source(Src::Mic)) => {
                     icon(IconName::Mic.path(), size::ICON_SM).into_any_element()
                 }

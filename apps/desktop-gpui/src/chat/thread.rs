@@ -3,6 +3,7 @@
 //! new-chat greeting, and the docked composer with "Jump to latest".
 
 use crate::ui::input::FieldText as _;
+use crate::ui::Tracking as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
@@ -10,6 +11,9 @@ use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, relative, AnyElement, Context, Div, SharedString, Window};
 
 use super::{composer, format, turn, Chat, Pane, Rename};
+
+/// `.mx-display` letter-spacing (em).
+const DISPLAY_TRACKING: f32 = -0.034;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::{icon, icon_button, kicker, skeleton, with_tip, Button, Tone};
@@ -102,6 +106,7 @@ fn header(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
             .shadow(vec![crate::ui::ring(p.accent_glow)])
             .font_weight(theme::W_SEMIBOLD)
             .text_size(text::LG)
+            .tracking(-0.01)
             .text_color(p.text_strong)
             .child(
                 Input::new(&chat.rename_input)
@@ -120,6 +125,7 @@ fn header(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
             .text_ellipsis()
             .font_weight(theme::W_SEMIBOLD)
             .text_size(text::LG)
+            .tracking(-0.01)
             .line_height(relative(1.2))
             .text_color(p.text_strong)
             .child(SharedString::from(chat.display_title()))
@@ -224,6 +230,7 @@ fn greeting(chat: &Chat, p: &Palette, window: &mut Window, cx: &mut Context<Chat
         &[(&hello, theme::W_SEMIBOLD), (ASK, theme::W_MEDIUM)],
         theme::FONT_UI,
         text::DISPLAY,
+        DISPLAY_TRACKING,
         avail,
         window,
     );
@@ -244,6 +251,7 @@ fn greeting(chat: &Chat, p: &Palette, window: &mut Window, cx: &mut Context<Chat
                         .max_w(title_w)
                         .font_weight(theme::W_SEMIBOLD)
                         .text_size(text::DISPLAY)
+                        .tracking(DISPLAY_TRACKING)
                         .line_height(relative(1.04))
                         .text_color(p.text_strong)
                         .child(super::inline_runs(&[

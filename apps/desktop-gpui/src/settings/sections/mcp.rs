@@ -414,6 +414,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
     let rows: Vec<AnyElement> = if servers.is_empty() {
         vec![div()
             .py(space::S3)
+            .border_b_1()
+            .border_color(p.hairline)
             .child(empty(
                 EmptyLayout::Compact,
                 Tone::Neutral,

@@ -228,7 +228,7 @@ impl QuickRecall {
                     .child(
                         Button::new("qr-retry-ask", "Retry")
                             .ghost()
-                            .sm()
+                            .inline()
                             .icon("icons/rotate-ccw.svg")
                             .on_click(act(cx, |qr, cx| {
                                 let q = qr.ask.asked.clone();
@@ -472,7 +472,13 @@ impl QuickRecall {
         let glyph = if audio {
             source_glyph(s.mic(), p)
         } else {
-            self.app_glyph(None, s.app_name.as_deref().unwrap_or("?"), 18., p)
+            self.app_glyph(
+                None,
+                s.app_name.as_deref().unwrap_or("?"),
+                18.,
+                Some(p.chart_grey_4),
+                p,
+            )
         };
         let looks = self.looks();
         div()

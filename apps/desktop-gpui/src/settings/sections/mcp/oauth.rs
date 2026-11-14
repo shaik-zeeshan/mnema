@@ -17,6 +17,7 @@ use crate::settings::{click, icons, Settings};
 use crate::theme::{space, text, Palette};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::Button;
+use crate::ui::Tracking as _;
 
 pub struct Flow {
     /// The connector whose live state drives the stage (the row's, or the
@@ -235,6 +236,14 @@ fn headline(t: impl Into<gpui_kit::SharedString>, p: &Palette) -> gpui_kit::Div 
         .child(t.into())
 }
 
+/// `box-shadow: 0 0 <blur> var(--app-accent-glow)` (on opaque fills only).
+fn glow(blur: f32, p: &Palette) -> Vec<gpui_kit::BoxShadow> {
+    vec![gpui_kit::BoxShadow {
+        blur_radius: px(blur),
+        ..crate::ui::spread(p.accent_glow, px(0.))
+    }]
+}
+
 /// The round stage glyph (`.oauth__glyph` / `__check` / `__x`).
 fn glyph(
     path: &'static str,
@@ -309,7 +318,7 @@ pub fn render(s: &Settings, f: &Flow, p: &Palette, cx: &mut Context<Settings>) -
                 p,
             )),
         Stage::Authorizing => div()
-            .child(glyph(icons::EXTERNAL, p.accent, p.accent_bg, p.accent_border))
+            .child(glyph(icons::EXTERNAL, p.accent, p.accent_bg, p.accent_border).shadow(glow(18., p)))
             .child(headline(format!("Approve {who} in your browser"), p))
             .child(line(
                 "We opened your browser \u{2014} approve access there, then you'll come right back.",
@@ -324,8 +333,9 @@ pub fn render(s: &Settings, f: &Flow, p: &Palette, cx: &mut Context<Settings>) -
                     .gap(space::S2)
                     .text_size(text::SM)
                     .font_weight(crate::theme::W_SEMIBOLD)
+                    .tracking(0.12)
                     .text_color(p.text_muted)
-                    .child(div().size(px(8.)).rounded_full().bg(p.accent))
+                    .child(div().size(px(8.)).rounded_full().bg(p.accent).shadow(glow(8., p)))
                     .child("WAITING\u{2026}"),
             )
             // The pending sign-in lapses on its own (~5 min, ADR 0051): Cancel
@@ -338,7 +348,7 @@ pub fn render(s: &Settings, f: &Flow, p: &Palette, cx: &mut Context<Settings>) -
                     .on_click(click(cx, |s, cx| close_picker(s, cx))),
             ),
         Stage::Authorized => div()
-            .child(glyph(icons::CHECK, p.accent, p.accent_bg, p.accent_border))
+            .child(glyph(icons::CHECK, p.accent, p.accent_bg, p.accent_border).shadow(glow(18., p)))
             .child(headline("Connected", p))
             .child(
                 primary("mcp-oauth-done", "Done".into())
@@ -391,6 +401,7 @@ pub fn render(s: &Settings, f: &Flow, p: &Palette, cx: &mut Context<Settings>) -
             d.child(
                 div()
                     .text_size(text::BASE)
+                    .tracking(0.01)
                     .text_color(p.text_muted)
                     .child(lede),
             )
@@ -401,11 +412,12 @@ pub fn render(s: &Settings, f: &Flow, p: &Palette, cx: &mut Context<Settings>) -
                 .flex_wrap()
                 .items_center()
                 .gap(px(6.))
-                .child(chip("HTTP", ChipKind::Neutral, p))
+                // `.chip` 0.06em, `.chip--path` 0.01em.
+                .child(super::preset::dialog_chip("HTTP", p).tracking(0.06))
                 .when(!path.is_empty(), |d| {
-                    d.child(chip(path, ChipKind::Neutral, p))
+                    d.child(super::preset::dialog_chip(path, p).tracking(0.01))
                 })
-                .child(chip("OAuth", ChipKind::Accent, p)),
+                .child(chip("OAuth", ChipKind::Accent, p).tracking(0.06)),
         )
         .child(stage)
         .children(f.submit_error.clone().map(|e| {

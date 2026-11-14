@@ -6,6 +6,7 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, AnyElement, Div, FontWeight, Hsla, SharedString};
 
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::ui::Tracking as _;
 use crate::ui::{alpha, icon, mix, Tone};
 
 /// One inline run of a paragraph: text and an optional `(weight, colour)`.
@@ -29,6 +30,7 @@ pub fn h2(s: impl Into<SharedString>, p: &Palette) -> Div {
     div()
         .font_weight(theme::W_SEMIBOLD)
         .text_size(text::XL)
+        .tracking(-0.018)
         .line_height(relative(1.25))
         .text_color(p.text_strong)
         .child(s.into())
@@ -177,6 +179,7 @@ pub fn num(s: impl Into<SharedString>, size: gpui_kit::Pixels, color: Hsla) -> D
     div()
         .font_family(FONT_MONO)
         .text_size(size)
+        .tracking(-0.01)
         .line_height(relative(1.))
         .text_color(color)
         .whitespace_nowrap()

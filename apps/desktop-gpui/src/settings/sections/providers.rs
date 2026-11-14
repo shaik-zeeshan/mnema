@@ -186,7 +186,7 @@ pub fn render(
                 popover("pv-add-menu", "Add provider", p)
                     .top(px(36.))
                     .right_0()
-                    .w(px(220.))
+                    .min_w(px(260.))
                     .p(px(4.))
                     .children(items)
                     .on_mouse_down_out(close)

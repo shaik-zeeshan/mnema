@@ -16,6 +16,7 @@ use super::{frame_actions, match_overlay, ocr_overlay, TimelineView};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::notice::{inline, notice};
+use crate::ui::Tracking as _;
 use crate::ui::{icon, skeleton, Button, Tone};
 
 /// `.timeline__stage--stale`: CSS `opacity: .55; filter: saturate(.6)`. GPUI has
@@ -132,7 +133,7 @@ fn empty_state(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
 fn audio_only_acts(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> AnyElement {
     use crate::ui::chip::{chip, ChipKind};
     let o = crate::ui::clock::now(cx).offset();
-    let hover = p.surface_hover;
+    let (hover, hover_fg) = (p.wash_strong, p.text_strong);
     let rows = v.audio.iter().rev().take(4).map(|seg| {
         let id = seg.id;
         let mic = seg.source == super::model::AudioSource::Microphone;
@@ -148,9 +149,9 @@ fn audio_only_acts(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>
             .gap(px(6.))
             .h(size::H_SM)
             .px(px(8.))
-            .rounded(radius::SM)
+            .rounded(radius::BTN_SM)
             .cursor_pointer()
-            .hover(move |s| s.bg(hover))
+            .hover(move |s| s.bg(hover).text_color(hover_fg))
             .child(chip(
                 if mic { "mic" } else { "system" },
                 if mic {
@@ -197,6 +198,7 @@ fn audio_only_acts(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>
 fn status_note(
     v: &TimelineView,
     p: &Palette,
+    window: &mut Window,
     cx: &mut Context<TimelineView>,
 ) -> Option<AnyElement> {
     let s = v.status.as_ref()?;
@@ -226,6 +228,15 @@ fn status_note(
                 p.overlay_border
             })
             .bg(p.overlay_bg_strong)
+            // `0 10px 24px` bg 28%: under the 82% fill it reads as a slightly
+            // deeper fill, like the CSS backdrop blur behind it.
+            .shadow(vec![gpui_kit::BoxShadow {
+                color: crate::ui::alpha(p.bg, 0.28),
+                offset: gpui_kit::point(px(0.), px(10.)),
+                blur_radius: px(24.),
+                spread_radius: px(0.),
+                inset: false,
+            }])
             .text_color(fg)
             .text_size(if s.error { text::SM } else { text::XS })
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
@@ -258,15 +269,42 @@ fn status_note(
                     })),
             )
             .when(s.error, |d| {
-                d.child(
-                    Button::icon_only("stage-status-close", IconName::X.path(), "Dismiss message")
-                        .ghost()
-                        .sm()
-                        .tip("Dismiss")
+                // `.timeline__stage-status-close`: 18 px, the note's own ink at 75%,
+                // a 14% tint of it on hover, the `--app-ring` on keyboard focus.
+                let focus = crate::ui::focus_handle("stage-status-close", window, cx);
+                let ring = crate::ui::focus_visible(&focus, crate::ui::Force::None, window);
+                d.child(crate::ui::with_tip(
+                    div()
+                        .id("stage-status-close")
+                        .test_support()
+                        .role(Role::Button)
+                        .aria_label("Dismiss message")
+                        .track_focus(&focus)
+                        .relative()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(px(18.))
+                        .mt(px(-1.))
+                        .mr(px(-2.))
+                        .rounded(radius::XS)
+                        .opacity(if ring { 1. } else { 0.75 })
+                        .cursor_pointer()
+                        .hover(move |s| s.opacity(1.).bg(crate::ui::alpha(fg, 0.14)))
+                        .child(icon(IconName::X.path(), px(11.)))
+                        .when(ring, |el| {
+                            el.child(crate::ui::ring_box(
+                                p.accent_glow,
+                                size::FOCUS_RING,
+                                radius::XS,
+                            ))
+                        })
                         .on_click(
                             cx.listener(|this, _, _, cx| this.set_status(None, None, false, cx)),
                         ),
-                )
+                    "Dismiss",
+                ))
             })
             .into_any_element(),
     )
@@ -275,6 +313,7 @@ fn status_note(
 fn dev_overlay(
     v: &TimelineView,
     p: &Palette,
+    window: &Window,
     cx: &mut Context<TimelineView>,
 ) -> Option<AnyElement> {
     let f = v.paging.active_frame().filter(|_| v.developer)?;
@@ -365,6 +404,9 @@ fn dev_overlay(
     if let Some(fp) = f.equivalence_hint.clone() {
         rows.insert(at(&rows, "fetch"), ("fp", fp));
     }
+    let mut keys: Vec<&str> = rows.iter().map(|(k, _)| *k).collect();
+    keys.extend(v.duplicate_of.as_ref().map(|_| "duplicateOf"));
+    let key_w = key_column(&keys, window);
     Some(
         div()
             .absolute()
@@ -384,12 +426,13 @@ fn dev_overlay(
             .bg(p.overlay_bg)
             .children(
                 rows.into_iter()
-                    .map(|(k, val)| row(k, SharedString::from(val).into_any_element(), p)),
+                    .map(|(k, val)| row(k, key_w, SharedString::from(val).into_any_element(), p)),
             )
             .children(v.duplicate_of.as_ref().map(|d| {
                 let id = d.id;
                 row(
                     "duplicateOf",
+                    key_w,
                     div()
                         .id("dev-duplicate-of")
                         .cursor_pointer()
@@ -407,15 +450,35 @@ fn dev_overlay(
     )
 }
 
-fn row(k: &str, val: AnyElement, p: &Palette) -> gpui_kit::Div {
+/// The dev panel's key column: as wide as its widest key (uppercase, 10 px
+/// semibold, 0.16em tracking), like the Svelte grid's `auto` column.
+fn key_column(keys: &[&str], window: &Window) -> Pixels {
+    keys.iter()
+        .map(|k| {
+            let k = k.to_uppercase();
+            crate::ui::text_width(
+                &k,
+                theme::FONT_UI,
+                theme::W_SEMIBOLD,
+                text::XS,
+                0.16,
+                window,
+            )
+        })
+        .fold(px(0.), Pixels::max)
+}
+
+fn row(k: &str, key_w: Pixels, val: AnyElement, p: &Palette) -> gpui_kit::Div {
     div()
         .flex()
         .gap(px(10.))
         .child(
             div()
-                .w(px(64.))
+                .flex_none()
+                .w(key_w)
                 .text_size(text::XS)
                 .font_weight(theme::W_SEMIBOLD)
+                .tracking(0.16)
                 .text_color(p.text_subtle)
                 .child(k.to_uppercase()),
         )
@@ -575,9 +638,9 @@ pub fn render(
         .child(measure)
         .child(body)
         .children(ocr_status(v, p))
-        .children(dev_overlay(v, p, cx))
+        .children(dev_overlay(v, p, window, cx))
         .children(stale_notice)
-        .children(status_note(v, p, cx))
+        .children(status_note(v, p, window, cx))
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ use super::Ocr;
 use super::{OcrStatus, TimelineView};
 use crate::theme::{radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::notice::inline;
+use crate::ui::Tracking as _;
 use crate::ui::{alpha, icon, nid, Tone};
 
 /// `MAX_OCR_BOXES` (lib/frame-ocr.ts): the overlay draws at most this many.
@@ -301,6 +302,12 @@ pub fn boxes(
                 alpha(p.ocr_box_fill, 0.18)
             })
             .on_hover(move |on: &bool, _, cx| on_hover(i, *on, cx))
+            // `0 0 0 1px hover-shadow, inset 0 0 0 1px hover-inset`: the box is
+            // translucent, so the outer ring is a border box around it.
+            .when(hot, |d| {
+                d.shadow(vec![crate::ui::inset(p.ocr_hover_inset, px(1.))])
+                    .child(crate::ui::ring_box(p.ocr_hover_shadow, px(1.), px(2.)))
+            })
             .when(hot, |d| {
                 d.child(
                     div()
@@ -319,6 +326,7 @@ pub fn boxes(
                         .text_color(p.ocr_chip_text)
                         .font_family(FONT_MONO)
                         .text_size(px((box_h * 0.8).clamp(8., 18.)))
+                        .tracking(-0.01)
                         .whitespace_nowrap()
                         .child(SharedString::from(b.text.clone())),
                 )
@@ -342,12 +350,13 @@ pub fn boxes(
                 .bottom(px(4.))
                 .px(px(6.))
                 .py(px(2.))
-                .rounded(radius::XS)
+                .rounded(px(3.))
                 .border_1()
                 .border_color(p.ocr_chip_border)
                 .bg(p.ocr_chip_bg)
                 .text_color(p.ocr_chip_text)
                 .text_size(text::XS)
+                .tracking(0.02)
                 .opacity(0.72)
                 .child(hint)
         }))

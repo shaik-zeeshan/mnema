@@ -4,21 +4,27 @@
 //! `AppUpdateStatus`, streamed by `CoreEvent::AppUpdateStatusChanged`.
 
 pub mod model;
+mod notes;
 
 use capture_types::LicenseStatus;
-use gpui_kit::base::{TextView, TextViewStyle};
+use gpui_kit::base::TextView;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, App, AppContext, Context, Global, Render, Window};
+use gpui_kit::{
+    div, px, relative, size, AnyElement, App, AppContext, Context, Global, Render, ScrollHandle,
+    Window,
+};
 use serde_json::Value;
 
 use super::parts::{frame, h2, inset_panel, note, spec_row};
 use crate::settings::model::{format_bytes, Json};
 use crate::settings::pending::Pending;
 use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::ui::baseline::{self, Line};
 use crate::ui::app_icon::{app_icon, Src};
 use crate::ui::window_strip::WindowStrip;
 use crate::ui::{icon, kicker, progress, Button, Tone};
 use model::{Key, LineIcon, LineTone};
+use notes::{notes_style, notes_view};
 
 pub const SIZE: (f32, f32) = (480., 520.);
 pub const MIN: (f32, f32) = (420., 240.);
@@ -67,6 +73,11 @@ pub struct UpdateWindow {
     pub refresh_license: Option<LicenseRefresh>,
     /// The refresh in flight; closing the window drops (cancels) it.
     pub(super) refresh_task: Option<gpui_kit::Task<()>>,
+    /// Real windows fit their height to the notes band; goldens keep the opening size.
+    pub fit: bool,
+    /// The band the window was last fitted to (`fitWindowToContent` re-fits only on a new band).
+    pub(super) fitted_band: Option<String>,
+    pub(super) notes_scroll: ScrollHandle,
 }
 
 impl UpdateWindow {
@@ -81,6 +92,9 @@ impl UpdateWindow {
             renew_note: None,
             refresh_license: None,
             refresh_task: None,
+            fit: false,
+            fitted_band: None,
+            notes_scroll: ScrollHandle::new(),
         }
     }
 
@@ -227,31 +241,30 @@ impl UpdateWindow {
                     _ => None,
                 };
                 // `.up-ver__words`: sans words around the mono version (`<b>`).
+                // One sentence in CSS: sans and mono words on one baseline.
+                let sans = Line::new(theme::FONT_UI, text::BASE, 1.3);
+                let mono = Line::new(FONT_MONO, text::BASE, 1.3);
+                let mut words = vec![
+                    (sans, div().child("You have")),
+                    (
+                        mono,
+                        div()
+                            .font_weight(theme::W_MEDIUM)
+                            .text_color(p.text_strong)
+                            .child(c.to_string()),
+                    ),
+                ];
+                words.extend(tail.map(|t| (sans, div().child(t.trim_start().to_string()))));
+                // `<span class="num">{license.windowEnd}</span>`.
+                words.extend(
+                    (k == Key::Expired)
+                        .then(|| self.license_terms(cx))
+                        .flatten()
+                        .map(|(_, end)| (mono, div().child(end))),
+                );
                 ver.font_family(theme::FONT_UI)
                     .line_height(relative(1.3))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_wrap()
-                            .items_baseline()
-                            .gap(px(4.))
-                            .child("You have")
-                            .child(
-                                div()
-                                    .font_family(FONT_MONO)
-                                    .font_weight(theme::W_MEDIUM)
-                                    .text_color(p.text_strong)
-                                    .child(c.to_string()),
-                            )
-                            .children(tail.map(|t| t.trim_start().to_string()))
-                            // `<span class="num">{license.windowEnd}</span>`.
-                            .children(
-                                (k == Key::Expired)
-                                    .then(|| self.license_terms(cx))
-                                    .flatten()
-                                    .map(|(_, end)| div().font_family(FONT_MONO).child(end)),
-                            ),
-                    )
+                    .child(baseline::row_top(words).flex_wrap().gap(px(4.)))
             }
             _ => ver,
         };
@@ -301,7 +314,8 @@ impl UpdateWindow {
         Some((who, format!("{day}, {year}")))
     }
 
-    fn band(&self, k: Key, cx: &mut Context<Self>, p: &Palette) -> AnyElement {
+    /// The release notes, and whether the band shows them.
+    fn notes(&self, k: Key) -> (Option<String>, bool) {
         let notes = self
             .status
             .as_ref()
@@ -315,6 +329,24 @@ impl UpdateWindow {
                 Key::Checking | Key::UpToDate | Key::CheckFailed | Key::Incompatible
             )
             && (k != Key::Expired || self.notes_open);
+        (notes, show_notes)
+    }
+
+    fn band(&self, k: Key, cx: &mut Context<Self>, p: &Palette) -> AnyElement {
+        let (notes, show_notes) = self.notes(k);
+        // `bandKind` + `notesHtml` + `notesOpen`: what a re-fit keys on.
+        let band_key = format!(
+            "{}|{}|{}",
+            if show_notes {
+                "notes"
+            } else if k == Key::Expired {
+                "lapsed"
+            } else {
+                "message"
+            },
+            notes.as_deref().unwrap_or_default(),
+            self.notes_open
+        );
         let mut band = div()
             .flex()
             .flex_col()
@@ -400,13 +432,14 @@ impl UpdateWindow {
             );
         }
         if let (true, Some(n)) = (show_notes, notes) {
-            band = band.child(crate::ui::scroll::area(
+            band = band.child(
                 inset_panel(p)
                     .id("up-notes")
                     .aria_label("Release notes")
                     .flex_shrink_1()
                     .min_h_0()
                     .overflow_y_scroll()
+                    .track_scroll(&self.notes_scroll)
                     .px(space::S4)
                     .pt(space::S3)
                     .pb(space::S4)
@@ -420,9 +453,11 @@ impl UpdateWindow {
                             .on_link_click(crate::ui::link::prose_click)
                             .style(notes_style(p, theme::mode(cx) == theme::Mode::Dark))
                             .into_any_element(),
-                    }),
-            ));
+                    })
+                    .child(crate::ui::scroll::bar(&self.notes_scroll)),
+            );
         }
+        let (scroll, this) = (self.notes_scroll.clone(), cx.entity().downgrade());
         div()
             .flex_1()
             .min_h_0()
@@ -430,7 +465,42 @@ impl UpdateWindow {
             .flex_col()
             .px(space::S5)
             .child(band)
+            // The room the band leaves unused: dead space the window can give back.
+            .child(div().flex_1())
+            .when(self.fit, |el| {
+                el.on_children_prepainted(move |bounds, window, cx| {
+                    let Some(spare) = bounds.get(1).map(|b| b.size.height) else {
+                        return;
+                    };
+                    // What the notes hide under their scroll, minus the spare room.
+                    let hidden = if show_notes {
+                        scroll.max_offset().y
+                    } else {
+                        px(0.)
+                    };
+                    let overflow = f32::from(hidden - spare);
+                    let (this, handle, key) =
+                        (this.clone(), window.window_handle(), band_key.clone());
+                    cx.defer(move |cx| {
+                        let _ = handle.update(cx, |_, window, cx| {
+                            let _ = this.update(cx, |v, _| v.fit_window(key, overflow, window));
+                        });
+                    });
+                })
+            })
             .into_any_element()
+    }
+
+    /// `fitWindowToContent`: once per band, grow or shrink to what it needs.
+    fn fit_window(&mut self, band: String, overflow: f32, window: &mut Window) {
+        if self.fitted_band.as_ref() == Some(&band) {
+            return;
+        }
+        self.fitted_band = Some(band);
+        let vp = window.viewport_size();
+        if let Some(h) = model::fit_height(f32::from(vp.height), overflow) {
+            window.resize(size(vp.width, px(h)));
+        }
     }
 
     fn controls(&self, k: Key, cx: &mut Context<Self>, p: &Palette) -> AnyElement {
@@ -597,116 +667,6 @@ fn mono_para(parts: &[(&str, Ink)], p: &Palette) -> gpui_kit::StyledText {
     crate::ui::face_runs(&runs)
 }
 
-/// `.up-notes`: muted body, strong 13 px headings, links in body ink.
-/// `.up-notes` for GitHub's notes: a 13 px heading, 12/1.5 bullets 5 px apart
-/// (faint markers), and the closing meta line at 11 px subtle with its link.
-fn notes_view(
-    blocks: Vec<model::NoteBlock>,
-    cx: &mut Context<UpdateWindow>,
-    p: &Palette,
-) -> gpui_kit::Div {
-    use model::NoteBlock;
-    let mut first = true;
-    div()
-        .flex()
-        .flex_col()
-        .children(blocks.into_iter().map(|b| {
-            let top = !std::mem::take(&mut first);
-            match b {
-                NoteBlock::Heading(h) => div()
-                    .when(top, |d| d.mt(px(4.)))
-                    .mb(px(6.))
-                    .font_weight(theme::W_SEMIBOLD)
-                    .text_size(text::MD)
-                    .line_height(relative(1.3))
-                    .text_color(p.text_strong)
-                    .child(h)
-                    .into_any_element(),
-                NoteBlock::List(items) => {
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap(px(5.))
-                        .mb(space::S2)
-                        .children(items.into_iter().map(|t| {
-                            div()
-                                .flex()
-                                .text_size(text::BASE)
-                                .line_height(relative(1.5))
-                                .text_color(p.text_muted)
-                                .child(
-                                    // `li::marker`: a faint round bullet.
-                                    div()
-                                        .w(px(18.))
-                                        .flex_none()
-                                        .pl(px(6.))
-                                        .pt(px(7.))
-                                        .child(div().size(px(4.)).rounded_full().bg(p.text_faint)),
-                                )
-                                .child(div().flex_1().min_w_0().child(t))
-                        }))
-                        .into_any_element()
-                }
-                NoteBlock::Para(words, link) => {
-                    // One text run so the link wraps inline after the words, as in CSS.
-                    let url = link.unwrap_or_default();
-                    let open = url.clone();
-                    let mut highlights = Vec::new();
-                    if !url.is_empty() {
-                        highlights.push((
-                            words.len()..words.len() + url.len(),
-                            gpui_kit::HighlightStyle {
-                                color: Some(p.text),
-                                underline: Some(gpui_kit::UnderlineStyle {
-                                    thickness: px(1.),
-                                    color: Some(p.border_hover),
-                                    wavy: false,
-                                }),
-                                ..Default::default()
-                            },
-                        ));
-                    }
-                    div()
-                        .id("up-notes-link")
-                        .when(top, |d| d.mt(space::S2))
-                        .text_size(text::SM)
-                        .line_height(relative(1.4))
-                        .text_color(p.text_subtle)
-                        .child(
-                            gpui_kit::StyledText::new(format!("{words}{url}"))
-                                .with_highlights(highlights),
-                        )
-                        .when(!open.is_empty(), |d| {
-                            d.role(gpui_kit::Role::Link)
-                                .cursor_pointer()
-                                // Feed notes aren't covered by the update signature: gate the URL.
-                                .on_click(cx.listener(move |_, _, _, cx| {
-                                    crate::ui::link::open(&open, cx);
-                                }))
-                        })
-                        .into_any_element()
-                }
-            }
-        }))
-}
-
-fn notes_style(p: &Palette, dark: bool) -> TextViewStyle {
-    let strong = p.text_strong;
-    TextViewStyle::default()
-        .with_dark(dark)
-        .with_foreground(p.text_muted)
-        .with_muted_foreground(p.text_subtle)
-        .with_link(p.text)
-        .with_border(p.border)
-        .with_code_background(p.wash)
-        .with_heading(move |_| {
-            gpui_kit::StyleRefinement::default()
-                .text_size(text::MD)
-                .font_weight(theme::W_SEMIBOLD)
-                .text_color(strong)
-        })
-}
-
 fn last_checked(s: Option<&Value>) -> Option<i64> {
     s.and_then(|s| s.num_at(&["lastCheckedAtUnixMs"]))
         .map(|n| n as i64)
@@ -790,6 +750,7 @@ pub fn open(cx: &mut App) {
         |_, cx| {
             cx.new(|_| UpdateWindow {
                 refresh_license: refresh,
+                fit: true,
                 ..UpdateWindow::new(status, license)
             })
         },

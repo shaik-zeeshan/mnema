@@ -4,6 +4,7 @@
 //! the right-hand status; plus the foot's operator query and live keys.
 
 use crate::ui::input::FieldText as _;
+use crate::ui::Tracking as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
@@ -24,12 +25,16 @@ const FIELD_TEXT: f32 = 19.;
 const FIELD_LINE: f32 = 34.;
 
 impl QuickRecall {
-    /// An app's 15 px icon, or its initial on a wash tile.
+    /// An app's icon, or its initial on a tile: the field pill's wash tile
+    /// (`tint: None`), or the 18 px row / citation tile (`.rc-app` in
+    /// `SearchResultCard` / `AskPane`): the letter in `tint`, an 18% fill of it
+    /// over the surface and a 30% inner ring.
     pub(super) fn app_glyph(
         &self,
         id: Option<&str>,
         name: &str,
         s: f32,
+        tint: Option<gpui_kit::Hsla>,
         p: &Palette,
     ) -> gpui_kit::AnyElement {
         let path = id
@@ -43,11 +48,20 @@ impl QuickRecall {
                 .items_center()
                 .justify_center()
                 .size(px(s))
-                .rounded(px(4.))
-                .bg(p.wash_strong)
-                .text_color(p.text_strong)
-                .text_size(px(s * 0.57))
                 .font_weight(gpui_kit::FontWeight::BOLD)
+                .map(|d| match tint {
+                    None => d
+                        .rounded(px(4.))
+                        .bg(p.wash_strong)
+                        .text_color(p.text_strong)
+                        .text_size(px(s * 0.57)),
+                    Some(c) => d
+                        .rounded(radius::BTN_SM)
+                        .bg(crate::ui::mix(c, p.surface, 0.18))
+                        .shadow(vec![crate::ui::inset(crate::ui::alpha(c, 0.3), px(1.))])
+                        .text_color(c)
+                        .text_size(text::XS),
+                })
                 .child(
                     name.chars()
                         .next()
@@ -61,7 +75,7 @@ impl QuickRecall {
     fn pill(&self, i: usize, pill: &Pill, cx: &mut Context<Self>, p: &Palette) -> impl IntoElement {
         let pressed = self.filters.pill == Some(i);
         let lead = match pill {
-            Pill::App(a) => self.app_glyph(None, a, 15., p),
+            Pill::App(a) => self.app_glyph(None, a, 15., None, p),
             Pill::Date { .. } => div()
                 .text_color(p.text_subtle)
                 .child(icon(IconName::Calendar.path(), size::ICON_SM))
@@ -100,13 +114,21 @@ impl QuickRecall {
             .h(size::H_SM)
             .max_w(px(220.))
             .px(px(9.))
-            .rounded(radius::SM)
+            .rounded(radius::BTN_SM)
             .border_1()
-            .border_color(if pressed { p.border_hover } else { p.border })
-            .bg(if pressed { p.wash_strong } else { p.surface })
+            .border_color(if pressed {
+                p.border_hover
+            } else {
+                p.border_strong
+            })
+            .bg(if pressed {
+                p.wash_strong
+            } else {
+                p.surface_raised
+            })
             .text_size(text::BASE)
             .font_weight(theme::W_MEDIUM)
-            .text_color(p.text)
+            .text_color(p.text_strong)
             .cursor_pointer()
             .hover(|s| s.bg(p.surface_hover))
             .child(lead)
@@ -265,6 +287,8 @@ impl QuickRecall {
                     .h(px(FIELD_LINE))
                     .overflow_hidden()
                     .text_size(px(FIELD_TEXT))
+                    // `.rc-mirror`; the transparent input over it inherits the same.
+                    .tracking(-0.012)
                     .line_height(px(FIELD_LINE))
                     .text_color(p.text_strong)
                     .child(
@@ -499,6 +523,8 @@ impl QuickRecall {
             .px(px(14.))
             .border_t_1()
             .border_color(p.hairline)
+            // Inside the shell's 1 px border: its fill must not cross the rounded corners.
+            .rounded_b(px(super::CORNER - 1.))
             .bg(alpha(p.surface, 0.55))
             .text_size(text::SM)
             .text_color(p.text_subtle)

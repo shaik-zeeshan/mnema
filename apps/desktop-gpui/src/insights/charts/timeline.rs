@@ -12,12 +12,23 @@ use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, relative, AnyElement, Div, Role, SharedString};
 
 use crate::insights::stats::category_color;
-use crate::theme::{self, Palette};
+use crate::theme::{self, Palette, FONT_UI};
 use crate::ui::app_icon::icon_or_initial;
+use crate::ui::baseline::{row_top, Line, PHI};
+use crate::ui::Tracking as _;
 use crate::ui::{alpha, nid};
 
 /// The dot's centre from the row top (`.dot` top 5 + half its 8).
 const DOT_Y: f32 = 9.;
+
+/// The app chip as a one-line row item: its 9.5 px label (inherited line
+/// height, at least the 13 px icon) is centred in the chip, so the chip
+/// behaves like one line whose box is the whole chip (+1 px pad, +1 px border).
+fn chip_line() -> Line {
+    let size = px(9.5);
+    let h = f32::from((size * PHI).round()).max(13.) + 4.;
+    Line::new(FONT_UI, size, h / f32::from(size))
+}
 
 /// `appLabel`: the app without one trailing `(…)` the model sometimes adds
 /// ("Zen (Zen)" → "Zen"); `None` when nothing is left to show.
@@ -94,6 +105,7 @@ pub fn timeline(
             div()
                 .mb(px(10.))
                 .text_size(px(10.5))
+                .tracking(0.04)
                 .text_color(p.text_muted)
                 .child(SharedString::from(t.to_uppercase()))
         }))
@@ -174,29 +186,28 @@ pub fn timeline(
                             div()
                                 .text_size(px(10.5))
                                 .font_weight(theme::W_MEDIUM)
+                                .tracking(0.02)
                                 .text_color(p.text_muted)
                                 .child(SharedString::from(range)),
                         )
-                        .child(
-                            div()
-                                .flex()
-                                .flex_wrap()
-                                .items_baseline()
-                                .gap(px(7.))
-                                .min_w_0()
-                                .child(
-                                    div()
-                                        .min_w_0()
-                                        .text_size(px(12.5))
-                                        .line_height(relative(1.45))
-                                        .text_color(p.text)
-                                        .child(SharedString::from(it.label.clone())),
-                                )
-                                .children(app.map(|a| {
-                                    let path = icon(&a);
-                                    chip(a, path, p)
-                                })),
-                        ),
+                        // `.label`: the text's first line and the chip on one baseline.
+                        .child({
+                            let mut items = vec![(
+                                Line::new(FONT_UI, px(12.5), 1.45),
+                                div()
+                                    .min_w_0()
+                                    .text_color(p.text)
+                                    .child(SharedString::from(it.label.clone())),
+                            )];
+                            items.extend(app.map(|a| {
+                                let path = icon(&a);
+                                // Wrapped, so the pad lands outside the chip's border and the
+                                // chip keeps the line height it inherited (the item's is synthetic).
+                                let c = chip(a, path, p).line_height(relative(PHI));
+                                (chip_line(), div().flex_none().child(c))
+                            }));
+                            row_top(items).flex_wrap().gap(px(7.)).min_w_0()
+                        }),
                 )
         }))
         .into_any_element()

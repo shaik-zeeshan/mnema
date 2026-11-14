@@ -225,47 +225,40 @@ pub fn edit_body(
     this: &Insights,
     editor: &Entity<TextareaState>,
     p: &crate::theme::Palette,
+    window: &Window,
     cx: &mut Context<Insights>,
 ) -> gpui_kit::Div {
-    use crate::theme::{self, radius, space, text};
+    use crate::theme::{radius, space, text};
     use crate::ui::{nid, Button};
     use gpui_kit::component::input::Textarea;
-    use gpui_kit::{div, px, Role};
+    use gpui_kit::{div, px, Focusable as _};
     let len = editor.read(cx).value().chars().count();
     let blank = editor.read(cx).value().trim().is_empty();
+    let focused = editor.focus_handle(cx).is_focused(window);
     let colors = super::context::topic_colors(p);
     let chips = div()
         .flex()
         .gap(px(4.))
         .children(TOPICS.into_iter().enumerate().map(|(i, name)| {
             let on = this.ctx_ui.edit_topic == Some(name);
-            div()
-                .id(nid("insights-edit-topic", i as u64))
-                .test_support()
-                .role(Role::Button)
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .h(px(24.))
-                .px(px(9.))
-                .rounded(radius::SM)
-                .border_1()
-                .border_color(if on { p.border_strong } else { p.border })
-                .bg(if on { p.wash_strong } else { p.surface_raised })
-                .cursor_pointer()
-                .text_size(text::BASE)
-                .font_weight(theme::W_MEDIUM)
-                .text_color(if on { p.text_strong } else { p.text_muted })
-                .child(super::charts::swatch(colors[i], 8.))
-                .child(name)
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    this.ctx_ui.edit_topic = if this.ctx_ui.edit_topic == Some(name) {
-                        None
-                    } else {
-                        Some(name)
-                    };
-                    cx.notify();
-                }))
+            super::charts::swatch_chip(
+                nid("insights-edit-topic", i as u64),
+                name,
+                colors[i],
+                on,
+                true,
+                p,
+            )
+            .test_support()
+            .cursor_pointer()
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.ctx_ui.edit_topic = if this.ctx_ui.edit_topic == Some(name) {
+                    None
+                } else {
+                    Some(name)
+                };
+                cx.notify();
+            }))
         }));
     let save = if this.ctx_ui.saving {
         Button::new("insights-edit-save", "Saving…")
@@ -288,11 +281,20 @@ pub fn edit_body(
         .flex_col()
         .gap(space::S3)
         .child(
+            // `.mx-input`: hover border, `:focus-visible` accent border + ring.
             div()
                 .rounded(radius::MD)
                 .border_1()
-                .border_color(p.border)
-                .bg(p.input_recess)
+                .bg(p.surface_subtle)
+                .map(|d| {
+                    if focused {
+                        d.border_color(p.accent_border)
+                            .shadow(vec![crate::ui::ring(p.accent_glow)])
+                    } else {
+                        d.border_color(p.border_strong)
+                            .hover(|s| s.border_color(p.border_hover))
+                    }
+                })
                 .text_size(text::LG)
                 .line_height(gpui_kit::relative(1.45))
                 .text_color(p.text_strong)

@@ -34,7 +34,12 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             None,
             Vec::new(),
             false,
-            vec![div().py(space::S3).child(failed).into_any_element()],
+            vec![div()
+                .py(space::S3)
+                .border_b_1()
+                .border_color(p.hairline)
+                .child(failed)
+                .into_any_element()],
             p,
         )
         .into_any_element();
@@ -44,6 +49,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         rows.push(
             div()
                 .py(space::S3)
+                .border_b_1()
+                .border_color(p.hairline)
                 .child(empty(
                     EmptyLayout::Compact,
                     Tone::Neutral,
@@ -151,7 +158,14 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                     .into_any_element(),
             );
         } else if m.preference.device_id.is_none() {
-            rows.push(div().py(space::S3).child(needs).into_any_element());
+            rows.push(
+                div()
+                    .py(space::S3)
+                    .border_b_1()
+                    .border_color(p.hairline)
+                    .child(needs)
+                    .into_any_element(),
+            );
         }
         let wait = m.disconnect_policy == MicrophoneDisconnectPolicy::WaitForSameDevice;
         rows.push(

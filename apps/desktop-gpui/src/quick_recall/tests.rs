@@ -498,3 +498,15 @@ fn a_newer_search_cancels_the_one_still_in_flight(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(searches(&b)[before..], ["pricing page".to_string()]);
 }
+
+#[test]
+fn a_snippet_with_line_breaks_stays_on_one_line() {
+    assert_eq!(
+        model::snippet_runs("…the parent's <mark>name</mark> opens.\n\nMove  to…"),
+        vec![
+            ("…the parent's ".to_string(), false),
+            ("name".to_string(), true),
+            (" opens. Move to…".to_string(), false),
+        ]
+    );
+}

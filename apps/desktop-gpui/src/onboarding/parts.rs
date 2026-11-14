@@ -8,6 +8,7 @@ use gpui_kit::{div, px, relative, AnyElement, App, Div, Pixels, SharedString, Wi
 
 use super::flow::Step;
 use crate::theme::{self, size, space, text, Palette, FONT_MONO};
+use crate::ui::Tracking as _;
 use crate::ui::{icon, mix};
 
 /// `.ob-bar` height.
@@ -300,6 +301,7 @@ pub fn display(s: impl Into<SharedString>, p: &Palette) -> Div {
     div()
         .font_weight(theme::W_SEMIBOLD)
         .text_size(DISPLAY)
+        .tracking(-0.034)
         .line_height(relative(1.04))
         .text_color(p.text_strong)
         .child(s.into())

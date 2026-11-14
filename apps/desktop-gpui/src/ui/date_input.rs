@@ -23,9 +23,10 @@ use super::calendar::{
 };
 use super::date_input_pop::{content, release, Act, Commit, Pop, RangePick};
 use super::{
-    focus_handle, focus_visible, icon, last_change, nid, outline, popover, with_tip, Force,
+    focus_handle, focus_visible, icon, last_change, nid, outline_bordered, popover, with_tip, Force,
 };
 use crate::theme::{self, motion, radius, size, text, Palette, FONT_MONO};
+use crate::ui::Tracking as _;
 
 /// `(start, end, period unit or None for day mode)`.
 pub type OnDate = Rc<dyn Fn(Date, Date, Option<Unit>, &mut Window, &mut App)>;
@@ -139,13 +140,19 @@ fn tick(x: f32, w: f32, h: i8, sel: bool, p: &Palette) -> gpui_kit::Div {
         .when(h < 0, |d| d.opacity(0.4))
 }
 
-/// Fade a ruler edge into the capsule (the CSS mask): `from` = capsule colour.
-fn edge(left: bool, from: Hsla) -> gpui_kit::Div {
-    let clear = Hsla { a: 0., ..from };
-    let (angle, a, b) = if left {
-        (90., from, clear)
-    } else {
-        (270., from, clear)
+/// The capsule button's hover group: the ruler's edge fades follow its fill.
+const BTN_GROUP: &str = "mx-date-btn";
+
+/// Fade a ruler edge into the capsule (the CSS mask): `from` = capsule colour,
+/// `hover` = its `:hover` fill, so the fade never shows as a lighter block.
+fn edge(left: bool, from: Hsla, hover: Hsla) -> gpui_kit::Div {
+    let angle = if left { 90. } else { 270. };
+    let fade = move |c: Hsla| {
+        linear_gradient(
+            angle,
+            linear_color_stop(c, 0.),
+            linear_color_stop(Hsla { a: 0., ..c }, 1.),
+        )
     };
     div()
         .absolute()
@@ -154,11 +161,8 @@ fn edge(left: bool, from: Hsla) -> gpui_kit::Div {
         .w(px(22.))
         .when(left, |d| d.left_0())
         .when(!left, |d| d.right_0())
-        .bg(linear_gradient(
-            angle,
-            linear_color_stop(a, 0.),
-            linear_color_stop(b, 1.),
-        ))
+        .bg(fade(from))
+        .group_hover(BTN_GROUP, move |s| s.bg(fade(hover)))
 }
 
 /// The drag payload while the capsule is scrubbed (its element id).
@@ -313,8 +317,8 @@ impl RenderOnce for DateInput {
             .when(!own, |d| d.bg(p.wash))
             .child(tape)
             .when(!own, |d| {
-                d.child(edge(true, cap_bg))
-                    .child(edge(false, cap_bg))
+                d.child(edge(true, cap_bg, p.surface_hover))
+                    .child(edge(false, cap_bg, p.surface_hover))
                     .child(
                         div()
                             .absolute()
@@ -398,6 +402,7 @@ impl RenderOnce for DateInput {
             ))
             .aria_expanded(open)
             .track_focus(&handle)
+            .group(BTN_GROUP)
             .relative()
             .flex()
             .items_center()
@@ -441,6 +446,7 @@ impl RenderOnce for DateInput {
                         div()
                             .font_weight(theme::W_SEMIBOLD)
                             .text_size(text::MD)
+                            .tracking(-0.01)
                             .child(label.clone()),
                     )
                     .child(
@@ -448,12 +454,13 @@ impl RenderOnce for DateInput {
                             .font_family(FONT_MONO)
                             .font_weight(theme::W_MEDIUM)
                             .text_size(text::MICRO)
+                            .tracking(0.08)
                             .text_color(p.text_subtle)
                             .child(rel.to_uppercase()),
                     ),
             )
             .child(ruler)
-            .when(ring, |d| d.child(outline(p.accent, px(6.))))
+            .when(ring, |d| d.child(outline_bordered(p.accent, px(6.), px(1.))))
             // Enter / Space land here too (GPUI's keyboard click on the focused capsule).
             .on_click(move |_, _, cx| {
                 let opening = !*toggle.read(cx);

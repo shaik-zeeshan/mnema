@@ -20,6 +20,7 @@ use crate::ui::choice::{Choice, ChoiceOption};
 use crate::ui::notice::notice;
 use crate::ui::segmented::Segmented;
 use crate::ui::switch::Switch;
+use crate::ui::Tracking as _;
 use crate::ui::{kicker, Tone};
 
 const SECTIONS: [(&str, &str); 4] = [
@@ -89,21 +90,18 @@ pub(super) fn kicker_note(
     label: &str,
     note: gpui_kit::Div,
     p: &Palette,
-    cx: &gpui_kit::App,
+    _: &gpui_kit::App,
 ) -> AnyElement {
-    baseline::row(
-        vec![
-            (
-                Line::new(FONT_MONO, text::XS, parts::FINE_LH),
-                kicker(label, p).into_any_element(),
-            ),
-            (
-                Line::new(FONT_UI, text::BASE, parts::FINE_LH),
-                note.into_any_element(),
-            ),
-        ],
-        cx,
-    )
+    baseline::row(vec![
+        (
+            Line::new(FONT_MONO, text::XS, parts::FINE_LH),
+            kicker(label, p).into_any_element(),
+        ),
+        (
+            Line::new(FONT_UI, text::BASE, parts::FINE_LH),
+            note.into_any_element(),
+        ),
+    ])
     .gap(space::S3)
     .into_any_element()
 }
@@ -296,8 +294,6 @@ impl Onboarding {
             .min_h(px(46.))
             .py(px(6.))
             .pl(px(depth * 26.))
-            .border_b_1()
-            .border_color(p.hairline)
             .children(elbow)
             .child(
                 div()
@@ -424,21 +420,18 @@ impl Onboarding {
             )
         };
         let kv = |k: &'static str, val: String| {
-            baseline::row(
-                vec![
-                    (
-                        Line::new(FONT_UI, text::BASE, leading::BODY),
-                        div().text_color(p.text_subtle).child(k).into_any_element(),
-                    ),
-                    (
-                        Line::new(FONT_MONO, text::BASE, leading::ONE),
-                        parts::mono(val, text::BASE, p.text_strong)
-                            .font_weight(theme::W_MEDIUM)
-                            .into_any_element(),
-                    ),
-                ],
-                cx,
-            )
+            baseline::row(vec![
+                (
+                    Line::new(FONT_UI, text::BASE, leading::BODY),
+                    div().text_color(p.text_subtle).child(k).into_any_element(),
+                ),
+                (
+                    Line::new(FONT_MONO, text::BASE, leading::ONE),
+                    parts::mono(val, text::BASE, p.text_strong)
+                        .font_weight(theme::W_MEDIUM)
+                        .into_any_element(),
+                ),
+            ])
             .gap(px(6.))
         };
         v.push(
@@ -454,14 +447,30 @@ impl Onboarding {
                         .rounded(px(3.))
                         .overflow_hidden()
                         .bg(p.surface_hover)
-                        .children(bar.into_iter().map(|(f, c)| {
-                            let frac = if total > 0. {
-                                self.disk_cost(f) / total
-                            } else {
-                                0.
-                            };
-                            div().h_full().w(relative(frac as f32)).bg(c)
-                        })),
+                        .children({
+                            let fracs: Vec<_> = bar
+                                .into_iter()
+                                .map(|(f, c)| {
+                                    let frac = if total > 0. {
+                                        self.disk_cost(f) / total
+                                    } else {
+                                        0.
+                                    };
+                                    (frac as f32, c)
+                                })
+                                .collect();
+                            // GPUI clips to a rectangle: the end segments round themselves.
+                            let first = fracs.iter().position(|(w, _)| *w > 0.);
+                            let last = fracs.iter().rposition(|(w, _)| *w > 0.);
+                            fracs.into_iter().enumerate().map(move |(i, (w, c))| {
+                                div()
+                                    .h_full()
+                                    .w(relative(w))
+                                    .bg(c)
+                                    .when(Some(i) == first, |d| d.rounded_l(px(3.)))
+                                    .when(Some(i) == last, |d| d.rounded_r(px(3.)))
+                            })
+                        }),
                 )
                 .child(
                     div()
@@ -607,7 +616,11 @@ impl Onboarding {
             .gap(space::S4)
             .children([
             head(vec![
-                parts::display("Your voice never leaves this Mac.", p).text_size(text::XL).into_any_element(),
+                // `.mx-h2`.
+                parts::display("Your voice never leaves this Mac.", p)
+                    .text_size(text::XL)
+                    .tracking(-0.018)
+                    .into_any_element(),
                 fine("Every engine below transcribes on this machine. Once an engine\u{2019}s model is on disk, it keeps working with the network off.", p).into_any_element(),
             ])
             .into_any_element(),

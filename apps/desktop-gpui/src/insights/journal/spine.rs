@@ -9,10 +9,11 @@ use time::UtcOffset;
 
 use super::day::{spine_axis, stack_lanes, Card, DayModel};
 use crate::insights::charts::swatch;
-use crate::insights::parts::{mono_label, panel, sec};
+use crate::insights::parts::{mono_label, panel, KICKER, MONO_LABEL};
 use crate::insights::stats::{self, category_color, focus_color, humanize_ms};
 use crate::insights::Insights;
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::ui::baseline;
 use crate::ui::{alpha, kicker, mix, nid, spread};
 
 /// `.in-sp__lane { --lh: 64px }`, 40 px a lane when overlaps stack, 4 px apart.
@@ -338,6 +339,12 @@ pub fn render(
                     .child("now"),
             )
     });
+    // `.in-sp__legend`: SM sans, inherited line height.
+    const LEGEND: baseline::Line = baseline::Line {
+        family: theme::FONT_UI,
+        size: text::SM,
+        lh: baseline::PHI,
+    };
     let legend = div()
         .flex()
         .flex_wrap()
@@ -412,17 +419,15 @@ pub fn render(
         .id("insights-spine")
         .p(space::S5)
         .mb(space::S7)
+        // `.in-sec`: kicker, span and the (wrapping) legend's first line on one baseline.
         .child(
-            sec(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space::S3)
-                    .child(kicker("Day spine", p))
-                    .child(mono_label(span_label, p)),
-                Some(legend.into_any_element()),
-            )
-            .mb_0(),
+            baseline::row_top(vec![
+                (KICKER, kicker("Day spine", p)),
+                (MONO_LABEL, mono_label(span_label, p)),
+                (LEGEND, div().flex_1()),
+                (LEGEND, legend),
+            ])
+            .gap(space::S3),
         )
         .child(plot)
         .into_any_element()

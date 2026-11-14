@@ -6,7 +6,6 @@
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Textarea;
 use gpui_kit::prelude::*;
-use gpui_kit::Focusable as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
     div, px, radians, relative, svg, AnyElement, Context, Div, SharedString, Transformation, Window,
@@ -395,7 +394,11 @@ pub fn render(
             .into_any_element();
     }
     let streaming = chat.streaming;
-    let focused = chat.composer.read(cx).focus_handle(cx).is_focused(window);
+    // `:focus-within`: focus on the textarea, or in the model picker's search or the
+    // scope calendar opened from inside it. A click on the card's own padding lands
+    // focus on the card itself, which (like the browser's blur) is not "within".
+    let focused =
+        chat.composer_focus.contains_focused(window, cx) && !chat.composer_focus.is_focused(window);
     let empty = chat.composer.read(cx).value().is_empty();
     let today = crate::ui::clock::now(cx).date();
     let send_to = chat
@@ -431,6 +434,7 @@ pub fn render(
             "chat-composer"
         })
         .role(gpui_kit::Role::Form)
+        .track_focus(&chat.composer_focus)
         .relative()
         .w_full()
         .max_w(max_w)
@@ -438,16 +442,12 @@ pub fn render(
         .rounded(radius::XL)
         .bg(p.surface_raised)
         .border_1()
+        // Focus darkens the border only: the Svelte app's 4 px halo is deliberately not ported
+        // (founder ruling 2026-11-14).
         .border_color(if focused {
             p.border_hover
         } else {
             p.border_strong
-        })
-        .when(focused, |d| {
-            d.shadow(vec![crate::ui::spread(
-                crate::ui::alpha(p.fg, 0.03),
-                px(4.),
-            )])
         })
         .child(
             div()
@@ -478,7 +478,7 @@ pub fn render(
                             .top(space::S4 + px(4.))
                             .left(space::S4)
                             .right(space::S4)
-                            .text_color(p.text_muted)
+                            .text_color(p.text_subtle)
                             .child(super::COMPOSER_PLACEHOLDER),
                     )
                 }),

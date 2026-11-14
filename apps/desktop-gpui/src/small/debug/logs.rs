@@ -10,7 +10,9 @@ use std::rc::Rc;
 use crate::ui::input::FieldText as _;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, relative, AnyElement, Context, ElementId, SharedString, Window};
+use gpui_kit::{
+    div, px, relative, AnyElement, Context, ElementId, Focusable as _, SharedString, Window,
+};
 
 use super::data::LOG_TAIL_LINES;
 use super::readouts::{filter_entries, group_log_lines, Level, LogEntry, LOG_FEATURES};
@@ -99,7 +101,7 @@ pub fn line_copy_id(raw: &str) -> ElementId {
 
 pub fn tab(
     w: &DebugWindow,
-    _: &mut Window,
+    window: &mut Window,
     cx: &mut Context<DebugWindow>,
     p: &Palette,
 ) -> AnyElement {
@@ -182,6 +184,7 @@ pub fn tab(
                     .field_h(px(18.))
                     .field_text(text::BASE)
                     .into_any_element(),
+                w.needle.focus_handle(cx).is_focused(window),
                 p,
             )
             .h(size::H_SM)

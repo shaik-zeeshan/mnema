@@ -23,6 +23,7 @@ use crate::ui::notice::{inline, notice};
 use crate::ui::progress::spinner;
 use crate::ui::select::Select;
 use crate::ui::switch::Switch;
+use crate::ui::Tracking as _;
 use crate::ui::{icon, kicker, Tone};
 
 /// The kind picker, local first (the Svelte optgroups' order).
@@ -35,13 +36,8 @@ const KINDS: [AiProviderKind; 6] = [
     AiProviderKind::OpenaiCompatible,
 ];
 
-fn lamp(color: Hsla) -> AnyElement {
-    div()
-        .flex_none()
-        .size(px(7.))
-        .rounded_full()
-        .bg(color)
-        .into_any_element()
+fn lamp(color: Hsla) -> gpui_kit::Div {
+    div().flex_none().size(px(7.)).rounded_full().bg(color)
 }
 
 fn line(tone: Tone, lead: AnyElement, text_: String, p: &Palette) -> gpui_kit::Div {
@@ -128,10 +124,15 @@ impl Onboarding {
             (None, None) => String::new(),
         };
         let this = cx.entity().downgrade();
+        // `.ob-ai-row`: hairlines above and below.
         let mut v = vec![div()
             .flex()
             .items_center()
             .gap(space::S4)
+            .py(px(10.))
+            .border_t_1()
+            .border_b_1()
+            .border_color(p.hairline)
             .child(
                 div()
                     .flex_1()
@@ -353,7 +354,7 @@ impl Onboarding {
                     .flex()
                     .items_center()
                     .gap(space::S3)
-                    .child(parts::mono(code, text::XL, p.text_strong))
+                    .child(parts::mono(code, text::XL, p.text_strong).tracking(0.12))
                     .child(
                         // `ChatgptConnect.svelte`: "Copied" for 1.5 s.
                         crate::ui::CopyButton::label("ob-ai-copy-code", "Copy code", copy)
@@ -554,11 +555,16 @@ impl Onboarding {
             .gap(space::S2)
             .px(space::S3)
             .py(space::S2)
-            .rounded(theme::radius::MD)
+            .rounded(theme::radius::LG)
             .border_1()
             .border_color(p.border)
             .bg(p.surface)
-            .child(lamp(lamp_c))
+            // `.ob-lamp.live`: a 3 px accent-glow halo.
+            .child(
+                lamp(lamp_c).when(matches!(check, Some(Check::Live { .. })), |d| {
+                    d.shadow(vec![crate::ui::ring(p.accent_glow)])
+                }),
+            )
             .child(
                 div()
                     .font_weight(theme::W_MEDIUM)
@@ -655,6 +661,10 @@ impl Onboarding {
             .flex()
             .items_center()
             .gap(space::S4)
+            .py(px(10.))
+            .border_t_1()
+            .border_b_1()
+            .border_color(p.hairline)
             .child(
                 div()
                     .flex_1()

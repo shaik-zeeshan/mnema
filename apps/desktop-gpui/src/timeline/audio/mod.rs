@@ -33,6 +33,7 @@ use gpui_kit::{
     Pixels, Role, ScrollHandle, SharedString, Task, Window,
 };
 
+use crate::ui::Tracking as _;
 use crate::theme::{self, motion, radius, space, text, FONT_MONO};
 use data::{Backend, Transcript, Write};
 use model::{Run, Segment};
@@ -653,6 +654,7 @@ fn error_row(label: &'static str, msg: &str, p: &theme::Palette) -> gpui_kit::Di
                 .flex_none()
                 .text_size(text::XS)
                 .font_weight(theme::W_SEMIBOLD)
+                .tracking(0.14)
                 .text_color(p.danger)
                 .child(label.to_uppercase()),
         )

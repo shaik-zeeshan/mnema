@@ -333,8 +333,10 @@ fn scrubber(d: &AudioDrawer, shown: f64, p: &Palette, cx: &mut Context<AudioDraw
             player_time(f as f64 * duration),
         ))
     });
+    let halo = crate::ui::spread(alpha(p.record_glyph_start, 0.18), px(4.));
     div()
         .id("drawer-wave")
+        .group("drawer-wave")
         .role(Role::Slider)
         .aria_label(SharedString::from(format!(
             "Seek within segment, {} of {}",
@@ -364,6 +366,7 @@ fn scrubber(d: &AudioDrawer, shown: f64, p: &Palette, cx: &mut Context<AudioDraw
                     .left(head_x)
                     .w(px(1.))
                     .bg(p.accent_strong)
+                    .shadow(vec![crate::ui::spread(p.accent_glow, px(1.))])
                     .when(!compact, |h| {
                         h.child(
                             div()
@@ -387,7 +390,8 @@ fn scrubber(d: &AudioDrawer, shown: f64, p: &Palette, cx: &mut Context<AudioDraw
                     .rounded(radius::PILL)
                     .border_2()
                     .border_color(p.surface_raised)
-                    .bg(p.status_running_fg),
+                    .bg(p.status_running_fg)
+                    .group_hover("drawer-wave", move |s| s.shadow(vec![halo.clone()])),
             )
         })
         .children(hover.map(|(x, who, at)| {

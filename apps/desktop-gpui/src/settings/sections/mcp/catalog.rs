@@ -13,6 +13,7 @@ use super::{form, oauth, preset, McpUi};
 use crate::settings::{commands, Settings};
 use crate::theme::{self, space, text, Palette};
 use crate::ui::input::TextInput;
+use crate::ui::Tracking as _;
 
 /// Lucide `sliders-vertical`, the Custom tile's glyph.
 const CUSTOM_ICON: &str = "icons/sliders-vertical.svg";
@@ -130,6 +131,7 @@ fn tile(
                                     .bg(p.accent_bg)
                                     .text_color(p.accent)
                                     .text_size(px(9.))
+                                    .tracking(0.08)
                                     .child("\u{2713} ADDED"),
                             )
                         }),
@@ -155,6 +157,7 @@ fn group(title: &'static str, first: bool, tiles: Vec<AnyElement>, p: &Palette) 
                 .ml(px(2.))
                 .text_size(text::XS)
                 .font_weight(theme::W_SEMIBOLD)
+                .tracking(0.12)
                 .text_color(p.text_subtle)
                 .child(SharedString::from(title.to_uppercase())),
         )

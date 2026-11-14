@@ -11,9 +11,11 @@ use super::look_view::{marked_text, SIDE_W};
 use super::model::{ms, Ranked};
 use super::view::act;
 use super::QuickRecall;
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::Button;
+use crate::ui::Tracking as _;
 
 impl QuickRecall {
     pub(super) fn look_side(&self, cx: &mut Context<Self>, p: &Palette) -> Div {
@@ -47,6 +49,7 @@ impl QuickRecall {
             div()
                 .text_size(text::MD)
                 .font_weight(theme::W_SEMIBOLD)
+                .tracking(-0.01)
                 .line_height(relative(1.3))
                 .text_color(p.text_strong)
                 .child(t)
@@ -68,25 +71,23 @@ impl QuickRecall {
                 .flex_col()
                 .flex_1()
                 .min_h_0()
+                // `.rc-side__txt header`: label and count on one baseline.
                 .child(
-                    div()
-                        .flex()
-                        .justify_between()
-                        .pb(px(6.))
-                        .child(
+                    baseline::row_top(vec![
+                        (
+                            Line::new(FONT_UI, text::SM, baseline::PHI),
                             div()
-                                .text_size(text::SM)
                                 .font_weight(theme::W_MEDIUM)
                                 .text_color(p.text_subtle)
                                 .child(label.to_string()),
-                        )
-                        .child(
-                            div()
-                                .font_family(FONT_MONO)
-                                .text_size(text::XS)
-                                .text_color(p.text_subtle)
-                                .child(format!("{n} lines")),
                         ),
+                        (
+                            Line::new(FONT_MONO, text::XS, baseline::PHI),
+                            div().text_color(p.text_subtle).child(format!("{n} lines")),
+                        ),
+                    ])
+                    .justify_between()
+                    .pb(px(6.)),
                 )
                 .child(crate::ui::scroll::area(
                     div()

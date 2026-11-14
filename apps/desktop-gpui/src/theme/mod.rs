@@ -56,6 +56,7 @@ pub fn init(setting: AppearanceSetting, system: WindowAppearance, cx: &mut App) 
     if let Err(e) = fonts::register(cx) {
         log::error!("theme: embedded fonts failed to load: {e:#}");
     }
+    crate::ui::baseline::init(cx);
     let system = Mode::from_appearance(system);
     let mode = resolve(&setting, system);
     cx.set_global(ThemeState {

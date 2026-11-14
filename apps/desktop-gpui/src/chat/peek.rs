@@ -11,13 +11,29 @@ use gpui_kit::TestSupportExt as _;
 use gpui_kit::{canvas, div, img, px, Context, ObjectFit, SharedString, Window};
 
 use super::{Chat, Source};
-use crate::theme::{radius, text, Palette};
+use crate::theme::{radius, text, Palette, FONT_UI};
 use crate::timeline::ocr_overlay::{self, next_hover, outcome};
 use crate::timeline::stage::image_rect;
 use crate::timeline::{Ocr, OcrStatus};
+use crate::ui::baseline::Line;
+use crate::ui::baseline::{lift, PHI};
 use crate::ui::dialog::Modal;
 use crate::ui::empty::{empty, EmptyLayout};
+use crate::ui::Tracking as _;
 use crate::ui::{with_tip, Tone};
+
+/// `.frame-modal__header`'s eyebrow (10 px) and title (13 px), both inheriting
+/// the line height.
+const EYEBROW: Line = Line {
+    family: FONT_UI,
+    size: text::XS,
+    lh: PHI,
+};
+const TITLE: Line = Line {
+    family: FONT_UI,
+    size: text::MD,
+    lh: PHI,
+};
 
 /// The panel's least height on a tiny window.
 pub const HERO_H: f32 = 280.;
@@ -315,10 +331,14 @@ pub fn frame_modal<V: PeekHost>(
             let rect = image_rect(chat.hero_size().get(), *w, *h);
             let o = &d.ocr;
             let entity = cx.entity().downgrade();
+            // GPUI clips to a rectangle: round the fitted image where it reaches the
+            // hero's inner corners (8 px inside the 1 px border), less its letterbox gap.
+            let gap = rect.map_or(0., |r| f32::from(r.origin.x.max(r.origin.y)));
             hero.child(
                 img(path.clone())
                     .image_cache(chat.peek_images())
                     .object_fit(ObjectFit::Contain)
+                    .rounded(px((8. - gap).max(0.)))
                     .absolute()
                     .inset_0()
                     .size_full(),
@@ -574,14 +594,12 @@ fn header(
     on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
 ) -> impl IntoElement {
     let (hover_bg, hover_bd, hover_fg) = (p.surface_hover, p.border, p.text_strong);
-    // No letter-spacing in GPUI: `.14em` tracking at 10 px is a 1.4 px gap per glyph.
     let eyebrow = div()
-        .flex()
         .flex_none()
-        .gap(px(1.4))
         .text_size(text::XS)
+        .tracking(0.14)
         .text_color(p.accent)
-        .children("FRAME".chars().map(|c| div().child(c.to_string())));
+        .child("FRAME");
     div()
         .flex()
         .items_center()
@@ -589,16 +607,26 @@ fn header(
         .pt(px(14.))
         .px(px(16.))
         .pb(px(10.))
-        .child(eyebrow)
         .child(
+            // The eyebrow and the title share a baseline; the close stays centred.
             div()
+                .flex()
                 .flex_1()
                 .min_w_0()
-                .truncate()
-                .text_size(text::MD)
-                .font_weight(crate::theme::W_SEMIBOLD)
-                .text_color(p.text_strong)
-                .child(SharedString::from(title.to_string())),
+                .items_end()
+                .gap(px(10.))
+                .child(eyebrow.pb(lift(EYEBROW, &[EYEBROW, TITLE])))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .truncate()
+                        .pb(lift(TITLE, &[EYEBROW, TITLE]))
+                        .text_size(text::MD)
+                        .font_weight(crate::theme::W_SEMIBOLD)
+                        .text_color(p.text_strong)
+                        .child(SharedString::from(title.to_string())),
+                ),
         )
         .child(
             div()

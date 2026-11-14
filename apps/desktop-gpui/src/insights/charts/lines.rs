@@ -6,8 +6,9 @@
 use gpui_kit::prelude::*;
 use gpui_kit::{canvas, div, point, px, Bounds, Div, Hsla, PathBuilder, Pixels, Window};
 
+use crate::insights::subjects::tiers::{pct, INITIAL_BASE, STRONGLY_HELD};
 use crate::theme::{space, text, Palette, FONT_MONO};
-use crate::ui::alpha;
+use crate::ui::{alpha, ring_box};
 
 /// One line: points in 0..1 (x across, y = confidence up), colour, width, dashed.
 #[derive(Clone)]
@@ -81,7 +82,10 @@ pub fn line_chart(
     p: &Palette,
 ) -> Div {
     const H: f32 = 230.;
-    let ticks = [0, 25, 50, 75, 100];
+    // The shared Subjects cuts (strongly held, taking shape) plus the floor.
+    let (held, shaping) = (pct(STRONGLY_HELD), pct(INITIAL_BASE));
+    let ticks = [100, held, shaping, (floor * 100.).round() as i64, 0];
+    let grid_at = [shaping, held, 100];
     let (grid, base, floor_c, area) = (
         p.hairline,
         p.border,
@@ -92,7 +96,7 @@ pub fn line_chart(
     let plot = canvas(
         |_, _, _| {},
         move |b, _, window, _| {
-            for v in [25., 50., 75., 100.] {
+            for v in grid_at.map(|v| v as f32) {
                 stroke(
                     b,
                     &[(0., v / 100.), (1., v / 100.)],
@@ -152,9 +156,14 @@ pub fn line_chart(
             .mt(px(-4.5))
             .size(px(9.))
             .rounded_full()
-            .border_2()
-            .when(origin, |d| d.border_color(p.accent).bg(p.accent))
-            .when(!origin, |d| d.border_color(p.text_strong).bg(p.surface))
+            // The origin is solid accent (its border is the fill) with a 3 px glow.
+            .when(origin, |d| {
+                d.bg(p.accent)
+                    .child(ring_box(p.accent_glow, px(3.), px(4.5)))
+            })
+            .when(!origin, |d| {
+                d.border_2().border_color(p.text_strong).bg(p.surface)
+            })
     };
     div()
         .flex()

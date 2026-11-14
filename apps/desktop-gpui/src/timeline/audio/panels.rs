@@ -9,6 +9,7 @@ use super::view_model::{self as vm, Panel};
 use super::AudioDrawer;
 use crate::theme::{self, space, text, Palette, FONT_MONO};
 use crate::ui::Button;
+use crate::ui::Tracking as _;
 
 fn notice(
     title: &str,
@@ -58,6 +59,7 @@ fn notice(
                 div()
                     .font_family(FONT_MONO)
                     .text_size(text::XS)
+                    .tracking(0.04)
                     .text_color(p.text_subtle)
                     .child(foot),
             )

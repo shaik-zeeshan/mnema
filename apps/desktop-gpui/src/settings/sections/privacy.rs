@@ -41,9 +41,10 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
         .flex()
         .flex_col()
         .w_full()
-        .rounded(radius::LG)
+        .rounded(radius::MD)
         .border_1()
         .border_color(p.border)
+        .bg(p.surface)
         .children(apps.into_iter().map(|app| {
             let (id, id2) = (app.id.clone(), app.id.clone());
             div()
@@ -115,6 +116,8 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
                 .gap(space::S3)
                 .px(space::S3)
                 .py(px(8.))
+                .rounded_b(radius::MD - px(1.))
+                .bg(p.surface_subtle)
                 .child(super::app_picker::add_app(s, p, cx))
                 .child(
                     div()

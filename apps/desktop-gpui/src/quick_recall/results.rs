@@ -9,7 +9,7 @@ use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{
-    div, img, px, relative, AnyElement, Context, Div, FontWeight, HighlightStyle, ObjectFit,
+    div, img, px, relative, AnyElement, Context, Div, FontWeight, HighlightStyle, Hsla, ObjectFit,
     Resource, Role, SharedString, StyledText, Window,
 };
 
@@ -17,6 +17,7 @@ use super::model::{ms, snippet_runs, Ranked};
 use super::view::{act, section};
 use super::QuickRecall;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
+use crate::ui::Tracking as _;
 use crate::ui::{
     alpha,
     chip::{chip, ChipKind},
@@ -39,12 +40,7 @@ pub(super) fn marked(snippet: &str, quote: bool, p: &Palette) -> StyledText {
         let start = s.len();
         s.push_str(&t);
         if m {
-            let st = HighlightStyle {
-                color: Some(p.accent),
-                background_color: Some(p.accent_bg),
-                ..Default::default()
-            };
-            hl.push((start..s.len(), st));
+            hl.push((start..s.len(), mark_style(p)));
         }
     }
     if quote {
@@ -53,13 +49,34 @@ pub(super) fn marked(snippet: &str, quote: bool, p: &Palette) -> StyledText {
     StyledText::new(s).with_highlights(hl)
 }
 
+/// `mark` (kit-extra.css): accent ink on the accent tint with a 1 px accent-border
+/// underline. Its 2 px corner and side padding can't exist inside a text run.
+pub(super) fn mark_style(p: &Palette) -> HighlightStyle {
+    HighlightStyle {
+        color: Some(p.accent),
+        background_color: Some(p.accent_bg),
+        underline: Some(gpui_kit::UnderlineStyle {
+            thickness: px(1.),
+            color: Some(p.accent_border),
+            wavy: false,
+        }),
+        ..Default::default()
+    }
+}
+
 impl QuickRecall {
     /// The app icon (letter fallback) for a frame; the source glyph for audio.
     pub(super) fn tile(&self, r: &Ranked, p: &Palette) -> AnyElement {
         match r {
             Ranked::Frame(f) => {
                 let name = f.app_name.clone().unwrap_or_else(|| "?".into());
-                self.app_glyph(f.app_bundle_id.as_deref(), &name, 18., p)
+                self.app_glyph(
+                    f.app_bundle_id.as_deref(),
+                    &name,
+                    18.,
+                    Some(p.text_muted),
+                    p,
+                )
             }
             Ranked::Audio(a) => source_glyph(a.mic(), p),
         }
@@ -254,9 +271,11 @@ impl QuickRecall {
         list.child(col).into_any_element()
     }
 
+    /// `behind` = the opaque colour under the crop (the row's fill over the shell).
     fn crop(
         &self,
         r: &Ranked,
+        behind: Hsla,
         window: &mut Window,
         cx: &mut Context<Self>,
         p: &Palette,
@@ -311,14 +330,29 @@ impl QuickRecall {
                                 .child(img(path).image_cache(&self.images).size_full())
                                 .children(f.match_boxes.iter().map(|b| match_box(b, p)))
                         }
-                        _ => div().absolute().top_0().left_0().size_full().child(
-                            img(path)
-                                .image_cache(&self.images)
-                                .size_full()
-                                .object_fit(ObjectFit::Contain),
-                        ),
+                        _ => {
+                            // Contained: round it where it reaches the crop's corners,
+                            // less its letterbox gap (GPUI clips to a rectangle).
+                            let gap = natural.map_or(0., |(nw, nh)| {
+                                let z = (CROP_W / nw).min(CROP_H / nh);
+                                ((CROP_W - nw * z) / 2.).max((CROP_H - nh * z) / 2.)
+                            });
+                            div().absolute().top_0().left_0().size_full().child(
+                                img(path)
+                                    .image_cache(&self.images)
+                                    .size_full()
+                                    .rounded((radius::MD - px(gap)).max(px(0.)))
+                                    .object_fit(ObjectFit::Contain),
+                            )
+                        }
                     };
                     el = el.child(frame);
+                    if natural.is_some() && focus.is_some() {
+                        // The zoomed frame overflows the crop and GPUI clips to a rectangle:
+                        // paint what's behind over the corner wedges (wide enough to reach
+                        // the corner, r·(√2−1); the part outside the crop is clipped).
+                        el = el.child(crate::ui::ring_box(behind, radius::MD, radius::MD));
+                    }
                 }
                 el.child(ring)
                     .child(
@@ -375,6 +409,7 @@ impl QuickRecall {
                         .pt(px(12.))
                         .px(px(12.))
                         .pb(px(10.))
+                        .rounded(radius::MD)
                         .bg(mix(s, p.surface_subtle, 0.07))
                         .child(
                             div()
@@ -384,6 +419,7 @@ impl QuickRecall {
                                 .font_family(FONT_MONO)
                                 .text_size(text::XS)
                                 .font_weight(theme::W_MEDIUM)
+                                .tracking(0.02)
                                 .text_color(s)
                                 .child(icon(
                                     if a.mic() {
@@ -510,6 +546,16 @@ impl QuickRecall {
         };
         let r_look = r.clone();
         let page = r.page_frame();
+        // The selected fill over the shell's `bg`, for the crop's corner cover.
+        let solid = Hsla {
+            a: 1.,
+            ..p.wash_strong
+        };
+        let behind = if selected {
+            mix(solid, p.bg, p.wash_strong.a)
+        } else {
+            p.bg
+        };
         div()
             .id(("qr-opt", 0usize))
             .test_support()
@@ -520,7 +566,7 @@ impl QuickRecall {
             .p(px(10.))
             .rounded(radius::LG)
             .when(selected, |d| d.bg(p.wash_strong))
-            .child(self.crop(r, window, cx, p))
+            .child(self.crop(r, behind, window, cx, p))
             .child(
                 div()
                     .flex()
@@ -552,6 +598,7 @@ impl QuickRecall {
                             .mt(px(2.))
                             .text_size(text::LG)
                             .font_weight(theme::W_SEMIBOLD)
+                            .tracking(-0.012)
                             .text_color(p.text_strong)
                             .child(self.tile(r, p))
                             .child(

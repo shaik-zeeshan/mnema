@@ -302,6 +302,7 @@ pub fn render(
         p.accent_glow,
         p.bg,
     );
+    let (surface, border, r) = (p.surface, p.border, radius::MD);
     let paint = canvas(
         move |b, window, _| {
             rail_x.set(f32::from(b.left()));
@@ -315,6 +316,14 @@ pub fn render(
         // This is the layer *under* the app icons (`.tl-group` and its resting ticks).
         move |b, _, window, _| {
             window.paint_layer(b, |window| {
+                // The rail's fill and 1 px border sit under the edge fade (CSS masks
+                // them with the rest): `b` is inside the rail's transparent border.
+                window.paint_quad(
+                    fill(b.dilate(px(1.)), surface)
+                        .corner_radii(r)
+                        .border_widths(px(1.))
+                        .border_color(border),
+                );
                 let c = f32::from(b.left()) + f32::from(b.size.width) / 2.;
                 let track = Bounds::new(
                     point(b.left(), b.top() + px(1.)),
@@ -356,21 +365,23 @@ pub fn render(
             }
             let x = slot_x(c, advance, active);
             let (tw, th) = (2., 22.);
-            // `0 0 0 1px glow, 0 0 10px glow`: a ring plus a soft halo.
-            for (pad, a) in [(5., 0.35), (1., 1.)] {
-                window.paint_quad(
-                    fill(
-                        Bounds::new(
-                            point(px(x - tw / 2. - pad), px(mid - th / 2. - pad)),
-                            size(px(tw + pad * 2.), px(th + pad * 2.)),
-                        ),
-                        alpha(glow, a * glow.a),
-                    )
-                    .corner_radii(px(pad)),
-                );
-            }
+            // `0 0 0 1px glow, 0 0 10px glow`: a ring plus a soft blurred halo.
+            window.paint_drop_shadows(
+                Bounds::new(
+                    point(px(x - tw / 2.), px(mid - th / 2.)),
+                    size(px(tw), px(th)),
+                ),
+                gpui_kit::Corners::all(px(0.5)),
+                &[
+                    spread(glow, px(1.)),
+                    gpui_kit::BoxShadow {
+                        blur_radius: px(10.),
+                        ..spread(glow, px(0.))
+                    },
+                ],
+            );
             tick(x, mid, tw, th, accent, window);
-            edge_fade(b, bg, window);
+            edge_fade(b.dilate(px(1.)), bg, window);
             caret(true, c, f32::from(b.top()) - 1., subtle, window);
             caret(false, c, f32::from(b.top()) + 30., subtle, window);
         },
@@ -415,9 +426,9 @@ pub fn render(
         .w_full()
         .h(px(RAIL_H))
         .rounded(radius::MD)
+        // Transparent, so the clip is the whole box and `paint` draws the border.
         .border_1()
-        .border_color(p.border)
-        .bg(p.surface)
+        .border_color(gpui_kit::transparent_black())
         .overflow_hidden()
         .cursor_pointer()
         .child(paint)

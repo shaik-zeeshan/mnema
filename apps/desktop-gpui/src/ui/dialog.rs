@@ -1,7 +1,8 @@
 //! The modal (`.cat-modal` / `.in-modal`): a scrim over the whole window
 //! (`position: fixed; inset: 0`, so the titlebar and status bar too, which it
 //! also keeps from taking clicks and hover) and a centred raised panel
-//! (radius 16, ≤640 px) with a title + close head, rising 10 px over 420 ms
+//! (radius 16, or `.cat-modal`'s 18 with an eyebrow head, ≤640 px) with a
+//! title + close head, rising 10 px over 420 ms
 //! expo while the scrim fades 220 ms. Esc and the scrim close. The scrim is
 //! `--app-overlay-bg` unless [`Modal::scrim`] says otherwise; the CSS blur is
 //! dropped (GPUI can't blur in-window).
@@ -19,6 +20,7 @@ use gpui_kit::{
 
 use super::{popover_shadow, Button};
 use crate::theme::{self, motion, radius, size, space, text};
+use crate::ui::Tracking as _;
 
 type OnClose = Rc<dyn Fn(&mut Window, &mut App)>;
 
@@ -113,10 +115,18 @@ impl RenderOnce for Modal {
         let close = self.on_close.clone();
         let (by_scrim, by_key) = (close.clone(), close.clone());
         let fade = motion::MED.as_secs_f32() / motion::SLOW.as_secs_f32();
-        let close_button = Button::icon_only("modal-close", IconName::X.path(), "Close")
-            .ghost()
-            .sm()
-            .when_some(close, |b, f| b.on_click(move |_, window, cx| f(window, cx)));
+        let cat = self.eyebrow.is_some();
+        let close_button = if cat {
+            cat_close(close, &p, window, cx).into_any_element()
+        } else {
+            Button::icon_only("modal-close", IconName::X.path(), "Close")
+                .ghost()
+                .sm()
+                .when_some(close, |b, f| b.on_click(move |_, window, cx| f(window, cx)))
+                .into_any_element()
+        };
+        // `.cat-modal__panel`: 18 px, where `.in-modal` keeps `--r-xl`.
+        let corner_r = if cat { px(18.) } else { self.radius };
         let (head, corner) = if self.chromeless {
             (None, None)
         } else if self.bare {
@@ -135,6 +145,8 @@ impl RenderOnce for Modal {
                 .gap(px(10.))
                 .font_weight(theme::W_SEMIBOLD)
                 .text_size(if eyebrow { text::LG } else { text::XL })
+                // `.cat-modal__header h2` / `.in-modal__head .mx-h2`.
+                .tracking(if eyebrow { -0.01 } else { -0.018 })
                 .line_height(gpui_kit::relative(1.25))
                 .text_color(p.text_strong)
                 .children(self.lead)
@@ -148,19 +160,20 @@ impl RenderOnce for Modal {
                     .child(
                         div()
                             .text_size(text::SM)
+                            .tracking(0.07)
                             .text_color(p.text_muted)
                             .child(SharedString::from(e.to_uppercase())),
                     )
                     .child(title),
                 None => title,
             };
+            // `.cat-modal__header`: 18 / 18 / 12; `.in-modal__head`: 24 / 24 / 16.
             let head = div()
                 .flex()
                 .items_start()
                 .gap(space::S4)
-                .px(space::S5)
-                .pt(space::S5)
-                .when(eyebrow, |d| d.pb(space::S3))
+                .when(eyebrow, |d| d.px(px(18.)).pt(px(18.)).pb(space::S3))
+                .when(!eyebrow, |d| d.px(space::S5).pt(space::S5))
                 .when(!eyebrow, |d| {
                     d.pb(space::S4).border_b_1().border_color(p.hairline)
                 })
@@ -178,7 +191,7 @@ impl RenderOnce for Modal {
                     .border_1()
                     .border_color(p.border_strong)
             })
-            .rounded(self.radius)
+            .rounded(corner_r)
             .shadow(popover_shadow(&p))
             .overflow_hidden()
             .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
@@ -234,4 +247,47 @@ impl RenderOnce for Modal {
         )
         .with_priority(super::popover::LAYER_MODAL)
     }
+}
+
+/// `.cat-modal__close`: 28 px, a 1 px border, 8 px corner, muted ink; hover and
+/// keyboard focus fill it and strengthen border and ink, focus adds the
+/// `--app-ring`; 1 px down while pressed.
+fn cat_close(
+    close: Option<OnClose>,
+    p: &theme::Palette,
+    window: &mut Window,
+    cx: &mut App,
+) -> impl IntoElement {
+    let focus = super::focus_handle("modal-close", window, cx);
+    let ring = super::focus_visible(&focus, super::Force::None, window);
+    let lit = (p.surface_hover, p.border_hover, p.text_strong);
+    div()
+        .id("modal-close")
+        .test_support()
+        .role(gpui_kit::Role::Button)
+        .aria_label("Close")
+        .track_focus(&focus)
+        .relative()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .size(px(28.))
+        .rounded(radius::MD)
+        .border_1()
+        .map(|el| match ring {
+            true => el
+                .bg(lit.0)
+                .border_color(lit.1)
+                .text_color(lit.2)
+                .shadow(vec![super::ring(p.accent_glow)]),
+            false => el.border_color(p.border).text_color(p.text_muted),
+        })
+        .cursor_pointer()
+        .hover(move |s| s.bg(lit.0).border_color(lit.1).text_color(lit.2))
+        .active(|s| s.top(px(1.)))
+        .child(super::icon(IconName::X.path(), size::ICON_SM))
+        .when_some(close, |el, f| {
+            el.on_click(move |_, window, cx| f(window, cx))
+        })
 }

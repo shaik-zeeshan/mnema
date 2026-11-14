@@ -7,6 +7,7 @@ use gpui_kit::{div, px, AnyElement, Div, SharedString};
 
 use super::{icon, Tone};
 use crate::theme::{self, radius, space, text, Palette};
+use crate::ui::Tracking as _;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EmptyLayout {
@@ -54,6 +55,7 @@ pub fn empty(
     let title = div()
         .font_weight(theme::W_SEMIBOLD)
         .text_size(if compact { text::MD } else { text::LG })
+        .tracking(-0.01)
         .line_height(gpui_kit::relative(1.3))
         .text_color(p.text_strong)
         .child(title.into());

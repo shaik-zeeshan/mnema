@@ -48,12 +48,13 @@ pub fn trigger(
     look: TriggerLook,
     p: &Palette,
 ) -> impl super::Control {
+    // `.select-trigger--warn` (0,1,0) loses to `:hover` / `[data-state=open]`.
     let border = if look.focused {
         p.accent_border
-    } else if look.warn {
-        p.warn_border
     } else if look.open || look.hover {
         p.border_hover
+    } else if look.warn {
+        p.warn_border
     } else {
         p.border_strong
     };
@@ -87,9 +88,7 @@ pub fn trigger(
         .line_height(gpui_kit::relative(1.))
         .cursor_pointer()
         .when(look.focused, |el| el.shadow(vec![ring(p.accent_glow)]))
-        .when(!look.focused && !look.warn, |el| {
-            el.hover(move |s| s.border_color(hover))
-        })
+        .when(!look.focused, |el| el.hover(move |s| s.border_color(hover)))
         .child(
             div()
                 .flex_1()

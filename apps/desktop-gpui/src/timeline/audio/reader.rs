@@ -72,9 +72,9 @@ fn gutter(
             .ml(px(-9.))
             .h(theme::size::H_SM)
             .px(px(9.))
-            .rounded(radius::SM)
+            .rounded(radius::BTN_SM)
             .cursor_pointer()
-            .hover(|el| el.bg(p.wash))
+            .hover(|el| el.bg(p.wash_strong).text_color(p.text_strong))
             .text_size(text::BASE)
             .font_weight(theme::W_MEDIUM)
             .text_color(if unnamed { p.text_muted } else { p.text_strong })
@@ -331,13 +331,23 @@ pub fn render(
                 })
                 .when(sel == Some(g.cluster_id) && !is_active, |el| el.bg(p.wash))
                 .when(fixing == Some(ix), |el| el.bg(p.wash_strong))
-                .when(g.overlaps, |el| el.border_l_2().border_color(p.warn_border))
                 .child(gutter(d, ix, g, stacked, p, cx))
                 .map(|el| {
                     let text = prose(d, ix, g, is_active, playing, p, cx);
+                    // `.turn--overlap .para`: a 2 px rule 16 px left of the text.
+                    let overlap = |w: gpui_kit::Div| {
+                        w.when(g.overlaps, |w| {
+                            w.ml(px(-16.))
+                                .pl(px(14.))
+                                .border_l_2()
+                                .border_color(p.warn_border)
+                        })
+                    };
                     // Stacked, the text's `flex_1` must not grow along the column.
                     if stacked {
-                        el.child(div().w_full().child(text))
+                        el.child(overlap(div().w_full()).child(text))
+                    } else if g.overlaps {
+                        el.child(overlap(div().flex_1().min_w_0()).child(text))
                     } else {
                         el.child(text)
                     }
@@ -399,16 +409,22 @@ pub fn render(
                     .right_0()
                     .flex()
                     .justify_center()
+                    // `.jump`: the popover shadow, on a box hugging the button.
                     .child(
-                        Button::new("drawer-jump", "jump to playhead")
-                            .sm()
-                            .icon(IconName::ArrowDown.path())
-                            .kbd("esc")
-                            .on_click(cx.listener(|d, _, _, cx| {
-                                d.follow_detached = false;
-                                d.reattach();
-                                cx.notify();
-                            })),
+                        div()
+                            .rounded(radius::BTN_SM)
+                            .shadow(crate::ui::popover::popover_shadow(p))
+                            .child(
+                                Button::new("drawer-jump", "jump to playhead")
+                                    .sm()
+                                    .icon(IconName::ArrowDown.path())
+                                    .kbd("esc")
+                                    .on_click(cx.listener(|d, _, _, cx| {
+                                        d.follow_detached = false;
+                                        d.reattach();
+                                        cx.notify();
+                                    })),
+                            ),
                     ),
             )
         })

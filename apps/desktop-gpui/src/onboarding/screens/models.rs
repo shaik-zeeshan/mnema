@@ -17,6 +17,7 @@ use crate::theme::{self, leading, radius, size, space, text, Palette, FONT_MONO,
 use crate::ui::baseline::{self, Line};
 use crate::ui::notice::notice;
 use crate::ui::segmented::Segmented;
+use crate::ui::Tracking as _;
 use crate::ui::{alpha, kicker, text_width, Tone};
 
 /// The big download total beside its fine print (`.ob-total b`, 22 px).
@@ -73,6 +74,7 @@ fn strip(cells: [(&str, String, bool); 3], p: &Palette) -> AnyElement {
                                 .font_family(FONT_MONO)
                                 .text_size(text::XS)
                                 .font_weight(theme::W_MEDIUM)
+                                .tracking(0.1)
                                 .line_height(relative(1.))
                                 .text_color(p.text_subtle)
                                 .child(label.to_uppercase()),
@@ -86,6 +88,7 @@ fn strip(cells: [(&str, String, bool); 3], p: &Palette) -> AnyElement {
                                     theme::W_MEDIUM
                                 })
                                 .text_size(text::MD)
+                                .when(num, |d| d.tracking(-0.01))
                                 .line_height(relative(1.2))
                                 .text_color(p.text_strong)
                                 .child(value),
@@ -383,28 +386,26 @@ impl Onboarding {
         let axis = (b.bytes() as f64).max(room.unwrap_or(0.)).max(1.) * 1.06;
         let frac = |bytes: f64| (bytes / axis) as f32;
         let room_frac = room.map_or(0., |r| frac(r).min(1.));
-        let total = baseline::row(
-            vec![
-                (
-                    Line::new(FONT_MONO, TOTAL, leading::ONE),
-                    parts::mono(
-                        budget::total_label(b.bytes(), b.approx()),
-                        TOTAL,
-                        if shown.is_some() {
-                            p.danger_text
-                        } else {
-                            p.text_strong
-                        },
-                    )
-                    .into_any_element(),
-                ),
-                (
-                    Line::new(FONT_UI, text::BASE, parts::FINE_LH),
-                    fine("to download before any of this works", p).into_any_element(),
-                ),
-            ],
-            cx,
-        )
+        let total = baseline::row(vec![
+            (
+                Line::new(FONT_MONO, TOTAL, leading::ONE),
+                parts::mono(
+                    budget::total_label(b.bytes(), b.approx()),
+                    TOTAL,
+                    if shown.is_some() {
+                        p.danger_text
+                    } else {
+                        p.text_strong
+                    },
+                )
+                .tracking(-0.04)
+                .into_any_element(),
+            ),
+            (
+                Line::new(FONT_UI, text::BASE, parts::FINE_LH),
+                fine("to download before any of this works", p).into_any_element(),
+            ),
+        ])
         .gap(space::S3);
         let parts_bar = [
             (b.speaker, p.source_mic),
@@ -419,12 +420,22 @@ impl Onboarding {
             .rounded(BAR_H / 2.)
             .overflow_hidden()
             .bg(p.surface_hover)
-            .children(
-                parts_bar
+            .children({
+                // GPUI clips to a rectangle: the end segments round themselves.
+                let parts: Vec<_> = parts_bar
                     .into_iter()
                     .filter(|(bytes, _)| *bytes > 0)
-                    .map(|(bytes, c)| div().h_full().w(relative(frac(bytes as f64))).bg(c)),
-            )
+                    .collect();
+                let last = parts.len().saturating_sub(1);
+                parts.into_iter().enumerate().map(move |(i, (bytes, c))| {
+                    div()
+                        .h_full()
+                        .w(relative(frac(bytes as f64)))
+                        .bg(c)
+                        .when(i == 0, |d| d.rounded_l(BAR_H / 2.))
+                        .when(i == last, |d| d.rounded_r(BAR_H / 2.))
+                })
+            })
             // Past the marker the downloads don't fit. shortcut: a flat tint, not
             // the CSS 135° hatch; draw stripes on a canvas if the founder asks.
             .when(verdict.is_some(), |d| {
@@ -445,7 +456,7 @@ impl Onboarding {
                 "no room left for downloads".into()
             };
             // Centred on the marker, except near either end (it would clip).
-            let lw = text_width(&label, FONT_MONO, theme::W_REGULAR, text::SM, window);
+            let lw = text_width(&label, FONT_MONO, theme::W_REGULAR, text::SM, 0., window);
             let shift = if room_frac > 0.78 {
                 lw
             } else if room_frac < 0.12 {

@@ -42,6 +42,7 @@ fn thumb(chat: &Chat, frame_id: Option<i64>, p: &Palette) -> Div {
             img(path.clone())
                 .image_cache(&chat.thumb_images)
                 .size_full()
+                .rounded(px(3.))
                 .object_fit(ObjectFit::Cover),
         ),
         Some(None) => slot
@@ -177,10 +178,15 @@ pub fn row(chat: &Chat, turn: i64, sources: &[Source], p: &Palette, cx: &mut Con
                         .role(gpui_kit::Role::Link)
                         .when(opening, |d| d.opacity(theme::DISABLED_OPACITY))
                         .cursor_pointer()
-                        .child(chip(host, ChipKind::Neutral, p).gap(px(4.)).child(icon(
-                            gpui_kit::assets::IconName::ExternalLink.path(),
-                            px(10.),
-                        ))),
+                        .child(
+                            chip(host, ChipKind::Neutral, p)
+                                .gap(px(4.))
+                                .hover(|st| st.border_color(p.border_hover))
+                                .child(icon(
+                                    gpui_kit::assets::IconName::ExternalLink.path(),
+                                    px(10.),
+                                )),
+                        ),
                     url.clone(),
                 )
                 .on_click(cx.listener({
@@ -210,15 +216,18 @@ pub fn row(chat: &Chat, turn: i64, sources: &[Source], p: &Palette, cx: &mut Con
                     .test_support()
                     .role(gpui_kit::Role::Button)
                     .cursor_pointer()
-                    .child(chip(
-                        label,
-                        if mic {
-                            ChipKind::Mic
-                        } else {
-                            ChipKind::SysAudio
-                        },
-                        p,
-                    )),
+                    .child(
+                        chip(
+                            label,
+                            if mic {
+                                ChipKind::Mic
+                            } else {
+                                ChipKind::SysAudio
+                            },
+                            p,
+                        )
+                        .hover(|st| st.border_color(p.border_hover)),
+                    ),
                 "Play this clip",
             )
             .on_click(cx.listener({

@@ -14,19 +14,23 @@ use map::map;
 pub mod pager;
 pub mod tiers;
 
+use crate::ui::Tracking as _;
 use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
-use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, SharedString, Window};
+use gpui_kit::{
+    div, px, relative, AnyElement, Context, Div, Focusable as _, Role, SharedString, Window,
+};
 
 pub use drawer::{drawer, push as drawer_push, step as step_conclusion};
 pub use detail::{flat as flat_conclusions, reveal as reveal_conclusion, tier_key};
 
 use super::charts::sparkline;
-use super::parts::{display, inset, label, lede, prose, read, sec, split, stat_text};
+use super::parts::{display, inset, label, lede, lift, prose, read, sec, split, stat_text, PHI};
 use super::Insights;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
+use crate::ui::baseline::Line;
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::segmented::Segmented;
 use crate::ui::{clock, icon, kicker, nid, Tone};
@@ -35,7 +39,24 @@ use tiers::{
     subject_rows, tier_names, Axis, SubjectRow, Tier, TIER_PAGE,
 };
 
-pub fn controls(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Vec<AnyElement> {
+/// A list row's name and its OPENED tag (`.in-subj__name` + `__tag`), inline on one baseline.
+const NAME: Line = Line {
+    family: crate::theme::FONT_UI,
+    size: text::MD,
+    lh: PHI,
+};
+const TAG: Line = Line {
+    family: FONT_MONO,
+    size: px(10.),
+    lh: PHI,
+};
+
+pub fn controls(
+    this: &Insights,
+    p: &Palette,
+    window: &Window,
+    cx: &mut Context<Insights>,
+) -> Vec<AnyElement> {
     if !this
         .subjects
         .as_ref()
@@ -43,19 +64,22 @@ pub fn controls(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Vec
     {
         return Vec::new();
     }
-    let search = div()
-        .flex()
-        .items_center()
-        .gap(space::S2)
-        .w(px(220.))
-        .h(size::H_MD)
-        .px(space::S3)
-        .rounded(radius::MD)
-        .border_1()
-        .border_color(p.border)
-        .bg(p.input_recess)
-        .text_color(p.text_subtle)
-        .child(icon(IconName::Search.path(), px(14.)))
+    let focused = this.filter.focus_handle(cx).is_focused(window);
+    let search = crate::chat::list::search_states(
+        div()
+            .flex()
+            .items_center()
+            .gap(space::S2)
+            .w(px(220.))
+            .h(size::H_MD)
+            .px(space::S3)
+            .rounded(radius::MD)
+            .border_1()
+            .bg(p.surface_subtle),
+        focused,
+        p,
+    )
+    .child(icon(IconName::Search.path(), px(14.)))
         .child(
             div().flex_1().min_w_0().text_color(p.text_strong).child(
                 Input::new(&this.filter)
@@ -191,7 +215,7 @@ pub fn render(
         .count();
     let (lead, tail) = headline(&names);
     let lede_el = lede(&format!("Your dossier · {} subjects · {visible} conclusions", rows.len()), p)
-        .child(display(lead, Some(tail), p))
+        .child(display(lead, Some(tail), p, window))
         .child(prose("What Mnema has come to believe about you. Each subject is scored by its strongest conclusion; confidence rises with fresh evidence, halves every 30 days without it, and drops faster when activity contradicts it.", p));
     let tiles = [
         ("Strongly held", "lead ≥ 68%"),
@@ -240,40 +264,38 @@ fn list(
         let key = section_key(this.axis, g.id);
         let (from, to, _, _) = pager::slice(this, &key, g.rows.len(), TIER_PAGE);
         if !g.title.is_empty() {
+            // `.in-group__link`: Show / Hide share the heading's mono caps, 22 px, hover fill.
+            let link = |id: &'static str, s: String, show: bool| {
+                div()
+                    .id(id)
+                    .role(Role::Button)
+                    .h(px(22.))
+                    .px(px(6.))
+                    .flex()
+                    .items_center()
+                    .rounded(radius::XS)
+                    .cursor_pointer()
+                    .whitespace_nowrap()
+                    .font_family(FONT_MONO)
+                    .text_size(text::XS)
+                    .font_weight(theme::W_MEDIUM)
+                    .text_color(p.text_subtle)
+                    .hover(|s| s.bg(p.wash_strong).text_color(p.text_strong))
+                    .child(s.to_uppercase())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        this.show_fading = show;
+                        cx.notify();
+                    }))
+            };
             let right = if folded {
                 (!g.rows.is_empty()).then(|| {
-                    div()
-                        .id("insights-show-fading")
-                        .role(Role::Button)
-                        .cursor_pointer()
-                        .text_size(text::SM)
-                        .text_color(p.text_muted)
-                        .child(format!("Show {} fading", g.rows.len()))
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_fading = true;
-                            cx.notify();
-                        }))
+                    link("insights-show-fading", format!("Show {} fading", g.rows.len()), true)
                         .into_any_element()
                 })
             } else {
-                let hide = g.faded.then(|| {
-                    div()
-                        .id("insights-hide-fading")
-                        .role(Role::Button)
-                        .h(px(22.))
-                        .px(px(6.))
-                        .flex()
-                        .items_center()
-                        .rounded(radius::XS)
-                        .cursor_pointer()
-                        .text_color(p.text_subtle)
-                        .hover(|s| s.bg(p.wash_strong).text_color(p.text_strong))
-                        .child("HIDE")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.show_fading = false;
-                            cx.notify();
-                        }))
-                });
+                let hide = g
+                    .faded
+                    .then(|| link("insights-hide-fading", "Hide".into(), false));
                 Some(
                     div()
                         .flex()
@@ -285,7 +307,7 @@ fn list(
             };
             col = col.child(
                 super::parts::group_head(&format!("{} · {}", g.title, g.rows.len()), right, p)
-                    .child(label(g.note, p).text_size(text::SM)),
+                    .child(label(g.note, p).text_size(text::SM).tracking(0.)),
             );
         }
         if folded {
@@ -320,23 +342,28 @@ fn list(
                 })
                 .collect();
             col = col.child(
+                // `.in-subj`: 170 / 1fr / 100 / 44 / 14, the fill 12 px past the column.
                 div()
                     .id(nid(&format!("insights-subj-{}", g.id), k as u64))
                     .role(Role::Button)
+                    .group("insights-subj")
                     .flex()
                     .items_center()
                     .gap(space::S4)
-                    .py(px(10.))
-                    .px(space::S2)
-                    .border_b_1()
+                    .py(px(12.))
+                    .px(space::S3)
+                    .mx(-space::S3)
+                    // `.in-subj:last-of-type { border-bottom: 0 }`.
+                    .when(from + k + 1 < to, |d| d.border_b_1())
                     .border_color(p.hairline)
                     .rounded(radius::SM)
                     .cursor_pointer()
                     .hover(|s| s.bg(p.surface_hover))
                     .when(current, |d| d.bg(p.wash))
+                    .when(g.faded, |d| d.opacity(0.62))
                     .child(
                         div()
-                            .w(px(180.))
+                            .w(px(170.))
                             .flex_none()
                             .flex()
                             .flex_col()
@@ -344,18 +371,25 @@ fn list(
                             .child(
                                 div()
                                     .flex()
-                                    .items_baseline()
+                                    .items_end()
                                     .min_w_0()
                                     .text_size(text::MD)
                                     .font_weight(theme::W_SEMIBOLD)
                                     .text_color(p.text_strong)
-                                    .child(div().truncate().child(r.subject.clone()))
+                                    .child(
+                                        div()
+                                            .truncate()
+                                            .when(current, |d| d.pb(lift(NAME, &[NAME, TAG])))
+                                            .child(r.subject.clone()),
+                                    )
                                     .when(current, |d| {
                                         d.child(
                                             div()
                                                 .ml(px(6.))
+                                                .pb(lift(TAG, &[NAME, TAG]))
                                                 .font_family(FONT_MONO)
                                                 .text_size(px(10.))
+                                                .tracking(0.06)
                                                 .text_color(p.accent)
                                                 .child("OPENED"),
                                         )
@@ -384,14 +418,15 @@ fn list(
                     )
                     .child(
                         div()
-                            .w(px(120.))
-                            .h(px(32.))
+                            .w(px(100.))
+                            .h(px(30.))
                             .flex_none()
                             .child(sparkline(spark)),
                     )
                     .child(
                         div()
-                            .w(px(40.))
+                            .w(px(44.))
+                            .flex_none()
                             .text_right()
                             .font_family(FONT_MONO)
                             .text_size(text::MD)
@@ -399,8 +434,14 @@ fn list(
                             .child(format!("{}%", pct(r.top))),
                     )
                     .child(
+                        // The arrow nudges 3 px right and darkens on row hover.
                         div()
+                            .relative()
+                            .flex_none()
                             .text_color(p.text_faint)
+                            .group_hover("insights-subj", |s| {
+                                s.left(px(3.)).text_color(p.text_strong)
+                            })
                             .child(icon(IconName::ChevronRight.path(), px(14.))),
                     )
                     .on_click(
@@ -439,7 +480,7 @@ fn side(listed: &[&SubjectRow], p: &Palette, cx: &mut Context<Insights>) -> Div 
             d.child(
                 div()
                     .child(sec(kicker("Moving this fortnight", p), None))
-                    .children(moving.iter().map(|r| {
+                    .children(moving.iter().enumerate().map(|(i, r)| {
                         let (t, c) = match move_pts(r) {
                             None => (
                                 format!("formed {}", super::stats::month_day(r.since_ms, off)),
@@ -454,12 +495,11 @@ fn side(listed: &[&SubjectRow], p: &Palette, cx: &mut Context<Insights>) -> Div 
                             .role(Role::Button)
                             .flex()
                             .justify_between()
-                            .py(px(7.))
-                            .border_t_1()
+                            .py(px(10.))
+                            .when(i > 0, |d| d.border_t_1())
                             .border_color(p.hairline)
                             .text_size(text::BASE)
                             .cursor_pointer()
-                            .hover(|s| s.bg(p.wash))
                             .on_click(cx.listener(move |this, _, _, cx| this.open_subject(subject.clone(), cx)))
                             .child(div().text_color(p.text).child(r.subject.clone()))
                             .child(
@@ -474,13 +514,15 @@ fn side(listed: &[&SubjectRow], p: &Palette, cx: &mut Context<Insights>) -> Div 
         })
         .child(
             inset(p)
-                .p(space::S5)
+                .p(space::S4)
                 .child(sec(kicker("How conviction works", p), None))
-                .children(key.map(|(k, v)| {
+                .children(key.into_iter().enumerate().map(|(i, (k, v))| {
                     div()
                         .flex()
                         .gap(space::S3)
-                        .py(px(5.))
+                        .py(px(10.))
+                        .when(i > 0, |d| d.border_t_1())
+                        .border_color(p.hairline)
                         .text_size(text::BASE)
                         .child(
                             div()

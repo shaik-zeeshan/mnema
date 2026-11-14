@@ -19,6 +19,7 @@ use super::model::{
 use super::TimelineView;
 use crate::theme::{self, radius, text, Palette, FONT_MONO};
 use crate::ui::app_icon::{app_icon, Src};
+use crate::ui::Tracking as _;
 use crate::ui::{alpha, mix, nid, spread, with_tip};
 
 /// `timelineAppRuns` is O(frames); it's recomputed only when the frame list
@@ -171,6 +172,7 @@ pub fn audio_lane(
             .font_family(FONT_MONO)
             .text_size(px(9.))
             .font_weight(theme::W_MEDIUM)
+            .tracking(0.08)
             .text_color(c)
             .child(t)
     };
@@ -204,7 +206,15 @@ pub fn audio_lane(
                 .h(px(11.))
                 .rounded(px(3.))
                 .bg(if mic { p.source_mic } else { p.source_sysaudio })
-                .when(selected, |d| d.shadow(vec![spread(p.accent, px(1.5))]))
+                .when(selected, |d| {
+                    d.shadow(vec![
+                        spread(p.accent, px(1.5)),
+                        gpui_kit::BoxShadow {
+                            blur_radius: px(10.),
+                            ..spread(p.accent_glow, px(0.))
+                        },
+                    ])
+                })
                 .cursor_pointer()
                 .on_hover(cx.listener(move |this, on: &bool, _, _| {
                     if *on {

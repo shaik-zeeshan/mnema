@@ -192,15 +192,18 @@ impl RenderOnce for ModelPicker {
                         .mx(space::S2)
                         .mt(space::S2)
                         .px(px(10.))
-                        // `.ch-pop .mx-search`: the kit search field, 32 px.
+                        // `.ch-pop .mx-search`: the kit search field, 32 px. Its
+                        // input holds focus whenever the picker is open, so it
+                        // always wears the `:focus-within` look.
                         .h(size::H_MD)
                         .rounded(FIELD_RADIUS)
                         .border_1()
-                        .border_color(p.border_strong)
+                        .border_color(p.accent_border)
+                        .shadow(vec![crate::ui::ring(p.accent_glow)])
                         .bg(p.surface_subtle)
                         .child(
                             div()
-                                .text_color(p.text_subtle)
+                                .text_color(p.accent)
                                 .child(icon(IconName::Search.path(), px(13.))),
                         )
                         .child(
@@ -210,7 +213,7 @@ impl RenderOnce for ModelPicker {
                                     .appearance(false)
                                     .px_0()
                                     .field_h(size::H_MD - px(2.))
-                                    .field_text(text::BASE),
+                                    .field_text(text::MD),
                             ),
                         ),
                 )
@@ -408,7 +411,8 @@ impl ModelPicker {
                     base.gap(px(6.))
                         .h(size::H_MD)
                         .px(px(8.))
-                        .rounded(radius::MD)
+                        // `.mx-btn--ghost.ch-model`: the kit button's 6 px corner.
+                        .rounded(radius::SM)
                         .text_color(if is_open { p.text_strong } else { p.text_muted })
                         .when(is_open, |el| el.bg(p.wash_strong))
                         .hover(move |s| s.bg(hover.0).text_color(hover.1))
@@ -649,7 +653,7 @@ impl ModelPicker {
                         if loading { "Retrying…" } else { "Retry" },
                     )
                     .ghost()
-                    .sm()
+                    .inline()
                     .disabled(loading)
                     .on_click(move |_, window, cx| f(window, cx))
                 });

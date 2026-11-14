@@ -17,12 +17,14 @@ use super::providers::{cloud, local_default};
 use crate::chat::format::{kind_label, provider_instance_label, url_host};
 use crate::settings::row::{line, row, state_word};
 use crate::settings::{click, icons, Reach, Settings};
-use crate::theme::{radius, space, text, Palette, FONT_MONO};
+use crate::theme::{radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::copy::CopyButton;
 use crate::ui::input::TextInput;
 use crate::ui::link::Link;
 use crate::ui::model_picker::ProviderFailure;
+use crate::ui::Tracking as _;
 use crate::ui::{Button, Tone};
 
 /// `ChatgptConnect`'s "Copied" flash.
@@ -247,7 +249,7 @@ pub fn render(
                 .child(
                     Button::new(nid("pv-retry", &pv.id), "Retry")
                         .ghost()
-                        .sm()
+                        .inline()
                         .disabled(s.pool_loading)
                         .on_click(click(cx, |s, cx| s.load_pool(cx))),
                 ),
@@ -511,15 +513,22 @@ fn chatgpt_block(
     let col = if let Some(Login::Waiting { code, url }) = login {
         let copy_text = code.clone();
         let cancel_id = id.to_string();
+        // One sentence in CSS: the link shares the hint's baseline.
+        let words = Line::new(FONT_UI, text::XS, 1.45);
         col.child(
-            div()
-                .flex()
-                .flex_wrap()
-                .items_baseline()
-                .gap(px(4.))
-                .child(hint("Enter this code at", p))
-                .child(Link::new(nid("pv-cg-page", id), VERIFY_HOST, url.clone()))
-                .child(hint("\u{2014} waiting for approval\u{2026}", p)),
+            baseline::row(vec![
+                (words, hint("Enter this code at", p).into_any_element()),
+                (
+                    Line::new(FONT_UI, text::MD, baseline::PHI),
+                    Link::new(nid("pv-cg-page", id), VERIFY_HOST, url.clone()).into_any_element(),
+                ),
+                (
+                    words,
+                    hint("\u{2014} waiting for approval\u{2026}", p).into_any_element(),
+                ),
+            ])
+            .flex_wrap()
+            .gap(px(4.)),
         )
         .child(
             div()
@@ -541,6 +550,7 @@ fn chatgpt_block(
                         .border_color(p.border)
                         .font_family(FONT_MONO)
                         .text_size(text::LG)
+                        .tracking(0.12)
                         .text_color(p.text)
                         .child(SharedString::from(code.clone()))
                         .on_click(move |_, _, cx| {

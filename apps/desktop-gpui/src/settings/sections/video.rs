@@ -16,6 +16,7 @@ use crate::ui::input::{field_warning, TextInput};
 use crate::ui::segmented::Segmented;
 use crate::ui::select::Select;
 use crate::ui::stepper::Stepper;
+use crate::ui::Tracking as _;
 
 /// `CAPTURE_INTERVAL_LADDER_S`.
 const LADDER: [f64; 11] = [0.1, 0.5, 1., 2., 3., 5., 10., 15., 30., 45., 60.];
@@ -253,6 +254,7 @@ pub fn render(
                 div()
                     .flex_1()
                     .text_size(text::XS)
+                    .tracking(0.02)
                     .line_height(gpui_kit::relative(1.55))
                     .child(msg),
             )
@@ -390,7 +392,7 @@ pub fn render(
     } else {
         Some(format!("{preset_hint}{}", at_rate(&d)))
     };
-    let bitrate = row("Bitrate").full().no_divider().control(
+    let bitrate = row("Bitrate").full().control(
         div()
             .flex()
             .flex_col()
@@ -467,8 +469,7 @@ pub fn render(
     ]
 }
 
-/// `.custom-res-field`: grows from 120 px; a small uppercase label (GPUI has
-/// no letter-spacing, so the 0.12em tracking is the one thing missing).
+/// `.custom-res-field`: grows from 120 px; a small uppercase label.
 fn field(label: &'static str, input: TextInput, p: &Palette) -> gpui_kit::Div {
     div()
         .flex()
@@ -482,6 +483,7 @@ fn field(label: &'static str, input: TextInput, p: &Palette) -> gpui_kit::Div {
             div()
                 .text_size(text::XS)
                 .font_weight(theme::W_SEMIBOLD)
+                .tracking(0.12)
                 .text_color(p.text_muted)
                 .child(label.to_uppercase()),
         )

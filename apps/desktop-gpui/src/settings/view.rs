@@ -8,6 +8,7 @@ use gpui_kit::{div, point, px, AnyElement, Context, ScrollEvent, Window};
 use super::groups::{self, SectionId, SPY_LINE};
 use super::{bar, icons, rail, sections, Settings};
 use crate::theme::{self, breakpoint, space, text, FONT_UI};
+use crate::ui::Tracking as _;
 use crate::ui::{notice, Button, Tone};
 
 /// `.settings-page`'s max width.
@@ -131,6 +132,7 @@ impl Render for Settings {
                 div()
                     .text_size(text::H1)
                     .font_weight(theme::W_SEMIBOLD)
+                    .tracking(-0.026)
                     .line_height(gpui_kit::relative(1.15))
                     .text_color(p.text_strong)
                     .child(g.label),

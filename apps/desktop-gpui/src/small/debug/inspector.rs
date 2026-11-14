@@ -18,6 +18,7 @@ use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
 use crate::ui::button::Button;
 use crate::ui::chip::chip;
 use crate::ui::notice::notice_el;
+use crate::ui::Tracking as _;
 use crate::ui::{icon, Tone};
 
 /// How long the Copy id tip says "Copied".
@@ -85,6 +86,7 @@ pub fn view(
                             .font_family(FONT_MONO)
                             .font_weight(theme::W_MEDIUM)
                             .text_size(text::LG)
+                            .tracking(-0.02)
                             .line_height(relative(1.2))
                             .text_color(p.text_strong)
                             .child(format!("#{id}")),

@@ -12,13 +12,15 @@ use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, Window};
 use super::charts::swatch;
 use super::model::ContextData;
 use super::parts::{
-    display, h2, inset, label, lede, mono_label, panel, prose, read, sec, split, stat_text,
+    display, h2, inset, label, lede, mono_label, panel, prose, read, sec_line, split, stat_text,
+    H2, KICKER, LABEL, MONO_LABEL,
 };
 use super::subjects::tiers::pct;
 use super::Insights;
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
+use crate::ui::Tracking as _;
 use crate::ui::{clock, icon, kicker, nid, Button, Tone};
 
 const MAX_CHARS: usize = 280;
@@ -51,7 +53,7 @@ pub fn topic_colors(p: &Palette) -> [gpui_kit::Hsla; 4] {
 }
 
 /// Topic name + its swatch (`context-topics.ts`).
-fn topics(p: &Palette) -> [(&'static str, gpui_kit::Hsla); 4] {
+pub(super) fn topics(p: &Palette) -> [(&'static str, gpui_kit::Hsla); 4] {
     [
         ("Work", p.cat_creating),
         ("Preferences", p.cat_organizing),
@@ -106,7 +108,7 @@ pub fn render(
             "What you write here steers the dossier, and never fades.",
         )
     };
-    let lede_el = lede("Context · in your own words", p).child(display(head, Some(em.into()), p)).child(prose(
+    let lede_el = lede("Context · in your own words", p).child(display(head, Some(em.into()), p, window)).child(prose(
         "Everything else Mnema knows is inferred from activity and scored on confidence. What you write here is taken as given — and outranks an inference that disagrees.",
         p,
     ));
@@ -153,7 +155,7 @@ pub fn render(
         .flex_col()
         .gap(space::S6)
         .child(composer(this, p, window, cx))
-        .child(standing(this, &d, unsent, p, off, cx));
+        .child(standing(this, &d, unsent, p, off, window, cx));
     div()
         .flex()
         .flex_col()
@@ -169,24 +171,8 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
         .gap(px(4.))
         .children(topics(p).into_iter().enumerate().map(|(i, (name, c))| {
             let on = this.draft_topic == Some(name);
-            div()
-                .id(nid("insights-topic", i as u64))
-                .role(Role::Button)
-                .flex()
-                .items_center()
-                .gap(px(6.))
-                .h(px(24.))
-                .px(px(9.))
-                .rounded(theme::radius::SM)
-                .border_1()
-                .border_color(if on { p.border_strong } else { p.border })
-                .bg(if on { p.wash_strong } else { p.surface_raised })
+            super::charts::swatch_chip(nid("insights-topic", i as u64), name, c, on, true, p)
                 .cursor_pointer()
-                .text_size(text::BASE)
-                .font_weight(theme::W_MEDIUM)
-                .text_color(if on { p.text_strong } else { p.text_muted })
-                .child(swatch(c, 8.))
-                .child(name)
                 .on_click(cx.listener(move |this, _, _, cx| {
                     this.draft_topic = if this.draft_topic == Some(name) {
                         None
@@ -208,11 +194,14 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
         } else {
             (IconName::Cloud.path(), format!("Goes to {name} each time Mnema forms conclusions · stays on this Mac with a local model."))
         };
-        div().flex().items_center().gap(px(6.)).text_size(text::SM).text_color(p.text_subtle).child(icon(ic, px(13.))).child(t)
+        // `.in-compose__priv`: 4 px under the row (`calc(-S3 + 4px)` against the gap).
+        div().flex().items_center().gap(px(6.)).mt(px(-8.)).text_size(text::SM).line_height(relative(1.4)).text_color(p.text_muted).child(div().flex_none().text_color(p.text_subtle).child(icon(ic, px(13.)))).child(div().truncate().child(t))
     });
     panel(p)
         .bg(p.surface_raised)
-        .p(space::S5)
+        .pt(space::S4)
+        .px(space::S4)
+        .pb(space::S3)
         .flex()
         .flex_col()
         .gap(space::S3)
@@ -221,19 +210,21 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
             div()
                 .relative()
                 .min_h(px(76.))
-                .text_size(text::LG)
-                .line_height(relative(1.5))
+                .text_size(text::XL)
+                .tracking(-0.01)
+                .line_height(relative(1.4))
                 .text_color(p.text_strong)
                 .child(
                     // The kit's multi-line editor insets its text 10 × 8 px; pull it
-                    // back so the text (and the drawn placeholder) sit on the kicker's edge.
-                    div().mx(px(-10.)).my(px(-8.)).child(
+                    // back so the text (and the drawn placeholder) sit on the kicker's
+                    // edge, and keep 72 px clear for the count (`padding-right: 72px`).
+                    div().ml(px(-10.)).mr(px(62.)).my(px(-8.)).child(
                         Textarea::new(&this.composer)
                             .aria_label("Add context")
                             .appearance(false)
                             .px_0()
                             .py_0()
-                            .text_size(text::LG),
+                            .text_size(text::XL),
                     ),
                 )
                 .when(len == 0, |d| {
@@ -248,21 +239,28 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
                     )
                 })
                 .child(
+                    // `.in-compose__count`: XS mono, pinned to the box's bottom right.
                     div()
-                        .flex()
-                        .justify_end()
-                        .child(mono_label(format!("{len} / {MAX_CHARS}"), p)),
+                        .absolute()
+                        .right(px(2.))
+                        .bottom(px(2.))
+                        .font_family(FONT_MONO)
+                        .text_size(text::XS)
+                        .line_height(relative(1.))
+                        .tracking(-0.01)
+                        .text_color(p.text_subtle)
+                        .child(format!("{len} / {MAX_CHARS}")),
                 ),
         )
         .child(
             div()
                 .flex()
                 .items_center()
-                .gap(space::S3)
+                .gap(px(6.))
                 .pt(space::S3)
                 .border_t_1()
                 .border_color(p.hairline)
-                .child(label("Topic", p))
+                .child(label("Topic", p).mr(px(4.)))
                 .child(topic_chips)
                 .child(div().flex_1())
                 .child(if this.ctx_ui.submitting {
@@ -294,7 +292,7 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
                         .into_any_element(),
                     Button::new("insights-add-retry", "Retry")
                         .ghost()
-                        .sm()
+                        .inline()
                         .on_click(cx.listener(|this, _, window, cx| this.submit_draft(window, cx)))
                         .into_any_element(),
                 ],
@@ -309,6 +307,7 @@ fn standing(
     unsent: usize,
     p: &Palette,
     off: time::UtcOffset,
+    window: &Window,
     cx: &mut Context<Insights>,
 ) -> Div {
     let rows = d.authored.clone().unwrap_or_default();
@@ -327,15 +326,10 @@ fn standing(
             if n > 0 { " · all sent" } else { "" }
         )
     };
-    let head = sec(
-        div()
-            .flex()
-            .items_end()
-            .gap(space::S3)
-            .child(h2("Standing context", p))
-            .child(mono_label(note, p)),
-        None,
-    );
+    let head = sec_line(vec![
+        (H2, h2("Standing context", p).into_any_element()),
+        (MONO_LABEL, mono_label(note, p).into_any_element()),
+    ]);
     if d.authored.is_none() {
         return div().child(head).child(empty(
             EmptyLayout::Panel,
@@ -388,14 +382,15 @@ fn standing(
             .items_start()
             .group("insights-stmt")
             .gap(space::S4)
+            // `.in-stmt`: the fill reaches 12 px past the column, the text stays on it.
             .py(px(14.))
             .px(space::S3)
+            .mx(-space::S3)
             .border_t_1()
             .border_color(p.hairline)
             .rounded(radius::SM)
-            .hover(|s| s.bg(p.wash))
+            .hover(|s| s.bg(crate::ui::alpha(p.fg, 0.025)))
             .when(!r.in_prompt && !editing, |d| d.opacity(0.38))
-            .when(editing, |d| d.bg(p.wash))
             .child(
                 div()
                     .w(px(120.))
@@ -417,7 +412,7 @@ fn standing(
                     })),
             )
             .when_some(editor, |row, ed| {
-                row.child(super::context_ops::edit_body(this, &ed, p, cx))
+                row.child(super::context_ops::edit_body(this, &ed, p, window, cx))
             })
             .when(!editing, |row| {
                 row.child(
@@ -430,6 +425,7 @@ fn standing(
                         .child(
                             div()
                                 .text_size(text::LG)
+                                .tracking(-0.005)
                                 .line_height(relative(1.45))
                                 .text_color(p.text_strong)
                                 .child(s.text.clone()),
@@ -489,124 +485,24 @@ fn standing(
 fn side(this: &Insights, d: &ContextData, p: &Palette, cx: &mut Context<Insights>) -> Div {
     let off = clock::now(cx).offset();
     let rows = d.authored.clone().unwrap_or_default();
-    let n = rows.len();
     let inferred = d.inferred.clone().unwrap_or_default();
     let ni = inferred.len();
-    let mut by_topic: Vec<(&str, gpui_kit::Hsla, usize)> = topics(p)
-        .into_iter()
-        .map(|(t, c)| {
-            (
-                t,
-                c,
-                rows.iter()
-                    .filter(|r| r.item.topic.as_deref() == Some(t))
-                    .count(),
-            )
-        })
-        .collect();
-    let other = n - by_topic.iter().map(|t| t.2).sum::<usize>();
-    if other > 0 {
-        by_topic.push(("Other", p.chart_grey_3, other));
-    }
-    let max_t = by_topic.iter().map(|t| t.2).max().unwrap_or(1).max(1);
-    let total = div()
-        .flex()
-        .gap(px(3.))
-        .h(px(8.))
-        .mt(space::S3)
-        .child(
-            div()
-                .flex_grow(n.max(1) as f32 * if n == 0 { 0.001 } else { 1. })
-                .flex_basis(px(0.))
-                .rounded(px(2.))
-                .bg(p.text_strong),
-        )
-        .child(
-            div()
-                .flex_grow(ni.max(1) as f32 * if ni == 0 { 0.001 } else { 1. })
-                .flex_basis(px(0.))
-                .rounded(px(2.))
-                .bg(p.chart_grey_3),
-        );
-    let mix = panel(p)
-        .p(space::S5)
-        .child(kicker("What the dossier is built from", p))
-        .child(total)
-        .child(
-            div()
-                .flex()
-                .gap(space::S4)
-                .mt(space::S2)
-                .text_size(text::SM)
-                .text_color(p.text_subtle)
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(5.))
-                        .child(swatch(p.text_strong, 8.))
-                        .child(format!("authored {n}")),
-                )
-                .child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .gap(px(5.))
-                        .child(swatch(p.chart_grey_4, 8.))
-                        .child(format!("inferred {ni}")),
-                ),
-        )
-        .when(n > 0, |d| {
-            d.child(
-                div()
-                    .mt(space::S3)
-                    .children(by_topic.into_iter().map(|(t, c, k)| {
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(space::S3)
-                            .py(px(7.))
-                            .border_t_1()
-                            .border_color(p.hairline)
-                            .text_size(text::BASE)
-                            .child(
-                                div()
-                                    .w(px(100.))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(6.))
-                                    .child(swatch(c, 8.))
-                                    .child(t),
-                            )
-                            .child(
-                                div().flex_1().child(
-                                    div()
-                                        .h(px(14.))
-                                        .w(relative(k as f32 / max_t as f32))
-                                        .rounded(px(2.))
-                                        .bg(c),
-                                ),
-                            )
-                            .child(
-                                div()
-                                    .w(px(24.))
-                                    .text_right()
-                                    .font_family(FONT_MONO)
-                                    .text_size(text::SM)
-                                    .child(k.to_string()),
-                            )
-                    })),
-            )
-        });
+    let mix = super::context_mix::mix(&rows, ni, p);
     let mut strongest = inferred.clone();
     strongest.sort_by(|a, b| b.confidence.total_cmp(&a.confidence));
     strongest.truncate(3);
     let views =
         div()
-            .child(sec(
-                kicker("Strongest inferred views", p),
-                Some(label("by confidence", p).into_any_element()),
-            ))
+            .child(
+                sec_line(vec![
+                    (
+                        KICKER,
+                        kicker("Strongest inferred views", p).into_any_element(),
+                    ),
+                    (LABEL, label("by confidence", p).into_any_element()),
+                ])
+                .justify_between(),
+            )
             .child(if strongest.is_empty() {
                 empty(
                     EmptyLayout::Compact,
@@ -628,8 +524,8 @@ fn side(this: &Insights, d: &ContextData, p: &Palette, cx: &mut Context<Insights
                             .role(Role::Button)
                             .flex()
                             .flex_col()
-                            .gap(px(3.))
-                            .py(px(8.))
+                            .gap(px(5.))
+                            .py(px(10.))
                             .border_t_1()
                             .border_color(p.hairline)
                             .cursor_pointer()
@@ -640,7 +536,8 @@ fn side(this: &Insights, d: &ContextData, p: &Palette, cx: &mut Context<Insights
                                     .flex()
                                     .gap(space::S2)
                                     .text_size(text::BASE)
-                                    .child(div().flex_1().child(c.statement.clone()))
+                                    // min_w_0: a flex child won't shrink below its text's full width, so it never wraps.
+                                    .child(div().flex_1().min_w_0().child(c.statement.clone()))
                                     .child(
                                         div()
                                             .font_family(FONT_MONO)
@@ -681,10 +578,13 @@ fn side(this: &Insights, d: &ContextData, p: &Palette, cx: &mut Context<Insights
             |el| {
                 el.child(
                     div()
-                        .child(sec(
-                            kicker("Dismissed beliefs", p),
-                            Some(label("won't be re-inferred", p).into_any_element()),
-                        ))
+                        .child(
+                            sec_line(vec![
+                                (KICKER, kicker("Dismissed beliefs", p).into_any_element()),
+                                (LABEL, label("won't be re-inferred", p).into_any_element()),
+                            ])
+                            .justify_between(),
+                        )
                         .children(this.ctx_ui.dismissed_error.clone().map(|e| {
                             crate::ui::notice::inline(
                                 Tone::Danger,
@@ -705,6 +605,7 @@ fn side(this: &Insights, d: &ContextData, p: &Palette, cx: &mut Context<Insights
                                 .child(
                                     div()
                                         .flex_1()
+                                        .min_w_0()
                                         .flex()
                                         .flex_col()
                                         .gap(px(2.))

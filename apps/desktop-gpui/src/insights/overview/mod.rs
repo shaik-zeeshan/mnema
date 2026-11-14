@@ -204,7 +204,7 @@ pub fn render(
         .flex_col()
         .children(failing(this, &f, p, clock::now(cx).offset()))
         .child(read(
-            lede_col(this, &d, &f, p, cx),
+            lede_col(this, &d, &f, p, window, cx),
             stat_cells(this, &d, &f, p, cx),
             this.width,
             p,
@@ -259,6 +259,7 @@ fn lede_col(
     d: &OverviewData,
     f: &Figures,
     p: &Palette,
+    window: &Window,
     cx: &mut Context<Insights>,
 ) -> gpui_kit::Div {
     let latest = at_latest(this, cx);
@@ -290,7 +291,7 @@ fn lede_col(
         })
     };
     let lede_el = if f.nothing && f.acts.is_empty() {
-        let l = lede(&plain, p).child(display(format!("Nothing captured {scope}."), None, p));
+        let l = lede(&plain, p).child(display(format!("Nothing captured {scope}."), None, p, window));
         if latest && (!running || paused) {
             // 2a: the current range is empty and Mnema isn't recording (or is paused).
             let (body, label) = if paused {
@@ -314,9 +315,9 @@ fn lede_col(
     } else if f.cap_only {
         let l = lede(&plain, p);
         if d.usage_error.is_some() && d.usage.is_none() {
-            l.child(display(format!("Couldn't load app time {scope}."), None, p))
+            l.child(display(format!("Couldn't load app time {scope}."), None, p, window))
         } else if let Some((_, note)) = no_app_time(this, d, f, cx) {
-            l.child(display(format!("No app time {scope}."), None, p))
+            l.child(display(format!("No app time {scope}."), None, p, window))
                 .child(prose(note, p))
         } else {
             let n = f.apps.len();
@@ -329,11 +330,12 @@ fn lede_col(
                 ),
                 top,
                 p,
+                window,
             ))
         }
     } else if let (Some(by), None) = (paused_by, &r.digest) {
         lede(&kicker, p)
-            .child(display(format!("No new read while {by}."), None, p))
+            .child(display(format!("No new read while {by}."), None, p, window))
             .child(prose(
                 if r.reason == Some(DigestAbsentReason::DerivationOff) {
                     "Everything below was written before."
@@ -373,7 +375,7 @@ fn lede_col(
                 .when(!paused_engine, |d| d.child(reread(this, cx)))
         };
         lede(&kicker, p)
-            .when(!head.is_empty(), |l| l.child(display(head.clone(), turn, p)))
+            .when(!head.is_empty(), |l| l.child(display(head.clone(), turn, p, window)))
             .when(!failed_refresh || head.is_empty(), |l| l.child(prose(dg.narrative, p)))
             .child(foot)
     } else if r.loading || r.regenerating || this.overview.as_ref().is_some_and(|o| o.stale) {
@@ -384,20 +386,20 @@ fn lede_col(
         )
     } else if held {
         lede(&kicker, p)
-            .child(display(format!("The read for {scope} was held back."), None, p))
+            .child(display(format!("The read for {scope} was held back."), None, p, window))
             .child(prose(format!("It touched a private category, so Mnema dropped it rather than show it. Your activities are untouched. Re-read, or step to another {unit}."), p))
             .child(div().mt(space::S5).child(reread(this, cx)))
     } else if let Some(t) = fail {
         lede(&kicker, p)
-            .child(display(format!("Couldn't write the read for {scope}."), None, p))
+            .child(display(format!("Couldn't write the read for {scope}."), None, p, window))
             .child(div().mt(space::S5).child(danger(t, retry("insights-read-retry"), p)))
     } else if waiting_first(this, d, f, cx) {
         lede(&kicker, p)
-            .child(display("Waiting for the first summary.", None, p))
+            .child(display("Waiting for the first summary.", None, p, window))
             .child(prose(format!("{}The first summary usually lands within about 10 minutes, and the read is written once there are two activities.", recording_since(this, cx).map(|t| format!("Recording since {t}. ")).unwrap_or_default()), p))
     } else if let Some(note) = older_note(this, f, cx) {
         lede(&kicker, p)
-            .child(display(format!("No read for this {unit}."), None, p))
+            .child(display(format!("No read for this {unit}."), None, p, window))
             .child(prose(note, p))
     } else if r.reason == Some(DigestAbsentReason::TooFew) {
         let n = f.acts.len();
@@ -407,11 +409,11 @@ fn lede_col(
             " it can use".into()
         };
         lede(&kicker, p)
-            .child(display(format!("Too little captured {scope} to write a read."), None, p))
+            .child(display(format!("Too little captured {scope} to write a read."), None, p, window))
             .child(prose(format!("A read needs at least two activities{tail}. The numbers on the right still count."), p))
     } else {
         lede(&kicker, p)
-            .child(display(format!("No read for {scope} yet."), None, p))
+            .child(display(format!("No read for {scope} yet."), None, p, window))
             .child(prose("It's written on its own once there's enough. Re-read asks for one now.", p))
             .child(div().mt(space::S5).child(reread(this, cx)))
     };

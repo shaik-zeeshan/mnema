@@ -603,7 +603,7 @@ pub fn render(
                 .child(
                     Button::new("repair-retry", "Try again")
                         .ghost()
-                        .sm()
+                        .inline()
                         .disabled(busy)
                         .on_click(cx.listener(move |d, _, _, cx| {
                             d.write(cluster, w.clone(), close_on, cx)

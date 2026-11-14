@@ -13,7 +13,7 @@ use crate::settings::row::{line, row, section};
 use crate::settings::{click, icons, on, reload, Settings};
 use crate::theme::{self, space, text, Palette};
 use crate::ui::switch::Switch;
-use crate::ui::{kbd, notice, progress, Button, Tone};
+use crate::ui::{notice, progress, Button, Tone};
 
 /// One editable action: id, label, description, category, (group key, binding key).
 pub struct Action {
@@ -397,11 +397,20 @@ fn chord(
         div()
             .flex()
             .gap(px(3.))
+            // `.mx-btn kbd`: no box, quiet mono text in a 20 px cell.
             .children(toks.into_iter().map(|t| {
-                kbd(SharedString::from(t), p)
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .h(px(20.))
                     .min_w(px(20.))
+                    .font_family(theme::FONT_MONO)
+                    .font_weight(theme::W_MEDIUM)
                     .text_size(text::SM)
+                    .line_height(gpui_kit::relative(1.))
+                    .text_color(p.text_subtle)
+                    .child(SharedString::from(t))
             }))
             .into_any_element()
     };
@@ -426,7 +435,12 @@ fn chord(
         } else {
             p.border_strong
         })
-        .bg(p.surface)
+        // `[aria-pressed=true]` (listening) takes the selected wash, over hover too.
+        .bg(if listening {
+            p.wash_strong
+        } else {
+            p.surface_raised
+        })
         .text_size(text::MD)
         .font_weight(theme::W_MEDIUM)
         .text_color(p.text)
@@ -439,7 +453,7 @@ fn chord(
         .when(saving, |d| d.opacity(theme::DISABLED_OPACITY))
         .when(!saving, |d| {
             d.cursor_pointer()
-                .hover(|st| st.bg(p.surface_hover))
+                .when(!listening, |d| d.hover(|st| st.bg(p.surface_hover)))
                 .on_click(cx.listener(move |s, _: &gpui_kit::ClickEvent, window, cx| {
                     s.ui.kb_capture_error = None;
                     s.ui.kb_listening = if s.ui.kb_listening == Some(id) {

@@ -19,6 +19,7 @@ use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::notice::notice_el;
 use crate::ui::segmented::{opt_count, Segmented};
+use crate::ui::Tracking as _;
 use crate::ui::{focus_handle, icon, nid, ring_box, CopyButton, Tone};
 
 /// `.mx-spec` label column in the drill-in.
@@ -52,6 +53,7 @@ pub(super) fn n(v: Option<f64>) -> String {
 pub(super) fn num(s: impl Into<SharedString>, p: &Palette) -> Div {
     div()
         .font_family(FONT_MONO)
+        .tracking(-0.01)
         .text_color(p.text_strong)
         .child(s.into())
 }

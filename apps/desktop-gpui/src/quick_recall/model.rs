@@ -269,8 +269,11 @@ pub fn ms(iso: &str) -> i64 {
 
 /// A snippet with its `<mark>` runs: `(text, marked)`.
 pub fn snippet_runs(s: &str) -> Vec<(String, bool)> {
+    // Snippets are HTML to the Svelte app, which folds newlines; GPUI text breaks the
+    // line on each one and spills out of a one-line row.
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = Vec::new();
-    let mut rest = s;
+    let mut rest = s.as_str();
     while let Some(open) = rest.find("<mark>") {
         if open > 0 {
             out.push((rest[..open].to_string(), false));

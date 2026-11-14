@@ -8,9 +8,11 @@ use serde_json::Value;
 use crate::settings::model::{short_datetime, Json};
 use crate::settings::row::{hint, row, section};
 use crate::settings::{click, Settings};
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
-use crate::ui::chip::{chip, ChipKind};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
+use crate::ui::chip::{chip, chip_line, ChipKind};
 use crate::ui::link::Link;
+use crate::ui::Tracking as _;
 use crate::ui::{nid, Button, CopyButton};
 
 /// `appUpdateStateLabel`.
@@ -131,20 +133,23 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
         app.str_at(&["arch"]).unwrap_or("unknown"),
         app.str_at(&["identifier"]).unwrap_or("unknown"),
     );
+    // `.about-meta__row`: the label and the value share one baseline.
     let meta = |k: &'static str, v: String| {
-        div()
-            .flex()
-            .gap(space::S3)
-            .text_size(text::BASE)
-            .child(
+        baseline::row_top(vec![
+            (
+                Line::new(FONT_MONO, text::XS, baseline::PHI),
                 div()
                     .w(px(84.))
-                    .font_family(FONT_MONO)
-                    .text_size(text::XS)
+                    .tracking(0.1)
                     .text_color(p.text_subtle)
                     .child(k.to_uppercase()),
-            )
-            .child(div().text_color(p.text).child(v))
+            ),
+            (
+                Line::new(FONT_UI, text::BASE, baseline::PHI),
+                div().text_color(p.text).child(v),
+            ),
+        ])
+        .gap(space::S3)
     };
     let hero = div()
         .flex()
@@ -154,16 +159,42 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
         .border_b_1()
         .border_color(p.hairline)
         .child(
-            div()
-                .flex()
-                .items_center()
-                .gap(space::S3)
-                .child(div().text_size(text::XL).font_weight(theme::W_SEMIBOLD).text_color(p.text_strong).child("Mnema"))
-                .child(match version.as_ref() {
-                    Some(v) => chip(format!("v{v}"), ChipKind::Accent, p),
-                    None => chip("checking\u{2026}", ChipKind::Neutral, p),
-                })
-                .child(chip(format!("{channel} channel").to_uppercase(), ChipKind::Neutral, p)),
+            // `.about-hero__head`: the version chip's text on the name's baseline.
+            baseline::row(vec![
+                (
+                    Line::new(FONT_UI, text::XL, baseline::PHI),
+                    div()
+                        .font_weight(theme::W_SEMIBOLD)
+                        .tracking(0.01)
+                        .text_color(p.text_strong)
+                        .child("Mnema")
+                        .into_any_element(),
+                ),
+                (
+                    chip_line(),
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::S3)
+                        .child(match version.as_ref() {
+                            // `.about-id__version`.
+                            Some(v) => chip(format!("v{v}"), ChipKind::Accent, p)
+                                .rounded(radius::PILL)
+                                .tracking(0.01),
+                            None => chip("checking\u{2026}", ChipKind::Neutral, p)
+                                .rounded(radius::PILL)
+                                .tracking(0.01),
+                        })
+                        .child(
+                            // `.badge`.
+                            chip(format!("{channel} channel").to_uppercase(), ChipKind::Neutral, p)
+                                .rounded(radius::PILL)
+                                .tracking(0.08),
+                        )
+                        .into_any_element(),
+                ),
+            ])
+            .gap(space::S3),
         )
         .child(hint(
             "Your memory, on rewind. Mnema records your screen so you can scrub back to anything you've seen: searchable, local, and yours.",
@@ -180,7 +211,6 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
             hero.into_any_element(),
             row("Copy details")
                 .desc("Copy version and build details to the clipboard.")
-                .no_divider()
                 .control(copy_button(
                     "about-copy",
                     "Copy details",
@@ -275,7 +305,11 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
                 .flex()
                 .items_center()
                 .gap(space::S2)
-                .child(chip(state_label(u), ChipKind::Neutral, p))
+                .child(
+                    chip(state_label(u), ChipKind::Neutral, p)
+                        .rounded(radius::PILL)
+                        .tracking(0.08),
+                )
                 .child(
                     Button::new(
                         "update-check",
@@ -389,7 +423,6 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
         vec![row("Status")
             .desc("Check for a new build and install it from here.")
             .full()
-            .no_divider()
             .control(panel)
             .build(p)
             .into_any_element()],
@@ -443,7 +476,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
                                     .child(div().text_color(p.text_strong).child(
                                         e.str_at(&["displayName"]).unwrap_or_default().to_string(),
                                     ))
-                                    .child(div().text_color(p.text_subtle).child(
+                                    .child(div().text_color(p.text_subtle).tracking(0.02).child(
                                         e.str_at(&["license"]).unwrap_or_default().to_string(),
                                     )),
                             )
@@ -466,7 +499,6 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> Vec<AnyE
         vec![row("Third-party notices")
             .desc("The full attribution list for the bundled open-source components.")
             .full()
-            .no_divider()
             .control(
                 div()
                     .flex()

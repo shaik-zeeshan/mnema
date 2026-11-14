@@ -9,7 +9,8 @@ use serde_json::Value;
 use crate::settings::model::{relative, short_day, Json};
 use crate::settings::row::{line, row, section};
 use crate::settings::{click, confirm, icons, Settings};
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::{icon, Button, Tone};
@@ -89,6 +90,8 @@ fn tool_row(
         .gap(space::S2)
         .child(
             div()
+                .min_w_0()
+                .truncate()
                 .text_size(text::MD)
                 .font_weight(theme::W_MEDIUM)
                 .text_color(p.text_strong)
@@ -102,6 +105,7 @@ fn tool_row(
     let scope = g.at(&["scope"]).clone();
     let meta = div()
         .flex()
+        .flex_wrap()
         .items_center()
         .gap(px(6.))
         .text_size(text::SM)
@@ -138,6 +142,7 @@ fn tool_row(
     let right: AnyElement = if blocked {
         div()
             .flex()
+            .flex_none()
             .items_center()
             .gap(space::S3)
             .child(div().text_size(text::SM).font_weight(theme::W_SEMIBOLD).text_color(p.text_muted).child("Never lapses"))
@@ -170,6 +175,7 @@ fn tool_row(
             );
         div()
             .flex()
+            .flex_none()
             .items_center()
             .gap(space::S3)
             .child(
@@ -190,8 +196,7 @@ fn tool_row(
                     SharedString::from(format!("block-{key}")),
                     if saving { "Blocking\u{2026}" } else { "Block" },
                 )
-                .ghost()
-                .danger()
+                .ghost_danger()
                 .sm()
                 .busy(saving)
                 .disabled(saving)
@@ -206,8 +211,6 @@ fn tool_row(
         .gap(space::S3)
         .px(space::S3)
         .py(px(10.))
-        .border_b_1()
-        .border_color(p.hairline)
         .child(
             div()
                 .flex()
@@ -245,31 +248,35 @@ fn list_section(title: &str, hint: &str, rows: Vec<AnyElement>, p: &Palette) -> 
         .flex_col()
         .gap(space::S2)
         .pt(space::S5)
+        // `.ac-sec__head`: title and hint on one baseline.
         .child(
-            div()
-                .flex()
-                .items_baseline()
-                .gap(space::S3)
-                .child(
+            baseline::row_top(vec![
+                (
+                    Line::new(FONT_UI, text::MD, baseline::PHI),
                     div()
-                        .text_size(text::MD)
                         .font_weight(theme::W_SEMIBOLD)
                         .text_color(p.text_strong)
                         .child(title.to_string()),
-                )
-                .child(
-                    div()
-                        .text_size(text::BASE)
-                        .text_color(p.text_subtle)
-                        .child(hint.to_string()),
                 ),
+                (
+                    Line::new(FONT_UI, text::BASE, baseline::PHI),
+                    div().text_color(p.text_subtle).child(hint.to_string()),
+                ),
+            ])
+            .gap(space::S3),
         )
         .child(
+            // `.ac-list`: hairlines between the tool rows only.
             div()
-                .rounded(radius::LG)
+                .rounded(radius::MD)
                 .border_1()
                 .border_color(p.border)
-                .children(rows),
+                .bg(p.surface)
+                .children(rows.into_iter().enumerate().map(|(i, r)| {
+                    div()
+                        .when(i > 0, |d| d.border_t_1().border_color(p.hairline))
+                        .child(r)
+                })),
         )
         .into_any_element()
 }
@@ -458,26 +465,29 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                     format!("{n} results")
                 }
             });
-            div()
-                .flex()
-                .items_center()
-                .gap(space::S3)
-                .py(px(6.))
-                .text_size(text::SM)
-                .child(
+            // `.ac-log li`: sans and mono columns on one baseline.
+            let (ui, mono) = (
+                Line::new(FONT_UI, text::SM, baseline::PHI),
+                Line::new(FONT_MONO, text::SM, baseline::PHI),
+            );
+            baseline::row_top(vec![
+                (
+                    ui,
                     div()
                         .flex_1()
                         .text_color(p.text)
                         .child(e.str_at(&["toolIdentity"]).unwrap_or_default().to_string()),
-                )
-                .child(
-                    div().font_family(FONT_MONO).text_color(p.text_muted).child(
+                ),
+                (
+                    mono,
+                    div().text_color(p.text_muted).child(
                         e.str_at(&["commandType"])
                             .unwrap_or_default()
                             .replace('_', "-"),
                     ),
-                )
-                .child(
+                ),
+                (
+                    ui,
                     div()
                         .w(px(80.))
                         .text_color(if outcome.is_some() {
@@ -486,17 +496,23 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                             p.text_subtle
                         })
                         .child(detail),
-                )
-                .child(
-                    div()
-                        .font_family(FONT_MONO)
-                        .text_color(p.text_subtle)
-                        .child(relative(
-                            e.num_at(&["timestampUnixMs"]).unwrap_or(0.) as i64,
-                            now,
-                        )),
-                )
-                .into_any_element()
+                ),
+                (
+                    mono,
+                    div().text_color(p.text_subtle).child(relative(
+                        e.num_at(&["timestampUnixMs"]).unwrap_or(0.) as i64,
+                        now,
+                    )),
+                ),
+            ])
+            .gap(space::S3)
+            // `padding: 9px 2px` around a 1.3 line; the baseline row's line box is
+            // already ~10 px taller, so 4 px keeps the old 35 px row pitch.
+            .px(px(2.))
+            .py(px(4.))
+            .border_b_1()
+            .border_color(p.hairline)
+            .into_any_element()
         })
         .collect();
     rows.push(
@@ -505,35 +521,38 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .flex_col()
             .gap(space::S2)
             .pt(space::S5)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .child(
-                        div()
-                            .text_size(text::MD)
-                            .font_weight(theme::W_SEMIBOLD)
-                            .text_color(p.text_strong)
-                            .child("Recent activity"),
-                    )
-                    .when(!s.data.history.is_empty(), |d| {
-                        d.child(
-                            div().ml_auto().child(
-                                Button::new("cli-reveal-log", "Reveal log in Finder")
-                                    .ghost()
-                                    .sm()
-                                    .icon(icons::FOLDER)
-                                    .on_click(|_, _, cx| {
-                                        if let Some(core) = crate::chat::core(cx) {
-                                            cx.reveal_path(
-                                                &core.paths().config.join("broker-audit.json"),
-                                            );
-                                        }
-                                    }),
-                            ),
-                        )
-                    }),
-            )
+            // `.ac-sec__head`: the heading and the button label on one baseline.
+            .child({
+                let mut head = vec![(
+                    Line::new(FONT_UI, text::MD, baseline::PHI),
+                    div()
+                        .font_weight(theme::W_SEMIBOLD)
+                        .text_color(p.text_strong)
+                        .child("Recent activity")
+                        .into_any_element(),
+                )];
+                if !s.data.history.is_empty() {
+                    head.push((
+                        // An sm button: one centred BASE line whose box is the whole button.
+                        Line::new(
+                            FONT_UI,
+                            text::BASE,
+                            f32::from(size::H_SM) / f32::from(text::BASE),
+                        ),
+                        Button::new("cli-reveal-log", "Reveal log in Finder")
+                            .ghost()
+                            .sm()
+                            .icon(icons::FOLDER)
+                            .on_click(|_, _, cx| {
+                                if let Some(core) = crate::chat::core(cx) {
+                                    cx.reveal_path(&core.paths().config.join("broker-audit.json"));
+                                }
+                            })
+                            .into_any_element(),
+                    ));
+                }
+                baseline::row(head).justify_between()
+            })
             .map(|d| {
                 if events.is_empty() {
                     d.child(

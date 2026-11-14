@@ -8,11 +8,26 @@ use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, AnyElement, Context, Role};
 
 use super::tiers::{pct, SubjectRow, DISPLAY_FLOOR, INITIAL_BASE, MAP_PAGE, STRONGLY_HELD};
-use crate::insights::parts::{label, panel, sec};
+use crate::insights::charts::hatch;
+use crate::insights::parts::{label, lift, panel, sec, PHI};
 use crate::insights::Insights;
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::empty::{empty, EmptyLayout};
-use crate::ui::{alpha, kicker, nid, Tone};
+use crate::ui::Tracking as _;
+use crate::ui::{alpha, kicker, nid, ring_box, Tone};
+
+/// A row's name and its conclusion count (`.in-map__name` + `small`), inline on one baseline.
+const NAME: Line = Line {
+    family: FONT_UI,
+    size: text::MD,
+    lh: PHI,
+};
+const COUNT: Line = Line {
+    family: FONT_MONO,
+    size: text::XS,
+    lh: PHI,
+};
 
 /// `ConvictionMap.svelte`: bands, axis, and one row per subject (top 12).
 pub(super) fn map(
@@ -41,7 +56,7 @@ pub(super) fn map(
                 .flex()
                 .items_center()
                 .gap(px(5.))
-                .child(div().size(px(8.)).rounded_full().bg(p.text_strong))
+                .child(div().size(px(9.)).rounded_full().bg(p.text_strong))
                 .child("now"),
         )
         .child(
@@ -53,7 +68,7 @@ pub(super) fn map(
                     div()
                         .size(px(8.))
                         .rounded_full()
-                        .border_1()
+                        .border(px(1.5))
                         .border_color(p.chart_grey_4),
                 )
                 .child("14 days ago"),
@@ -104,14 +119,25 @@ pub(super) fn map(
                 .border_dashed()
                 .border_color(p.hairline)
                 .when(firm, |d| d.bg(alpha(p.fg, 0.025)))
-                .when(fade, |d| d.bg(alpha(p.fg, 0.015)))
+                // `.fade`: 1 px fg-3% stripes every 7 px.
+                .when(fade, |d| {
+                    d.child(
+                        hatch(alpha(p.fg, 0.03), gpui_kit::transparent_black(), 1., 7.)
+                            .absolute()
+                            .inset_0(),
+                    )
+                })
                 .child(
                     div()
                         .absolute()
                         .top_0()
                         .left(px(8.))
+                        // `max-width: calc(100% - 12px)`: a narrow band clips its label.
+                        .right(px(4.))
+                        .truncate()
                         .font_family(FONT_MONO)
                         .text_size(text::XS)
+                        .tracking(0.08)
                         .text_color(p.text_faint)
                         .child(l.to_uppercase()),
                 )
@@ -207,10 +233,11 @@ pub(super) fn map(
                     .size(px(8.))
                     .rounded_full()
                     .bg(p.surface)
-                    .border_1()
+                    .border(px(1.5))
                     .border_color(p.chart_grey_4)
             }))
             .child(
+                // `.in-map__now`: a 3 px surface ring; a new one adds a 2 px glow past it.
                 div()
                     .absolute()
                     .top(px(13.))
@@ -222,6 +249,20 @@ pub(super) fn map(
                         p.accent
                     } else {
                         p.text_strong
+                    })
+                    .child(ring_box(p.surface, px(3.), px(6.)))
+                    .when(r.then.is_none(), |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .top(px(-5.))
+                                .left(px(-5.))
+                                .right(px(-5.))
+                                .bottom(px(-5.))
+                                .rounded(px(11.))
+                                .border_2()
+                                .border_color(p.accent_glow),
+                        )
                     }),
             );
         div()
@@ -245,6 +286,7 @@ pub(super) fn map(
                     .child(
                         div()
                             .truncate()
+                            .pb(lift(NAME, &[NAME, COUNT]))
                             .text_size(text::MD)
                             .font_weight(theme::W_SEMIBOLD)
                             .text_color(p.text_strong)
@@ -252,6 +294,7 @@ pub(super) fn map(
                     )
                     .child(
                         div()
+                            .pb(lift(COUNT, &[NAME, COUNT]))
                             .font_family(FONT_MONO)
                             .text_size(text::XS)
                             .text_color(p.text_faint)
@@ -260,28 +303,28 @@ pub(super) fn map(
             )
             .child(track)
             .child(
-                div()
-                    .w(px(VAL_W))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_end()
-                    .gap(space::S3)
-                    .pr(space::S3)
-                    .font_family(FONT_MONO)
-                    .child(
+                baseline::row(vec![
+                    (
+                        Line::new(FONT_MONO, text::MD, PHI),
                         div()
-                            .text_size(text::MD)
                             .text_color(p.text_strong)
-                            .child(format!("{c}%")),
-                    )
-                    .child(
+                            .child(format!("{c}%"))
+                            .into_any_element(),
+                    ),
+                    (
+                        Line::new(FONT_MONO, text::XS, PHI),
                         div()
                             .w(px(28.))
-                            .text_size(text::XS)
                             .text_color(dcol)
-                            .child(dtext),
+                            .child(dtext)
+                            .into_any_element(),
                     ),
+                ])
+                .w(px(VAL_W))
+                .flex_none()
+                .justify_end()
+                .gap(space::S3)
+                .pr(space::S3),
             )
             .on_click(cx.listener(move |this, _, _, cx| this.open_subject(subject.clone(), cx)))
     });

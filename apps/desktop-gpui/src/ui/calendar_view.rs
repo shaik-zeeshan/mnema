@@ -17,6 +17,7 @@ use time::{Date, Duration};
 use super::calendar::{month_cells, month_of, span_label, WEEKDAYS};
 use super::{alpha, focus_handle, focus_visible, mix, nid, Button, Force};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
+use crate::ui::Tracking as _;
 
 pub type OnPickDay = Rc<dyn Fn(Date, &mut Window, &mut App)>;
 
@@ -476,6 +477,7 @@ impl RenderOnce for Calendar {
                 .font_family(FONT_MONO)
                 .font_weight(theme::W_MEDIUM)
                 .text_size(text::XS)
+                .tracking(0.06)
                 .text_color(p.text_subtle)
                 .child(label)
         };
@@ -518,6 +520,7 @@ impl RenderOnce for Calendar {
                             .flex_1()
                             .font_weight(theme::W_SEMIBOLD)
                             .text_size(text::MD)
+                            .tracking(-0.01)
                             .line_height(gpui_kit::relative(1.))
                             .text_color(p.text_strong)
                             .child(title),

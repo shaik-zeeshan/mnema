@@ -116,7 +116,7 @@ fn center_tone(title: String, body: &str, acts: Vec<AnyElement>, tone: Tone, p: 
 pub fn render(
     this: &mut Insights,
     p: &Palette,
-    _: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Insights>,
 ) -> AnyElement {
     let Some(j) = this
@@ -275,6 +275,7 @@ pub fn render(
                 at_latest,
                 &day_label,
                 p,
+                window,
                 cx,
             ),
             lede_stats(
@@ -410,6 +411,7 @@ fn lede_col(
     at_latest: bool,
     day_label: &str,
     p: &Palette,
+    window: &Window,
     cx: &mut Context<Insights>,
 ) -> gpui_kit::Div {
     let off = clock::now(cx).offset();
@@ -421,7 +423,7 @@ fn lede_col(
     let tracked_s = humanize_ms(tracked);
     if let Some(why) = why {
         return lede(day_label, p)
-            .child(display(format!("{tracked_s} tracked."), Some("Nothing written up.".into()), p))
+            .child(display(format!("{tracked_s} tracked."), Some("Nothing written up.".into()), p, window))
             .child(prose(format!("{why} Everything captured is on the Timeline."), p));
     }
     let no_derive = !this.status.ctx.as_ref().is_some_and(|c| c.engine_available);
@@ -449,7 +451,7 @@ fn lede_col(
             1 => (format!("Too little captured on {day_label} to write a digest."), "A digest needs at least two activities; this day has one. It's below, as captured."),
             _ => (format!("Too little captured on {day_label} to write a digest."), "A digest needs at least two activities it can use. They're below, as captured."),
         };
-        return lede(&kicker, p).child(display(h, None, p)).child(prose(b, p));
+        return lede(&kicker, p).child(display(h, None, p, window)).child(prose(b, p));
     }
     let me = cx.entity().downgrade();
     let regen = move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
@@ -487,7 +489,7 @@ fn lede_col(
             reread.icon(IconName::RotateCcw.path())
         };
         return lede(&kicker, p)
-            .child(display(head, turn, p))
+            .child(display(head, turn, p, window))
             .child(prose(dg.narrative, p))
             .child(
                 div()
@@ -522,6 +524,7 @@ fn lede_col(
             format!("{shown_n} activities, {tracked_s} tracked."),
             None,
             p,
+            window,
         ))
         .child(prose(body, p))
         .when(r.error.is_some() && engine, |l| {

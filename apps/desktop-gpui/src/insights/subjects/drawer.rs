@@ -15,10 +15,11 @@ use gpui_kit::{div, px, relative, AnyElement, Context, Pixels, Role};
 use super::detail::{flat, histories, TIERS};
 use super::tier_of;
 use super::tiers::pct;
-use crate::insights::parts::{h2, label, sec};
+use crate::insights::parts::{h2, label};
 use crate::insights::stats::{self, humanize_ms};
 use crate::insights::Insights;
 use crate::theme::{self, breakpoint, space, text, Palette, FONT_MONO};
+use crate::ui::Tracking as _;
 use crate::ui::{clock, icon, kicker, nid, Button};
 
 /// ↑/↓ walk the conclusions and the drawer follows.
@@ -112,10 +113,19 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
         this.open_conclusion = None;
         cx.notify();
     };
+    // `.sd-dr__bar`: 46 px, hairline under it, edge to edge across the drawer.
+    let pad = if sheet { space::S4 } else { space::S5 };
     let bar = div()
         .flex()
+        .flex_none()
         .items_center()
         .gap(space::S1)
+        .h(px(46.))
+        .mx(-pad)
+        .pl(pad)
+        .pr(space::S3)
+        .border_b_1()
+        .border_color(p.hairline)
         .when(sheet, |d| {
             d.child(
                 icon_btn(
@@ -126,10 +136,32 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 .on_click(cx.listener(close)),
             )
         })
-        .child(kicker(
-            &format!("Conclusion · {} of {n} · {tier}", i + 1),
-            p,
-        ))
+        // `.sd-dr__bar .mx-kicker`: one line that ends in "…" when the bar is narrow.
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(space::S2)
+                .min_w_0()
+                .font_family(FONT_MONO)
+                .text_size(text::XS)
+                .font_weight(theme::W_MEDIUM)
+                .text_color(p.text_subtle)
+                .tracking(0.12)
+                .child(
+                    div()
+                        .flex_none()
+                        .text_color(p.accent)
+                        .tracking(0.)
+                        .child("//"),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(format!("Conclusion · {} of {n} · {tier}", i + 1).to_uppercase()),
+                ),
+        )
         .child(div().flex_1())
         .child(
             icon_btn(
@@ -365,6 +397,8 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 .mr(px(4.))
                 .font_family(FONT_MONO)
                 .text_size(text::XS)
+                // The Pager inherits `.sd-h`'s tracking.
+                .tracking(0.08)
                 .text_color(p.text_subtle)
                 .child(format!("{}\u{2013}{to} OF {total}", from + 1)),
         )
@@ -485,7 +519,7 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 .map(|d| {
                     if sheet {
                         // `.sd-drawer--sheet`: over the whole pane, on the page background.
-                        d.absolute().inset_0().bg(p.bg).px(space::S4).py(space::S5)
+                        d.absolute().inset_0().bg(p.bg).px(space::S4).pb(space::S5)
                     } else {
                         // Over the pane (`position: fixed`), not beside it: see `push`.
                         d.absolute()
@@ -494,9 +528,10 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                             .right_0()
                             .w(relative(SHARE))
                             .border_l_1()
-                            .border_color(p.border)
-                            .bg(p.surface)
-                            .p(space::S5)
+                            .border_color(p.border_strong)
+                            .bg(p.surface_subtle)
+                            .px(space::S5)
+                            .pb(space::S5)
                     }
                 })
                 .overflow_y_scroll()
@@ -504,20 +539,34 @@ pub fn drawer(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Optio
                 .flex_col()
                 .gap(space::S4)
                 .child(bar)
-                .child(h2(c.statement.clone(), p).line_height(relative(1.3)))
+                .child(
+                    // `.in-cd__statement`.
+                    h2(c.statement.clone(), p)
+                        .tracking(-0.02)
+                        .line_height(relative(1.3)),
+                )
                 .child(acts_row)
                 .child(spec)
                 .child(
                     div()
-                        .child(sec(
+                        .child(
+                            // `.sd-h`: the head, a hairline rule filling the line, the pager.
                             div()
                                 .flex()
                                 .items_center()
-                                .gap(px(6.))
-                                .child(kicker(&format!("Evidence · {total}"), p))
-                                .child(label("newest first", p).text_color(p.text_faint)),
-                            Some(pager.into_any_element()),
-                        ))
+                                .gap(space::S3)
+                                .mb(space::S3)
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(6.))
+                                        .child(kicker(&format!("Evidence · {total}"), p))
+                                        .child(label("newest first", p).text_color(p.text_faint)),
+                                )
+                                .child(div().flex_1().min_w(px(12.)).h(px(1.)).bg(p.hairline))
+                                .child(pager),
+                        )
                         .child(list),
                 ),
         )

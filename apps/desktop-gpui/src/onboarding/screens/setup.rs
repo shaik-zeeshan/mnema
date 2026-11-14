@@ -13,6 +13,7 @@ use crate::settings::model::format_bytes;
 use crate::theme::{self, leading, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::baseline::{self, Line};
 use crate::ui::notice::{inline, notice};
+use crate::ui::Tracking as _;
 use crate::ui::{icon, Tone};
 
 /// The big percentage and its smaller "%" (`.ob-pct`).
@@ -126,22 +127,23 @@ impl Onboarding {
                 &p,
             )
         };
-        let pct_el = baseline::row(
-            vec![
-                (
-                    Line::new(FONT_MONO, parts::PCT, PCT_LH),
-                    div().child(pct.to_string()).into_any_element(),
-                ),
-                (
-                    Line::new(FONT_MONO, PCT_UNIT, PCT_LH),
-                    div()
-                        .text_color(p.text_subtle)
-                        .child("%")
-                        .into_any_element(),
-                ),
-            ],
-            cx,
-        )
+        let pct_el = baseline::row(vec![
+            (
+                Line::new(FONT_MONO, parts::PCT, PCT_LH),
+                div()
+                    .tracking(-0.06)
+                    .child(pct.to_string())
+                    .into_any_element(),
+            ),
+            (
+                Line::new(FONT_MONO, PCT_UNIT, PCT_LH),
+                div()
+                    .tracking(-0.02)
+                    .text_color(p.text_subtle)
+                    .child("%")
+                    .into_any_element(),
+            ),
+        ])
         .font_weight(gpui_kit::FontWeight::LIGHT)
         .text_color(p.text_strong);
 
@@ -247,7 +249,7 @@ impl Onboarding {
                                 this.retry_item(&it, cx)
                             })
                             .ghost()
-                            .sm()
+                            .inline()
                             .icon("icons/rotate-ccw.svg")
                             .into_any_element(),
                         ],
@@ -279,29 +281,28 @@ impl Onboarding {
                             .flex()
                             .items_center()
                             .gap(space::S3)
+                            // `.ob-item__name` / `.ob-item__st`: line-height 1.
+                            .line_height(gpui_kit::relative(1.))
                             .child(
-                                baseline::row(
-                                    vec![
-                                        (
-                                            Line::new(FONT_UI, text::MD, leading::BODY),
-                                            div().child(item.name()).into_any_element(),
-                                        ),
-                                        (
-                                            Line::new(FONT_MONO, text::BASE, leading::ONE),
-                                            parts::mono(
-                                                format!(
-                                                    "{}{}",
-                                                    if item.approx() { "about " } else { "" },
-                                                    format_bytes(item.bytes as f64)
-                                                ),
-                                                text::BASE,
-                                                p.text_subtle,
-                                            )
-                                            .into_any_element(),
-                                        ),
-                                    ],
-                                    cx,
-                                )
+                                baseline::row(vec![
+                                    (
+                                        Line::new(FONT_UI, text::MD, leading::ONE),
+                                        div().child(item.name()).into_any_element(),
+                                    ),
+                                    (
+                                        Line::new(FONT_MONO, text::BASE, leading::ONE),
+                                        parts::mono(
+                                            format!(
+                                                "{}{}",
+                                                if item.approx() { "about " } else { "" },
+                                                format_bytes(item.bytes as f64)
+                                            ),
+                                            text::BASE,
+                                            p.text_subtle,
+                                        )
+                                        .into_any_element(),
+                                    ),
+                                ])
                                 .flex_1()
                                 .gap(space::S2)
                                 .font_weight(theme::W_MEDIUM)

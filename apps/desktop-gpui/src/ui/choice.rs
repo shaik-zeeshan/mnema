@@ -10,8 +10,10 @@ use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, App, Div, ElementId, SharedString, Window};
 
-use super::{focus_handle, focus_visible, icon, inset, mix, nid, outline, Force};
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use super::baseline::{self, Line};
+use super::{focus_handle, focus_visible, icon, inset, mix, nid, outline_bordered, Force};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::Tracking as _;
 
 #[derive(Clone)]
 pub struct ChoiceOption {
@@ -167,27 +169,26 @@ impl RenderOnce for Choice {
                     .shadow(vec![inset(edge, px(1.))])
                     .child(icon(path, px(15.)))
             });
-            let title = div()
-                .flex()
-                .items_baseline()
+            // `.mx-choice__title`: the mono tag on the label's first baseline.
+            let mut words = vec![(
+                Line::new(FONT_UI, text::MD, 1.3),
+                div().child(o.label.clone()),
+            )];
+            words.extend(o.tag.clone().map(|t| {
+                (
+                    Line::new(FONT_MONO, text::XS, 1.),
+                    div()
+                        .font_weight(theme::W_MEDIUM)
+                        .tracking(0.02)
+                        .text_color(p.text_subtle)
+                        .child(t),
+                )
+            }));
+            let title = baseline::row_top(words)
                 .gap(px(6.))
                 .pr(px(18.))
                 .font_weight(theme::W_SEMIBOLD)
-                .text_size(text::MD)
-                .line_height(gpui_kit::relative(1.3))
-                .text_color(p.text_strong)
-                .child(o.label.clone())
-                .when_some(o.tag.clone(), |d, t| {
-                    d.child(
-                        div()
-                            .font_family(FONT_MONO)
-                            .font_weight(theme::W_MEDIUM)
-                            .text_size(text::XS)
-                            .line_height(gpui_kit::relative(1.))
-                            .text_color(p.text_subtle)
-                            .child(t),
-                    )
-                });
+                .text_color(p.text_strong);
             let desc = o.description.clone().map(|d| {
                 div()
                     .text_size(if dense { text::SM } else { text::BASE })
@@ -278,7 +279,7 @@ impl RenderOnce for Choice {
                     .when(on, |el| {
                         el.child(check(&p).absolute().top(px(11.)).right(px(11.)))
                     })
-                    .when(ring, |el| el.child(outline(p.accent, radius::LG)))
+                    .when(ring, |el| el.child(outline_bordered(p.accent, radius::LG, px(1.))))
             };
             el.when_some(on_change.filter(|_| !o.disabled), |el, f| {
                 el.on_click(move |_, window, cx| f(ix, window, cx))

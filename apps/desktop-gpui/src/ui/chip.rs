@@ -6,6 +6,7 @@ use gpui_kit::{div, px, Div, Hsla, SharedString};
 
 use super::{mix, spread};
 use crate::theme::{self, radius, size, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::Tracking as _;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ChipKind {
@@ -53,6 +54,7 @@ pub fn chip(label: impl Into<SharedString>, kind: ChipKind, p: &Palette) -> Div 
         .font_weight(theme::W_MEDIUM)
         .line_height(gpui_kit::relative(1.))
         .whitespace_nowrap()
+        .tracking(if cat { 0. } else { 0.02 })
         .when(!cat, |d| d.font_family(FONT_MONO).text_size(text::XS))
         .when_some(
             match kind {
@@ -66,6 +68,16 @@ pub fn chip(label: impl Into<SharedString>, kind: ChipKind, p: &Palette) -> Div 
             },
         )
         .child(label.into())
+}
+
+/// A non-category chip as a `baseline::row` item: its one centred line of text
+/// sits like a single line whose line box is the whole chip.
+pub fn chip_line() -> super::baseline::Line {
+    super::baseline::Line::new(
+        FONT_MONO,
+        text::XS,
+        f32::from(size::CHIP_H) / f32::from(text::XS),
+    )
 }
 
 /// The badge dot: put it inside a `relative()` icon button. Colour = the worst

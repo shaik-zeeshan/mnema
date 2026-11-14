@@ -11,7 +11,8 @@ use gpui_kit::{div, px, AnyElement, Context, Div, Hsla, MouseButton, SharedStrin
 use super::groups::{self, GroupId, SectionId};
 use super::Settings;
 use crate::shell::model::{self as shell_model, RecMod};
-use crate::theme::{self, breakpoint, radius, size, space, text, Palette, FONT_MONO};
+use crate::theme::{self, breakpoint, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::{icon, kbd, mix, Button};
 use gpui_kit::component::input::Input;
 
@@ -64,6 +65,8 @@ pub fn render(s: &Settings, window: &mut Window, cx: &mut Context<Settings>) -> 
         .icon("icons/arrow-left.svg")
         .kbd("Esc")
         .on_click(cx.listener(|_, _, _, cx| cx.emit(super::SettingsEvent::Back)));
+    let search_focused =
+        gpui_kit::Focusable::focus_handle(s.inputs.search.read(cx), cx).is_focused(window);
     let search = div()
         .flex()
         .items_center()
@@ -76,7 +79,12 @@ pub fn render(s: &Settings, window: &mut Window, cx: &mut Context<Settings>) -> 
         .border_color(p.hairline)
         .bg(p.wash)
         .text_color(p.text_subtle)
-        .child(icon("icons/search.svg", px(13.)))
+        // `.mx-search:focus-within` colours the glyph; the rail keeps its border.
+        .child(
+            div()
+                .when(search_focused, |d| d.text_color(p.accent))
+                .child(icon("icons/search.svg", px(13.))),
+        )
         .child(
             div().flex_1().min_w_0().text_color(p.text_strong).child(
                 Input::new(&s.inputs.search)
@@ -366,13 +374,20 @@ fn footer(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settings>)
                 .child(pill)
                 .child(lanes),
         )
-        .child(
-            div()
-                .flex()
+        // `.st-foot__meta`: one line of text, the mono version on its baseline.
+        .child({
+            let mut words = vec![(
+                Line::new(FONT_UI, text::SM, baseline::PHI),
+                div().child("Mnema"),
+            )];
+            words.extend(version.map(|v| {
+                (
+                    Line::new(FONT_MONO, text::SM, baseline::PHI),
+                    div().child(v),
+                )
+            }));
+            baseline::row_top(words)
                 .gap(px(4.))
-                .text_size(text::SM)
                 .text_color(p.text_subtle)
-                .child("Mnema")
-                .children(version.map(|v| div().font_family(FONT_MONO).child(v))),
-        )
+        })
 }

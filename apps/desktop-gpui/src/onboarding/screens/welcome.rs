@@ -16,6 +16,7 @@ use super::primary;
 use crate::onboarding::{parts, Onboarding};
 use crate::theme::{self, leading, motion, radius, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::baseline::{self, Line};
+use crate::ui::Tracking as _;
 use crate::ui::{kicker, mix};
 
 const TILES: [[u8; 5]; 8] = [
@@ -233,20 +234,18 @@ impl Onboarding {
             .items_center()
             .gap(px(4.))
             .font_weight(theme::W_MEDIUM)
+            .tracking(0.12)
             .text_color(p.text_subtle)
             .child(crate::ui::icon("icons/rewind.svg", text::XS))
             .child("REWINDING");
-        let rail = baseline::row(
-            vec![
-                (
-                    Line::new(FONT_MONO, text::XS, leading::BODY),
-                    tag.into_any_element(),
-                ),
-                (Line::new(FONT_MONO, text::MD, leading::BODY), tc_el),
-                (Line::new(FONT_UI, text::BASE, leading::BODY), read_el),
-            ],
-            cx,
-        )
+        let rail = baseline::row(vec![
+            (
+                Line::new(FONT_MONO, text::XS, leading::BODY),
+                tag.into_any_element(),
+            ),
+            (Line::new(FONT_MONO, text::MD, leading::BODY), tc_el),
+            (Line::new(FONT_UI, text::BASE, leading::BODY), read_el),
+        ])
         .gap(space::S4)
         .px(space::S8 + self.inset)
         .pt(space::S3);
@@ -255,6 +254,7 @@ impl Onboarding {
             .flex_col()
             .font_weight(theme::W_SEMIBOLD)
             .text_size(parts::HERO)
+            .tracking(-0.045)
             .line_height(relative(0.98))
             .text_color(p.text_strong)
             .child("Your memory,")

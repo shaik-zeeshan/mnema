@@ -349,6 +349,16 @@ fn inline(s: &str) -> String {
     out
 }
 
+/// `fitUpdateWindowHeight`: the height that fits the band, or `None` to leave the
+/// window alone. `overflow` > 0 means clipped, < 0 dead space; clamped to 260–640.
+pub fn fit_height(current: f32, overflow: f32) -> Option<f32> {
+    if overflow.abs() < 2. {
+        return None;
+    }
+    let target = (current + overflow).clamp(260., 640.).round();
+    (target != current.round()).then_some(target)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -416,5 +426,14 @@ mod tests {
             ])
         );
         assert_eq!(note_blocks("```\ncode\n```"), None);
+    }
+
+    #[test]
+    fn fit_height_clamps_to_260_640() {
+        assert_eq!(fit_height(520., -300.), Some(260.));
+        assert_eq!(fit_height(520., -100.), Some(420.));
+        assert_eq!(fit_height(520., 400.), Some(640.));
+        assert_eq!(fit_height(520., 1.5), None);
+        assert_eq!(fit_height(640., 50.), None);
     }
 }

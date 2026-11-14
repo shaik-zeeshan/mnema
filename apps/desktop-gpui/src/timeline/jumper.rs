@@ -9,13 +9,14 @@ use std::rc::Rc;
 use gpui_kit::assets::IconName;
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::{div, px, AnyElement, Context, Role, SharedString};
+use gpui_kit::{div, px, AnyElement, Context, Role, SharedString, Window};
 use time::{Date, Duration, OffsetDateTime, Time, UtcOffset};
 
 use super::model::{clock_label, day_label, local};
 use super::TimelineView;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::calendar::{calendar, month_of, shift_cursor, Body, CalSpec, Foot, GridKeys};
+use crate::ui::Tracking as _;
 use crate::ui::{icon, nid, popover, with_tip, Button};
 
 #[derive(Default)]
@@ -245,6 +246,7 @@ pub fn trigger(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
             div()
                 .text_size(text::MD)
                 .font_weight(theme::W_MEDIUM)
+                .tracking(-0.01)
                 .child(SharedString::from(day)),
         )
         .children(at.map(|t| {
@@ -258,6 +260,7 @@ pub fn trigger(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) ->
                 .font_family(FONT_MONO)
                 .text_size(text::BASE)
                 .font_weight(theme::W_MEDIUM)
+                .tracking(-0.01)
                 .text_color(p.text_muted)
                 .child(clock_label(t, true))
         }))
@@ -404,10 +407,21 @@ fn hour_rows(
 }
 
 /// The popover, anchored under the trigger.
-pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> Option<AnyElement> {
+pub fn render(
+    v: &TimelineView,
+    p: &Palette,
+    window: &Window,
+    cx: &mut Context<TimelineView>,
+) -> Option<AnyElement> {
     if !v.jumper.open {
         return None;
     }
+    let vp = window.viewport_size();
+    // `@media (max-width: 640px)`: the two panes stack and scroll together.
+    let stack = vp.width <= px(640.);
+    // `updatePickerPosition`: as tall as the room under the trigger allows, 160–420.
+    let below = vp.height - v.jumper_at.bounds(cx).bottom() - size::POP_GAP - space::S3;
+    let height = below.max(px(160.)).min(px(420.));
     let (view, picked) = (v.jumper.view?, v.jumper.picked?);
     let today = crate::ui::clock::now(cx).date();
     let o = offset(cx);
@@ -475,8 +489,8 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
     let hours = div()
         .flex()
         .flex_col()
-        .w(px(212.))
-        .min_h_0()
+        .when(!stack, |d| d.w(px(212.)).min_h_0())
+        .when(stack, |d| d.flex_none())
         .border_l_1()
         .border_color(p.hairline)
         .child(
@@ -523,7 +537,7 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
         .absolute()
         .top(space::S3 + size::CMD_H + size::POP_GAP)
         .left(space::S4)
-        .h(px(420.))
+        .h(height)
         .overflow_hidden()
         .on_mouse_down_out(cx.listener(|this, e, _, cx| {
             // The trigger toggles it (`TimelineJumper.svelte` skips it too).
@@ -546,21 +560,28 @@ pub fn render(v: &TimelineView, p: &Palette, cx: &mut Context<TimelineView>) -> 
                     div()
                         .text_size(text::MD)
                         .font_weight(theme::W_SEMIBOLD)
+                        .tracking(-0.01)
                         .text_color(p.text_strong)
                         .child("Jump to date & time"),
                 )
                 .child(latest_button("jumper-latest", v, cx)),
         )
-        .child(
-            div()
+        .child({
+            let panes = div()
+                .id("jumper-panes")
                 .flex()
                 .flex_1()
                 .min_h_0()
                 .border_y_1()
                 .border_color(p.hairline)
-                .child(div().p(px(4.)).child(cal))
-                .child(hours),
-        )
+                .child(div().flex_none().p(px(4.)).child(cal))
+                .child(hours);
+            if stack {
+                crate::ui::scroll::area(panes.flex_col().overflow_y_scroll()).into_any_element()
+            } else {
+                panes.into_any_element()
+            }
+        })
         .child(
             div()
                 .px(space::S4)

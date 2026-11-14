@@ -5,6 +5,7 @@ use crate::ui::input::FieldText as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::input::Input;
 use gpui_kit::prelude::*;
+use gpui_kit::Focusable as _;
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, relative, AnyElement, Context, Div, SharedString, Window};
 
@@ -13,29 +14,52 @@ use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::{icon, icon_button, kicker, mix, skeleton, with_tip, Button, Tone};
 
-/// `.mx-search`.
-pub fn search_box(input: AnyElement, p: &Palette) -> Div {
-    div()
-        .flex()
-        .items_center()
-        .gap(space::S2)
-        .h(size::H_MD)
-        .pl(space::S3)
-        .pr(space::S2)
-        .bg(p.surface_subtle)
-        .border_1()
-        .border_color(p.border)
-        .rounded(radius::MD)
-        .text_color(p.text_subtle)
-        .child(icon(IconName::Search.path(), px(13.)))
-        .child(div().flex_1().min_w_0().text_size(text::MD).child(input))
+/// `.mx-search`; `focused` = its input has focus (`:focus-within`).
+pub fn search_box(input: AnyElement, focused: bool, p: &Palette) -> Div {
+    search_states(
+        div()
+            .flex()
+            .items_center()
+            .gap(space::S2)
+            .h(size::H_MD)
+            .pl(space::S3)
+            .pr(space::S2)
+            .bg(p.surface_subtle)
+            .border_1()
+            .rounded(radius::MD),
+        focused,
+        p,
+    )
+    .child(icon(IconName::Search.path(), px(13.)))
+    .child(
+        div()
+            .flex_1()
+            .min_w_0()
+            .text_size(text::MD)
+            .text_color(p.text_strong)
+            .child(input),
+    )
+}
+
+/// `.mx-search` borders and icon colour: `border` at rest, `border_strong` on
+/// hover; with focus inside, `accent_border` + the 3 px glow ring + an accent icon.
+pub fn search_states(el: Div, focused: bool, p: &Palette) -> Div {
+    if focused {
+        el.border_color(p.accent_border)
+            .shadow(vec![crate::ui::ring(p.accent_glow)])
+            .text_color(p.accent)
+    } else {
+        el.border_color(p.border)
+            .text_color(p.text_subtle)
+            .hover(|s| s.border_color(p.border_strong))
+    }
 }
 
 pub fn render(
     chat: &Chat,
     narrow: bool,
     p: &Palette,
-    _: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Chat>,
 ) -> impl IntoElement {
     let query = chat.search.read(cx).value().trim().to_lowercase();
@@ -198,6 +222,7 @@ pub fn render(
                         .field_h(size::H_MD - px(2.))
                         .field_text(text::MD)
                         .into_any_element(),
+                    chat.search.focus_handle(cx).is_focused(window),
                     p,
                 )),
         )
@@ -330,6 +355,7 @@ fn row(
             .border_color(p.accent_border)
             .rounded(radius::XS)
             .bg(p.surface_subtle)
+            .shadow(vec![crate::ui::ring(p.accent_glow)])
             .text_color(p.text_strong)
             .font_weight(theme::W_MEDIUM)
             .text_size(text::MD)

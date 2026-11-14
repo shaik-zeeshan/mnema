@@ -71,7 +71,7 @@ fn row(
     cx: &mut Context<Shell>,
 ) -> impl IntoElement {
     let tone = match n.severity {
-        Severity::Error => p.danger,
+        Severity::Error => p.danger_text,
         Severity::Warning => p.warn,
         Severity::Info => p.info,
     };
@@ -231,37 +231,15 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
             )
         });
     let body = if rows.is_empty() {
-        div()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(6.))
-            .px(space::S4)
-            .py(space::S5)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(32.))
-                    .rounded(radius::MD)
-                    .border_1()
-                    .border_color(p.border_strong)
-                    .text_color(p.text_muted)
-                    .child(icon(IconName::Bell.path(), size::ICON)),
-            )
-            .child(
-                div()
-                    .text_size(text::MD)
-                    .font_weight(theme::W_SEMIBOLD)
-                    .text_color(p.text_strong)
-                    .child("You’re all caught up"),
-            )
-            .child(
-                div()
-                    .text_color(p.text_muted)
-                    .child("Capture, model and update warnings land here."),
-            )
+        crate::ui::empty::empty(
+            crate::ui::empty::EmptyLayout::Compact,
+            crate::ui::Tone::Neutral,
+            IconName::Bell.path(),
+            "You’re all caught up",
+            "Capture, model and update warnings land here.",
+            Vec::new(),
+            p,
+        )
     } else {
         // `.mx-notifs__list`: 380 px tall at most, then it scrolls.
         div().child(crate::ui::scroll::area(

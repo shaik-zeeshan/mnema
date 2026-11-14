@@ -11,8 +11,9 @@ use gpui_kit::{
     div, px, App, ClickEvent, ElementId, FocusHandle, Hsla, Pixels, SharedString, Window,
 };
 
-use super::{focus_handle, focus_visible, icon, mix, outline, progress, tooltip, Force};
+use super::{focus_handle, focus_visible, icon, mix, outline_bordered, progress, tooltip, Force};
 use crate::theme::{self, radius, size, text, Palette};
+use crate::ui::Tracking as _;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Variant {
@@ -36,6 +37,9 @@ pub enum ButtonSize {
     Md,
     /// 26 px.
     Sm,
+    /// 22 px, 6 px sides, 2 px off the text before it: the action inside an
+    /// inline message (`.mx-inline .mx-btn`). Otherwise `Sm`.
+    Inline,
 }
 
 pub type ClickHandler = Rc<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
@@ -131,6 +135,11 @@ impl Button {
     }
     pub fn sm(mut self) -> Self {
         self.size = ButtonSize::Sm;
+        self
+    }
+    /// [`ButtonSize::Inline`].
+    pub fn inline(mut self) -> Self {
+        self.size = ButtonSize::Inline;
         self
     }
     /// Override the height (status bar's 22 px buttons: `--_h: 22px`).
@@ -250,7 +259,8 @@ fn skin(v: Variant, pressed: bool, p: &Palette) -> Skin {
             bg: none,
             bd: none,
             fg: p.danger_text,
-            hover: (p.danger_bg, none, p.danger_text),
+            // The ghost hover's strong ink, then the danger hover's fill + border.
+            hover: (p.danger_bg, p.danger_border, p.text_strong),
             press: p.danger_bg,
             ring: p.danger,
         },
@@ -264,7 +274,14 @@ fn skin(v: Variant, pressed: bool, p: &Palette) -> Skin {
         },
     };
     if pressed {
+        // `[aria-pressed="true"]` comes after `:hover` in kit.css: the selected
+        // fill stays under the pointer (and while held).
         s.bg = p.wash_strong;
+        // (primary and danger hovers outrank it.)
+        if matches!(v, Variant::Secondary | Variant::Ghost) {
+            s.hover.0 = p.wash_strong;
+            s.press = p.wash_strong;
+        }
         if v == Variant::Ghost {
             s.fg = p.text_strong;
         }
@@ -275,12 +292,16 @@ fn skin(v: Variant, pressed: bool, p: &Palette) -> Skin {
 impl RenderOnce for Button {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let p = theme::tokens(cx);
-        let sm = self.size == ButtonSize::Sm;
-        let h = self
-            .height
-            .unwrap_or(if sm { size::H_SM } else { size::H_MD });
+        let sm = self.size != ButtonSize::Md;
+        let inline = self.size == ButtonSize::Inline;
+        let h = self.height.unwrap_or(match self.size {
+            ButtonSize::Md => size::H_MD,
+            ButtonSize::Sm => size::H_SM,
+            ButtonSize::Inline => size::H_MINI,
+        });
         let (pad, fs, r, gap) = if sm {
-            (px(9.), text::BASE, radius::BTN_SM, px(6.))
+            let pad = if inline { px(6.) } else { px(9.) };
+            (pad, text::BASE, radius::BTN_SM, px(6.))
         } else {
             (px(12.), text::MD, px(6.), px(7.))
         };
@@ -364,6 +385,7 @@ impl RenderOnce for Button {
             .when(self.block, |el| el.w_full().justify_start())
             .when(!self.block, |el| el.justify_center())
             .gap(gap)
+            .when(inline, |el| el.ml(px(2.)))
             .h(h)
             .when(self.icon_only, |el| el.w(h))
             .when(!self.icon_only, |el| el.px(pad))
@@ -375,6 +397,7 @@ impl RenderOnce for Button {
             .font_family(theme::FONT_UI)
             .text_size(fs)
             .font_weight(theme::W_MEDIUM)
+            .tracking(-0.003)
             .line_height(gpui_kit::relative(1.))
             .whitespace_nowrap()
             .when(self.force == Force::Press && live, |el| el.top(px(1.)))
@@ -416,7 +439,7 @@ impl RenderOnce for Button {
                 )
             })
             .when(ring, |el| {
-                el.child(outline(super::alpha(s.ring, opacity), r))
+                el.child(outline_bordered(super::alpha(s.ring, opacity), r, px(1.)))
             })
             .when(ring && tip.is_some(), |el| {
                 el.child(tooltip::focus_tip(tip.clone().unwrap_or_default(), &p))

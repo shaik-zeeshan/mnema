@@ -117,6 +117,8 @@ pub struct Chat {
     /// Drops a late peek / OCR answer for a frame no longer peeked.
     peek_gen: u64,
     peek_focus: gpui_kit::FocusHandle,
+    /// The composer card's own node, for its `:focus-within` look.
+    pub composer_focus: gpui_kit::FocusHandle,
     /// An audio source's open receipt.
     pub clip: Option<clip::Clip>,
     clip_gen: u64,
@@ -259,6 +261,7 @@ impl Chat {
             peek_data: Default::default(),
             peek_gen: 0,
             peek_focus: cx.focus_handle(),
+            composer_focus: cx.focus_handle(),
             clip: None,
             clip_gen: 0,
             sources: match core(cx) {

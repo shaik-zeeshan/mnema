@@ -10,6 +10,7 @@ use super::rows::{OptionRow, Pick};
 use super::view::glyph;
 use super::ModelPicker;
 use crate::theme::{self, radius, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{row_top, Line, PHI};
 use crate::ui::{icon, kbd, nid};
 
 impl ModelPicker {
@@ -37,39 +38,37 @@ impl ModelPicker {
             ),
             (o.main.after.as_str(), None),
         ]);
-        let main = div()
-            .flex_1()
-            .min_w_0()
-            .flex()
-            .items_baseline()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .when(sentinel, |el| el.font_family(FONT_UI))
-            .child(
-                div()
-                    .min_w_0()
-                    .overflow_hidden()
-                    .text_ellipsis()
-                    .child(name),
-            )
-            .when_some(
-                sentinel
-                    .then(|| self.spec.sentinel.as_ref().and_then(|(_, r)| r.clone()))
-                    .flatten(),
-                |el, (_, m)| {
-                    el.child(
+        // `.ch-opt__main` is one inline run: the quiet model on the name's baseline.
+        let mut words = vec![(
+            Line::new(if sentinel { FONT_UI } else { FONT_MONO }, text::SM, PHI),
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_ellipsis()
+                .child(name),
+        )];
+        words.extend(
+            sentinel
+                .then(|| self.spec.sentinel.as_ref().and_then(|(_, r)| r.clone()))
+                .flatten()
+                .map(|(_, m)| {
+                    (
+                        Line::new(FONT_MONO, text::XS, PHI),
                         div()
                             .flex_none()
                             .ml(px(6.))
-                            .font_family(FONT_MONO)
-                            .text_size(text::XS)
                             .text_color(p.text_subtle)
                             .child(SharedString::from(crate::chat::format::model_display_name(
                                 &m,
                             ))),
                     )
-                },
-            );
+                }),
+        );
+        let main = row_top(words)
+            .flex_1()
+            .min_w_0()
+            .overflow_hidden()
+            .whitespace_nowrap();
         let make_default = (o.can_make_default)
             .then(|| engine.clone().zip(self.on_make_default.clone()))
             .flatten()

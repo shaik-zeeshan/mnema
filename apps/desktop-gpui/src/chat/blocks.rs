@@ -7,20 +7,39 @@ use capture_types::{BarsItem, DossierItem, TimelineItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, AnyElement, Div, Hsla, SharedString};
 
-use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
+use crate::ui::baseline::{lift, PHI};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::Line;
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::mix;
 
 /// `.mx-panel.ch-block` with an optional `h5` head and right-hand label.
 pub fn panel(title: Option<&str>, label: Option<&str>, body: AnyElement, p: &Palette) -> Div {
+    // `h5` 13/1.3 and the label (inherited line height) on one baseline.
+    const H5: Line = Line {
+        family: FONT_UI,
+        size: text::MD,
+        lh: 1.3,
+    };
+    const LABEL: Line = Line {
+        family: FONT_UI,
+        size: text::XS,
+        lh: PHI,
+    };
+    let all: Vec<Line> = title
+        .map(|_| H5)
+        .into_iter()
+        .chain(label.map(|_| LABEL))
+        .collect();
     let head = (title.is_some() || label.is_some()).then(|| {
         div()
             .flex()
-            .items_baseline()
+            .items_end()
             .gap(space::S3)
             .mb(space::S3)
             .children(title.map(|t| {
                 div()
+                    .pb(lift(H5, &all))
                     .font_weight(theme::W_SEMIBOLD)
                     .text_size(text::MD)
                     .line_height(relative(1.3))
@@ -31,6 +50,7 @@ pub fn panel(title: Option<&str>, label: Option<&str>, body: AnyElement, p: &Pal
                 // `.mx-label`: sans 500, subtle.
                 div()
                     .ml_auto()
+                    .pb(lift(LABEL, &all))
                     .font_weight(theme::W_MEDIUM)
                     .text_size(text::XS)
                     .text_color(p.text_subtle)

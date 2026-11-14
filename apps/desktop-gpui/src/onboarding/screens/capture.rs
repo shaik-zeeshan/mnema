@@ -242,12 +242,15 @@ impl Onboarding {
                     .h(size::H_SM)
                     .pl(px(4.))
                     .pr(space::S2)
-                    .rounded(radius::SM)
+                    // `.mx-btn--sm[aria-pressed]`: selected fill when on, clear when off;
+                    // hover changes neither (both rules outrank `:hover`).
+                    .rounded(radius::BTN_SM)
                     .border_1()
-                    .border_color(p.border)
-                    .bg(p.surface_raised)
+                    .border_color(p.border_strong)
+                    .when(on, |d| d.bg(p.wash_strong))
                     .cursor_pointer()
                     .text_size(text::BASE)
+                    .font_weight(theme::W_MEDIUM)
                     .text_color(if on { p.text_strong } else { p.text_subtle })
                     .when(!on, |d| d.line_through())
                     .child(glyph)

@@ -7,7 +7,9 @@
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, AnyElement, Div, Hsla, SharedString};
 
-use crate::theme::{self, space, text, Palette};
+use crate::theme::{self, space, text, Palette, FONT_UI};
+use crate::ui::baseline::{self, Line};
+use crate::ui::Tracking as _;
 
 /// `.setting-group`: the head line, then the rows (`bare` = no top border).
 pub fn section(
@@ -18,30 +20,34 @@ pub fn section(
     rows: Vec<AnyElement>,
     p: &Palette,
 ) -> Div {
+    // Title and hint share the first line's baseline (a long hint wraps under
+    // itself); the actions centre on the whole head.
+    let mut words = vec![(
+        Line::new(FONT_UI, text::MD, baseline::PHI),
+        div()
+            .flex_none()
+            .font_weight(theme::W_SEMIBOLD)
+            .tracking(-0.01)
+            .text_color(p.text_strong)
+            .child(SharedString::from(title.to_string())),
+    )];
+    words.extend(hint.map(|h| {
+        (
+            Line::new(FONT_UI, text::BASE, 1.5),
+            div()
+                .flex_1()
+                .min_w_0()
+                .text_color(p.text_subtle)
+                .child(SharedString::from(h.to_string())),
+        )
+    }));
     let head = div()
         .flex()
         .items_center()
         .gap(space::S3)
         .pb(space::S2)
         .min_w_0()
-        .child(
-            div()
-                .flex_none()
-                .text_size(text::MD)
-                .font_weight(theme::W_SEMIBOLD)
-                .text_color(p.text_strong)
-                .child(SharedString::from(title.to_string())),
-        )
-        .children(hint.map(|h| {
-            div()
-                .flex_1()
-                .min_w_0()
-                .text_size(text::BASE)
-                .line_height(gpui_kit::relative(1.5))
-                .text_color(p.text_subtle)
-                .child(SharedString::from(h.to_string()))
-        }))
-        .when(hint.is_none(), |d| d.child(div().flex_1()))
+        .child(baseline::row_top(words).gap(space::S3).flex_1().min_w_0())
         .when(!actions.is_empty(), |d| {
             d.child(
                 div()
@@ -327,6 +333,7 @@ pub fn state_word(
 pub fn hint(text_: impl Into<SharedString>, p: &Palette) -> Div {
     div()
         .text_size(text::BASE)
+        .tracking(0.03)
         .line_height(gpui_kit::relative(1.5))
         .text_color(p.text_subtle)
         .child(text_.into())

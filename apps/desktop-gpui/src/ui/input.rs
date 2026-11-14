@@ -8,6 +8,7 @@ use gpui_kit::{div, px, App, Div, ElementId, Entity, Focusable, Pixels, SharedSt
 
 use super::{ring, Force, FIELD_RADIUS};
 use crate::theme::{self, size, space, text, Palette, FONT_MONO};
+use crate::ui::Tracking as _;
 
 /// A single-line field's line box, as a multiple of its text size.
 const CARET_LINE: f32 = 1.5;
@@ -42,6 +43,7 @@ pub struct TextInput {
     num: bool,
     center: bool,
     invalid: bool,
+    warn: bool,
     disabled: bool,
     force: Force,
     width: Option<Pixels>,
@@ -61,6 +63,7 @@ impl TextInput {
             num: false,
             center: false,
             invalid: false,
+            warn: false,
             disabled: false,
             force: Force::None,
             width: None,
@@ -77,6 +80,11 @@ impl TextInput {
     }
     pub fn invalid(mut self, on: bool) -> Self {
         self.invalid = on;
+        self
+    }
+    /// `.text-input--empty`: a warn border at rest (hover and focus win).
+    pub fn warn(mut self, on: bool) -> Self {
+        self.warn = on;
         self
     }
     pub fn disabled(mut self, on: bool) -> Self {
@@ -109,6 +117,8 @@ impl RenderOnce for TextInput {
             p.accent_border
         } else if self.force == Force::Hover {
             p.border_hover
+        } else if self.warn {
+            p.warn_border
         } else {
             p.border_strong
         };
@@ -136,6 +146,8 @@ impl RenderOnce for TextInput {
             .text_color(p.text_strong)
             .font_family(family)
             .text_size(fs)
+            // `.num`'s letter-spacing.
+            .when(self.num, |el| el.tracking(-0.01))
             .when(focused, |el| el.shadow(vec![ring(p.accent_glow)]))
             .when(live, |el| el.hover(move |s| s.border_color(hover)))
             .when(self.disabled, |el| el.opacity(theme::DISABLED_OPACITY))

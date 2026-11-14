@@ -12,6 +12,7 @@ use gpui_kit::{div, px, AnyElement, Context, Role, SharedString};
 use super::tiers::{page_label, page_slice};
 use crate::insights::Insights;
 use crate::theme::{self, radius, text, FONT_MONO, FONT_UI};
+use crate::ui::Tracking as _;
 use crate::ui::{icon, nid, popover};
 
 /// `TIER_PAGE_SIZES`; `usize::MAX` is "Show all".
@@ -165,6 +166,7 @@ pub fn pager(
                 .border_1()
                 .border_color(p.border_strong)
                 .rounded(radius::MD)
+                .tracking(0.)
                 .shadow(popover::popover_shadow(&p))
                 .occlude()
                 .on_mouse_down_out(cx.listener(|this, _, _, cx| {
@@ -178,6 +180,7 @@ pub fn pager(
                         .mb(px(6.))
                         .font_family(FONT_MONO)
                         .text_size(px(10.))
+                        .tracking(0.08)
                         .text_color(p.text_faint)
                         .child("ROWS PER PAGE"),
                 )

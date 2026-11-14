@@ -30,6 +30,7 @@ use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
 use crate::ui::calendar::{capsule_label, period_of};
 use crate::ui::dialog::Modal as Dialog;
 use crate::ui::select::Select;
+use crate::ui::Tracking as _;
 use crate::ui::{app_icon, clock, kicker, nid};
 
 pub fn modal(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Option<AnyElement> {
@@ -309,7 +310,7 @@ fn act_row(
         .whitespace_nowrap()
         .text_size(text::SM)
         .text_color(p.text_muted)
-        .hover(|s| s.text_color(p.text_strong))
+        .hover(|s| s.text_color(p.text_strong).border_color(p.border_hover))
         .child("adjust")
         .child(crate::ui::icon(
             if editing {
@@ -374,6 +375,7 @@ fn act_row(
                 .child(
                     div()
                         .text_size(px(9.))
+                        .tracking(0.05)
                         .text_color(p.text_subtle)
                         .child(name),
                 )
@@ -438,6 +440,7 @@ fn act_row(
             div()
                 .flex_none()
                 .text_size(px(9.5))
+                .tracking(0.06)
                 .text_color(p.text_faint)
                 .child(focus_hint(f).to_uppercase())
         }))
@@ -640,14 +643,15 @@ fn focus(
                 .when(sessions.is_empty(), |d| {
                     d.child(note("No focused sessions in this range."))
                 })
-                .children(sessions.into_iter().map(|a| {
+                .children(sessions.into_iter().enumerate().map(|(i, a)| {
                     let fl = a.focus.unwrap_or(FocusLevel::Mixed);
+                    // `.session` border-top, none under the heading (`.in-group + .session`).
                     div()
                         .flex()
                         .items_center()
                         .gap(space::S3)
                         .py(px(7.))
-                        .border_b_1()
+                        .when(i > 0, |d| d.border_t_1())
                         .border_color(p.hairline)
                         .text_size(text::BASE)
                         .child(swatch(focus_color(fl, p), 8.))

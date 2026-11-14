@@ -12,7 +12,8 @@ use crate::ui::chip::{chip, ChipKind};
 use crate::ui::choice::{Choice, ChoiceOption};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::window_strip::WindowStrip;
-use crate::ui::{icon, kicker, notice, skeleton, Button, Tone};
+use crate::ui::Tracking as _;
+use crate::ui::{icon, kicker, notice, skeleton, Button, Force, Tone};
 
 const TERMINAL: &str = "icons/square-terminal.svg";
 const ALERT: &str = "icons/triangle-alert.svg";
@@ -105,6 +106,7 @@ impl AccessRequest {
                         div()
                             .font_weight(theme::W_SEMIBOLD)
                             .text_size(text::LG)
+                            .tracking(-0.01)
                             .line_height(relative(1.3))
                             .text_color(p.text_strong)
                             .child(r.tool.clone()),
@@ -280,7 +282,6 @@ impl AccessRequest {
             .gap(space::S2)
             .child(
                 div()
-                    .mb(space::S2)
                     .font_weight(theme::W_MEDIUM)
                     .text_size(text::BASE)
                     .text_color(p.text_muted)
@@ -453,6 +454,7 @@ impl AccessRequest {
                 };
                 let mut deny = Button::new("ac-deny", deny_label)
                     .focus_handle(&self.deny_focus)
+                    .when(self.deny_ring, |b| b.force(Force::Focus))
                     .disabled(busy)
                     .spinner(self.acting == Acting::Cancelling)
                     .on_click(act(AccessRequest::deny));
@@ -512,6 +514,7 @@ impl AccessRequest {
                         },
                     )
                     .focus_handle(&self.deny_focus)
+                    .when(self.deny_ring, |b| b.force(Force::Focus))
                     .disabled(busy)
                     .on_click(act(AccessRequest::deny)),
                 )

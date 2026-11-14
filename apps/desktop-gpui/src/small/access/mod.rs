@@ -13,7 +13,9 @@ use std::time::Duration;
 
 use app_core::broker_authorization_channel as channel;
 use app_core::AppCore;
-use gpui_kit::{App, AppContext, Context, FocusHandle, KeyDownEvent, ScrollHandle, Task, Window};
+use gpui_kit::{
+    App, AppContext, Context, FocusHandle, KeyDownEvent, ScrollHandle, Subscription, Task, Window,
+};
 use serde_json::Value;
 
 use model::{Receipt, ReceiptKind, Request, Scope};
@@ -154,12 +156,16 @@ pub struct AccessRequest {
     pub acting: Acting,
     /// The safe anchor (Deny, or Close when nothing is pending).
     pub deny_focus: FocusHandle,
+    /// The ring the web window shows on Deny as it opens (script focus with no
+    /// pointer use yet): on until Deny first loses focus.
+    pub deny_ring: bool,
     pub close_focus: FocusHandle,
     /// Real windows resize to their content; goldens keep the opening size.
     pub fit: bool,
     pub(crate) fitted_view: String,
     pub(crate) body_scroll: ScrollHandle,
     _age: Task<()>,
+    _deny_blur: Subscription,
 }
 
 impl AccessRequest {
@@ -174,6 +180,11 @@ impl AccessRequest {
                 break;
             }
         });
+        let deny_focus = cx.focus_handle().tab_stop(true);
+        let deny_blur = cx.on_blur(&deny_focus, window, |this: &mut Self, _, cx| {
+            this.deny_ring = false;
+            cx.notify();
+        });
         let mut this = Self {
             backend,
             phase: Phase::Loading,
@@ -181,12 +192,14 @@ impl AccessRequest {
             error: None,
             gone: false,
             acting: Acting::None,
-            deny_focus: cx.focus_handle().tab_stop(true),
+            deny_focus,
+            deny_ring: true,
             close_focus: cx.focus_handle().tab_stop(true),
             fit: false,
             fitted_view: String::new(),
             body_scroll: ScrollHandle::new(),
             _age: age,
+            _deny_blur: deny_blur,
         };
         this.deny_focus.focus(window, cx);
         this.reload(window, cx);

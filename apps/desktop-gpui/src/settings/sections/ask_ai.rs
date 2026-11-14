@@ -44,6 +44,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         rows.push(
             div()
                 .py(space::S3)
+                .border_b_1()
+                .border_color(p.hairline)
                 .child(notice::notice(
                     Tone::Warn,
                     icons::INFO,

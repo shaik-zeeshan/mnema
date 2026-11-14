@@ -413,7 +413,7 @@ pub fn render(this: &mut Insights, p: &Palette, cx: &mut Context<Insights>) -> A
                     Some(
                         div()
                             .absolute()
-                            .top(px(4.))
+                            .top(px(6.))
                             .left(relative(x))
                             .w(px(2.))
                             .h(px(10.))
@@ -506,8 +506,10 @@ pub fn screen(path: Option<&PathBuf>, images: &Entity<FrameImages>, p: &Palette)
         .w_full()
         .h(px(200.))
         .rounded(radius::MD)
+        .border_1()
+        .border_color(p.border)
         .overflow_hidden()
-        .bg(p.surface_subtle)
+        .bg(p.bg)
         .child(match path {
             Some(path) => img(path.clone())
                 .image_cache(images)
@@ -516,23 +518,43 @@ pub fn screen(path: Option<&PathBuf>, images: &Entity<FrameImages>, p: &Palette)
                 .into_any_element(),
             None => skeleton::skel(p).size_full().into_any_element(),
         })
+        // GPUI clips to the inner rectangle, not the rounded corners: over the corner
+        // wedges paint the receipt box behind (`shell`), then the frame's border again.
+        // Both are clipped to the inside, so only the wedges change.
+        .child(crate::ui::ring_box(
+            p.surface_subtle,
+            radius::MD,
+            radius::MD - px(1.),
+        ))
+        .child(crate::ui::ring_box(p.border, px(1.), radius::MD - px(1.)))
 }
 
 /// The scrub track with the playhead at `head` (0..=1).
 pub fn track(head: f32, p: &Palette) -> Div {
+    // `.in-scrub`: a 2 px line centred in a 22 px hit box, the head 2×18 with a glow.
     div()
         .relative()
-        .h(px(18.))
-        .rounded(radius::XS)
-        .bg(p.wash)
+        .h(px(22.))
         .child(
             div()
                 .absolute()
-                .top_0()
-                .bottom_0()
+                .left_0()
+                .right_0()
+                .top(px(10.))
+                .h(px(2.))
+                .rounded(px(1.))
+                .bg(p.border_strong),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(2.))
+                .h(px(18.))
                 .w(px(2.))
+                .rounded(px(1.))
                 .left(relative(head.clamp(0., 1.)))
-                .bg(p.accent),
+                .bg(p.accent)
+                .shadow(vec![crate::ui::ring(p.accent_glow)]),
         )
 }
 

@@ -43,7 +43,7 @@ use app_core::fixtures::{self, FixtureId};
 use app_core::AppCore;
 use capture_types::AppearanceSetting;
 use gpui_kit::base::Root;
-use gpui_kit::{AppContext, VisualTestAppContext, WindowAppearance};
+use gpui_kit::{px, AppContext, VisualTestAppContext, WindowAppearance};
 use mnema_gpui::assets::MnemaAssets;
 use mnema_gpui::host::GpuiHost;
 use mnema_gpui::shell::{data, fixture, Overlay, Shell, ShellModel};
@@ -284,6 +284,14 @@ fn run() -> anyhow::Result<()> {
         clock::freeze(Some(fixtures::fixture_now()), cx);
         Ok(())
     })?;
+    let probe = pointer::open(&mut cx, gpui_kit::size(px(64.), px(64.)), |_, cx| {
+        cx.new(|_| gpui_kit::EmptyView)
+    })?;
+    cx.update_window(probe.into(), |_, window, _| {
+        fonts::tracking_measures(window)
+    })?
+    .map_err(|e| anyhow::anyhow!("fonts: tracking: {e}"))?;
+    cx.update_window(probe.into(), |_, window, _| window.remove_window())?;
 
     let models = [
         (FixtureId::Populated, shell_model(FixtureId::Populated)?),

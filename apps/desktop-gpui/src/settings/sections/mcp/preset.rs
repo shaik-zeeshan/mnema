@@ -15,11 +15,12 @@ use super::form::{commit, hint, label, stack};
 use super::logic::{self, Advanced, PRESETS};
 use super::{close_picker, probe_node, Step, NODE_URL};
 use crate::settings::{click, commands, icons, Settings};
-use crate::theme::{self, space, text, Palette, FONT_MONO};
+use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
 use crate::ui::chip::{chip, ChipKind};
 use crate::ui::input::TextInput;
 use crate::ui::link::Link;
 use crate::ui::Button;
+use crate::ui::Tracking as _;
 
 pub struct Connect {
     pub preset: usize,
@@ -362,6 +363,7 @@ fn advanced(c: &Connect, hosted: bool, p: &Palette, cx: &mut Context<Settings>) 
                 .px(space::S3)
                 .text_size(text::XS)
                 .font_weight(theme::W_SEMIBOLD)
+                .tracking(0.1)
                 .text_color(p.text_muted)
                 .cursor_pointer()
                 .hover(|st| st.text_color(p.text_strong))
@@ -416,6 +418,7 @@ pub fn render(s: &Settings, c: &Connect, p: &Palette, cx: &mut Context<Settings>
     let mut body: Vec<AnyElement> = vec![
         div()
             .text_size(text::SM)
+            .tracking(0.01)
             .line_height(gpui_kit::relative(1.5))
             .text_color(p.text_muted)
             .child(pr.lede)
@@ -425,13 +428,10 @@ pub fn render(s: &Settings, c: &Connect, p: &Palette, cx: &mut Context<Settings>
             .flex_wrap()
             .items_center()
             .gap(px(6.))
-            .child(chip(
-                if pr.hosted() { "HTTP" } else { "STDIO" },
-                ChipKind::Neutral,
-                p,
-            ))
+            // `.chip` 0.06em, `.chip--path` 0.01em.
+            .child(dialog_chip(if pr.hosted() { "HTTP" } else { "STDIO" }, p).tracking(0.06))
             .when(!path.is_empty(), |d| {
-                d.child(chip(path, ChipKind::Neutral, p))
+                d.child(dialog_chip(path, p).tracking(0.01))
             })
             .into_any_element(),
     ];
@@ -529,4 +529,12 @@ pub fn render(s: &Settings, c: &Connect, p: &Palette, cx: &mut Context<Settings>
         .children(body)
         .child(footer)
         .into_any_element()
+}
+
+/// The connector dialog's `.chip`: surface fill, strong border, 5 px corners.
+pub(super) fn dialog_chip(label: impl Into<gpui_kit::SharedString>, p: &Palette) -> gpui_kit::Div {
+    chip(label, ChipKind::Neutral, p)
+        .rounded(radius::BTN_SM)
+        .border_color(p.border_strong)
+        .bg(p.surface)
 }

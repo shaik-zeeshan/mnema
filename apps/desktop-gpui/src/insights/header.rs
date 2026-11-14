@@ -12,6 +12,7 @@ use super::model::{engine_state, Engine, Tab};
 use super::Insights;
 use crate::theme::{self, space, text, Palette};
 use crate::ui::notice::notice as notice_box;
+use crate::ui::Tracking as _;
 use crate::ui::{Button, Tone};
 
 pub const BAR_H: f32 = 56.;
@@ -39,11 +40,15 @@ pub fn bar(this: &Insights, p: &Palette, window: &mut Window, cx: &mut Context<I
             .cursor_pointer()
             .text_size(text::LG)
             .font_weight(theme::W_MEDIUM)
+            .tracking(-0.012)
             .text_color(if on { p.text_strong } else { p.text_subtle })
             .hover(|s| s.text_color(p.text))
             .child(t.label())
             .children(count(t).map(|n| {
+                // `.in-tabs .num`: the kit's `.num` makes it mono.
                 div()
+                    .font_family(theme::FONT_MONO)
+                    .tracking(-0.01)
                     .text_size(text::XS)
                     .font_weight(theme::W_MEDIUM)
                     .text_color(if on { p.text_subtle } else { p.text_faint })
@@ -113,7 +118,7 @@ fn controls(
     match this.tab {
         Tab::Overview => super::overview::controls(this, p, window, cx),
         Tab::Journal => super::journal::controls(this, p, cx),
-        Tab::Subjects => super::subjects::controls(this, p, cx),
+        Tab::Subjects => super::subjects::controls(this, p, window, cx),
         _ => Vec::new(),
     }
 }

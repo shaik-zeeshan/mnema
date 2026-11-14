@@ -11,6 +11,7 @@ use gpui_kit::{div, px, Context, Div, Hsla, MouseButton, Role, SharedString, Win
 use super::model::{self, FlagKind, Lane, LaneMod, RecMod, Tone};
 use super::{Overlay, Shell};
 use crate::theme::{self, breakpoint, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::Tracking as _;
 use crate::ui::{clock, icon, icon_button, sep, with_tip};
 
 fn lane_color(lane: Lane, p: &Palette) -> Hsla {
@@ -21,13 +22,16 @@ fn lane_color(lane: Lane, p: &Palette) -> Hsla {
     }
 }
 
-/// `.mx-lane`: a 5px mark (35% unless lit) then the label.
-fn lane(lane: Lane, kind: LaneMod, small: Option<&'static str>, p: &Palette) -> Div {
+/// `.mx-lane`: a 5px mark (35% unless lit) then the label. `blocked`
+/// (`.mx-lane--blocked`, no screen permission): a round lit mark, and warn ink
+/// unless the lane is selected (the source colour outranks it in kit.css).
+fn lane(lane: Lane, kind: LaneMod, small: Option<&'static str>, blocked: bool, p: &Palette) -> Div {
     let (fg, mark) = match kind {
         LaneMod::On => (lane_color(lane, p), 1.),
         LaneMod::Paused => (p.status_paused_fg, 1.),
         LaneMod::Starting | LaneMod::Waiting => (p.text_muted, 1.),
         LaneMod::Error => (p.danger_text, 1.),
+        LaneMod::Off if blocked => (p.warn, 1.),
         LaneMod::Off => (p.text_subtle, 0.35),
     };
     let mark = div()
@@ -37,6 +41,15 @@ fn lane(lane: Lane, kind: LaneMod, small: Option<&'static str>, p: &Palette) -> 
         .map(|m| match kind {
             LaneMod::Starting | LaneMod::Waiting => m.border_1().border_color(fg),
             LaneMod::Error => m.rounded_full().bg(fg),
+            _ if blocked => m.rounded_full().bg(fg),
+            // Two 2 px bars, 1 px apart, 6 px tall (the paused mark's gradient).
+            LaneMod::Paused => m
+                .h(px(6.))
+                .rounded(px(0.))
+                .flex()
+                .justify_between()
+                .child(div().w(px(2.)).h_full().bg(fg))
+                .child(div().w(px(2.)).h_full().bg(fg)),
             _ => m.bg(fg).opacity(mark),
         });
     div()
@@ -119,6 +132,10 @@ fn rec_pill(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoEle
         .text_color(fg)
         .cursor_pointer()
         .hover(|s| s.bg(p.wash_strong))
+        // `.ss-rectrig[aria-expanded="true"]`: the fill stays while its popover is open.
+        .when(shell.overlay == Some(Overlay::Status), |el| {
+            el.bg(p.wash_strong)
+        })
         .child(dot)
         .child(label)
         .on_click(cx.listener(|this, _, _, cx| this.toggle_overlay(Overlay::Status, cx)))
@@ -144,7 +161,8 @@ fn record_controls(
         };
         out.push(
             with_tip(
-                icon_button("status-pause", title, size::H_MINI, false, p),
+                // `mx-btn--icon` without `--sm`: the 6 px corner.
+                icon_button("status-pause", title, size::H_MINI, false, p).rounded(radius::SM),
                 title,
             )
             .child(icon(glyph, size::ICON_XS))
@@ -161,7 +179,8 @@ fn record_controls(
         let off = !m.running || m.loading_stop;
         out.push(
             with_tip(
-                icon_button("status-stop", "Stop recording", size::H_MINI, false, p),
+                icon_button("status-stop", "Stop recording", size::H_MINI, false, p)
+                    .rounded(radius::SM),
                 format!("Stop recording  {key}"),
             )
             .child(icon(crate::assets::FILL_STOP, size::ICON_XS))
@@ -189,6 +208,7 @@ fn record_controls(
         .border_color(p.border_strong)
         .font_family(FONT_UI)
         .text_size(text::BASE)
+        .tracking(-0.003)
         .text_color(p.text_strong)
         .cursor_pointer()
         .hover(|s| s.bg(p.surface_hover))
@@ -244,7 +264,7 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
                     .map(|(i, (l, (kind, small)))| {
                         let el = div()
                             .id(("status-live-lane", i))
-                            .child(lane(*l, kind, small, p));
+                            .child(lane(*l, kind, small, false, p));
                         // The popover says it all while open (`use:tip={statusPop.open ? null : …}`).
                         if open {
                             el.into_any_element()
@@ -304,7 +324,7 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
             .cursor_pointer()
             .hover(|s| s.bg(p.wash_strong))
             .when(off, |el| el.opacity(theme::DISABLED_OPACITY))
-            .child(lane(l, kind, small, p))
+            .child(lane(l, kind, small, screen_blocked, p))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_source(i, cx)));
         row = row.child(with_tip(button, tip));
     }
@@ -312,13 +332,17 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
 }
 
 /// A pill: the status flag (`.mx-flag[data-tone]`) or the engine (`.mx-engine`).
+/// `hover_bg`: the fill under the pointer (transparent for most; `None` for a
+/// `span.mx-flag`, which has no hover rule).
 fn pill(
     id: &'static str,
     lead: &str,
     bold: String,
     tone: Option<(Hsla, Hsla)>,
+    hover_bg: Option<Hsla>,
     p: &Palette,
 ) -> gpui_kit::Stateful<gpui_kit::Div> {
+    let (bd, strong_ink) = (p.border_hover, p.text_strong);
     let (fg, border, dot, strong) = match tone {
         Some((tone, border)) => (tone, border, tone, tone),
         None => (p.text_muted, p.border_strong, p.status_dot, p.text),
@@ -337,7 +361,10 @@ fn pill(
         .border_color(border)
         .text_color(fg)
         .cursor_pointer()
-        .hover(|s| s.border_color(p.border_hover))
+        // The bold part keeps its own colour (`.mx-flag[data-tone] b`).
+        .when_some(hover_bg, |el, bg| {
+            el.hover(move |s| s.bg(bg).border_color(bd).text_color(strong_ink))
+        })
         // `.mx-flag[data-tone]::before`: a 3 px halo of the tone at 18%.
         .child(
             div()
@@ -362,10 +389,10 @@ pub fn render(
     let wide = window.viewport_size().width >= breakpoint::STATUS_WIDE;
     let rec = model::rec_view(m);
     let flag = model::status_flag(m).map(|f| {
-        let tone = match f.tone {
-            Tone::Info => (p.info, p.info_border),
-            Tone::Warn => (p.warn, p.warn_border),
-            Tone::Danger => (p.danger, p.danger_border),
+        let (tone, tone_bg) = match f.tone {
+            Tone::Info => ((p.info, p.info_border), p.info_bg),
+            Tone::Warn => ((p.warn, p.warn_border), p.warn_bg),
+            Tone::Danger => ((p.danger_text, p.danger_border), p.danger_bg),
         };
         let restart = f.kind == FlagKind::PrivacyRestart;
         let action = if restart && shell.restarting {
@@ -373,7 +400,13 @@ pub fn render(
         } else {
             f.action.clone()
         };
-        let el = pill("status-flag", &f.text, action, Some(tone), p);
+        let hover_bg = match f.kind {
+            FlagKind::PrivacyRetry => None,
+            // `button.mx-flag.ss-trig-flag`: the tone fill on hover and while open.
+            FlagKind::DiskSoon => Some(tone_bg),
+            _ => Some(gpui_kit::transparent_black()),
+        };
+        let el = pill("status-flag", &f.text, action, Some(tone), hover_bg, p);
         let tip = f.tip.clone();
         // "retrying" is status, not a button (`<span role="status">`).
         let el = if f.kind == FlagKind::PrivacyRetry {
@@ -382,8 +415,9 @@ pub fn render(
             el.opacity(theme::BUSY_OPACITY).cursor_default()
         } else {
             let flag = f.clone();
+            let open = shell.overlay == Some(Overlay::Status);
             el.when(f.kind == FlagKind::DiskSoon, |el| {
-                el.aria_expanded(shell.overlay == Some(Overlay::Status))
+                el.aria_expanded(open).when(open, |el| el.bg(tone_bg))
             })
             .on_click(cx.listener(move |this, _, _, cx| this.run_flag(&flag, cx)))
         }
@@ -405,7 +439,15 @@ pub fn render(
             .items_center()
             .gap(space::S3)
             .child(with_tip(
-                pill("status-engine", "engine", e.label.to_string(), tone, p).on_click(
+                pill(
+                    "status-engine",
+                    "engine",
+                    e.label.to_string(),
+                    tone,
+                    Some(gpui_kit::transparent_black()),
+                    p,
+                )
+                .on_click(
                     // `openSettings("intelligence")`, as the Svelte engine pill.
                     |_, _, cx| {
                         cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
@@ -472,6 +514,7 @@ pub fn render(
         .font_family(FONT_MONO)
         .text_size(text::XS)
         .font_weight(theme::W_MEDIUM)
+        .tracking(0.02)
         .text_color(p.status_fg)
         .whitespace_nowrap()
         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())

@@ -81,7 +81,9 @@ impl RenderOnce for Switch {
             .size(size::SWITCH_KNOB)
             .rounded_full()
             .bg(knob(self.on))
-            .when(light && !self.on, |el| {
+            // Disabled, the knob fades on its own over the faded track, so the
+            // shadow (painted under the whole knob) would show through it.
+            .when(light && !self.on && !self.disabled, |el| {
                 el.shadow(vec![spread(p.border_strong, px(0.5))])
             });
         let knob_el = if gen == 0 || prev == self.on {

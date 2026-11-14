@@ -10,6 +10,7 @@ use crate::settings::{click, on, Settings};
 use crate::theme::{space, text, Palette, FONT_MONO};
 use crate::ui::switch::Switch;
 use crate::ui::Button;
+use crate::ui::Tracking as _;
 
 const OPENING: &str = "Open app log";
 const DELETING: &str = "Delete app log";
@@ -95,7 +96,13 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                     .flex()
                     .gap(space::S3)
                     .text_size(text::BASE)
-                    .child(div().w(px(40.)).text_color(p.text_subtle).child(k))
+                    .child(
+                        div()
+                            .w(px(40.))
+                            .tracking(0.1)
+                            .text_color(p.text_subtle)
+                            .child(k),
+                    )
                     .child(
                         div()
                             .flex_1()
@@ -174,6 +181,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                             d.child(
                                 div()
                                     .text_size(text::SM)
+                                    .tracking(0.06)
                                     .text_color(p.accent)
                                     .child("\u{2713} Deleted"),
                             )
@@ -207,7 +215,6 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         row("General application log")
             .desc("Captures high-level runtime events and errors.")
             .full()
-            .no_divider()
             .control(
                 div()
                     .flex()

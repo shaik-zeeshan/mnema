@@ -35,6 +35,7 @@ pub mod stepper;
 pub mod switch;
 pub mod toast;
 pub mod tooltip;
+pub mod tracking;
 pub mod window_strip;
 
 #[cfg(test)]
@@ -47,6 +48,7 @@ pub use copy::CopyButton;
 pub use kbd::{kbd, keys};
 pub use popover::{float, pop_in, popover, popover_shadow};
 pub use tooltip::{with_tip, Tip};
+pub use tracking::Tracking;
 
 use gpui_kit::prelude::*;
 use gpui_kit::TestSupportExt as _;
@@ -77,8 +79,8 @@ pub fn kicker(label: &str, p: &Palette) -> Div {
         .text_size(text::XS)
         .font_weight(theme::W_MEDIUM)
         .text_color(p.text_subtle)
-        .child(div().text_color(p.accent).child("//"))
-        // No letter-spacing in GPUI: the 0.12em tracking is a native gap.
+        .tracking(0.12)
+        .child(div().text_color(p.accent).tracking(0.).child("//"))
         .child(SharedString::from(label.to_uppercase()))
 }
 
@@ -119,22 +121,24 @@ impl<T: StatefulInteractiveElement + ParentElement + Styled + IntoElement> Contr
 
 /// The kit's ghost icon button (`mx-btn--ghost mx-btn--icon`), `h` square.
 /// `current` = `aria-current` / pressed: the selected fill. Mouse-down stops here
-/// so a titlebar drag never starts from a button.
+/// so a titlebar drag never starts from a button. A Tab stop like [`Button`]:
+/// the 2 px accent outline on keyboard focus, 1 px down while pressed.
 pub fn icon_button(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     h: Pixels,
     current: bool,
     p: &Palette,
-) -> impl Control {
+) -> IconButton {
+    let id = id.into();
     let (fg, bg) = if current {
         (p.text_strong, Some(p.wash_strong))
     } else {
         (p.text_muted, None)
     };
     let hover = (p.wash_strong, p.text_strong);
-    div()
-        .id(id)
+    let el = div()
+        .id(id.clone())
         .test_support()
         .role(gpui_kit::Role::Button)
         .aria_label(label)
@@ -149,9 +153,56 @@ pub fn icon_button(
         .when_some(bg, |el, bg| el.bg(bg))
         .cursor_pointer()
         .hover(move |s| s.bg(hover.0).text_color(hover.1))
+        .active(|s| s.top(px(1.)))
         .on_mouse_down(gpui_kit::MouseButton::Left, |_, _, cx| {
             cx.stop_propagation()
-        })
+        });
+    IconButton {
+        id,
+        el,
+        ring: p.accent,
+    }
+}
+
+/// [`icon_button`]'s element: a styled div that takes its focus handle at render
+/// (the callers build it without a `Window`).
+#[derive(IntoElement)]
+pub struct IconButton {
+    id: ElementId,
+    el: gpui_kit::base::ObservedElement<gpui_kit::Stateful<Div>>,
+    ring: Hsla,
+}
+
+impl Styled for IconButton {
+    fn style(&mut self) -> &mut gpui_kit::StyleRefinement {
+        self.el.style()
+    }
+}
+impl ParentElement for IconButton {
+    fn extend(&mut self, elements: impl IntoIterator<Item = gpui_kit::AnyElement>) {
+        self.el.extend(elements)
+    }
+}
+impl InteractiveElement for IconButton {
+    fn interactivity(&mut self) -> &mut gpui_kit::Interactivity {
+        self.el.interactivity()
+    }
+}
+impl StatefulInteractiveElement for IconButton {}
+
+impl RenderOnce for IconButton {
+    fn render(mut self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let handle = focus_handle(self.id, window, cx);
+        // The outline follows a caller's `.rounded(..)` (the status bar's 6 px).
+        let r = match self.el.style().corner_radii.top_left {
+            Some(gpui_kit::AbsoluteLength::Pixels(r)) => r,
+            _ => radius::BTN_SM,
+        };
+        let ring = focus_visible(&handle, Force::None, window);
+        self.el
+            .track_focus(&handle)
+            .when(ring, |el| el.child(outline(self.ring, r)))
+    }
 }
 
 /// The 3 px accent-glow focus ring (`--app-ring`), as a box shadow.
@@ -196,7 +247,13 @@ pub fn ring_box(color: Hsla, w: Pixels, r: Pixels) -> Div {
 /// CSS `outline: 2px solid <color>; outline-offset: 2px` around a box of corner
 /// radius `r`: an absolute child, so the parent must be `relative()`.
 pub fn outline(color: Hsla, r: Pixels) -> Div {
-    let off = -(size::OUTLINE + size::OUTLINE_OFFSET);
+    outline_bordered(color, r, px(0.))
+}
+
+/// [`outline`] for a host with a `border` px border: CSS measures `outline-offset`
+/// from outside the border, an absolute child is placed from inside it.
+pub fn outline_bordered(color: Hsla, r: Pixels, border: Pixels) -> Div {
+    let off = -(size::OUTLINE + size::OUTLINE_OFFSET + border);
     div()
         .absolute()
         .top(off)
@@ -241,9 +298,32 @@ pub fn focus_handle(id: impl Into<ElementId>, window: &mut Window, cx: &mut App)
         .clone()
 }
 
-/// CSS `:focus-visible`: focused, and the last input was the keyboard.
+thread_local! {
+    /// The focused control [`focus_visible`] last saw, and whether its focus came by keyboard.
+    static FOCUS_ARRIVED: std::cell::RefCell<Option<(gpui_kit::WeakFocusHandle, bool)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// CSS `:focus-visible` as WebKit shows it: focused, and the focus *arrived* by keyboard.
+/// A click focuses a GPUI control (WebKit leaves a clicked button unfocused), so reading
+/// the input mode live lit the ring on the last-clicked button at the next key press.
 pub fn focus_visible(handle: &FocusHandle, force: Force, window: &Window) -> bool {
-    force == Force::Focus || (handle.is_focused(window) && window.last_input_was_keyboard())
+    if force == Force::Focus {
+        return true;
+    }
+    FOCUS_ARRIVED.with_borrow_mut(|seen| {
+        let mine = seen.as_ref().is_some_and(|(h, _)| h == handle);
+        if !handle.is_focused(window) {
+            if mine {
+                *seen = None;
+            }
+            return false;
+        }
+        if !mine {
+            *seen = Some((handle.downgrade(), window.last_input_was_keyboard()));
+        }
+        seen.as_ref().is_some_and(|(_, by_key)| *by_key)
+    })
 }
 
 /// The value before the latest change of `value`, and a generation that bumps
@@ -328,18 +408,20 @@ pub fn face_runs(
 }
 
 /// Rendered width of one line of text (controls that size themselves to their
-/// labels, like the segmented thumb).
+/// labels, like the segmented thumb), at `tracking` em (`ui::tracking`).
 pub fn text_width(
     s: &str,
     family: &'static str,
     weight: gpui_kit::FontWeight,
     font_size: Pixels,
+    tracking: f32,
     window: &Window,
 ) -> Pixels {
     let run = gpui_kit::TextRun {
         len: s.len(),
         font: gpui_kit::Font {
             weight,
+            features: tracking::with_tracking(&Default::default(), tracking),
             ..gpui_kit::font(family)
         },
         color: gpui_kit::black(),
@@ -389,12 +471,13 @@ fn balance(widths: &[f32], space: f32, avail: f32) -> f32 {
     hi
 }
 
-/// A max width for a headline of `runs` (text, weight) that wraps it balanced
-/// within `avail` (GPUI has no `text-wrap: balance`).
+/// A max width for a headline of `runs` (text, weight) at `tracking` em that
+/// wraps it balanced within `avail` (GPUI has no `text-wrap: balance`).
 pub fn balanced_width(
     runs: &[(&str, gpui_kit::FontWeight)],
     family: &'static str,
     font_size: Pixels,
+    tracking: f32,
     avail: Pixels,
     window: &Window,
 ) -> Pixels {
@@ -402,13 +485,13 @@ pub fn balanced_width(
     for (s, weight) in runs {
         for word in s.split_whitespace() {
             widths.push(f32::from(text_width(
-                word, family, *weight, font_size, window,
+                word, family, *weight, font_size, tracking, window,
             )));
         }
     }
     let weight = runs.first().map(|r| r.1).unwrap_or_default();
-    let space = f32::from(text_width("a a", family, weight, font_size, window))
-        - f32::from(text_width("aa", family, weight, font_size, window));
+    let space = f32::from(text_width("a a", family, weight, font_size, tracking, window))
+        - f32::from(text_width("aa", family, weight, font_size, tracking, window));
     // Slack of one space: the wrapper's own measure of a line can run a little
     // past the sum of its words, and the line must not tip into a third.
     px((balance(&widths, space, f32::from(avail)) + space)

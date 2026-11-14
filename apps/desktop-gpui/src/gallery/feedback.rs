@@ -134,8 +134,7 @@ pub(super) fn render(_: &mut Gallery, _: &mut Window, cx: &mut Context<Gallery>)
                     .into_any_element(),
                 Button::new("i-0", "Download")
                     .ghost()
-                    .sm()
-                    .h(px(22.))
+                    .inline()
                     .into_any_element(),
             ],
             &p,
@@ -147,8 +146,7 @@ pub(super) fn render(_: &mut Gallery, _: &mut Window, cx: &mut Context<Gallery>)
                 "OpenAI rejected this key.".into_any_element(),
                 Button::new("i-1", "Retry")
                     .ghost()
-                    .sm()
-                    .h(px(22.))
+                    .inline()
                     .into_any_element(),
             ],
             &p,

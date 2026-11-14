@@ -13,9 +13,11 @@ use crate::keymap;
 use crate::theme::{self, size, space, text, Palette};
 use crate::ui::{icon, kbd, kicker, pop_in, popover, progress, Button};
 
-/// The leading dot's width; the meaning-index bar insets by it plus the gap so
-/// its label lines up with the rows' label column.
+/// The leading dot's size.
 const DOT: Pixels = px(7.);
+/// `.ss-row`'s first grid column (the dot sits at its left); the meaning-index
+/// bar insets by it plus the gap so its label lines up with the rows' label column.
+const DOT_COL: Pixels = px(8.);
 
 fn row(r: &PopRow, p: &Palette, cx: &mut Context<Shell>) -> impl IntoElement {
     let tone: Hsla = match r.tone {
@@ -54,7 +56,7 @@ fn row(r: &PopRow, p: &Palette, cx: &mut Context<Shell>) -> impl IntoElement {
         .gap(space::S2)
         .text_size(text::BASE)
         .line_height(relative(1.4))
-        .child(dot)
+        .child(div().flex_none().w(DOT_COL).child(dot))
         .child(
             div()
                 .flex_none()
@@ -161,7 +163,7 @@ pub fn render(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> impl IntoE
                 div()
                     .pt(space::S1)
                     .pb(space::S1)
-                    .pl(DOT + space::S2)
+                    .pl(DOT_COL + space::S2)
                     .child(
                         progress::progress_meta("Building meaning index", format!("{pct}%"), p)
                             .mb(space::S2),

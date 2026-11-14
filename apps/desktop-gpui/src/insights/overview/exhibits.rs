@@ -10,10 +10,13 @@ use gpui_kit::{div, px, AnyElement, Context, Div, Role, SharedString, Window};
 
 use super::Figures;
 use crate::insights::charts::{
-    self, focus_split, heatmap, sparkline, spec_rows, stacked_bar, swatch,
+    self, focus_split, heatmap, sparkline, spec_rows, stacked_bar, swatch, swatch_chip,
 };
 use crate::insights::model::OverviewData;
-use crate::insights::parts::{group_head, h2, label, mono_label, panel, prose, sec, split};
+use crate::insights::parts::{
+    group_head, h2, label, mono_label, panel, prose, sec, sec_line, split, H2, KICKER, LABEL,
+    MONO_LABEL,
+};
 use crate::insights::stats::{self, category_color, category_label, fmt_duration, CATEGORY_ORDER};
 use crate::insights::subjects::tiers::pct;
 use crate::insights::{Insights, Modal};
@@ -184,10 +187,16 @@ pub fn exhibits(
         .flex_1()
         .min_w_0()
         .p(space::S5)
-        .child(sec(
-            kicker(&format!("Where the {} went", unit.name()), p),
-            Some(label(per, p).into_any_element()),
-        ))
+        .child(
+            sec_line(vec![
+                (
+                    KICKER,
+                    kicker(&format!("Where the {} went", unit.name()), p).into_any_element(),
+                ),
+                (LABEL, label(per, p).into_any_element()),
+            ])
+            .justify_between(),
+        )
         .when_some(chart_error.clone(), |w, e| {
             w.child(empty(
                 EmptyLayout::Panel,
@@ -280,7 +289,9 @@ pub fn exhibits(
                 })
                 .collect(),
             p.chart_grey_3,
+            None,
             p,
+            cx,
         )
     };
     let n_apps = f.apps.len();
@@ -423,6 +434,8 @@ pub fn feed(
     } else {
         let total: usize = groups.iter().map(|g| g.1).sum();
         let mut col = div().flex().flex_col();
+        // `.concl:last-of-type { border-bottom: 0 }`: the rows are siblings across groups.
+        let last = groups.iter().rev().find_map(|g| g.2.last()).map(|c| c.id);
         for (k, all, rows) in groups {
             let head = match k {
                 Kind::Formed => format!("Formed this {} · {all}", unit.name()),
@@ -453,7 +466,7 @@ pub fn feed(
                         .items_center()
                         .gap(space::S4)
                         .py(px(10.))
-                        .border_b_1()
+                        .when(last != Some(c.id), |d| d.border_b_1())
                         .border_color(p.hairline)
                         .cursor_pointer()
                         .group("insights-change")
@@ -566,7 +579,7 @@ pub fn feed(
                 div().child("Couldn't load.").into_any_element(),
                 Button::new("insights-attn-retry", "Retry")
                     .ghost()
-                    .sm()
+                    .inline()
                     .on_click(cx.listener(|this, _, _, cx| this.reload(cx)))
                     .into_any_element(),
             ],
@@ -592,7 +605,8 @@ pub fn feed(
                 attention
                     .iter()
                     .take(if this.ov_ui.attn_open { usize::MAX } else { 5 })
-                    .map(|a| {
+                    .enumerate()
+                    .map(|(i, a)| {
                         let id = a.id;
                         let busy = this.ov_ui.correcting.contains(&id);
                         let when = format!(
@@ -606,7 +620,8 @@ pub fn feed(
                             .flex_col()
                             .gap(space::S2)
                             .pt(px(12.))
-                            .border_t_1()
+                            // `.lead + .row { border-top: 0 }`.
+                            .when(i > 0, |d| d.border_t_1())
                             .border_color(p.hairline)
                             .when(busy, |d| d.opacity(0.5))
                             .child(
@@ -621,39 +636,23 @@ pub fn feed(
                                 CATEGORY_ORDER.iter().map(|k| {
                                     let k = *k;
                                     // `mx-btn--sm` with the category's swatch (the kit Button has no lead slot).
-                                    div()
-                                        .id(nid(&format!("insights-tag-{id}"), k as u64))
-                                        .test_support()
-                                        .role(Role::Button)
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(6.))
-                                        .h(px(24.))
-                                        .px(px(9.))
-                                        .rounded(radius::SM)
-                                        .border_1()
-                                        .border_color(p.border)
-                                        .bg(p.surface_raised)
-                                        .text_size(text::BASE)
-                                        .font_weight(theme::W_MEDIUM)
-                                        .text_color(p.text)
-                                        .child(swatch(category_color(Some(k), p), 8.))
-                                        .child(category_label(Some(k)))
-                                        .when(busy, |d| d.opacity(theme::DISABLED_OPACITY))
-                                        .when(!busy, |d| {
-                                            d.cursor_pointer()
-                                                .hover(|s| {
-                                                    s.bg(p.surface_hover)
-                                                        .border_color(p.border_hover)
-                                                })
-                                                .on_click(cx.listener(move |this, _, _, cx| {
-                                                    this.correct(
-                                                        id,
-                                                        super::Fix::Category(Some(k)),
-                                                        cx,
-                                                    )
-                                                }))
-                                        })
+                                    swatch_chip(
+                                        nid(&format!("insights-tag-{id}"), k as u64),
+                                        category_label(Some(k)),
+                                        category_color(Some(k), p),
+                                        false,
+                                        !busy,
+                                        p,
+                                    )
+                                    .test_support()
+                                    .when(busy, |d| d.opacity(theme::DISABLED_OPACITY))
+                                    .when(!busy, |d| {
+                                        d.cursor_pointer().on_click(cx.listener(
+                                            move |this, _, _, cx| {
+                                                this.correct(id, super::Fix::Category(Some(k)), cx)
+                                            },
+                                        ))
+                                    })
                                 }),
                             ))
                     }),
@@ -683,19 +682,24 @@ pub fn feed(
         .then(|| mono_label(format!("{} untagged", attention.len()), p).into_any_element());
     split(
         div()
-            .child(sec(
-                div()
-                    .flex()
-                    .items_end()
-                    .gap(space::S3)
-                    .child(h2("What changed", p))
-                    .child(label(format!("in your dossier {scope}"), p)),
-                None,
-            ))
+            .child(sec_line(vec![
+                (H2, h2("What changed", p).into_any_element()),
+                (
+                    LABEL,
+                    label(format!("in your dossier {scope}"), p).into_any_element(),
+                ),
+            ]))
             .child(changed),
         panel(p)
             .p(space::S5)
-            .child(sec(kicker("Needs attention", p), untagged))
+            .child(
+                sec_line(
+                    std::iter::once((KICKER, kicker("Needs attention", p).into_any_element()))
+                        .chain(untagged.map(|u| (MONO_LABEL, u)))
+                        .collect(),
+                )
+                .justify_between(),
+            )
             .child(attn_body),
         this.width,
     )

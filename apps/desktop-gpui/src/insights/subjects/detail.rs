@@ -15,12 +15,14 @@ use super::tier_of;
 use super::tiers::{derive_trend, fortnight_ago, interpolate, pct, Tier, DISPLAY_FLOOR};
 use crate::insights::charts::{line_chart, sparkline, Line};
 use crate::insights::parts::{
-    display, group_head, label, lede, panel, prose, read, sec, stat, stat_value,
+    display, group_head, label, lede, panel, prose, read_at, sec_line, stat, stat_value_at, KICKER,
+    LABEL,
 };
 use crate::insights::stats;
 use crate::insights::Insights;
 use crate::theme::{self, breakpoint, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
+use crate::ui::Tracking as _;
 use crate::ui::{clock, icon, kicker, nid, Button, Tone};
 
 pub(super) const TIERS: [(Tier, &str, &str); 4] = [
@@ -98,7 +100,7 @@ pub fn column_width(this: &Insights) -> Pixels {
 pub fn render(
     this: &mut Insights,
     p: &Palette,
-    _: &mut Window,
+    window: &mut Window,
     cx: &mut Context<Insights>,
 ) -> AnyElement {
     let subject = this.subject.clone().unwrap_or_default();
@@ -230,7 +232,12 @@ pub fn render(
         &format!("Subject · since {} · {trend}", stats::month_day(since, off)),
         p,
     )
-    .child(display(subject.clone(), None, p))
+    .child(
+        // `@container sd (max-width: 560px)`: `.mx-display` drops to 32 px.
+        // shortcut: the balanced width is still measured at 40 px; pass the size
+        // into `display` if a long title wraps unevenly at 32.
+        display(subject.clone(), None, p, window).when(tight, |d| d.text_size(px(32.))),
+    )
     .child(prose(
         format!(
             "{} — its strongest conclusion, at {}%.",
@@ -240,6 +247,13 @@ pub fn render(
         p,
     ));
     let n_ev = ev.len();
+    // `@container sd (max-width: 760px)`: the stacked stats' values drop to 24 px.
+    let value_size = if column_width(this) <= breakpoint::READ_NARROW {
+        px(24.)
+    } else {
+        px(28.)
+    };
+    let stat_value = |v: &str, p: &Palette| stat_value_at(v, value_size, p);
     let stats_el = vec![
         stat(
             "Lead confidence",
@@ -286,11 +300,17 @@ pub fn render(
         .into_any_element(),
     ];
     let chart_id = this.open_conclusion.unwrap_or(lead.id);
-    let chart = chart(&live_owned, &hist, chart_id, off, p);
-    let mut tiers_el = div().flex().flex_col().child(sec(
-        kicker("Conclusions", p),
-        Some(label(format!("{} · by confidence", live.len()), p).into_any_element()),
-    ));
+    let chart = chart(&live_owned, &hist, chart_id, (now, off), p);
+    let mut tiers_el = div().flex().flex_col().child(
+        sec_line(vec![
+            (KICKER, kicker("Conclusions", p).into_any_element()),
+            (
+                LABEL,
+                label(format!("{} · by confidence", live.len()), p).into_any_element(),
+            ),
+        ])
+        .justify_between(),
+    );
     for (t, title, note) in TIERS {
         // A pending Dismiss has left the list (its toast holds the Undo).
         let rows: Vec<&Conclusion> = live.iter().copied().filter(|c| tier_of(c) == t).collect();
@@ -308,19 +328,26 @@ pub fn render(
             true,
             cx,
         );
-        tiers_el = tiers_el.child(group_head(
-            &format!("{title} · {}", rows.len()),
-            Some(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(space::S2)
-                    .when(!tight, |d| d.child(label(note, p).text_size(text::SM)))
-                    .children(pager)
-                    .into_any_element(),
-            ),
-            p,
-        ));
+        // `.sd-h` (0.08em, the pager inherits it) around a `.mx-kicker` title (0.12em).
+        tiers_el = tiers_el.child(
+            group_head(
+                &format!("{title} · {}", rows.len()),
+                Some(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(space::S2)
+                        .tracking(0.08)
+                        .when(!tight, |d| {
+                            d.child(label(note, p).text_size(text::SM).tracking(0.))
+                        })
+                        .children(pager)
+                        .into_any_element(),
+                ),
+                p,
+            )
+            .tracking(0.12),
+        );
         for c in rows[from..to].iter().copied() {
             tiers_el = tiers_el.child(row(this, c, &hist, delta(c).map(signed), p, cx));
         }
@@ -329,28 +356,37 @@ pub fn render(
         .flex()
         .flex_col()
         .child(crumb)
-        .child(read(lede_el, stats_el, column_width(this), p))
+        .child(read_at(
+            lede_el,
+            stats_el,
+            column_width(this),
+            (breakpoint::READ_NARROW, breakpoint::SUBJECT_TIGHT),
+            p,
+        ))
         .child(
             panel(p)
                 .p(if tight { space::S4 } else { space::S5 })
                 .mb(space::S6)
-                .child(sec(
-                    kicker("Confidence over time", p),
-                    (!tight).then(|| {
-                        label(
-                            format!(
-                                "{} conclusion in bold · others in grey · ● evidence",
-                                if this.open_conclusion.is_some() {
-                                    "open"
-                                } else {
-                                    "lead"
-                                }
-                            ),
-                            p,
-                        )
-                        .into_any_element()
-                    }),
-                ))
+                .child(
+                    sec_line(
+                        std::iter::once((
+                            KICKER,
+                            kicker("Confidence over time", p).into_any_element(),
+                        ))
+                        .chain((!tight).then(|| {
+                            let which = if this.open_conclusion.is_some() {
+                                "open"
+                            } else {
+                                "lead"
+                            };
+                            let note =
+                                format!("{which} conclusion in bold · others in grey · ● evidence");
+                            (LABEL, label(note, p).into_any_element())
+                        }))
+                        .collect(),
+                    )
+                    .justify_between(),
+                )
                 .child(chart),
         )
         .child(tiers_el)
@@ -361,7 +397,7 @@ fn chart(
     cs: &[Conclusion],
     hist: &HashMap<i64, Vec<ConfidenceSnapshot>>,
     sel: i64,
-    off: time::UtcOffset,
+    (now, off): (i64, time::UtcOffset),
     p: &Palette,
 ) -> Div {
     let picked: Vec<&Conclusion> = cs
@@ -440,16 +476,29 @@ fn chart(
             }
         }
     }
+    // `midMonth`: the month on a long span, the date on a short one, nothing
+    // when the span is a day or two; the right end reads "today" when it is.
     let mid = from + (to - from) / 2;
+    let days = (to - from) / stats::DAY_MS;
+    let mid_label = match days {
+        60.. => stats::month_day(mid, off)
+            .split(' ')
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+        3.. => stats::month_day(mid, off),
+        _ => String::new(),
+    };
+    let to_label = if stats::start_of_day(to, off) == stats::start_of_day(now, off) {
+        "today".to_string()
+    } else {
+        stats::month_day(to, off)
+    };
     line_chart(
         lines,
         dots,
         DISPLAY_FLOOR as f32,
-        [
-            stats::month_day(from, off),
-            stats::month_day(mid, off),
-            stats::month_day(to, off),
-        ],
+        [stats::month_day(from, off), mid_label, to_label],
         p,
     )
 }
@@ -502,17 +551,36 @@ fn row(
     div()
         .id(nid("insights-concl", id as u64))
         .role(Role::Button)
+        .relative()
         .flex()
         .items_center()
-        .gap(space::S3)
-        .py(px(9.))
-        .px(space::S2)
+        // `.sd-row`: gap S4, S3 at `@container sd (max-width: 760px)`.
+        .gap(if cw > breakpoint::READ_NARROW {
+            space::S4
+        } else {
+            space::S3
+        })
+        .py(px(11.))
+        .px(space::S3)
         .border_b_1()
         .border_color(p.hairline)
         .cursor_pointer()
-        .when(on, |d| d.bg(p.wash_strong))
-        .hover(|s| s.bg(p.wash))
-        .when(c.status == ConclusionStatus::Faded, |d| d.opacity(0.6))
+        .when(!on, |d| d.hover(|s| s.bg(p.wash)))
+        // `.is-open`: selected fill and a 2 px strong bar inside the left edge.
+        .when(on, |d| {
+            d.bg(p.wash_strong).child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(2.))
+                    .bg(p.text_strong),
+            )
+        })
+        .when(c.status == ConclusionStatus::Faded && !on, |d| {
+            d.opacity(0.62)
+        })
         .child(
             div()
                 .w(px(40.))

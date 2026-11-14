@@ -9,7 +9,7 @@ use gpui_kit::{div, px, AnyElement, Context, Window};
 use super::voice_take::{self, VoiceTake};
 use crate::settings::row::{hint, line, row, section};
 use crate::settings::{icons, on, Settings};
-use crate::theme::{radius, space, text, Palette};
+use crate::theme::{space, text, Palette};
 use crate::ui::switch::Switch;
 use crate::ui::{Button, Tone};
 use crate::voice::{self, Phase};
@@ -191,12 +191,12 @@ pub fn render(
             b.child(hint("Saved. Recognising saved people was switched on for you.", p))
         })
         .child(
+            // `.voice-sentence`: a quotation rule, no box.
             div()
-                .p(space::S3)
-                .rounded(radius::MD)
-                .border_1()
-                .border_color(p.hairline)
-                .bg(p.surface_subtle)
+                .px(px(12.))
+                .py(px(10.))
+                .border_l_2()
+                .border_color(p.border)
                 .text_size(text::MD)
                 .line_height(gpui_kit::relative(1.6))
                 .text_color(p.text)

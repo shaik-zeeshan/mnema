@@ -328,6 +328,79 @@ fn disabled_buttons_swallow_clicks_and_busy_ones_too(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn icon_buttons_are_tab_stops_that_a_click_never_focuses(cx: &mut TestAppContext) {
+    use gpui_kit::StatefulInteractiveElement as _;
+    let (window, view) = open(cx, |_, _, cx| {
+        let p = theme::tokens(cx);
+        let this = cx.weak_entity();
+        div()
+            .flex()
+            .gap(px(10.))
+            .child(Button::new("first", "First"))
+            .child(
+                super::icon_button("icon", "Icon", px(26.), false, &p).on_click(move |_, _, cx| {
+                    this.update(cx, |h, _| h.selected += 1).ok();
+                }),
+            )
+            .into_any_element()
+    });
+    let focused = |cx: &mut TestAppContext, id: &'static str| {
+        cx.update_window(window.into(), |_, window, cx| {
+            window.render_frame(cx);
+            window.find(id).focused()
+        })
+        .unwrap()
+    };
+    act(cx, window, |w, cx| w.click("first", cx));
+    act(cx, window, |w, cx| w.press("tab", cx));
+    assert_eq!(
+        focused(cx, "icon"),
+        Some(true),
+        "Tab reaches the icon button"
+    );
+    act(cx, window, |w, cx| w.click("first", cx));
+    // Its mouse-down stops at the button (no titlebar drag), so a click runs
+    // the handler but leaves focus where it was, as a WebKit button does.
+    act(cx, window, |w, cx| w.click("icon", cx));
+    assert_eq!(cx.read(|cx| view.read(cx).selected), 1, "the click fired");
+    assert_eq!(focused(cx, "first"), Some(true), "and focus stayed put");
+}
+
+/// A key pressed after a click must not ring the clicked control: WebKit never focuses
+/// a clicked button, so the old app shows the ring only when focus arrives by Tab.
+#[gpui_kit::test]
+fn the_focus_ring_needs_focus_to_arrive_by_keyboard(cx: &mut TestAppContext) {
+    use gpui_kit::{InteractiveElement as _, TestSupportExt as _};
+    let rings = std::rc::Rc::new(std::cell::Cell::new([false; 2]));
+    let seen = rings.clone();
+    let (window, _) = open(cx, move |_, window, cx| {
+        let box_ = |id: &'static str, window: &mut Window, cx: &mut gpui_kit::App| {
+            let handle = super::focus_handle(id, window, cx);
+            let ring = super::focus_visible(&handle, super::Force::None, window);
+            (div().id(id).test_support().size(px(20.)).track_focus(&handle), ring)
+        };
+        let (a, ring_a) = box_("a", window, cx);
+        let (b, ring_b) = box_("b", window, cx);
+        seen.set([ring_a, ring_b]);
+        div().flex().child(a).child(b).into_any_element()
+    });
+    let rings = |cx: &mut TestAppContext| {
+        cx.update_window(window.into(), |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        rings.get()
+    };
+    act(cx, window, |w, cx| w.click("a", cx));
+    assert_eq!(rings(cx), [false, false], "a click shows no ring");
+    act(cx, window, |w, cx| w.press("x", cx));
+    assert_eq!(rings(cx), [false, false], "nor does a key after it");
+    act(cx, window, |w, cx| w.press("tab", cx));
+    assert_eq!(rings(cx), [false, true], "Tab does");
+    act(cx, window, |w, cx| w.click("a", cx));
+    act(cx, window, |w, cx| w.press("x", cx));
+    assert_eq!(rings(cx), [false, false], "and clicking away clears it");
+}
+
+#[gpui_kit::test]
 fn segmented_hugs_its_options_in_a_column_unless_filled(cx: &mut TestAppContext) {
     let (window, _) = open(cx, |_, _, _| {
         div()

@@ -12,6 +12,7 @@ use crate::onboarding::parts::{self, fine, head};
 use crate::onboarding::{FinalePhase, Onboarding};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::notice::notice;
+use crate::ui::Tracking as _;
 use crate::ui::{alpha, progress, Tone};
 
 const HEAD_W: f32 = 360.;
@@ -38,6 +39,7 @@ fn pill(
         .font_family(FONT_MONO)
         .font_weight(theme::W_MEDIUM)
         .text_size(text::SM)
+        .tracking(0.04)
         .text_color(fg)
         .when(spin, |d| d.child(progress::spinner(size::SPIN_SM)))
         .when_some(dot, |d, (c, glow)| {
@@ -60,6 +62,7 @@ fn title(lines: &[&str], p: &Palette) -> AnyElement {
         .flex_col()
         .font_weight(theme::W_SEMIBOLD)
         .text_size(parts::FINALE_TITLE)
+        .tracking(-0.042)
         .line_height(relative(0.98))
         .text_color(p.text_strong)
         .children(lines.iter().map(|l| div().child(l.to_string())))
@@ -210,7 +213,13 @@ impl Onboarding {
                 .border_1()
                 .border_color(p.border)
                 .bg(p.surface)
-                .child(img(path).size_full().object_fit(ObjectFit::Cover))
+                // GPUI clips to a rectangle: the picture rounds itself inside the border.
+                .child(
+                    img(path)
+                        .size_full()
+                        .object_fit(ObjectFit::Cover)
+                        .rounded(radius::LG - px(1.)),
+                )
                 .into_any_element(),
             _ if audio_only => empty(format!("No screen frames \u{2014} {screen_off}.")),
             _ if running && ev.is_some() => {

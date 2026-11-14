@@ -20,6 +20,7 @@ use super::groups::SectionId;
 use super::view::PAGE_MAX_W;
 use super::{click, icons, Settings};
 use crate::theme::{self, radius, space, text, Palette};
+use crate::ui::Tracking as _;
 use crate::ui::{notice, Button, Tone};
 
 /// One catalog app (`recommendedApps[]`): the name the app list knows it by.
@@ -333,7 +334,7 @@ pub fn banner(s: &Settings, v: &PromptView, p: &Palette, cx: &mut Context<Settin
         .justify_between()
         .gap(px(14.))
         .p(space::S3)
-        .rounded(radius::MD)
+        .rounded(radius::SM)
         .border_1()
         .border_color(p.warn_border)
         .bg(p.warn_bg)
@@ -348,6 +349,7 @@ pub fn banner(s: &Settings, v: &PromptView, p: &Palette, cx: &mut Context<Settin
                     div()
                         .text_size(text::XS)
                         .font_weight(theme::W_SEMIBOLD)
+                        .tracking(0.12)
                         .text_color(p.warn)
                         .child("SENSITIVE CAPTURE PROTECTION"),
                 )

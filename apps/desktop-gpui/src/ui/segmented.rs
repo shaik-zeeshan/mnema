@@ -9,7 +9,7 @@ use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, Animation, App, ElementId, Pixels, SharedString, Window};
 
 use super::{
-    focus_handle, focus_visible, icon, inset, last_change, nid, ring_box, spread, text_width, Force,
+    focus_handle, focus_visible, icon, inset, last_change, nid, ring_box, text_width, Force,
 };
 use crate::theme::{self, motion, radius, size, text, FONT_MONO, FONT_UI};
 
@@ -150,12 +150,12 @@ impl RenderOnce for Segmented {
                     px(0.)
                 };
                 let count_w = o.count.as_ref().map_or(px(0.), |c| {
-                    ICON_GAP + text_width(c, FONT_MONO, theme::W_REGULAR, text::XS, window)
+                    ICON_GAP + text_width(c, FONT_MONO, theme::W_REGULAR, text::XS, 0., window)
                 });
                 pad * 2.
                     + icon_w
                     + count_w
-                    + text_width(&o.label, family, theme::W_MEDIUM, fs, window)
+                    + text_width(&o.label, family, theme::W_MEDIUM, fs, 0., window)
             })
             .collect();
 
@@ -173,7 +173,7 @@ impl RenderOnce for Segmented {
             .w(to.1)
             .rounded(radius::SM)
             .bg(p.surface_raised)
-            .shadow(vec![spread(p.border_strong, px(1.))]);
+            .child(ring_box(p.border_strong, px(1.), radius::SM));
         let n = self.options.len().max(1) as f32;
         let (from_f, to_f) = (
             prev.min(n as usize - 1) as f32 / n,
@@ -191,7 +191,7 @@ impl RenderOnce for Segmented {
                 .w(gpui_kit::relative(1. / n))
                 .rounded(radius::SM)
                 .bg(p.surface_raised)
-                .shadow(vec![spread(p.border_strong, px(1.))]);
+                .child(ring_box(p.border_strong, px(1.), radius::SM));
             let t = if gen == 0 {
                 t.into_any_element()
             } else {

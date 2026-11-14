@@ -22,6 +22,7 @@ use crate::theme::{space, text, Palette};
 use crate::ui::input::TextInput;
 use crate::ui::segmented::Segmented;
 use crate::ui::Button;
+use crate::ui::Tracking as _;
 
 pub struct Form {
     /// The connector being edited (`None` = adding a new one).
@@ -359,6 +360,7 @@ pub(super) fn label(t: &'static str, p: &Palette) -> gpui_kit::Div {
 pub(super) fn hint(t: impl Into<SharedString>, p: &Palette) -> gpui_kit::Div {
     div()
         .text_size(text::SM)
+        .tracking(0.03)
         .line_height(gpui_kit::relative(1.5))
         .text_color(p.text_muted)
         .child(t.into())
@@ -538,7 +540,7 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
             stack(vec![
                 label("URL", p).into_any_element(),
                 TextInput::new("mcp-form-url", "URL", &f.url)
-                    .invalid(no_url)
+                    .warn(no_url)
                     .into_any_element(),
             ])
             .when(no_url, |d| {
@@ -600,6 +602,7 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
                         .items_center()
                         .gap(px(4.))
                         .text_size(text::BASE)
+                        .tracking(0.06)
                         .text_color(p.accent)
                         .child(crate::ui::icon(icons::CHECK, crate::theme::size::ICON_XS))
                         .child("secret saved")
@@ -676,12 +679,6 @@ pub fn render(s: &Settings, f: &Form, p: &Palette, cx: &mut Context<Settings>) -
                 .overflow_y_scroll()
                 .children(body),
         )
-        .child(
-            footer
-                .px(space::S5)
-                .pb(space::S5)
-                .border_t_1()
-                .border_color(p.hairline),
-        )
+        .child(footer.px(space::S5).pb(space::S5))
         .into_any_element()
 }

@@ -15,9 +15,11 @@ use std::time::Duration;
 
 use super::{Chat, ChatTurn};
 use crate::insights::model::{reason_copy, Engine};
-use crate::theme::{self, size, text, Palette, FONT_MONO};
+use crate::theme::{self, size, text, Palette, FONT_MONO, FONT_UI};
+use crate::ui::baseline::{self, Line};
 use crate::ui::link::Link;
 use crate::ui::notice::notice;
+use crate::ui::Tracking as _;
 use crate::ui::{icon, icon_button, with_tip, Button, Tone};
 
 const VERIFY_HOST: &str = "auth.openai.com/codex/device";
@@ -181,6 +183,13 @@ impl Chat {
     }
 }
 
+/// `hint`'s one line, for `baseline` rows.
+const HINT: Line = Line {
+    family: FONT_UI,
+    size: text::SM,
+    lh: 1.45,
+};
+
 fn hint(s: &'static str, p: &Palette) -> Div {
     div()
         .text_size(text::SM)
@@ -207,15 +216,19 @@ fn sign_in(chat: &Chat, id: &str, p: &Palette, cx: &mut Context<Chat>) -> AnyEle
         let copied = chat.code_copied;
         let label = if copied { "Copied" } else { "Copy code" };
         return col
+            // `.chatgpt-connect__hint`: one paragraph, so the link takes the
+            // hint's size and line height and every first line shares a baseline.
             .child(
-                div()
-                    .flex()
-                    .flex_wrap()
-                    .items_baseline()
-                    .gap(px(4.))
-                    .child(hint("Enter this code at", p))
-                    .child(Link::new("chat-signin-page", VERIFY_HOST, url.clone()))
-                    .child(hint("— waiting for approval…", p)),
+                baseline::row_top(vec![
+                    (HINT, hint("Enter this code at", p)),
+                    (
+                        HINT,
+                        div().child(Link::new("chat-signin-page", VERIFY_HOST, url.clone())),
+                    ),
+                    (HINT, hint("— waiting for approval…", p)),
+                ])
+                .flex_wrap()
+                .gap(px(4.)),
             )
             .child(
                 div()
@@ -232,6 +245,7 @@ fn sign_in(chat: &Chat, id: &str, p: &Palette, cx: &mut Context<Chat>) -> AnyEle
                             .font_family(FONT_MONO)
                             .font_weight(theme::W_SEMIBOLD)
                             .text_size(text::LG)
+                            .tracking(0.12)
                             .text_color(p.text_strong)
                             .child(SharedString::from(code.clone()))
                             .on_click(copy(code)),

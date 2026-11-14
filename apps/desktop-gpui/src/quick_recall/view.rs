@@ -7,6 +7,7 @@ use gpui_kit::{canvas, div, px, AnyElement, App, ClickEvent, Context, Div, Rende
 
 use super::{QuickRecall, CAP_H, FIELD_H, FOOT_H, LOOK_H};
 use crate::theme::{self, space, text, Palette, FONT_UI};
+use crate::ui::baseline::{self, Line};
 
 /// A click handler that runs `f` on the bar.
 pub(super) fn act(
@@ -29,30 +30,21 @@ pub(super) fn section(
     right: Option<String>,
     p: &Palette,
 ) -> Div {
-    div()
-        .flex()
-        .items_baseline()
+    let mono = Line::new(theme::FONT_MONO, text::XS, baseline::PHI);
+    let mut items = vec![(
+        Line::new(FONT_UI, text::BASE, baseline::PHI),
+        div().child(label.to_string()),
+    )];
+    items.extend(count.map(|c| (mono, div().child(c))));
+    items.extend(right.map(|c| (mono, div().ml_auto().child(c))));
+    // The mono counts share the label's baseline.
+    baseline::row_top(items)
         .gap(space::S2)
         .mx(px(10.))
         .mt(px(10.))
         .mb(px(4.))
-        .text_size(text::BASE)
         .font_weight(theme::W_MEDIUM)
         .text_color(p.text_subtle)
-        .child(label.to_string())
-        .children(count.map(|c| {
-            div()
-                .font_family(theme::FONT_MONO)
-                .text_size(text::XS)
-                .child(c)
-        }))
-        .children(right.map(|c| {
-            div()
-                .ml_auto()
-                .font_family(theme::FONT_MONO)
-                .text_size(text::XS)
-                .child(c)
-        }))
 }
 
 impl QuickRecall {

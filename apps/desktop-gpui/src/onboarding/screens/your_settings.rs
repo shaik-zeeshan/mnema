@@ -11,6 +11,7 @@ use crate::onboarding::parts::{self, display, head, Mark};
 use crate::onboarding::{storage, Onboarding};
 use crate::theme::{self, space, text, Palette, FONT_MONO};
 use crate::ui::kicker;
+use crate::ui::Tracking as _;
 
 struct Row {
     name: &'static str,
@@ -236,9 +237,10 @@ impl Onboarding {
                 .gap(px(8.))
                 .child(
                     parts::mono(k.to_uppercase(), text::XS, p.text_subtle)
-                        .font_weight(theme::W_MEDIUM),
+                        .font_weight(theme::W_MEDIUM)
+                        .tracking(0.1),
                 )
-                .child(parts::mono(v, text::LG, p.text_strong))
+                .child(parts::mono(v, text::LG, p.text_strong).tracking(-0.02))
         };
         let facts = div()
             .flex()

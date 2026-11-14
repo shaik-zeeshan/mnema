@@ -193,8 +193,7 @@ pub fn modal(s: &Settings, list: &ToolList, p: &Palette, cx: &mut Context<Settin
                 .justify_between()
                 .gap(space::S3)
                 .py(space::S2)
-                .border_b_1()
-                .border_color(p.border)
+                .when(i > 0, |d| d.border_t_1().border_color(p.hairline))
                 .child(
                     div()
                         .flex()

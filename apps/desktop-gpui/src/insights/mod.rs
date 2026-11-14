@@ -6,6 +6,7 @@
 
 pub mod charts;
 mod context;
+mod context_mix;
 mod context_ops;
 pub mod data;
 #[cfg(feature = "fixtures")]
