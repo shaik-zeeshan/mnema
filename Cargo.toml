@@ -20,4 +20,12 @@ members = [
     "crates/capture-writers",
     "crates/secret-redaction",
 ]
+# The vendored GPUI text crate is a dependency, not a workspace member.
+exclude = ["vendor/gpui-pre-apple"]
 resolver = "2"
+
+# gpui-pre-apple 0.3.11 plus three Mnema changes (grep "Mnema change"): no stroke thickening
+# (`no_font_smoothing`) and letter-spacing (`MNEMA_TRACKING_TAG`) in text_system.rs, and
+# shadow corners that grow with the spread in shaders.metal.
+[patch.crates-io]
+gpui-pre-apple = { path = "vendor/gpui-pre-apple" }
