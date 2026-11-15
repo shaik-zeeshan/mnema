@@ -141,6 +141,7 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         ..Default::default()
     };
     let picker = ModelPicker::new("askai-model", spec)
+        .sentinel_tip("Follows the default model chosen in Providers")
         .trigger(Trigger::Block {
             label,
             placeholder: false,

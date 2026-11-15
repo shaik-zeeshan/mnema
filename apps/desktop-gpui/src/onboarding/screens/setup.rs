@@ -232,11 +232,18 @@ impl Onboarding {
                             .sm(),
                         )
                         .into_any_element(),
+                    // The download's error wraps beside the name; the icon and Retry keep their line.
                     DlState::Failed => inline(
                         Tone::Danger,
-                        Some(icon("icons/triangle-alert.svg", px(13.)).into_any_element()),
+                        Some(
+                            div()
+                                .flex_none()
+                                .child(icon("icons/triangle-alert.svg", px(13.)))
+                                .into_any_element(),
+                        ),
                         vec![
                             div()
+                                .min_w_0()
                                 .child(
                                     self.dl
                                         .errors
@@ -255,6 +262,8 @@ impl Onboarding {
                         ],
                         &p,
                     )
+                    .flex_nowrap()
+                    .min_w_0()
                     .into_any_element(),
                     DlState::Queued => div()
                         .text_size(text::BASE)
@@ -342,11 +351,8 @@ impl Onboarding {
         } else {
             parts::ruled(Some(px(620.)), rows, &p).into_any_element()
         });
-        let foot = parts::footer(
-            Some(
-                "Live since you arrived, and it never disables. Downloads carry on behind you."
-                    .into_any_element(),
-            ),
+        let foot = parts::footer_text(
+            "Live since you arrived, and it never disables. Downloads carry on behind you.",
             vec![
                 back(cx),
                 primary("ob-next", "Continue", cx, |this, _, cx| this.next(cx)).into_any_element(),

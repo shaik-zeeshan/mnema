@@ -23,6 +23,25 @@ pub enum ChipKind {
 }
 
 pub fn chip(label: impl Into<SharedString>, kind: ChipKind, p: &Palette) -> Div {
+    frame(kind, p).flex_none().child(label.into())
+}
+
+/// A chip whose label is data (a device, an app, a web address): it shrinks to
+/// its box and the label ends in "\u{2026}". Cap it with `.max_w(..)` where the
+/// parent gives it no width, and put the whole value in a tooltip.
+pub fn chip_fit(label: impl Into<SharedString>, kind: ChipKind, p: &Palette) -> Div {
+    frame(kind, p).min_w_0().child(
+        div()
+            .min_w_0()
+            // The ellipsis clips to this box: at the chip's 1.0 line height it
+            // would shave the descenders, so the box is 2 px taller each way.
+            .py(px(2.))
+            .truncate()
+            .child(label.into()),
+    )
+}
+
+fn frame(kind: ChipKind, p: &Palette) -> Div {
     let (fg, bg, bd) = match kind {
         ChipKind::Neutral => (p.text_muted, p.surface_subtle, p.border),
         ChipKind::Screen => (p.source_screen, p.source_screen_bg, p.source_screen_border),
@@ -41,7 +60,6 @@ pub fn chip(label: impl Into<SharedString>, kind: ChipKind, p: &Palette) -> Div 
     let cat = matches!(kind, ChipKind::Category(_));
     div()
         .flex()
-        .flex_none()
         .items_center()
         .gap(px(5.))
         .h(size::CHIP_H)
@@ -67,7 +85,6 @@ pub fn chip(label: impl Into<SharedString>, kind: ChipKind, p: &Palette) -> Div 
                     .child(div().flex_none().size(px(6.)).rounded(px(2.)).bg(c))
             },
         )
-        .child(label.into())
 }
 
 /// A non-category chip as a `baseline::row` item: its one centred line of text

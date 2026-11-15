@@ -9,7 +9,8 @@ use gpui_kit::TestSupportExt as _;
 use gpui_kit::{div, px, Animation, App, ElementId, Pixels, SharedString, Window};
 
 use super::{
-    focus_handle, focus_visible, icon, inset, last_change, nid, ring_box, text_width, Force,
+    focus_handle, focus_visible, icon, inset, last_change, nid, ring_box, text_width, with_tip,
+    Force,
 };
 use crate::theme::{self, motion, radius, size, text, FONT_MONO, FONT_UI};
 
@@ -24,6 +25,15 @@ pub struct SegOption {
     pub icon: Option<SharedString>,
     /// A mono count after the label (the developer window's job filter).
     pub count: Option<SharedString>,
+    /// Hover text when it should say more than the label (the default).
+    pub tip: Option<SharedString>,
+}
+
+impl SegOption {
+    pub fn tip(mut self, t: impl Into<SharedString>) -> Self {
+        self.tip = Some(t.into());
+        self
+    }
 }
 
 impl<S: Into<SharedString>> From<S> for SegOption {
@@ -32,6 +42,7 @@ impl<S: Into<SharedString>> From<S> for SegOption {
             label: label.into(),
             icon: None,
             count: None,
+            tip: None,
         }
     }
 }
@@ -41,6 +52,7 @@ pub fn opt_icon(label: impl Into<SharedString>, icon: impl Into<SharedString>) -
         label: label.into(),
         icon: Some(icon.into()),
         count: None,
+        tip: None,
     }
 }
 
@@ -49,6 +61,7 @@ pub fn opt_count(label: impl Into<SharedString>, count: impl Into<SharedString>)
         label: label.into(),
         icon: None,
         count: Some(count.into()),
+        tip: None,
     }
 }
 
@@ -240,6 +253,10 @@ impl RenderOnce for Segmented {
             let strong = p.text_strong;
             let on_change = self.on_change.clone();
             let off = self.disabled || self.off.contains(&ix);
+            // Every option tips its label (Segmented.svelte); a dead group shows none.
+            let tip = (!self.disabled)
+                .then(|| o.tip.clone().unwrap_or_else(|| o.label.clone()))
+                .filter(|t| !t.is_empty());
             div()
                 .id(nid(&format!("{base}-opt"), ix as u64))
                 .test_support()
@@ -286,6 +303,7 @@ impl RenderOnce for Segmented {
                 .when_some(on_change.filter(|_| !off), |el, f| {
                     el.on_click(move |_, window, cx| f(ix, window, cx))
                 })
+                .when_some(tip, |el, t| with_tip(el, t))
         });
 
         let hug = widths.iter().fold(INSET * 2., |a, w| a + *w);

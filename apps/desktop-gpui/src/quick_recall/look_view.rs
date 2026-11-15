@@ -490,6 +490,7 @@ impl QuickRecall {
                                         .flex()
                                         .items_center()
                                         .justify_center()
+                                        .flex_none()
                                         .size(px(24.))
                                         .rounded_full()
                                         .bg(crate::ui::mix(s, p.surface, 0.26))
@@ -510,7 +511,9 @@ impl QuickRecall {
                                         .font_weight(theme::W_SEMIBOLD)
                                         .child(t.speaker.clone()),
                                 )
-                                .child(format!("in {title}")),
+                                // One line, cut with an ellipsis (the side panel has
+                                // the full title).
+                                .child(div().min_w_0().truncate().child(format!("in {title}"))),
                         )
                     })
                     .child(

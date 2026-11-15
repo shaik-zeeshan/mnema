@@ -415,7 +415,7 @@ pub fn render(s: &Settings, f: &Flow, p: &Palette, cx: &mut Context<Settings>) -
                 // `.chip` 0.06em, `.chip--path` 0.01em.
                 .child(super::preset::dialog_chip("HTTP", p).tracking(0.06))
                 .when(!path.is_empty(), |d| {
-                    d.child(super::preset::dialog_chip(path, p).tracking(0.01))
+                    d.child(super::preset::path_chip(path, p))
                 })
                 .child(chip("OAuth", ChipKind::Accent, p).tracking(0.06)),
         )

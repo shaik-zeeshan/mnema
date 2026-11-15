@@ -98,7 +98,8 @@ pub fn toast_box(t: &Toast, key: u64, p: &Palette) -> Div {
                 .text_color(tone)
                 .child(icon(glyph.path(), px(15.))),
         )
-        .child(t.text.clone())
+        // Wraps inside the 520 px cap instead of pushing the action out.
+        .child(div().min_w_0().child(t.text.clone()))
         .when_some(t.small.clone(), |d, s| {
             d.child(
                 div()

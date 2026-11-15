@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::settings::model::{relative, short_day, Json};
 use crate::settings::row::{line, row, section};
 use crate::settings::{click, confirm, icons, Settings};
+use crate::shell::notifications_pop::stamp;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::baseline::{self, Line};
 use crate::ui::chip::{chip, ChipKind};
@@ -88,20 +89,26 @@ fn tool_row(
         .flex()
         .items_center()
         .gap(space::S2)
-        .child(
+        // `.ac-tool__label`: one line, cut with an ellipsis; the tooltip has the rest.
+        .child(crate::ui::with_tip(
             div()
+                .id(SharedString::from(format!("cli-tool-name-{key}")))
                 .min_w_0()
                 .truncate()
                 .text_size(text::MD)
                 .font_weight(theme::W_MEDIUM)
                 .text_color(p.text_strong)
                 .child(label.clone()),
-        )
-        .child(chip(
-            source_label(g.str_at(&["identitySource"]).unwrap_or_default()),
-            ChipKind::Neutral,
-            p,
-        ));
+            label.clone(),
+        ))
+        .child({
+            let src = g.str_at(&["identitySource"]).unwrap_or_default();
+            crate::ui::with_tip(
+                chip(source_label(src), ChipKind::Neutral, p)
+                    .id(SharedString::from(format!("cli-tool-src-{key}"))),
+                crate::small::access::model::identity_source(src).1,
+            )
+        });
     let scope = g.at(&["scope"]).clone();
     let meta = div()
         .flex()
@@ -111,9 +118,7 @@ fn tool_row(
         .text_size(text::SM)
         .text_color(p.text_subtle);
     let meta = if blocked {
-        let at = g
-            .num_at(&["blockedAtUnixMs"])
-            .map(|ms| format!("blocked {}", short_day(ms as i64, today)));
+        let at = g.num_at(&["blockedAtUnixMs"]).map(|ms| ms as i64);
         meta.child(if never {
             "Never allowed".into_any_element()
         } else {
@@ -124,11 +129,23 @@ fn tool_row(
                 .child(chip(scope_chip(&scope), ChipKind::Neutral, p))
                 .into_any_element()
         })
-        .children(at.map(|a| div().child(format!("\u{b7} {a}"))))
+        .children(at.map(|ms| {
+            crate::ui::with_tip(
+                div()
+                    .id(SharedString::from(format!("cli-blocked-at-{key}")))
+                    .child(format!("\u{b7} blocked {}", short_day(ms, today))),
+                stamp(ms, today.offset()),
+            )
+        }))
         .when(never, |d| d.child("\u{b7} will ask again if unblocked"))
     } else {
         meta.child(chip(scope_chip(&scope), ChipKind::Neutral, p))
-            .child(format!("\u{b7} used {}", relative(last, now)))
+            .child(crate::ui::with_tip(
+                div()
+                    .id(SharedString::from(format!("cli-used-{key}")))
+                    .child(format!("\u{b7} used {}", relative(last, now))),
+                stamp(last, today.offset()),
+            ))
             .when_some(last_cmd, |d, c| {
                 d.child("\u{b7} last ran").child(
                     div()
@@ -178,8 +195,9 @@ fn tool_row(
             .flex_none()
             .items_center()
             .gap(space::S3)
-            .child(
+            .child(crate::ui::with_tip(
                 div()
+                    .id(SharedString::from(format!("cli-lapse-{key}")))
                     .flex()
                     .flex_col()
                     .gap(px(4.))
@@ -190,7 +208,11 @@ fn tool_row(
                             .child(text_),
                     )
                     .child(bar),
-            )
+                format!(
+                    "Lapses {} if unused \u{2014} the next request asks again",
+                    short_day(last + TTL_MS, today)
+                ),
+            ))
             .child(
                 Button::new(
                     SharedString::from(format!("block-{key}")),
@@ -260,7 +282,12 @@ fn list_section(title: &str, hint: &str, rows: Vec<AnyElement>, p: &Palette) -> 
                 ),
                 (
                     Line::new(FONT_UI, text::BASE, baseline::PHI),
-                    div().text_color(p.text_subtle).child(hint.to_string()),
+                    // Wraps under itself on a narrow window, as `row::section`'s hint.
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_color(p.text_subtle)
+                        .child(hint.to_string()),
                 ),
             ])
             .gap(space::S3),
@@ -444,13 +471,15 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         ));
     }
     let now = crate::ui::clock::now_ms(cx);
+    let offset = crate::ui::clock::now(cx).offset();
     let events: Vec<AnyElement> = s
         .data
         .history
         .iter()
         .rev()
         .take(ACTIVITY)
-        .map(|e| {
+        .enumerate()
+        .map(|(i, e)| {
             let outcome = match e.str_at(&["outcome"]) {
                 None | Some("success") => None,
                 Some("scope_rejected") => Some("Out of scope"),
@@ -470,13 +499,22 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 Line::new(FONT_UI, text::SM, baseline::PHI),
                 Line::new(FONT_MONO, text::SM, baseline::PHI),
             );
+            let tool = e.str_at(&["toolIdentity"]).unwrap_or_default().to_string();
             baseline::row_top(vec![
                 (
                     ui,
+                    // `.ac-log b`: one line, cut with an ellipsis; the tooltip has the rest.
                     div()
                         .flex_1()
+                        .min_w_0()
                         .text_color(p.text)
-                        .child(e.str_at(&["toolIdentity"]).unwrap_or_default().to_string()),
+                        .child(crate::ui::with_tip(
+                            div()
+                                .id(SharedString::from(format!("cli-log-tool-{i}")))
+                                .truncate()
+                                .child(tool.clone()),
+                            tool,
+                        )),
                 ),
                 (
                     mono,
@@ -499,10 +537,14 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 ),
                 (
                     mono,
-                    div().text_color(p.text_subtle).child(relative(
-                        e.num_at(&["timestampUnixMs"]).unwrap_or(0.) as i64,
-                        now,
-                    )),
+                    // A sized-to-text inner div carries the full date-time tip.
+                    div().text_color(p.text_subtle).child({
+                        let ts = e.num_at(&["timestampUnixMs"]).unwrap_or(0.) as i64;
+                        crate::ui::with_tip(
+                            div().id(("cli-log-at", i)).child(relative(ts, now)),
+                            stamp(ts, offset),
+                        )
+                    }),
                 ),
             ])
             .gap(space::S3)

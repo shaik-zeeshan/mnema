@@ -16,7 +16,7 @@ use super::logic::{self, Advanced, PRESETS};
 use super::{close_picker, probe_node, Step, NODE_URL};
 use crate::settings::{click, commands, icons, Settings};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
-use crate::ui::chip::{chip, ChipKind};
+use crate::ui::chip::{chip, chip_fit, ChipKind};
 use crate::ui::input::TextInput;
 use crate::ui::link::Link;
 use crate::ui::Button;
@@ -431,7 +431,7 @@ pub fn render(s: &Settings, c: &Connect, p: &Palette, cx: &mut Context<Settings>
             // `.chip` 0.06em, `.chip--path` 0.01em.
             .child(dialog_chip(if pr.hosted() { "HTTP" } else { "STDIO" }, p).tracking(0.06))
             .when(!path.is_empty(), |d| {
-                d.child(dialog_chip(path, p).tracking(0.01))
+                d.child(path_chip(path, p))
             })
             .into_any_element(),
     ];
@@ -533,8 +533,23 @@ pub fn render(s: &Settings, c: &Connect, p: &Palette, cx: &mut Context<Settings>
 
 /// The connector dialog's `.chip`: surface fill, strong border, 5 px corners.
 pub(super) fn dialog_chip(label: impl Into<gpui_kit::SharedString>, p: &Palette) -> gpui_kit::Div {
-    chip(label, ChipKind::Neutral, p)
-        .rounded(radius::BTN_SM)
+    dialog_style(chip(label, ChipKind::Neutral, p), p)
+}
+
+/// `.chip--path`: the connector's address. A long one ends in "\u{2026}" at the
+/// dialog's width; the tooltip has it whole.
+pub(super) fn path_chip(path: String, p: &Palette) -> impl IntoElement {
+    crate::ui::with_tip(
+        dialog_style(chip_fit(path.clone(), ChipKind::Neutral, p), p)
+            .max_w_full()
+            .tracking(0.01)
+            .id("mcp-dialog-path"),
+        path,
+    )
+}
+
+fn dialog_style(chip: gpui_kit::Div, p: &Palette) -> gpui_kit::Div {
+    chip.rounded(radius::BTN_SM)
         .border_color(p.border_strong)
         .bg(p.surface)
 }

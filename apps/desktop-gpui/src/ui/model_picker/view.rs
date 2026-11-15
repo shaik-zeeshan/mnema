@@ -434,30 +434,39 @@ impl ModelPicker {
                 )
                 .into_any_element()
             }
-            Trigger::Block { label, placeholder } => base
-                .w_full()
-                .justify_between()
-                .gap(px(8.))
-                .h(size::H_MD)
-                .px(space::S3)
-                .rounded(radius::MD)
-                .border_1()
-                .border_color(if is_open {
-                    p.accent_border
-                } else {
-                    p.border_strong
-                })
-                .bg(p.surface_subtle)
-                .font_family(FONT_MONO)
-                .text_size(text::BASE)
-                .text_color(if *placeholder {
-                    p.text_faint
-                } else {
-                    p.text_strong
-                })
-                .child(SharedString::from(label.clone()))
-                .child(chevron(px(14.)))
-                .into_any_element(),
+            Trigger::Block { label, placeholder } => with_tip(
+                base.w_full()
+                    .justify_between()
+                    .gap(px(8.))
+                    .h(size::H_MD)
+                    .px(space::S3)
+                    .rounded(radius::MD)
+                    .border_1()
+                    .border_color(if is_open {
+                        p.accent_border
+                    } else {
+                        p.border_strong
+                    })
+                    .bg(p.surface_subtle)
+                    .font_family(FONT_MONO)
+                    .text_size(text::BASE)
+                    .text_color(if *placeholder {
+                        p.text_faint
+                    } else {
+                        p.text_strong
+                    })
+                    // `.mpm-current`: one line, ellipsis.
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(SharedString::from(label.clone())),
+                    )
+                    .child(chevron(px(14.))),
+                SharedString::from(label.clone()),
+            )
+            .into_any_element(),
         }
     }
 
@@ -512,7 +521,14 @@ impl ModelPicker {
                     };
                     el.child(div().text_color(p.text_subtle).child(icon(path, px(11.))))
                 })
-                .child(SharedString::from(label.clone()))
+                .child(with_tip(
+                    div()
+                        .id(SharedString::from(format!("{base}-hdr-{label}")))
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(label.clone())),
+                    SharedString::from(label.clone()),
+                ))
                 .children(
                     provider
                         .as_deref()
@@ -546,46 +562,56 @@ impl ModelPicker {
                 open,
                 index,
             } => hover_to(
-                div()
-                    .id(nid(&format!("{base}-grp"), *index as u64))
-                    .role(gpui_kit::Role::ListBoxOption)
-                    .aria_label(SharedString::from(label.clone()))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .mt(px(2.))
-                    .p(px(8.))
-                    .rounded(radius::SM)
-                    .cursor_pointer()
-                    .font_weight(theme::W_SEMIBOLD)
-                    .text_size(text::SM)
-                    .text_color(if cursor { lit.1 } else { p.text_muted })
-                    .when(cursor, |el| el.bg(lit.0))
-                    .child(
-                        gpui_kit::svg()
-                            .path(IconName::ChevronRight.path())
-                            .size(px(12.))
-                            .text_color(p.text_subtle)
-                            .when(*open, |s| {
-                                s.with_transformation(Transformation::rotate(radians(
-                                    std::f32::consts::FRAC_PI_2,
-                                )))
-                            }),
-                    )
-                    .child(SharedString::from(label.clone()))
-                    .child(where_chip(self.spec.is_local(provider), p))
-                    .child(
-                        div()
-                            .ml_auto()
-                            .font_family(FONT_MONO)
-                            .font_weight(theme::W_REGULAR)
-                            .text_size(text::XS)
-                            .text_color(p.text_subtle)
-                            .child(count.map_or(String::new(), |n| {
-                                format!("{n} model{}", if n == 1 { "" } else { "s" })
-                            })),
-                    )
-                    .on_click(click(row.clone())),
+                with_tip(
+                    div()
+                        .id(nid(&format!("{base}-grp"), *index as u64))
+                        .role(gpui_kit::Role::ListBoxOption)
+                        .aria_label(SharedString::from(label.clone()))
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .mt(px(2.))
+                        .p(px(8.))
+                        .rounded(radius::SM)
+                        .cursor_pointer()
+                        .font_weight(theme::W_SEMIBOLD)
+                        .text_size(text::SM)
+                        .text_color(if cursor { lit.1 } else { p.text_muted })
+                        .when(cursor, |el| el.bg(lit.0))
+                        .child(
+                            gpui_kit::svg()
+                                .path(IconName::ChevronRight.path())
+                                .flex_none()
+                                .size(px(12.))
+                                .text_color(p.text_subtle)
+                                .when(*open, |s| {
+                                    s.with_transformation(Transformation::rotate(radians(
+                                        std::f32::consts::FRAC_PI_2,
+                                    )))
+                                }),
+                        )
+                        // A long provider name ends in "…" instead of pushing the chip out.
+                        .child(
+                            div()
+                                .min_w_0()
+                                .truncate()
+                                .child(SharedString::from(label.clone())),
+                        )
+                        .child(where_chip(self.spec.is_local(provider), p))
+                        .child(
+                            div()
+                                .ml_auto()
+                                .font_family(FONT_MONO)
+                                .font_weight(theme::W_REGULAR)
+                                .text_size(text::XS)
+                                .text_color(p.text_subtle)
+                                .child(count.map_or(String::new(), |n| {
+                                    format!("{n} model{}", if n == 1 { "" } else { "s" })
+                                })),
+                        )
+                        .on_click(click(row.clone())),
+                    SharedString::from(label.clone()),
+                ),
                 *index,
             )
             .into_any_element(),
@@ -668,7 +694,8 @@ impl ModelPicker {
                     .text_size(text::SM)
                     .text_color(p.warn)
                     .child(icon(IconName::TriangleAlert.path(), px(13.)))
-                    .child(SharedString::from(t.clone()))
+                    // The provider's error wraps inside the 360 px list.
+                    .child(div().min_w_0().child(SharedString::from(t.clone())))
                     .children(retry)
                     .into_any_element()
             }

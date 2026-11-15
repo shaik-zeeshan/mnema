@@ -376,12 +376,14 @@ fn list(
                                     .text_size(text::MD)
                                     .font_weight(theme::W_SEMIBOLD)
                                     .text_color(p.text_strong)
-                                    .child(
+                                    .child(crate::ui::with_tip(
                                         div()
+                                            .id(nid(&format!("insights-subj-name-{}", g.id), k as u64))
                                             .truncate()
                                             .when(current, |d| d.pb(lift(NAME, &[NAME, TAG])))
                                             .child(r.subject.clone()),
-                                    )
+                                        r.subject.clone(),
+                                    ))
                                     .when(current, |d| {
                                         d.child(
                                             div()
@@ -495,15 +497,26 @@ fn side(listed: &[&SubjectRow], p: &Palette, cx: &mut Context<Insights>) -> Div 
                             .role(Role::Button)
                             .flex()
                             .justify_between()
+                            .gap(space::S3)
                             .py(px(10.))
                             .when(i > 0, |d| d.border_t_1())
                             .border_color(p.hairline)
                             .text_size(text::BASE)
                             .cursor_pointer()
                             .on_click(cx.listener(move |this, _, _, cx| this.open_subject(subject.clone(), cx)))
-                            .child(div().text_color(p.text).child(r.subject.clone()))
+                            // One line, cut with "…" (the subject page has the full name).
+                            .child(crate::ui::with_tip(
+                                div()
+                                    .id(SharedString::from(format!("insights-move-name-{}", r.subject)))
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(p.text)
+                                    .child(r.subject.clone()),
+                                r.subject.clone(),
+                            ))
                             .child(
                                 div()
+                                    .flex_none()
                                     .font_family(FONT_MONO)
                                     .text_size(text::SM)
                                     .text_color(c)
@@ -536,6 +549,7 @@ fn side(listed: &[&SubjectRow], p: &Palette, cx: &mut Context<Insights>) -> Div 
                         .child(
                             div()
                                 .flex_1()
+                                .min_w_0()
                                 .text_color(p.text_muted)
                                 .line_height(relative(1.4))
                                 .child(v),

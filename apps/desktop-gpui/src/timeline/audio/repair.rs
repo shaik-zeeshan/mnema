@@ -110,7 +110,7 @@ fn card(p: &Palette) -> gpui_kit::Div {
         .border_color(p.border)
 }
 
-fn card_title(s: String, p: &Palette) -> gpui_kit::Div {
+fn card_title(id: &'static str, s: String, p: &Palette) -> gpui_kit::Div {
     div()
         .flex()
         .items_center()
@@ -118,7 +118,12 @@ fn card_title(s: String, p: &Palette) -> gpui_kit::Div {
         .text_size(text::MD)
         .font_weight(theme::W_SEMIBOLD)
         .text_color(p.text_strong)
-        .child(s)
+        // One line, cut with an ellipsis (the tooltip has the rest): a long
+        // name would otherwise run past the 352 px panel.
+        .child(with_tip(
+            div().id(id).min_w_0().truncate().child(s.clone()),
+            s,
+        ))
 }
 
 fn hint(s: String, p: &Palette) -> gpui_kit::Div {
@@ -195,7 +200,7 @@ pub fn render(
         let (sid, sname) = (s.id, s.display_name.clone());
         body.push(
             card(p)
-                .child(card_title(format!("Sounds like {sname}"), p).children(
+                .child(card_title("repair-suggest-title", format!("Sounds like {sname}"), p).children(
                     g.recognition_confidence.clone().map(|c| {
                         crate::ui::with_tip(
                             chip(c, ChipKind::Neutral, p).id("repair-recognition"),
@@ -247,7 +252,11 @@ pub fn render(
         let merge_into = g.merge_target;
         body.push(
             card(p)
-                .child(card_title(format!("Possibly the same voice as {target}"), p))
+                .child(card_title(
+                    "repair-merge-title",
+                    format!("Possibly the same voice as {target}"),
+                    p,
+                ))
                 .child(hint(
                     format!(
                         "{}Over-segmentation is the common failure — one person split in two. Merging folds every turn of this voice into theirs.",
@@ -457,19 +466,26 @@ pub fn render(
         );
     }
 
-    let (label, busy_label, ready) = if r.line_scope {
-        ("Move this line".to_string(), "Moving…", r.move_to.is_some())
+    // `named`: the label carries a person's name, so it may run long.
+    let (label, busy_label, ready, named) = if r.line_scope {
+        (
+            "Move this line".to_string(),
+            "Moving…",
+            r.move_to.is_some(),
+            false,
+        )
     } else if let Some(Pick::Person(id)) = pick {
         let n = profiles
             .iter()
             .find(|p| p.id == id)
             .map_or(String::new(), |p| p.display_name.clone());
-        (format!("Link to {n}"), "Linking…", true)
+        (format!("Link to {n}"), "Linking…", true, true)
     } else {
         (
             "Name & apply".to_string(),
             "Saving…",
             pick == Some(Pick::New),
+            false,
         )
     };
     let turn_ids = g.turn_ids.clone();
@@ -526,8 +542,9 @@ pub fn render(
                 .pr(space::S2)
                 .pt(px(10.))
                 .child(mark(d.marks.get(&cluster), vm::is_unnamed(&g), p))
-                .child(
+                .child(with_tip(
                     div()
+                        .id("repair-name")
                         .overflow_hidden()
                         .text_ellipsis()
                         .whitespace_nowrap()
@@ -535,7 +552,8 @@ pub fn render(
                         .font_weight(theme::W_SEMIBOLD)
                         .text_color(p.text_strong)
                         .child(name.clone()),
-                )
+                    name.clone(),
+                ))
                 .when(linked.is_some_and(|l| l.is_account_owner), |el| {
                     el.child(chip("you", ChipKind::Neutral, p))
                 })
@@ -599,7 +617,8 @@ pub fn render(
                     IconName::TriangleAlert.path(),
                     theme::size::ICON_SM,
                 ))
-                .child(e)
+                // `min_w_0` lets a long error wrap inside the panel.
+                .child(div().min_w_0().child(e))
                 .child(
                     Button::new("repair-retry", "Try again")
                         .ghost()
@@ -611,24 +630,33 @@ pub fn render(
                 )
         }))
         .child(
+            // Narrow: the count wraps under the button, and a name too long for
+            // the panel ends in "…" (the web runs both out of the panel).
             div()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(10.))
                 .px(space::S4)
                 .py(px(10.))
                 .border_t_1()
                 .border_color(p.hairline)
-                .child(
-                    Button::new(
+                .child({
+                    let tip = (named && !busy).then(|| label.clone());
+                    let b = Button::new(
                         "repair-commit",
                         if busy { busy_label.to_string() } else { label },
                     )
                     .primary()
+                    .fit()
                     .disabled(busy || !ready)
                     .spinner(busy)
-                    .on_click(commit),
-                )
+                    .on_click(commit);
+                    match tip {
+                        Some(t) => b.tip(t),
+                        None => b,
+                    }
+                })
                 .when(unnamed_left > 0, |el| {
                     el.child(
                         div()

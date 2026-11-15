@@ -218,6 +218,12 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
             Button::new("dv-run", if recording { "Stop" } else { "Record" })
                 .sm()
                 .when(recording, |b| b.icon(crate::assets::STOP_SQUARE))
+                // shortcut: Svelte adds " · ⌥⌘R"; this window can't read the saved bindings yet.
+                .tip(if recording {
+                    "Stop recording"
+                } else {
+                    "Start recording"
+                })
                 .disabled(w.acting.is_some())
                 .on_click(move |_, _, cx| {
                     let _ = me.update(cx, |w, cx| w.act(action, cx));

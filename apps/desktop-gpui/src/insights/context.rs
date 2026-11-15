@@ -166,10 +166,8 @@ pub fn render(
 
 fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insights>) -> Div {
     let len = this.composer.read(cx).value().chars().count();
-    let topic_chips = div()
-        .flex()
-        .gap(px(4.))
-        .children(topics(p).into_iter().enumerate().map(|(i, (name, c))| {
+    let topic_chips = div().flex().flex_wrap().min_w_0().gap(px(4.)).children(
+        topics(p).into_iter().enumerate().map(|(i, (name, c))| {
             let on = this.draft_topic == Some(name);
             super::charts::swatch_chip(nid("insights-topic", i as u64), name, c, on, true, p)
                 .cursor_pointer()
@@ -181,7 +179,8 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
                     };
                     cx.notify();
                 }))
-        }));
+        }),
+    );
     let provider = this
         .status
         .ai
@@ -195,7 +194,7 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
             (IconName::Cloud.path(), format!("Goes to {name} each time Mnema forms conclusions · stays on this Mac with a local model."))
         };
         // `.in-compose__priv`: 4 px under the row (`calc(-S3 + 4px)` against the gap).
-        div().flex().items_center().gap(px(6.)).mt(px(-8.)).text_size(text::SM).line_height(relative(1.4)).text_color(p.text_muted).child(div().flex_none().text_color(p.text_subtle).child(icon(ic, px(13.)))).child(div().truncate().child(t))
+        div().flex().items_center().gap(px(6.)).mt(px(-8.)).text_size(text::SM).line_height(relative(1.4)).text_color(p.text_muted).child(div().flex_none().text_color(p.text_subtle).child(icon(ic, px(13.)))).child(crate::ui::with_tip(div().id("insights-compose-priv").truncate().child(t.clone()), t))
     });
     panel(p)
         .bg(p.surface_raised)
@@ -253,8 +252,11 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
                 ),
         )
         .child(
+            // Narrow: the button wraps under the chips, which wrap among themselves
+            // (the web runs the row out of the panel).
             div()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(px(6.))
                 .pt(space::S3)
@@ -286,6 +288,7 @@ fn composer(this: &Insights, p: &Palette, _: &mut Window, cx: &mut Context<Insig
                 None,
                 vec![
                     div()
+                        .min_w_0()
                         .child(format!(
                             "Couldn't save that statement — {e}. Your text is still here."
                         ))
@@ -564,7 +567,10 @@ fn side(this: &Insights, d: &ContextData, p: &Palette, cx: &mut Context<Insights
         .text_size(text::BASE)
         .text_color(p.text_muted)
         .child(div().flex().items_center().gap(px(6.)).child(icon(IconName::Lock.path(), px(12.))).child(kicker("Sensitive Category Guardrail", p)))
-        .child(div().flex().flex_wrap().gap(px(6.)).children(SENSITIVE.map(|s| chip(s, ChipKind::Neutral, p))))
+        .child(div().flex().flex_wrap().gap(px(6.)).children(SENSITIVE.map(|s| match s {
+            "other protected" => crate::ui::with_tip(chip(s, ChipKind::Neutral, p).id("ctx-guard-other"), "race / ethnicity, disability, immigration status, financial distress").into_any_element(),
+            _ => chip(s, ChipKind::Neutral, p).into_any_element(),
+        })))
         .child("Mnema never infers these categories about you. What you write here is sent as written.");
     div()
         .flex()
@@ -589,7 +595,7 @@ fn side(this: &Insights, d: &ContextData, p: &Palette, cx: &mut Context<Insights
                             crate::ui::notice::inline(
                                 Tone::Danger,
                                 None,
-                                vec![div().child(e).into_any_element()],
+                                vec![div().min_w_0().child(e).into_any_element()],
                                 p,
                             )
                         }))

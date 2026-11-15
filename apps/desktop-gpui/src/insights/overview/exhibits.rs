@@ -504,7 +504,10 @@ pub fn feed(
                                             d.child(div().text_color(p.accent).child("● new"))
                                         })
                                         .when(fading, |d| {
-                                            d.child("below the display floor — kept for history")
+                                            // Wraps beside a long subject chip (CSS wraps the bare text).
+                                            d.child(div().min_w_0().child(
+                                                "below the display floor — kept for history",
+                                            ))
                                         }),
                                 ),
                         )

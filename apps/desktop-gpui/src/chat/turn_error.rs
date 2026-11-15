@@ -235,7 +235,7 @@ fn sign_in(chat: &Chat, id: &str, p: &Palette, cx: &mut Context<Chat>) -> AnyEle
                     .flex()
                     .items_center()
                     .gap(px(6.))
-                    .child(
+                    .child(with_tip(
                         div()
                             .id("chat-signin-code")
                             .test_support()
@@ -249,7 +249,8 @@ fn sign_in(chat: &Chat, id: &str, p: &Palette, cx: &mut Context<Chat>) -> AnyEle
                             .text_color(p.text_strong)
                             .child(SharedString::from(code.clone()))
                             .on_click(copy(code)),
-                    )
+                        "Click to copy",
+                    ))
                     .child(
                         with_tip(
                             icon_button("chat-signin-copy", label, size::H_SM, false, p).child(

@@ -14,7 +14,7 @@ use gpui_kit::{
 };
 
 use super::model::{ms, snippet_runs, Ranked};
-use super::view::{act, section};
+use super::view::{act, section, tipped};
 use super::QuickRecall;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::Tracking as _;
@@ -123,8 +123,12 @@ impl QuickRecall {
                     .gap(space::S2)
                     .text_size(text::MD)
                     .child(
-                        div()
+                        // Capped at the row so a long window title ends in "…"
+                        // (`.rc-row__t`) instead of being cut off mid-letter.
+                        tipped(("qr-row-title", i), &r.title())
                             .flex_none()
+                            .max_w_full()
+                            .truncate()
                             .font_weight(theme::W_MEDIUM)
                             .text_color(p.text_strong)
                             .child(r.title()),
@@ -542,7 +546,8 @@ impl QuickRecall {
                 .items_center()
                 .gap(px(6.))
                 .child(chip("keyword", ChipKind::Accent, p).h(px(18.)))
-                .child(format!("{words}{times} {place}"))
+                // Wraps (`.rc-why`) when many words matched.
+                .child(div().min_w_0().child(format!("{words}{times} {place}")))
         };
         let r_look = r.clone();
         let page = r.page_frame();
@@ -602,7 +607,7 @@ impl QuickRecall {
                             .text_color(p.text_strong)
                             .child(self.tile(r, p))
                             .child(
-                                div()
+                                tipped("qr-opt-title", &r.title())
                                     .min_w_0()
                                     .overflow_hidden()
                                     .text_ellipsis()

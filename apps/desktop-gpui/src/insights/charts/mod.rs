@@ -17,7 +17,7 @@ use capture_types::FocusLevel;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, font, px, AnyElement, App, Div, Hsla, Pixels, SharedString};
 
-use crate::insights::stats::{focus_color, hour_label, HeatRow};
+use crate::insights::stats::{clock_range, fmt_duration, focus_color, focus_label, hour_label, HeatRow};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::{mix, with_tip};
 
@@ -57,21 +57,33 @@ pub fn heatmap(rows: &[HeatRow], p: &Palette) -> Div {
         .gap(px(3.))
         .mt(space::S4)
         .child(head)
-        .children(rows.iter().map(|r| {
+        .children(rows.iter().enumerate().map(|(ri, r)| {
             div()
                 .flex()
                 .gap(px(3.))
                 .child(label(r.label.clone().into(), p.text_subtle))
-                .children(r.cells.iter().map(|c| {
-                    let bg = match c {
-                        Some((band, minutes)) => mix(
-                            focus_color(*band, p),
-                            p.surface,
-                            if *minutes >= 60. { 0.88 } else { 0.42 },
-                        ),
-                        None => p.wash,
-                    };
-                    div().flex_1().h(px(20.)).rounded(px(3.)).bg(bg)
+                .children(r.cells.iter().enumerate().map(|(i, c)| {
+                    let cell = div().flex_1().h(px(20.)).rounded(px(3.));
+                    match c {
+                        Some((band, minutes)) => {
+                            let cell = cell.bg(mix(
+                                focus_color(*band, p),
+                                p.surface,
+                                if *minutes >= 60. { 0.88 } else { 0.42 },
+                            ));
+                            // Cell i covers [2i, 2i+2) local hours: read off the UTC epoch day.
+                            let hour = |k: usize| k as i64 * 2 * 3_600_000;
+                            let slot = clock_range(hour(i), hour(i + 1), time::UtcOffset::UTC, "–");
+                            let tip = format!(
+                                "{} · {} · {} {slot}",
+                                focus_label(*band),
+                                fmt_duration((*minutes * 60_000.) as i64),
+                                r.tip
+                            );
+                            tipped(crate::ui::nid("heat", (ri * 12 + i) as u64), cell, tip)
+                        }
+                        None => cell.bg(p.wash).into_any_element(),
+                    }
                 }))
         }))
 }
@@ -95,12 +107,19 @@ pub fn focus_split(c: crate::insights::stats::FocusCounts, p: &Palette) -> Div {
         .flex_col()
         .gap(space::S2)
         .child(div().flex().gap(px(3.)).h(px(8.)).children(
-            parts.iter().filter(|(_, n)| *n > 0).map(|(f, n)| {
-                div()
+            parts.iter().enumerate().filter(|(_, (_, n))| *n > 0).map(|(k, (f, n))| {
+                let band = div()
                     .flex_grow(*n as f32)
                     .flex_basis(px(0.))
                     .rounded(px(2.))
-                    .bg(focus_color(*f, p))
+                    .bg(focus_color(*f, p));
+                let tip = format!(
+                    "{} · {}% · {n} of {} activities",
+                    focus_label(*f),
+                    pct(*n),
+                    c.n
+                );
+                tipped(crate::ui::nid("focus-band", k as u64), band, tip)
             }),
         ))
         .child(
@@ -116,7 +135,7 @@ pub fn focus_split(c: crate::insights::stats::FocusCounts, p: &Palette) -> Div {
                         .items_center()
                         .gap(px(6.))
                         .child(swatch(focus_color(*f, p), 8.))
-                        .child(crate::insights::stats::focus_label(*f))
+                        .child(focus_label(*f))
                         .child(
                             div()
                                 .font_family(FONT_MONO)
@@ -292,16 +311,18 @@ pub fn spec_rows(
                 .when(i > 0, |d| d.border_t_1())
                 .border_color(p.hairline)
                 .text_size(text::BASE)
-                .child(
+                .child(with_tip(
                     // Gives way before the bar's 48 px floor does (`minmax(0, max-content)`).
                     div()
+                        .id(SharedString::from(format!("spec-name-{i}-{name}")))
                         .min_w_0()
                         .w(name_w)
                         .pr(space::S5)
                         .truncate()
                         .text_color(p.text)
-                        .child(name),
-                )
+                        .child(name.clone()),
+                    name,
+                ))
                 .child(
                     div()
                         .flex_1()

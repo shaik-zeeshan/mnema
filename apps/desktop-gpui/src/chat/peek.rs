@@ -419,7 +419,7 @@ pub fn frame_modal<V: PeekHost>(
         .window_title
         .clone()
         .unwrap_or_else(|| "Captured frame".into());
-    let head = header(&title, p, {
+    let head = header(&title, s.window_title.as_deref(), p, {
         let close = close.clone();
         move |_, cx| {
             let _ = close.update(cx, |c, cx| c.close_peek(cx));
@@ -444,11 +444,10 @@ pub fn frame_modal<V: PeekHost>(
         .when(s.app_name.is_some() && s.window_title.is_some(), |m| {
             m.child(sep())
         })
-        .children(
-            s.window_title
-                .clone()
-                .map(|t| div().min_w_0().truncate().child(SharedString::from(t))),
-        )
+        .children(s.window_title.clone().map(|t| {
+            let el = div().id("chat-frame-window").min_w_0().truncate();
+            with_tip(el.child(t.clone()), t)
+        }))
         .when(!time.is_empty(), |m| {
             m.child(sep()).child(
                 div()
@@ -587,9 +586,10 @@ pub fn compact_time(iso: &str, offset: time::UtcOffset) -> String {
 }
 
 /// `.frame-modal__header`: the accent "FRAME" eyebrow inline before a 13 px
-/// title, and the 24 px close.
+/// title (tipped with the window title when there is one), and the 24 px close.
 fn header(
     title: &str,
+    tip: Option<&str>,
     p: &Palette,
     on_close: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
 ) -> impl IntoElement {
@@ -618,6 +618,7 @@ fn header(
                 .child(eyebrow.pb(lift(EYEBROW, &[EYEBROW, TITLE])))
                 .child(
                     div()
+                        .id("chat-frame-title")
                         .flex_1()
                         .min_w_0()
                         .truncate()
@@ -625,7 +626,11 @@ fn header(
                         .text_size(text::MD)
                         .font_weight(crate::theme::W_SEMIBOLD)
                         .text_color(p.text_strong)
-                        .child(SharedString::from(title.to_string())),
+                        .child(SharedString::from(title.to_string()))
+                        .when_some(
+                            tip.filter(|t| !t.is_empty()).map(str::to_string),
+                            |el, t| with_tip(el, t),
+                        ),
                 ),
         )
         .child(

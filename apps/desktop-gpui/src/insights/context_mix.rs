@@ -10,7 +10,7 @@ use super::context::topics;
 use super::parts::panel;
 use crate::theme::{self, space, text, Palette, FONT_MONO};
 use crate::ui::Tracking as _;
-use crate::ui::{alpha, kicker};
+use crate::ui::{alpha, kicker, with_tip};
 
 type Row = app_core::user_context::commands::AuthoredContextRow;
 
@@ -50,20 +50,24 @@ pub(super) fn mix(rows: &[Row], ni: usize, p: &Palette) -> Div {
         .gap(px(2.))
         .h(px(10.))
         .mt(space::S3)
-        .child(
+        .child(with_tip(
             div()
+                .id("ctx-mix-authored")
                 .flex_grow(n.max(1) as f32 * if n == 0 { 0.001 } else { 1. })
                 .flex_basis(px(0.))
                 .rounded(px(2.))
                 .bg(p.text_strong),
-        )
-        .child(
+            format!("Authored · {n} — you said it, never fades"),
+        ))
+        .child(with_tip(
             div()
+                .id("ctx-mix-inferred")
                 .flex_grow(ni.max(1) as f32 * if ni == 0 { 0.001 } else { 1. })
                 .flex_basis(px(0.))
                 .rounded(px(2.))
                 .bg(p.chart_grey_3),
-        );
+            format!("Inferred · {ni} — read from activity, scored, can fade"),
+        ));
     panel(p)
         .p(space::S5)
         .child(kicker("What the dossier is built from", p))

@@ -280,7 +280,8 @@ pub fn boxes(
         let hot = hovered == Some(i);
         let box_h = b.h * h;
         let on_hover = on_hover.clone();
-        div()
+        let tip = format!("{} · {:.0}%", b.text, b.confidence * 100.);
+        let el = div()
             .id(nid("ocr-box", i as u64))
             .role(Role::ListItem)
             .aria_label(SharedString::from(format!(
@@ -330,7 +331,8 @@ pub fn boxes(
                         .whitespace_nowrap()
                         .child(SharedString::from(b.text.clone())),
                 )
-            })
+            });
+        crate::ui::with_tip(el, tip)
     });
     div()
         .id("ocr-overlay")
@@ -407,7 +409,8 @@ pub fn status_note_from(
         inline(
             tone,
             Some(lead),
-            vec![SharedString::from(msg).into_any_element()],
+            // `min_w_0`: a long OCR error wraps inside the note.
+            vec![div().min_w_0().child(msg).into_any_element()],
             p,
         ),
         p,
@@ -432,16 +435,24 @@ pub fn unpositioned_note(p: &Palette) -> AnyElement {
 }
 
 fn note_box(el: impl IntoElement, p: &Palette) -> AnyElement {
+    // `max-width: calc(100% - 24px)`: an invisible full-width row the note
+    // hugs its content inside, so a long message wraps instead of running off.
     div()
         .absolute()
         .left(space::S3)
+        .right(space::S3)
         .bottom(space::S3)
-        .px(px(9.))
-        .py(px(4.))
-        .rounded(radius::SM)
-        .border_1()
-        .border_color(p.overlay_border)
-        .bg(p.overlay_bg_strong)
-        .child(el)
+        .flex()
+        .child(
+            div()
+                .min_w_0()
+                .px(px(9.))
+                .py(px(4.))
+                .rounded(radius::SM)
+                .border_1()
+                .border_color(p.overlay_border)
+                .bg(p.overlay_bg_strong)
+                .child(el),
+        )
         .into_any_element()
 }

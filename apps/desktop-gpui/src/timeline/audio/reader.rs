@@ -60,7 +60,8 @@ fn gutter(
         .flatten();
     let needs = repairable && (g.person_id.is_none() || g.suggested_person_id.is_some());
     let who = if repairable {
-        div()
+        let tip = name.clone();
+        let el = div()
             .id(ElementId::NamedInteger("drawer-who".into(), ix as u64))
             .role(Role::Button)
             .aria_label(SharedString::from(format!("Repair speaker {name}")))
@@ -98,8 +99,8 @@ fn gutter(
                         theme::size::ICON_SM,
                     )),
             )
-            .on_click(cx.listener(move |d, _, window, cx| d.open_repair(ix, window, cx)))
-            .into_any_element()
+            .on_click(cx.listener(move |d, _, window, cx| d.open_repair(ix, window, cx)));
+        crate::ui::with_tip(el, tip).into_any_element()
     } else {
         div()
             .flex()
@@ -267,7 +268,12 @@ fn prose(
         }
         None => {
             let seek = vm::segment_seek(&d.data.runs, g);
-            base.child(
+            // `formatTranscriptSegmentTitle`: "0:12–0:31", or the start alone.
+            let mut range = vm::player_time(g.start_ms as f64 / 1000.);
+            if g.end_ms > g.start_ms {
+                range = format!("{range}–{}", vm::player_time(g.end_ms as f64 / 1000.));
+            }
+            base.child(crate::ui::with_tip(
                 div()
                     .id(ElementId::NamedInteger("drawer-para".into(), ix as u64))
                     .role(Role::Button)
@@ -283,7 +289,8 @@ fn prose(
                         d.seek_to_ms(seek);
                         cx.notify();
                     })),
-            )
+                format!("Jump to {range}"),
+            ))
             .into_any_element()
         }
     }

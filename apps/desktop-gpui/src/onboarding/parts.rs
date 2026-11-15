@@ -264,6 +264,28 @@ pub fn main_col(
 
 /// `.ob-foot`: a state line on the left, the actions on the right.
 pub fn footer(note: Option<AnyElement>, acts: Vec<AnyElement>, inset: Pixels, p: &Palette) -> Div {
+    foot(note, None, acts, inset, p)
+}
+
+/// [`footer`] with a plain-text note: once "…" cuts it, the tip has it whole.
+pub fn footer_text(
+    note: impl Into<SharedString>,
+    acts: Vec<AnyElement>,
+    inset: Pixels,
+    p: &Palette,
+) -> Div {
+    let note = note.into();
+    let tip = Some(note.clone()).filter(|n| !n.is_empty());
+    foot(Some(note.into_any_element()), tip, acts, inset, p)
+}
+
+fn foot(
+    note: Option<AnyElement>,
+    tip: Option<SharedString>,
+    acts: Vec<AnyElement>,
+    inset: Pixels,
+    p: &Palette,
+) -> Div {
     div()
         .flex()
         .flex_none()
@@ -278,6 +300,7 @@ pub fn footer(note: Option<AnyElement>, acts: Vec<AnyElement>, inset: Pixels, p:
         .bg(mix(p.bg, p.surface, 0.86))
         .child(
             div()
+                .id("ob-foot-note")
                 .flex_1()
                 .min_w_0()
                 .overflow_hidden()
@@ -286,7 +309,8 @@ pub fn footer(note: Option<AnyElement>, acts: Vec<AnyElement>, inset: Pixels, p:
                 .text_size(text::BASE)
                 .line_height(relative(1.4))
                 .text_color(p.text_subtle)
-                .children(note),
+                .children(note)
+                .when_some(tip, |el, t| crate::ui::with_tip(el, t)),
         )
         .children(acts)
 }

@@ -23,6 +23,15 @@ pub(super) fn act(
     }
 }
 
+/// A div tipped with `text`, whitespace-folded (no tip when that is empty).
+pub(super) fn tipped(id: impl Into<gpui_kit::ElementId>, text: &str) -> gpui_kit::Stateful<Div> {
+    let el = div().id(id);
+    match super::model::fold(text) {
+        t if t.is_empty() => el,
+        t => crate::ui::with_tip(el, t),
+    }
+}
+
 /// `.rc-sec`: a section label with a mono count (and an optional right-hand one).
 pub(super) fn section(
     label: &str,

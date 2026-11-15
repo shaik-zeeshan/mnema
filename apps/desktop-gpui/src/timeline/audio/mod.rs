@@ -658,7 +658,14 @@ fn error_row(label: &'static str, msg: &str, p: &theme::Palette) -> gpui_kit::Di
                 .text_color(p.danger)
                 .child(label.to_uppercase()),
         )
-        .child(div().flex_1().font_family(FONT_MONO).child(msg.to_string()))
+        // `min_w_0`: a long message wraps instead of running past the drawer.
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .font_family(FONT_MONO)
+                .child(msg.to_string()),
+        )
 }
 
 impl Render for AudioDrawer {

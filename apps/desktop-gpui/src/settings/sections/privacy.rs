@@ -62,37 +62,61 @@ fn excluded_list(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEl
                     &app.bundle_id,
                     p,
                 ))
-                .child(
+                // Name and bundle id: one line each, cut with an ellipsis
+                // (`.excl-meta`); the tooltips have the rest.
+                .child(crate::ui::with_tip(
                     div()
+                        .id(SharedString::from(format!("excl-name-{}", app.id)))
+                        .min_w_0()
+                        .truncate()
                         .text_size(text::MD)
                         .font_weight(theme::W_MEDIUM)
                         .text_color(p.text_strong)
                         .child(app.display_name.clone()),
-                )
-                .child(
+                    app.display_name.clone(),
+                ))
+                .child(crate::ui::with_tip(
                     div()
+                        .id(SharedString::from(format!("excl-bundle-{}", app.id)))
                         .flex_1()
                         .min_w_0()
+                        .truncate()
                         .font_family(FONT_MONO)
                         .text_size(text::SM)
                         .text_color(p.text_subtle)
                         .child(app.bundle_id.clone()),
-                )
-                .child(
-                    Switch::new(
-                        SharedString::from(format!("excl-on-{}", app.id)),
-                        format!("Exclude {}", app.display_name),
-                        app.enabled,
-                    )
-                    .disabled(s.privacy_in_flight)
-                    .on_toggle(on(cx, move |s, v: bool, cx| {
-                        let id = id.clone();
-                        s.privacy_command(
-                            move |d| rules::set_privacy_excluded_app_enabled(d, &id, v),
-                            cx,
-                        )
-                    })),
-                )
+                    app.bundle_id.clone(),
+                ))
+                // `Switch` takes no tip: a size-to-fit wrapper carries it (also while disabled).
+                .child(crate::ui::with_tip(
+                    div()
+                        .id(SharedString::from(format!("excl-on-tip-{}", app.id)))
+                        .flex()
+                        .flex_none()
+                        .child(
+                            Switch::new(
+                                SharedString::from(format!("excl-on-{}", app.id)),
+                                format!("Exclude {}", app.display_name),
+                                app.enabled,
+                            )
+                            .disabled(s.privacy_in_flight)
+                            .on_toggle(on(
+                                cx,
+                                move |s, v: bool, cx| {
+                                    let id = id.clone();
+                                    s.privacy_command(
+                                        move |d| rules::set_privacy_excluded_app_enabled(d, &id, v),
+                                        cx,
+                                    )
+                                },
+                            )),
+                        ),
+                    if app.enabled {
+                        "Excluded · switch off to pause"
+                    } else {
+                        "Paused · switch on to exclude"
+                    },
+                ))
                 .child(
                     Button::icon_only(
                         SharedString::from(format!("excl-rm-{}", app.id)),

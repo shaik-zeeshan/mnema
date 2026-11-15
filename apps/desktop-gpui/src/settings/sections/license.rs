@@ -424,7 +424,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                             .flex()
                             .gap(space::S2)
                             .w_full()
-                            .child(div().flex_1().child(
+                            // `min_w_0`: a long pasted key can't push Activate out.
+                            .child(div().flex_1().min_w_0().child(
                                 TextInput::new("lic-key", "License key", &s.inputs.license_key)
                                     .invalid(matches!(s.ui.lic_activate, Some(Err(_))))
                                     .disabled(activating),

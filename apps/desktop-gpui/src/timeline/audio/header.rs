@@ -80,6 +80,12 @@ pub fn render(d: &AudioDrawer, p: &Palette, cx: &mut Context<AudioDrawer>) -> An
     let s = &d.segment;
     let offset = crate::ui::clock::now(cx).offset();
     let at = |ms| clock_label(local(ms, offset), true);
+    // `formatUnixMs` (`toLocaleString`): "11/15/2026, 10:14:03 AM".
+    let stamp = |ms| {
+        let t = local(ms, offset);
+        let day = format!("{}/{}/{}", t.month() as u8, t.day(), t.year());
+        format!("{day}, {}", clock_label(t, true))
+    };
     let (tone, label, busy) = vm::status_pill(
         s.source,
         d.data.status,
@@ -158,11 +164,13 @@ pub fn render(d: &AudioDrawer, p: &Palette, cx: &mut Context<AudioDrawer>) -> An
                 .child(format!("#{}", s.segment_index)),
         )
         .child(sep(p))
-        .child(
+        .child(with_tip(
             div()
+                .id("drawer-range")
                 .font_family(FONT_MONO)
                 .child(format!("{} → {}", at(s.start_ms), at(s.end_ms))),
-        )
+            format!("{} – {}", stamp(s.start_ms), stamp(s.end_ms)),
+        ))
         .child(sep(p))
         .child(
             div()
@@ -266,6 +274,7 @@ fn speaker_strip(d: &AudioDrawer, p: &Palette, cx: &mut Context<AudioDrawer>) ->
                 .role(Role::Button)
                 .aria_label(SharedString::from(aria))
                 .flex()
+                .flex_none()
                 .items_center()
                 .gap(px(7.))
                 .h(theme::size::H_SM)
@@ -327,12 +336,14 @@ fn speaker_strip(d: &AudioDrawer, p: &Palette, cx: &mut Context<AudioDrawer>) ->
                 .child("Speakers"),
         )
         .child(
+            // `.spk__list`: scrolls sideways when the voices outrun the row.
             div()
+                .id("drawer-speaker-list")
                 .flex()
                 .items_center()
                 .gap(px(2.))
                 .min_w_0()
-                .overflow_hidden()
+                .overflow_x_scroll()
                 .children(chips),
         )
         .child(div().flex_1())

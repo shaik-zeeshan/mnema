@@ -10,7 +10,7 @@ use gpui_kit::{div, img, px, relative, Context, Div, ObjectFit, SharedString};
 
 use super::{format, Chat, Source};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO};
-use crate::ui::chip::{chip, ChipKind};
+use crate::ui::chip::{chip_fit, ChipKind};
 use crate::ui::{alpha, icon, nid, with_tip};
 
 /// Decoded thumbnails kept (≤200 px each): every chip in a long chat at once.
@@ -179,7 +179,8 @@ pub fn row(chat: &Chat, turn: i64, sources: &[Source], p: &Palette, cx: &mut Con
                         .when(opening, |d| d.opacity(theme::DISABLED_OPACITY))
                         .cursor_pointer()
                         .child(
-                            chip(host, ChipKind::Neutral, p)
+                            chip_fit(host, ChipKind::Neutral, p)
+                                .max_w(px(260.))
                                 .gap(px(4.))
                                 .hover(|st| st.border_color(p.border_hover))
                                 .child(icon(
@@ -209,6 +210,7 @@ pub fn row(chat: &Chat, turn: i64, sources: &[Source], p: &Palette, cx: &mut Con
             if mic { "mic" } else { "system" },
             when(&s.started_at, now)
         );
+        let tip = format!("Play this clip — {label}");
         kids.push(
             with_tip(
                 div()
@@ -217,7 +219,7 @@ pub fn row(chat: &Chat, turn: i64, sources: &[Source], p: &Palette, cx: &mut Con
                     .role(gpui_kit::Role::Button)
                     .cursor_pointer()
                     .child(
-                        chip(
+                        chip_fit(
                             label,
                             if mic {
                                 ChipKind::Mic
@@ -226,9 +228,10 @@ pub fn row(chat: &Chat, turn: i64, sources: &[Source], p: &Palette, cx: &mut Con
                             },
                             p,
                         )
+                        .max_w(px(260.))
                         .hover(|st| st.border_color(p.border_hover)),
                     ),
-                "Play this clip",
+                tip,
             )
             .on_click(cx.listener({
                 let src = s.clone();

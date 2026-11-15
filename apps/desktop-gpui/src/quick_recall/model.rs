@@ -271,7 +271,7 @@ pub fn ms(iso: &str) -> i64 {
 pub fn snippet_runs(s: &str) -> Vec<(String, bool)> {
     // Snippets are HTML to the Svelte app, which folds newlines; GPUI text breaks the
     // line on each one and spills out of a one-line row.
-    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let s = fold(s);
     let mut out = Vec::new();
     let mut rest = s.as_str();
     while let Some(open) = rest.find("<mark>") {
@@ -287,6 +287,11 @@ pub fn snippet_runs(s: &str) -> Vec<(String, bool)> {
         out.push((rest.to_string(), false));
     }
     out
+}
+
+/// Captured text on one line: whitespace runs (newlines too) become one space.
+pub fn fold(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub fn plain_snippet(s: &str) -> String {

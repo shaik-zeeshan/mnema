@@ -10,7 +10,7 @@ use gpui_kit::{div, px, AnyElement, Context, Div, HighlightStyle, Role, SharedSt
 
 use super::rules::{NoticeIcon, WayOut};
 use super::tokens::{parse_natural, pill_label, pill_operators, Pill, Src};
-use super::view::{act, section};
+use super::view::{act, section, tipped};
 use super::{EmptyState, QuickRecall};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::empty::{empty, EmptyLayout};
@@ -109,7 +109,7 @@ impl QuickRecall {
                 row_base(("qr-recent-row", i), sel, p)
                     .child(icon(glyph, px(14.)))
                     .child(
-                        div()
+                        tipped(("qr-recent-text", i), &t)
                             .flex_1()
                             .min_w_0()
                             .overflow_hidden()
@@ -329,7 +329,7 @@ impl QuickRecall {
                     col = col.child(
                         row_base(("qr-way", i), sel, p)
                             .child(icon(glyph, px(14.)))
-                            .child(div().flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_size(text::MD).font_weight(theme::W_MEDIUM).text_color(p.text_strong).child(way.label().to_string()))
+                            .child(tipped(("qr-way-label", i), way.label()).flex_1().min_w_0().overflow_hidden().text_ellipsis().whitespace_nowrap().text_size(text::MD).font_weight(theme::W_MEDIUM).text_color(p.text_strong).child(way.label().to_string()))
                             .child(time_cell(when, sel, p))
                             .on_mouse_move(cx.listener(move |qr, _, _, cx| {
                                 if qr.way_sel != i {
@@ -407,7 +407,7 @@ impl QuickRecall {
                 .when(active, |d| d.bg(p.wash_strong))
                 .child(lead)
                 .child(
-                    div()
+                    tipped(("qr-pop-opt-label", i), &o.label)
                         .flex_1()
                         .min_w_0()
                         .overflow_hidden()

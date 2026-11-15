@@ -432,9 +432,11 @@ fn danger(text_: String, retry: Button, p: &Palette) -> gpui_kit::Div {
     crate::ui::notice::inline(
         Tone::Danger,
         Some(crate::ui::icon(IconName::TriangleAlert.path(), gpui_kit::px(13.)).into_any_element()),
-        vec![div().child(text_).into_any_element(), retry.into_any_element()],
+        // min_w_0 here and on the line: the error wraps instead of running past the lede.
+        vec![div().min_w_0().child(text_).into_any_element(), retry.into_any_element()],
         p,
     )
+    .min_w_0()
 }
 
 /// Why there's no app time (`noAppTime`): `(stat caption, note)`.

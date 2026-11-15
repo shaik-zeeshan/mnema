@@ -15,6 +15,7 @@ use gpui_kit::{
 };
 
 use super::tokens::{mirror_segments, pill_label, pill_operators, Pill, Seg};
+use super::view::tipped;
 use super::{EmptyState, Mode, QuickRecall};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
 use crate::ui::app_icon::{app_icon, Src};
@@ -131,6 +132,10 @@ impl QuickRecall {
             .text_color(p.text_strong)
             .cursor_pointer()
             .hover(|s| s.bg(p.surface_hover))
+            // The full label, but not over this pill's own open popover.
+            .when(!(self.filters.popover && pressed), |d| {
+                crate::ui::with_tip(d, label.clone())
+            })
             .child(lead)
             .child(
                 div()
@@ -504,7 +509,7 @@ impl QuickRecall {
                 .overflow_hidden()
                 .child(icon(IconName::Code.path(), size::ICON_SM))
                 .child(
-                    div()
+                    tipped("qr-foot-query", &full)
                         .min_w_0()
                         .overflow_hidden()
                         .text_ellipsis()

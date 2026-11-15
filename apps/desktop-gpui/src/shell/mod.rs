@@ -8,7 +8,7 @@ pub mod data;
 pub mod fixture;
 pub mod health;
 pub mod model;
-mod notifications_pop;
+pub(crate) mod notifications_pop;
 mod pop_rows;
 mod shortcuts_pop;
 mod status_bar;

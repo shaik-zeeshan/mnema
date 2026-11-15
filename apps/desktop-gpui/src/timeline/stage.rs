@@ -426,7 +426,10 @@ fn dev_overlay(
             .bg(p.overlay_bg)
             .children(
                 rows.into_iter()
-                    .map(|(k, val)| row(k, key_w, SharedString::from(val).into_any_element(), p)),
+                    .map(|(k, val)| {
+                        let tip = Some(val.clone());
+                        row(k, key_w, SharedString::from(val).into_any_element(), tip, p)
+                    }),
             )
             .children(v.duplicate_of.as_ref().map(|d| {
                 let id = d.id;
@@ -443,6 +446,7 @@ fn dev_overlay(
                         .on_click(cx.listener(move |this, _, _, cx| this.jump(id, cx)))
                         .test_support()
                         .into_any_element(),
+                    None,
                     p,
                 )
             }))
@@ -468,7 +472,27 @@ fn key_column(keys: &[&str], window: &Window) -> Pixels {
         .fold(px(0.), Pixels::max)
 }
 
-fn row(k: &str, key_w: Pixels, val: AnyElement, p: &Palette) -> gpui_kit::Div {
+/// `tip`: the whole value, shown on hover since the value truncates.
+fn row(
+    k: &str,
+    key_w: Pixels,
+    val: AnyElement,
+    tip: Option<String>,
+    p: &Palette,
+) -> gpui_kit::Div {
+    let value = div()
+        .flex_1()
+        .min_w_0()
+        .truncate()
+        .font_family(FONT_MONO)
+        .text_size(text::XS)
+        .text_color(p.text)
+        .child(val);
+    let value = match tip.filter(|t| !t.is_empty()) {
+        Some(t) => crate::ui::with_tip(value.id(SharedString::from(format!("dev-row-{k}"))), t)
+            .into_any_element(),
+        None => value.into_any_element(),
+    };
     div()
         .flex()
         .gap(px(10.))
@@ -482,16 +506,7 @@ fn row(k: &str, key_w: Pixels, val: AnyElement, p: &Palette) -> gpui_kit::Div {
                 .text_color(p.text_subtle)
                 .child(k.to_uppercase()),
         )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .truncate()
-                .font_family(FONT_MONO)
-                .text_size(text::XS)
-                .text_color(p.text)
-                .child(val),
-        )
+        .child(value)
 }
 
 fn ocr_status(v: &TimelineView, p: &Palette) -> Option<AnyElement> {

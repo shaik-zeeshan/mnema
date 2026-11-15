@@ -16,7 +16,7 @@ use crate::settings::model::format_bytes;
 use crate::theme::{self, leading, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::baseline::{self, Line};
 use crate::ui::notice::notice;
-use crate::ui::segmented::Segmented;
+use crate::ui::segmented::{SegOption, Segmented};
 use crate::ui::Tracking as _;
 use crate::ui::{alpha, kicker, text_width, Tone};
 
@@ -243,10 +243,14 @@ impl Onboarding {
         let f = &self.features;
 
         // ── Transcription ──
-        let t_labels: Vec<String> = engine.map_or(vec![], |e| {
+        // Short labels; the tip is the full model name (ModelPickers.svelte).
+        let t_labels: Vec<SegOption> = engine.map_or(vec![], |e| {
             e.models
                 .iter()
-                .map(|m| budget::short_label(m.0.as_deref().unwrap_or(""), &m.1))
+                .map(|m| {
+                    SegOption::from(budget::short_label(m.0.as_deref().unwrap_or(""), &m.1))
+                        .tip(m.1.clone())
+                })
                 .collect()
         });
         let t_sel = engine
@@ -313,9 +317,12 @@ impl Onboarding {
             let multi = self.semantic.get(s_sel).is_some_and(|m| m.4);
             let builds = family_builds(&self.semantic, multi);
             let at = builds.iter().position(|&i| i == s_sel).unwrap_or(0);
-            let labels: Vec<String> = builds
+            let labels: Vec<SegOption> = builds
                 .iter()
-                .map(|&i| budget::short_label(&self.semantic[i].0, &self.semantic[i].1))
+                .map(|&i| {
+                    SegOption::from(budget::short_label(&self.semantic[i].0, &self.semantic[i].1))
+                        .tip(self.semantic[i].1.clone())
+                })
                 .collect();
             s_groups.push(
                 Segmented::new(

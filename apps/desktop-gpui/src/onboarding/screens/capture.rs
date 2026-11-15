@@ -13,8 +13,9 @@ use crate::onboarding::storage::{self, Seg, Tone as VTone};
 use crate::onboarding::Onboarding;
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::chip::{chip, ChipKind};
-use crate::ui::segmented::Segmented;
-use crate::ui::{kicker, mix, Tone};
+use crate::settings::model::format_bytes;
+use crate::ui::segmented::{SegOption, Segmented};
+use crate::ui::{kicker, mix, with_tip, Tone};
 
 const LABEL_W: f32 = 136.;
 
@@ -112,7 +113,14 @@ impl Onboarding {
         let rate = Segmented::new(
             "ob-rate",
             "How often to take a snapshot",
-            storage::LADDER.iter().map(|s| storage::short_rate(*s)),
+            // The tip carries each rate's daily cost (CaptureSentence.svelte).
+            storage::LADDER.iter().map(|s| {
+                SegOption::from(storage::short_rate(*s)).tip(format!(
+                    "{} \u{2014} {} a day",
+                    storage::interval_phrase(*s),
+                    format_bytes(storage::daily_bytes(*s, px_))
+                ))
+            }),
             rate_ix,
         )
         .mono()
@@ -137,6 +145,7 @@ impl Onboarding {
         };
         let bad = v.clause.is_some();
         let path = div()
+            .id("ob-folder-path")
             .flex()
             .items_center()
             .h(size::H_SM)
@@ -155,7 +164,9 @@ impl Onboarding {
                 } else {
                     s
                 }
-            });
+            })
+            // The middle of a long path is cut to "…"; the tip has all of it.
+            .when(!shown.is_empty(), |el| with_tip(el, shown.clone()));
         let folder = div()
             .flex()
             .items_center()
@@ -223,47 +234,54 @@ impl Onboarding {
                             tile,
                         )),
                     });
-                div()
-                    .id(gpui_kit::ElementId::Name(format!("ob-app-{id}").into()))
-                    .role(gpui_kit::Role::Button)
-                    .aria_label(gpui_kit::SharedString::from(format!(
-                        "{}{} \u{2014} {}",
-                        a.display_name,
-                        if pending { ", not installed yet" } else { "" },
-                        if on {
-                            "never recorded, activate to record it"
-                        } else {
-                            "recorded, activate to hide it again"
-                        }
-                    )))
-                    .flex()
-                    .items_center()
-                    .gap(px(6.))
-                    .h(size::H_SM)
-                    .pl(px(4.))
-                    .pr(space::S2)
-                    // `.mx-btn--sm[aria-pressed]`: selected fill when on, clear when off;
-                    // hover changes neither (both rules outrank `:hover`).
-                    .rounded(radius::BTN_SM)
-                    .border_1()
-                    .border_color(p.border_strong)
-                    .when(on, |d| d.bg(p.wash_strong))
-                    .cursor_pointer()
-                    .text_size(text::BASE)
-                    .font_weight(theme::W_MEDIUM)
-                    .text_color(if on { p.text_strong } else { p.text_subtle })
-                    .when(!on, |d| d.line_through())
-                    .child(glyph)
-                    .child(a.display_name.clone())
-                    .when(pending, |d| {
-                        d.child(
-                            div()
-                                .text_size(text::SM)
-                                .text_color(p.text_subtle)
-                                .child("\u{b7} when installed"),
-                        )
-                    })
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_app(&id, cx)))
+                let name = a.display_name.clone();
+                crate::ui::with_tip(
+                    div()
+                        .id(gpui_kit::ElementId::Name(format!("ob-app-{id}").into()))
+                        .role(gpui_kit::Role::Button)
+                        .aria_label(gpui_kit::SharedString::from(format!(
+                            "{}{} \u{2014} {}",
+                            a.display_name,
+                            if pending { ", not installed yet" } else { "" },
+                            if on {
+                                "never recorded, activate to record it"
+                            } else {
+                                "recorded, activate to hide it again"
+                            }
+                        )))
+                        .flex()
+                        .items_center()
+                        .min_w_0()
+                        .gap(px(6.))
+                        .h(size::H_SM)
+                        .pl(px(4.))
+                        .pr(space::S2)
+                        // `.mx-btn--sm[aria-pressed]`: selected fill when on, clear when off;
+                        // hover changes neither (both rules outrank `:hover`).
+                        .rounded(radius::BTN_SM)
+                        .border_1()
+                        .border_color(p.border_strong)
+                        .when(on, |d| d.bg(p.wash_strong))
+                        .cursor_pointer()
+                        .text_size(text::BASE)
+                        .font_weight(theme::W_MEDIUM)
+                        .text_color(if on { p.text_strong } else { p.text_subtle })
+                        .when(!on, |d| d.line_through())
+                        .child(glyph)
+                        // A typed name can be any length: one line + ellipsis, the tip has it all.
+                        .child(div().min_w_0().truncate().child(name.clone()))
+                        .when(pending, |d| {
+                            d.child(
+                                div()
+                                    .flex_none()
+                                    .text_size(text::SM)
+                                    .text_color(p.text_subtle)
+                                    .child("\u{b7} when installed"),
+                            )
+                        })
+                        .on_click(cx.listener(move |this, _, _, cx| this.toggle_app(&id, cx))),
+                    name,
+                )
             }))
             .child(add);
 

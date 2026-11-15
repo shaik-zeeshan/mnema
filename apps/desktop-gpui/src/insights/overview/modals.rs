@@ -31,7 +31,7 @@ use crate::ui::calendar::{capsule_label, period_of};
 use crate::ui::dialog::Modal as Dialog;
 use crate::ui::select::Select;
 use crate::ui::Tracking as _;
-use crate::ui::{app_icon, clock, kicker, nid};
+use crate::ui::{app_icon, clock, kicker, nid, with_tip};
 
 pub fn modal(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Option<AnyElement> {
     let m = this.modal?;
@@ -216,15 +216,17 @@ fn categories(
                     .text_color(p.text_strong)
                     .child(category_label(key)),
             )
-            .child(
+            .child(with_tip(
                 div()
+                    .id(nid("insights-thread-stats", ti as u64))
                     .flex_1()
                     .min_w_0()
                     .truncate()
                     .text_size(text::SM)
                     .text_color(p.text_muted)
                     .child(thread_stats(t, day_range)),
-            )
+                thread_stats(t, day_range),
+            ))
             .child(
                 div()
                     .flex_none()
@@ -422,13 +424,15 @@ fn act_row(
                 .flex()
                 .flex_col()
                 .gap(px(2.))
-                .child(
+                .child(with_tip(
                     div()
+                        .id(nid("insights-act-row-title", id as u64))
                         .truncate()
                         .text_size(px(12.5))
                         .text_color(p.text_strong)
                         .child(a.title.clone()),
-                )
+                    a.title.clone(),
+                ))
                 .child(
                     div()
                         .text_size(px(10.5))
@@ -520,15 +524,17 @@ fn apps(this: &Insights, d: &crate::insights::model::OverviewData, p: &Palette) 
                                 .flex()
                                 .items_baseline()
                                 .gap(px(8.))
-                                .child(
+                                .child(with_tip(
                                     div()
+                                        .id(nid("insights-app-name", i as u64))
                                         .flex_1()
                                         .min_w_0()
                                         .truncate()
                                         .text_size(px(12.5))
                                         .text_color(p.text_strong)
                                         .child(a.app.clone()),
-                                )
+                                    a.app.clone(),
+                                ))
                                 .child(
                                     div()
                                         .flex_none()
@@ -655,14 +661,16 @@ fn focus(
                         .border_color(p.hairline)
                         .text_size(text::BASE)
                         .child(swatch(focus_color(fl, p), 8.))
-                        .child(
+                        .child(with_tip(
                             div()
+                                .id(nid("insights-session-title", i as u64))
                                 .flex_1()
                                 .min_w_0()
                                 .truncate()
                                 .text_color(p.text_strong)
                                 .child(a.title.clone()),
-                        )
+                            a.title.clone(),
+                        ))
                         .child(mono_label(
                             format!(
                                 "{} {} · {}",

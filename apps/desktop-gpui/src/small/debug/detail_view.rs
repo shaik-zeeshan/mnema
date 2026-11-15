@@ -20,7 +20,7 @@ use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::notice::notice_el;
 use crate::ui::segmented::{opt_count, Segmented};
 use crate::ui::Tracking as _;
-use crate::ui::{focus_handle, icon, nid, ring_box, CopyButton, Tone};
+use crate::ui::{focus_handle, icon, nid, ring_box, with_tip, CopyButton, Tone};
 
 /// `.mx-spec` label column in the drill-in.
 pub(super) const LABEL_W: gpui_kit::Pixels = px(110.);
@@ -309,7 +309,8 @@ fn lane_view(
     let model_cell = div()
         .flex()
         .flex_wrap()
-        .child(num(model_id, p))
+        // A long model id wraps inside the value column instead of running past it.
+        .child(num(model_id, p).min_w_0())
         .children(lang.map(|l| div().child(format!(" \u{b7} {l}"))));
     let rows: [(&str, Div, &str); 4] = [
         ("Average time", avg, "last 24 h"),
@@ -602,7 +603,9 @@ fn job_row(
             mono(job_ts(job.str_at(&["updatedAt"]), cx), p.text_subtle),
         ))
         .children(msg.map(|m| {
-            div()
+            // One line under the row; the tip has the whole message.
+            let line = div()
+                .id(nid("dv-job-msg", id as u64))
                 .ml(COL_ID + px(10.))
                 .min_w_0()
                 .overflow_hidden()
@@ -615,7 +618,8 @@ fn job_row(
                 } else {
                     p.text_subtle
                 })
-                .child(m)
+                .child(m.clone());
+            with_tip(line, m)
         }))
         .into_any_element()
 }

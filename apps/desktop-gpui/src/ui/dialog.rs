@@ -141,6 +141,7 @@ impl RenderOnce for Modal {
             let title = div()
                 .flex()
                 .flex_1()
+                .min_w_0()
                 .items_center()
                 .gap(px(10.))
                 .font_weight(theme::W_SEMIBOLD)
@@ -150,12 +151,21 @@ impl RenderOnce for Modal {
                 .line_height(gpui_kit::relative(1.25))
                 .text_color(p.text_strong)
                 .children(self.lead)
-                .child(self.title.clone());
+                // One line + ellipsis (a connector's name rides in it); the tip has the rest.
+                .child(super::with_tip(
+                    div()
+                        .id("modal-title")
+                        .min_w_0()
+                        .truncate()
+                        .child(self.title.clone()),
+                    self.title.clone(),
+                ));
             let title = match self.eyebrow {
                 Some(e) => div()
                     .flex()
                     .flex_col()
                     .flex_1()
+                    .min_w_0()
                     .gap(px(2.))
                     .child(
                         div()

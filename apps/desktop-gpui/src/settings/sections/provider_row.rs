@@ -245,7 +245,9 @@ pub fn render(
                 .flex()
                 .items_center()
                 .gap(space::S2)
-                .child(line(Tone::Warn, icons::CLOUD_OFF, text, p))
+                .max_w_full()
+                // The listing's error wraps beside Retry instead of running past the row.
+                .child(line(Tone::Warn, icons::CLOUD_OFF, text, p).min_w_0())
                 .child(
                     Button::new(nid("pv-retry", &pv.id), "Retry")
                         .ghost()
@@ -535,7 +537,7 @@ fn chatgpt_block(
                 .flex()
                 .items_center()
                 .gap(space::S2)
-                .child(
+                .child(crate::ui::with_tip(
                     div()
                         .id(nid("pv-cg-code", id))
                         .test_support()
@@ -558,7 +560,8 @@ fn chatgpt_block(
                                 copy_text.clone(),
                             ))
                         }),
-                )
+                    "Click to copy",
+                ))
                 .child(
                     CopyButton::icon(nid("pv-cg-copy", id), "Copy code", code.clone())
                         .tip("Copy code")

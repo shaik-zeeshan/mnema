@@ -335,6 +335,8 @@ pub struct Column {
     pub start: i64,
     pub end: i64,
     pub label: String,
+    /// The hover's slot name: "9:00–10:00 AM" (day) or "Wed, Nov 12".
+    pub tip: String,
     pub live: bool,
     pub future: bool,
     /// Stacked bottom-up in `CATEGORY_ORDER` (+ uncategorized last); `None` key
@@ -367,6 +369,11 @@ fn slots(start: i64, end: i64, unit: Unit, now: i64, off: UtcOffset) -> Vec<Colu
             start: s,
             end: e,
             label,
+            tip: if unit == Unit::Day {
+                clock_range(s, e, off, "–")
+            } else {
+                day_label(s, off)
+            },
             live: now >= s && now < e,
             future: s > now,
             parts: Vec::new(),
@@ -455,6 +462,8 @@ pub fn app_time_columns(
 #[derive(Clone, Debug, PartialEq)]
 pub struct HeatRow {
     pub label: String,
+    /// "Wed, Nov 12", or "week 46" in month mode.
+    pub tip: String,
     /// 12 two-hour slots; `Some((band, mean minutes per day))`.
     pub cells: Vec<Option<(FocusLevel, f64)>>,
 }
@@ -509,10 +518,16 @@ pub fn focus_heat(
         .into_iter()
         .map(|(_, g)| {
             let first = local(g[0].0.start, off).date();
-            let label = if unit == Unit::Month {
-                format!("W{}", first.iso_week())
+            let (label, tip) = if unit == Unit::Month {
+                (
+                    format!("W{}", first.iso_week()),
+                    format!("week {}", first.iso_week()),
+                )
             } else {
-                weekday(g[0].0.start, off).to_string()
+                (
+                    weekday(g[0].0.start, off).to_string(),
+                    day_label(g[0].0.start, off),
+                )
             };
             let cells = (0..12)
                 .map(|i| {
@@ -539,7 +554,7 @@ pub fn focus_heat(
                     })
                 })
                 .collect();
-            HeatRow { label, cells }
+            HeatRow { label, tip, cells }
         })
         .collect()
 }

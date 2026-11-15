@@ -118,18 +118,23 @@ fn header(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
             )
             .into_any_element()
     } else {
-        div()
-            .min_w_0()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .font_weight(theme::W_SEMIBOLD)
-            .text_size(text::LG)
-            .tracking(-0.01)
-            .line_height(relative(1.2))
-            .text_color(p.text_strong)
-            .child(SharedString::from(chat.display_title()))
-            .into_any_element()
+        let title = chat.display_title();
+        with_tip(
+            div()
+                .id("chat-head-title")
+                .min_w_0()
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_weight(theme::W_SEMIBOLD)
+                .text_size(text::LG)
+                .tracking(-0.01)
+                .line_height(relative(1.2))
+                .text_color(p.text_strong)
+                .child(SharedString::from(title.clone())),
+            title,
+        )
+        .into_any_element()
     };
     let meta = (count > 0).then(|| {
         let started = started

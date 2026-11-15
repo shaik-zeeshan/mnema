@@ -253,6 +253,8 @@ pub fn render(
             .child(
                 div()
                     .flex_1()
+                    // Wraps inside the box instead of running past it.
+                    .min_w_0()
                     .text_size(text::XS)
                     .tracking(0.02)
                     .line_height(gpui_kit::relative(1.55))

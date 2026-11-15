@@ -7,10 +7,10 @@ use capture_types::{BarsItem, DossierItem, TimelineItem};
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, relative, AnyElement, Div, Hsla, SharedString};
 
-use crate::ui::baseline::{lift, PHI};
 use crate::theme::{self, radius, space, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::baseline::Line;
-use crate::ui::chip::{chip, ChipKind};
+use crate::ui::baseline::{lift, PHI};
+use crate::ui::chip::{chip_fit, ChipKind};
 use crate::ui::mix;
 
 /// `.mx-panel.ch-block` with an optional `h5` head and right-hand label.
@@ -38,17 +38,25 @@ pub fn panel(title: Option<&str>, label: Option<&str>, body: AnyElement, p: &Pal
             .gap(space::S3)
             .mb(space::S3)
             .children(title.map(|t| {
-                div()
-                    .pb(lift(H5, &all))
-                    .font_weight(theme::W_SEMIBOLD)
-                    .text_size(text::MD)
-                    .line_height(relative(1.3))
-                    .text_color(p.text_strong)
-                    .child(SharedString::from(t.to_string()))
+                // One line, cut with an ellipsis (the tooltip has the rest).
+                crate::ui::with_tip(
+                    div()
+                        .id(SharedString::from(format!("block-title-{t}")))
+                        .min_w_0()
+                        .truncate()
+                        .pb(lift(H5, &all))
+                        .font_weight(theme::W_SEMIBOLD)
+                        .text_size(text::MD)
+                        .line_height(relative(1.3))
+                        .text_color(p.text_strong)
+                        .child(SharedString::from(t.to_string())),
+                    t.to_string(),
+                )
             }))
             .children(label.map(|l| {
                 // `.mx-label`: sans 500, subtle.
                 div()
+                    .flex_none()
                     .ml_auto()
                     .pb(lift(LABEL, &all))
                     .font_weight(theme::W_MEDIUM)
@@ -96,6 +104,7 @@ pub fn bars(items: &[BarsItem], p: &Palette) -> Div {
                 .gap(px(8.))
                 .child(
                     div()
+                        .id(SharedString::from(format!("bars-label-{i}-{}", it.label)))
                         .w(px(110.))
                         .flex_none()
                         .overflow_hidden()
@@ -103,7 +112,10 @@ pub fn bars(items: &[BarsItem], p: &Palette) -> Div {
                         .text_ellipsis()
                         .text_size(px(11.5))
                         .text_color(if dominant { p.text } else { p.text_muted })
-                        .child(SharedString::from(it.label.clone())),
+                        .child(SharedString::from(it.label.clone()))
+                        .when(!it.label.is_empty(), |d| {
+                            crate::ui::with_tip(d, it.label.clone())
+                        }),
                 )
                 .child(
                     div()
@@ -185,11 +197,15 @@ pub fn dossier(items: &[DossierItem], p: &Palette) -> Div {
                 .when(i == 0, |d| d.pt_0())
                 .when(i > 0, |d| d.border_t_1().border_color(p.hairline))
                 .child(
-                    div().w(px(96.)).flex_none().children(
-                        it.subject
-                            .as_ref()
-                            .map(|s| chip(s.clone(), ChipKind::Neutral, p)),
-                    ),
+                    // A subject longer than the column ends in "\u{2026}".
+                    div().w(px(96.)).flex_none().flex().children(it.subject.as_ref().map(|s| {
+                        crate::ui::with_tip(
+                            chip_fit(s.clone(), ChipKind::Neutral, p)
+                                .max_w_full()
+                                .id(SharedString::from(format!("dossier-subject-{i}-{s}"))),
+                            s.clone(),
+                        )
+                    })),
                 )
                 .child(
                     div()
@@ -230,7 +246,7 @@ pub fn timeline(title: Option<&str>, items: &[TimelineItem], p: &Palette) -> Div
                 .text_color(p.text_strong)
                 .child(SharedString::from(t.to_string()))
         }))
-        .children(items.iter().map(|it| {
+        .children(items.iter().enumerate().map(|(i, it)| {
             let range = match &it.end {
                 Some(e) => format!("{} – {e}", it.start),
                 None => it.start.clone(),
@@ -248,11 +264,17 @@ pub fn timeline(title: Option<&str>, items: &[TimelineItem], p: &Palette) -> Div
                         .bg(category_color(it.category.as_deref(), p)),
                 )
                 .child(
+                    // `.rc-tl li span`: one line, cut with an ellipsis.
                     div()
+                        .id(SharedString::from(format!("tl-label-{i}-{}", it.label)))
                         .flex_1()
                         .min_w_0()
+                        .truncate()
                         .text_color(p.text_strong)
-                        .child(SharedString::from(it.label.clone())),
+                        .child(SharedString::from(it.label.clone()))
+                        .when(!it.label.is_empty(), |d| {
+                            crate::ui::with_tip(d, it.label.clone())
+                        }),
                 )
                 .children(it.app.as_ref().map(|a| {
                     div()

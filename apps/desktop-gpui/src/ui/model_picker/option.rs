@@ -11,7 +11,7 @@ use super::view::glyph;
 use super::ModelPicker;
 use crate::theme::{self, radius, text, Palette, FONT_MONO, FONT_UI};
 use crate::ui::baseline::{row_top, Line, PHI};
-use crate::ui::{icon, kbd, nid};
+use crate::ui::{icon, kbd, nid, with_tip};
 
 impl ModelPicker {
     pub(super) fn option(
@@ -128,7 +128,12 @@ impl ModelPicker {
                 })
                 .into_any_element()
         });
-        div()
+        let tip = self
+            .sentinel_tip
+            .clone()
+            .filter(|_| sentinel)
+            .unwrap_or_else(|| SharedString::from(o.title.clone()));
+        let row = div()
             .id(nid(&format!("{base}-opt"), o.index as u64))
             .role(gpui_kit::Role::ListBoxOption)
             .aria_selected(o.selected)
@@ -163,6 +168,8 @@ impl ModelPicker {
                     .when(o.selected, |el| {
                         el.child(icon(IconName::Check.path(), px(13.)))
                     }),
-            )
+            );
+        // The name is cut with "…" in a narrow menu; the tip holds it whole.
+        with_tip(row, tip)
     }
 }

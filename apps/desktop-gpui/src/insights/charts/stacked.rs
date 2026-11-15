@@ -7,7 +7,9 @@ use capture_types::ActivityCategory;
 use gpui_kit::prelude::*;
 use gpui_kit::{div, px, Div};
 
-use crate::insights::stats::{axis_max, category_color, fmt_axis_tick, fmt_duration, Column};
+use crate::insights::stats::{
+    axis_max, category_color, category_label, fmt_axis_tick, fmt_duration, Column,
+};
 use crate::theme::{radius, space, text, Palette, FONT_MONO};
 use crate::ui::calendar::Unit;
 
@@ -55,15 +57,21 @@ pub fn stacked_bar(
                 .bottom(gpui_kit::relative((*v / max) as f32))
                 .bg(p.hairline)
         }));
-    let col = |c: &Column| {
+    let col = |ci: usize, c: &Column| {
         if c.total <= 0 {
+            let status = if c.future {
+                "not yet"
+            } else {
+                "nothing captured"
+            };
             return div()
                 .flex_1()
                 .h_full()
                 .flex()
                 .flex_col()
                 .justify_end()
-                .child(
+                .child(super::tipped(
+                    crate::ui::nid("col-empty", ci as u64),
                     div()
                         .h(px(24.))
                         .rounded(radius::XS)
@@ -71,7 +79,8 @@ pub fn stacked_bar(
                         .border_dashed()
                         .border_color(p.border)
                         .when(c.future && unit == Unit::Month, |d| d.opacity(0.4)),
-                );
+                    format!("{} · {status}", c.tip),
+                ));
         }
         let h = (c.total as f64 / max) as f32;
         let n = c.parts.len();
@@ -88,11 +97,24 @@ pub fn stacked_bar(
                 .flex_basis(px(0.))
                 .bg(color)
                 .when(dim, |d| d.opacity(0.2));
-            if i + 1 == n {
+            let seg = if i + 1 == n {
                 super::rounded_top(seg)
             } else {
                 seg
-            }
+            };
+            let tip = format!(
+                "{} · {} · {} · {}% of {}",
+                if c.app_time {
+                    "App time"
+                } else {
+                    category_label(*k)
+                },
+                fmt_duration(*ms),
+                c.tip,
+                (*ms as f64 / c.total as f64 * 100.).round() as i64,
+                fmt_duration(c.total)
+            );
+            super::tipped(crate::ui::nid("col-seg", (ci * 32 + i) as u64), seg, tip)
         });
         let live = c.live && unit == Unit::Week;
         div()
@@ -132,7 +154,7 @@ pub fn stacked_bar(
         .mt(space::S4)
         .child(axis)
         .child(grid)
-        .children(cols.iter().map(col));
+        .children(cols.iter().enumerate().map(|(ci, c)| col(ci, c)));
     let days = div()
         .flex()
         .gap(gap)

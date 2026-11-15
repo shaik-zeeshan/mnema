@@ -20,7 +20,12 @@ fn landing_chip(
     let label = chip(format!("from Recall · “{}”", l.query), ChipKind::Accent, p)
         .id("landing-chip")
         .max_w(px(300.))
-        .overflow_hidden();
+        // `.tl-searchchip__label span`: a long query ends in "…" (the tooltip has
+        // it whole). In the chip's flex row the text keeps its full width and is
+        // clipped mid-glyph; as a column item it takes the chip's width.
+        .flex_col()
+        .justify_center()
+        .truncate();
     Some(
         div()
             .flex()

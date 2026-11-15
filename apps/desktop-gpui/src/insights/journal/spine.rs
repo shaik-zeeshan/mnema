@@ -252,7 +252,13 @@ pub fn render(
         .filter(|s| runs.is_none() && model.pending.active && now.is_some_and(|n| n > *s))
         .map(|s| {
             let w = x(now.unwrap_or(s)) - x(s);
-            slot(x(s), w, false)
+            let state = if model.pending.unavailable.is_some() {
+                "Paused"
+            } else {
+                "Writing up"
+            };
+            let el = slot(x(s), w, false)
+                .id("insights-spine-pending")
                 .top_0()
                 .h(px(lane_total))
                 .rounded(radius::XS)
@@ -275,15 +281,29 @@ pub fn render(
                     } else {
                         "writing up"
                     })
-                })
+                });
+            crate::ui::with_tip(el, format!("{state} · {} → now", stats::clock(s, off)))
         });
     let focus = cards.iter().filter(|_| runs.is_none()).filter_map(|c| {
         let f = c.slot.activity.focus?;
+        let a = &c.slot.activity;
+        let tip = format!(
+            "{} · {}",
+            stats::focus_label(f),
+            stats::clock_range(a.started_at_ms, a.ended_at_ms, off, "–")
+        );
         Some(
             slot(x(c.start), x(c.end) - x(c.start), true)
                 .top_0()
                 .bottom_0()
-                .child(div().size_full().rounded(px(3.)).bg(focus_color(f, p))),
+                .child(crate::ui::with_tip(
+                    div()
+                        .id(nid("insights-spine-focus", a.id as u64))
+                        .size_full()
+                        .rounded(px(3.))
+                        .bg(focus_color(f, p)),
+                    tip,
+                )),
         )
     });
     // `.in-sp__grid` (inset -6px 0 0): each line stops 18 px above the plot's

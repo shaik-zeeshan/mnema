@@ -238,6 +238,8 @@ fn scope_panel(chat: &Chat, p: &Palette, cx: &mut Context<Chat>) -> Div {
                     div()
                         .flex()
                         .flex_col()
+                        // Lets the note wrap in a narrow composer instead of running past it.
+                        .min_w_0()
                         .child(
                             div()
                                 .font_weight(theme::W_MEDIUM)
@@ -401,6 +403,7 @@ pub fn render(
         chat.composer_focus.contains_focused(window, cx) && !chat.composer_focus.is_focused(window);
     let empty = chat.composer.read(cx).value().is_empty();
     let today = crate::ui::clock::now(cx).date();
+    let scope_label = chat.scope.summary(today);
     let send_to = chat
         .pin
         .clone()
@@ -520,7 +523,7 @@ pub fn render(
                                 .overflow_hidden()
                                 .whitespace_nowrap()
                                 .text_ellipsis()
-                                .child(SharedString::from(chat.scope.summary(today))),
+                                .child(SharedString::from(scope_label.clone())),
                         )
                         .child(
                             svg()
@@ -537,7 +540,7 @@ pub fn render(
                             this.ctx_open = !this.ctx_open;
                             cx.notify();
                         })),
-                    "What the model may read",
+                    format!("What the model may read — {scope_label}"),
                 ))
                 .child(div().ml_auto().child(send)),
         )

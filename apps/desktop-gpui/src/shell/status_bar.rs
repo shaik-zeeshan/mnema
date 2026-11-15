@@ -226,7 +226,8 @@ fn record_controls(
     out
 }
 
-fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyElement {
+/// `terse`: without each lane's "· word" (the mark and the tooltip still say it).
+fn lanes(shell: &Shell, terse: bool, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyElement {
     let m = &shell.model.status;
     if m.running || m.loading_start {
         let live = model::live_lanes(m);
@@ -262,9 +263,13 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
                     .zip(live)
                     .enumerate()
                     .map(|(i, (l, (kind, small)))| {
-                        let el = div()
-                            .id(("status-live-lane", i))
-                            .child(lane(*l, kind, small, false, p));
+                        let el = div().id(("status-live-lane", i)).child(lane(
+                            *l,
+                            kind,
+                            small.filter(|_| !terse),
+                            false,
+                            p,
+                        ));
                         // The popover says it all while open (`use:tip={statusPop.open ? null : …}`).
                         if open {
                             el.into_any_element()
@@ -324,7 +329,7 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
             .cursor_pointer()
             .hover(|s| s.bg(p.wash_strong))
             .when(off, |el| el.opacity(theme::DISABLED_OPACITY))
-            .child(lane(l, kind, small, screen_blocked, p))
+            .child(lane(l, kind, small.filter(|_| !terse), screen_blocked, p))
             .on_click(cx.listener(move |this, _, _, cx| this.toggle_source(i, cx)));
         row = row.child(with_tip(button, tip));
     }
@@ -333,7 +338,7 @@ fn lanes(shell: &Shell, p: &Palette, cx: &mut Context<Shell>) -> gpui_kit::AnyEl
 
 /// A pill: the status flag (`.mx-flag[data-tone]`) or the engine (`.mx-engine`).
 /// `hover_bg`: the fill under the pointer (transparent for most; `None` for a
-/// `span.mx-flag`, which has no hover rule).
+/// `span.mx-flag`, which has no hover rule). No `lead` and no `bold` leaves the dot.
 fn pill(
     id: &'static str,
     lead: &str,
@@ -368,6 +373,7 @@ fn pill(
         // `.mx-flag[data-tone]::before`: a 3 px halo of the tone at 18%.
         .child(
             div()
+                .flex_none()
                 .size(px(6.))
                 .rounded_full()
                 .bg(dot)
@@ -375,8 +381,21 @@ fn pill(
                     d.shadow(vec![crate::ui::ring(crate::ui::alpha(dot, 0.18))])
                 }),
         )
-        .when(!lead.is_empty(), |el| el.child(lead.to_string()))
-        .child(div().text_color(strong).child(bold))
+        // The lead text gives way first (with an ellipsis), the action only once
+        // the lead is gone, the bar's `?` never.
+        .min_w_0()
+        .when(!lead.is_empty(), |el| {
+            el.child(
+                div()
+                    .min_w_0()
+                    .flex_shrink(1e6)
+                    .truncate()
+                    .child(lead.to_string()),
+            )
+        })
+        .when(!bold.is_empty(), |el| {
+            el.child(div().min_w_0().truncate().text_color(strong).child(bold))
+        })
 }
 
 pub fn render(
@@ -407,7 +426,13 @@ pub fn render(
             _ => Some(gpui_kit::transparent_black()),
         };
         let el = pill("status-flag", &f.text, action, Some(tone), hover_bg, p);
-        let tip = f.tip.clone();
+        let full = format!("{} {}", f.text, f.action).trim().to_string();
+        // A narrow bar cuts the lead text short, so the tip carries all of it
+        // (not over the open status popover, as the lanes).
+        let tip = f
+            .tip
+            .clone()
+            .or_else(|| (shell.overlay != Some(Overlay::Status)).then(|| full.clone()));
         // "retrying" is status, not a button (`<span role="status">`).
         let el = if f.kind == FlagKind::PrivacyRetry {
             el.role(Role::Status).cursor_default()
@@ -421,39 +446,52 @@ pub fn render(
             })
             .on_click(cx.listener(move |this, _, _, cx| this.run_flag(&flag, cx)))
         }
-        .aria_label(SharedString::from(
-            format!("{} {}", f.text, f.action).trim().to_string(),
-        ))
+        .aria_label(SharedString::from(full))
         .test_support();
         match tip {
             Some(tip) => with_tip(el, tip).into_any_element(),
             None => el.into_any_element(),
         }
     });
-    let resting = (flag.is_none() && rec.kind == RecMod::Paused && rec.clock.is_none())
-        .then(|| div().child("resumes when you’re back").into_any_element());
+    // Under 900 px a flag, the lanes' words and the engine pill don't fit together
+    // (the web lets them overlap). The flag is the one to read, so the lanes drop
+    // their words and the engine pill shrinks to its dot; both keep their tooltip.
+    let compact = !wide && flag.is_some();
+    let resting =
+        (flag.is_none() && rec.kind == RecMod::Paused && rec.clock.is_none()).then(|| {
+            let t = "resumes when you’re back";
+            with_tip(div().id("status-resting").min_w_0().truncate().child(t), t).into_any_element()
+        });
     let engine = m.engine.as_ref().map(|e| {
         let tone = e.error.then_some((p.warn, p.warn_border));
         div()
             .flex()
             .items_center()
             .gap(space::S3)
+            .min_w_0()
+            // Down to its dot, it has nothing left to give: the flag's text does.
+            .when(compact, |d| d.flex_none())
             .child(with_tip(
                 pill(
                     "status-engine",
-                    "engine",
-                    e.label.to_string(),
+                    if compact { "" } else { "engine" },
+                    (!compact).then(|| e.label.to_string()).unwrap_or_default(),
                     tone,
                     Some(gpui_kit::transparent_black()),
                     p,
                 )
+                .test_support()
                 .on_click(
                     // `openSettings("intelligence")`, as the Svelte engine pill.
                     |_, _, cx| {
                         cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
                     },
                 ),
-                e.tip.clone(),
+                if compact {
+                    format!("engine {} \u{2014} {}", e.label, e.tip)
+                } else {
+                    e.tip.clone()
+                },
             ))
             .child(sep(p))
     });
@@ -484,6 +522,11 @@ pub fn render(
         .justify_end()
         .h_full()
         .min_w_0()
+        // The readouts give way before the flag's, engine's or resting text, the
+        // only other items that shrink: flex hands out the shortfall by shrink ×
+        // width, so this weight leaves their share far below an f32 step until the
+        // readouts are gone.
+        .flex_shrink(1e12)
         .overflow_hidden()
         .child(div().h_full())
         .children(texts.into_iter().enumerate().map(|(i, text)| {
@@ -521,7 +564,7 @@ pub fn render(
         .child(rec_pill(shell, p, cx))
         .children(record_controls(shell, p, cx))
         .child(sep(p))
-        .child(lanes(shell, p, cx))
+        .child(lanes(shell, compact, p, cx))
         .child(div().flex_1())
         .children(flag)
         .children(resting)

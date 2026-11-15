@@ -330,10 +330,14 @@ pub fn render(this: &mut Insights, p: &Palette, cx: &mut Context<Insights>) -> A
     };
     let speed_ix = SPEEDS.iter().position(|s| *s == rc.speed).unwrap_or(1);
     let entity = cx.entity().downgrade();
+    // `.in-playrow` (gap `--s-2`, the clock `margin-left: auto`); the speeds,
+    // then the clock, wrap to a second line when the column is too narrow, where
+    // the web runs out of the box.
     let controls = div()
         .flex()
+        .flex_wrap()
         .items_center()
-        .gap(space::S3)
+        .gap(space::S2)
         .child(
             Button::new(
                 "insights-receipt-play",
@@ -364,12 +368,12 @@ pub fn render(this: &mut Insights, p: &Palette, cx: &mut Context<Insights>) -> A
                 }),
             )
         })
-        .child(div().flex_1())
         .children(head_ms.map(|ms| {
             mono_label(
                 crate::timeline::model::clock_label(stats::local(ms, off), true),
                 p,
             )
+            .ml_auto()
         }));
     // Lands on the frame the receipt is showing; audio-only, on the selected segment.
     let fid = frames.get(rc.index.min(n.saturating_sub(1))).map(|f| f.0);
@@ -447,7 +451,7 @@ pub fn render(this: &mut Insights, p: &Palette, cx: &mut Context<Insights>) -> A
                 crate::ui::notice::inline(
                     Tone::Danger,
                     None,
-                    vec![div().child(e).into_any_element()],
+                    vec![div().min_w_0().child(e).into_any_element()],
                     p,
                 )
             }))

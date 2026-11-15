@@ -170,7 +170,14 @@ pub fn view(
                 .as_deref()
                 .map_or("\u{2014}".into(), detail::provider_name),
         )
-        .children(model_id.map(|m| div().flex().child(" \u{b7} ").child(num(m, p))));
+        // A long model id wraps inside the value column instead of running past it.
+        .children(model_id.map(|m| {
+            div()
+                .flex()
+                .min_w_0()
+                .child(" \u{b7} ")
+                .child(num(m, p).min_w_0())
+        }));
     let rows: [(&str, Div, &str); 4] = [
         (
             "Created",

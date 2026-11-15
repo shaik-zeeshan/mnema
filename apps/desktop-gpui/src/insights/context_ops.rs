@@ -236,10 +236,8 @@ pub fn edit_body(
     let blank = editor.read(cx).value().trim().is_empty();
     let focused = editor.focus_handle(cx).is_focused(window);
     let colors = super::context::topic_colors(p);
-    let chips = div()
-        .flex()
-        .gap(px(4.))
-        .children(TOPICS.into_iter().enumerate().map(|(i, name)| {
+    let chips = div().flex().flex_wrap().min_w_0().gap(px(4.)).children(
+        TOPICS.into_iter().enumerate().map(|(i, name)| {
             let on = this.ctx_ui.edit_topic == Some(name);
             super::charts::swatch_chip(
                 nid("insights-edit-topic", i as u64),
@@ -259,7 +257,8 @@ pub fn edit_body(
                 };
                 cx.notify();
             }))
-        }));
+        }),
+    );
     let save = if this.ctx_ui.saving {
         Button::new("insights-edit-save", "Saving…")
             .primary()
@@ -308,8 +307,10 @@ pub fn edit_body(
                 ),
         )
         .child(
+            // Narrow: count, Cancel and Save wrap under the chips (the web overflows).
             div()
                 .flex()
+                .flex_wrap()
                 .items_center()
                 .gap(space::S2)
                 .child(chips)

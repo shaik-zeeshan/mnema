@@ -187,16 +187,23 @@ fn connector_row(
         .text_color(p.text_muted)
         .map(|d| {
             if needs_node {
-                d.child("Runs on this Mac and needs Node, which wasn\u{2019}t found.")
-                    .child(crate::ui::link::Link::new(
-                        SharedString::from(format!("mcp-node-{}", server.id)),
-                        "Install it from nodejs.org",
-                        NODE_URL,
-                    ))
+                // Each sentence wraps inside the row instead of running past it.
+                d.child(
+                    div()
+                        .min_w_0()
+                        .child("Runs on this Mac and needs Node, which wasn\u{2019}t found."),
+                )
+                .child(crate::ui::link::Link::new(
+                    SharedString::from(format!("mcp-node-{}", server.id)),
+                    "Install it from nodejs.org",
+                    NODE_URL,
+                ))
             } else {
                 d.child(
-                    logic::sub_line(view.badge, server.enabled)
-                        .unwrap_or_else(|| logic::hint(view.badge, stdio)),
+                    div().min_w_0().child(
+                        logic::sub_line(view.badge, server.enabled)
+                            .unwrap_or_else(|| logic::hint(view.badge, stdio)),
+                    ),
                 )
             }
         })
@@ -207,15 +214,16 @@ fn connector_row(
             );
             let id = server.id.clone();
             let enabled = server.enabled;
-            d.child("\u{b7}").child(
+            let tip = if enabled {
+                "See and curate this connector's tools"
+            } else {
+                "Enable this connector to list its tools."
+            };
+            d.child("\u{b7}").child(crate::ui::with_tip(
                 div()
                     .id(SharedString::from(format!("mcp-tools-{}", server.id)))
                     .role(gpui_kit::Role::Button)
-                    .aria_label(if enabled {
-                        "See and curate this connector's tools"
-                    } else {
-                        "Enable this connector to list its tools."
-                    })
+                    .aria_label(tip)
                     .text_color(if enabled { p.text } else { p.text_faint })
                     .when(enabled, |d| {
                         d.cursor_pointer()
@@ -225,11 +233,13 @@ fn connector_row(
                             }))
                     })
                     .child(caption),
-            )
+                tip,
+            ))
         });
     let below = div()
         .flex()
         .flex_col()
+        .max_w_full()
         .gap(px(4.))
         .child(hint_line)
         .children(s.ui.mcp.oauth_errors.get(&server.id).map(|e| {
@@ -240,7 +250,7 @@ fn connector_row(
                 .text_size(text::BASE)
                 .text_color(p.danger_text)
                 .child(crate::ui::icon(icons::ALERT, crate::theme::size::ICON_SM))
-                .child(e.clone())
+                .child(div().min_w_0().child(e.clone()))
         }));
     let verb_button = |label: &'static str, reconnect: bool| {
         let id = server.id.clone();

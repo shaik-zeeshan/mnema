@@ -199,7 +199,20 @@ impl Row {
                     .rounded(px(2.))
                     .bg(s.color(p))
             }))
-            .child(self.label)
+            // One line, cut with an ellipsis: a bare text child keeps its full
+            // width and runs past the row (a long provider or connector name).
+            .child(
+                div()
+                    .id(SharedString::from(format!("row-label-{}", self.label)))
+                    .min_w_0()
+                    .truncate()
+                    // The copy column never drops under 240 px, which fits a
+                    // label this short: only a longer one can be cut.
+                    .when(self.label.chars().count() > 28, |d| {
+                        crate::ui::with_tip(d, self.label.clone())
+                    })
+                    .child(self.label),
+            )
             .children(self.extra);
         let copy = div()
             .flex()

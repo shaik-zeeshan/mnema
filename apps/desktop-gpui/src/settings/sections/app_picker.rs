@@ -172,8 +172,9 @@ pub fn add_app(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElem
                                 .text_color(p.text_strong)
                                 .child(name.clone()),
                         )
-                        .child(
+                        .child(crate::ui::with_tip(
                             div()
+                                .id(SharedString::from(format!("excl-pick-bundle-{bundle}")))
                                 .overflow_hidden()
                                 .text_ellipsis()
                                 .whitespace_nowrap()
@@ -181,7 +182,8 @@ pub fn add_app(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyElem
                                 .text_size(text::SM)
                                 .text_color(p.text_subtle)
                                 .child(bundle.clone()),
-                        ),
+                            bundle.clone(),
+                        )),
                 )
                 .when(*running, |d| d.child(chip("running", ChipKind::Neutral, p)))
                 .on_click(crate::settings::click(cx, move |s, cx| {

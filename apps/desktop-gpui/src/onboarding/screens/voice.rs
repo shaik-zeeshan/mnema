@@ -225,8 +225,8 @@ impl Onboarding {
                 .into_any_element(),
             );
         }
-        let foot = parts::footer(
-            Some("The voiceprint never leaves this device, and recognition labels many turns \u{2014} not every turn.".into_any_element()),
+        let foot = parts::footer_text(
+            "The voiceprint never leaves this device, and recognition labels many turns \u{2014} not every turn.",
             acts,
             self.inset,
             &p,

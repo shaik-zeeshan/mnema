@@ -114,7 +114,12 @@ pub fn modal(s: &Settings, list: &ToolList, p: &Palette, cx: &mut Context<Settin
             .id("mcp-tools-status")
             .role(gpui_kit::Role::Status)
             .child(crate::ui::icon(icons::LOADER, crate::theme::size::ICON_SM))
-            .child(format!("Connecting to {name}\u{2026}"))
+            // A long connector name wraps instead of running past the modal.
+            .child(
+                div()
+                    .min_w_0()
+                    .child(format!("Connecting to {name}\u{2026}")),
+            )
             .into_any_element()
     } else if let Some(e) = &list.error {
         div()

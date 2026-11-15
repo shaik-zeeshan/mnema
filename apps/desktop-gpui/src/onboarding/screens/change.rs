@@ -697,8 +697,8 @@ impl Onboarding {
                 cx.notify();
             })
         };
-        let foot = parts::footer(
-            Some(SECTIONS[at].1.into_any_element()),
+        let foot = parts::footer_text(
+            SECTIONS[at].1,
             vec![
                 back_btn.ghost().into_any_element(),
                 next_btn.into_any_element(),

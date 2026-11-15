@@ -15,7 +15,7 @@ use crate::onboarding::parts::{self, fine, head};
 use crate::onboarding::Onboarding;
 use crate::settings::icons;
 use crate::theme::{self, size, space, text, Palette};
-use crate::ui::chip::{chip, ChipKind};
+use crate::ui::chip::{chip, chip_fit, ChipKind};
 use crate::ui::choice::{Choice, ChoiceOption};
 use crate::ui::input::TextInput;
 use crate::ui::model_picker::{EngineRef, ModelPicker, PoolModel, Spec, Trigger};
@@ -40,13 +40,16 @@ fn lamp(color: Hsla) -> gpui_kit::Div {
     div().flex_none().size(px(7.)).rounded_full().bg(color)
 }
 
+/// A long note (an engine's error) wraps its text, not the icon or a trailing
+/// button onto a line of their own (`settings::row::line`).
 fn line(tone: Tone, lead: AnyElement, text_: String, p: &Palette) -> gpui_kit::Div {
     inline(
         tone,
-        Some(lead),
-        vec![div().child(text_).into_any_element()],
+        Some(div().flex_none().child(lead).into_any_element()),
+        vec![div().min_w_0().child(text_).into_any_element()],
         p,
     )
+    .flex_nowrap()
 }
 
 fn check_word(c: Option<&Check>) -> String {
@@ -565,26 +568,45 @@ impl Onboarding {
                     d.shadow(vec![crate::ui::ring(p.accent_glow)])
                 }),
             )
-            .child(
+            // A custom name or host: one line + ellipsis, the tip has the rest.
+            .child(crate::ui::with_tip(
                 div()
+                    .id(SharedString::from(format!("ob-ai-card-name-{}", pv.id)))
+                    .min_w_0()
+                    .truncate()
                     .font_weight(theme::W_MEDIUM)
                     .text_size(text::MD)
                     .text_color(p.text_strong)
                     .child(provider_instance_label(pv)),
-            )
+                provider_instance_label(pv),
+            ))
             .when(is_default, |d| d.child(chip("default", ChipKind::Info, p)))
-            .child(chip(check_word(check), kind, p))
+            // A failure can be the provider's own error text: one line +
+            // ellipsis, the tooltip has the rest.
+            .child({
+                let word = check_word(check);
+                chip_fit(word.clone(), kind, p)
+                    .max_w(px(220.))
+                    .id(SharedString::from(format!("ob-ai-card-status-{}", pv.id)))
+                    .when(matches!(check, Some(Check::Failed(_))), |d| {
+                        crate::ui::with_tip(d, word)
+                    })
+            })
             .when(
                 !pv.kind.is_local() && self.ai.keys_saved.contains(&pv.id),
                 |d| {
-                    d.child(chip(
-                        if pv.kind == AiProviderKind::Chatgpt {
-                            "signed in"
-                        } else {
-                            "key in vault"
-                        },
-                        ChipKind::Neutral,
-                        p,
+                    d.child(crate::ui::with_tip(
+                        chip(
+                            if pv.kind == AiProviderKind::Chatgpt {
+                                "signed in"
+                            } else {
+                                "key in vault"
+                            },
+                            ChipKind::Neutral,
+                            p,
+                        )
+                        .id(SharedString::from(format!("ob-ai-vault-{}", pv.id))),
+                        "stored in the app vault, day.mnema.vault",
                     ))
                 },
             )

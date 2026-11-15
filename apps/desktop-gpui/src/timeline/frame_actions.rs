@@ -330,7 +330,7 @@ fn menu(
                 cx.notify();
             }
         }))
-        .child(
+        .child(crate::ui::with_tip(
             item(
                 "action-copy",
                 IconName::Copy.path(),
@@ -344,8 +344,9 @@ fn menu(
             .when(ready, |d| {
                 d.on_click(cx.listener(|this, _, w, cx| this.copy_image(w, cx)))
             }),
-        )
-        .child(
+            "Copy image (C)",
+        ))
+        .child(crate::ui::with_tip(
             item(
                 "action-download",
                 IconName::Download.path(),
@@ -359,8 +360,9 @@ fn menu(
             .when(ready, |d| {
                 d.on_click(cx.listener(|this, _, w, cx| this.download_image(w, cx)))
             }),
-        )
-        .child(
+            "Download image (D)",
+        ))
+        .child(crate::ui::with_tip(
             item(
                 "action-copy-text",
                 IconName::ScanText.path(),
@@ -374,7 +376,14 @@ fn menu(
             .when(has_text, |d| {
                 d.on_click(cx.listener(|this, _, _, cx| this.copy_text(cx)))
             }),
-        )
+            if has_text {
+                "Copy all recognized on-screen text"
+            } else if reading {
+                "Reading the frame's text…"
+            } else {
+                "No recognized text in this frame"
+            },
+        ))
         .children(host.map(|h| {
             let opening = v.opening_url;
             crate::ui::with_tip(

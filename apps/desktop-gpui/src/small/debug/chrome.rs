@@ -12,7 +12,7 @@ use crate::theme::{self, size, space, text, Palette, FONT_MONO};
 use crate::ui::menu::{menu, menu_item};
 use crate::ui::segmented::Segmented;
 use crate::ui::window_strip::WindowStrip;
-use crate::ui::{icon, Button, Force, Tone};
+use crate::ui::{icon, with_tip, Button, Force, Tone};
 
 fn small_icon(id: &'static str, path: &'static str, aria: &'static str) -> Button {
     Button::icon_only(id, path, aria).ghost().sm().h(px(22.))
@@ -196,8 +196,7 @@ pub fn verdict(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> A
         .child(
             div()
                 .min_w_0()
-                .overflow_hidden()
-                .whitespace_nowrap()
+                .truncate()
                 .font_weight(theme::W_MEDIUM)
                 .text_size(text::MD)
                 .line_height(relative(1.3))
@@ -281,6 +280,12 @@ pub fn mini(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> AnyE
                 .child(item(&MINI_DOTS[c]))
                 .child(item(&MINI_DOTS[c + 4]))
         }));
+    // One tip for the whole body: the action, then the footer the narrow window cuts.
+    let body_tip = if foot.text.is_empty() {
+        "Click to expand".to_string()
+    } else {
+        format!("Click to expand \u{2014} {}", foot.text)
+    };
     let foot = div()
         .flex()
         .items_center()
@@ -379,7 +384,7 @@ pub fn mini(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> AnyE
         .flex()
         .flex_col()
         .child(strip)
-        .child(
+        .child(with_tip(
             div()
                 .id("dv-mini-body")
                 .role(gpui_kit::Role::Button)
@@ -398,6 +403,7 @@ pub fn mini(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> AnyE
                 }))
                 .child(dots)
                 .child(foot),
-        )
+            body_tip,
+        ))
         .into_any_element()
 }

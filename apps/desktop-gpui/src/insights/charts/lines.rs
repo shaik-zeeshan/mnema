@@ -73,10 +73,10 @@ pub fn sparkline(series: Vec<(Hsla, bool, Vec<f64>)>) -> impl IntoElement {
 
 /// `SubjectChart.svelte`: 230 px plot, 34 px y-axis, x labels under it.
 /// `area` is filled under the first bold line; `dots` are evidence points
-/// `(x, y, origin)`; `floor` is the dashed display floor (0..1).
+/// `(x, y, origin, hover label)`; `floor` is the dashed display floor (0..1).
 pub fn line_chart(
     lines: Vec<Line>,
-    dots: Vec<(f32, f32, bool)>,
+    dots: Vec<(f32, f32, bool, String)>,
     floor: f32,
     x_labels: [String; 3],
     p: &Palette,
@@ -147,8 +147,9 @@ pub fn line_chart(
             .text_color(p.text_faint)
             .child(s)
     };
-    let dot_el = |(x, y, origin): (f32, f32, bool)| {
-        div()
+    let dot_el = |i: usize, (x, y, origin, tip): (f32, f32, bool, String)| {
+        let el = div()
+            .id(crate::ui::nid("subj-dot", i as u64))
             .absolute()
             .left(gpui_kit::relative(x))
             .top(gpui_kit::relative(1. - y))
@@ -163,7 +164,8 @@ pub fn line_chart(
             })
             .when(!origin, |d| {
                 d.border_2().border_color(p.text_strong).bg(p.surface)
-            })
+            });
+        crate::ui::with_tip(el, tip)
     };
     div()
         .flex()
@@ -199,7 +201,7 @@ pub fn line_chart(
                         .mt(px(-14.))
                         .child(label(format!("display floor {}%", (floor * 100.).round()))),
                 )
-                .children(dots.into_iter().map(dot_el)),
+                .children(dots.into_iter().enumerate().map(|(i, d)| dot_el(i, d))),
         )
         .child({
             let [a, b, c] = x_labels;

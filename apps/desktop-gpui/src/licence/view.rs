@@ -62,7 +62,8 @@ pub fn banner(licence: &Entity<Licence>, cx: &App) -> Option<AnyElement> {
         .flex_wrap()
         .gap_x(px(4.))
         .children(shown.bold.map(|b| strong(b, &p)))
-        .child(shown.text)
+        // The sentence wraps inside the banner instead of running under its buttons.
+        .child(div().min_w_0().child(shown.text))
         .into_any_element();
     Some(
         notice::banner(shown.tone, message, acts, &p)

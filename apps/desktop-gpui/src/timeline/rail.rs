@@ -167,9 +167,10 @@ fn readout(
                         .min_w_0()
                         .child(
                             fly(
+                                // Wraps, not truncates: the readout is itself the
+                                // hover popup, so a tooltip can't show a cut name.
                                 div()
                                     .relative()
-                                    .truncate()
                                     .text_size(text::MD)
                                     .line_height(gpui_kit::relative(1.05))
                                     .font_weight(theme::W_SEMIBOLD)

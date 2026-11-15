@@ -116,6 +116,8 @@ pub struct ModelPicker {
     pub(crate) on_make_default: Option<OnEngine>,
     /// A link at the end of the footer line ("Settings → AI ↗").
     pub(crate) foot_link: Option<(SharedString, OnOpen)>,
+    /// The "Default" row's hover text when it should not be its title (Ask AI).
+    pub(crate) sentinel_tip: Option<SharedString>,
 }
 
 impl ModelPicker {
@@ -136,7 +138,12 @@ impl ModelPicker {
             on_retry: None,
             on_make_default: None,
             foot_link: None,
+            sentinel_tip: None,
         }
+    }
+    pub fn sentinel_tip(mut self, t: impl Into<SharedString>) -> Self {
+        self.sentinel_tip = Some(t.into());
+        self
     }
     pub fn on_retry(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_retry = Some(Rc::new(f));

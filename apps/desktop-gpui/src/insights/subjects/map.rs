@@ -184,6 +184,17 @@ pub(super) fn map(
             Some(_) => ("±0".into(), p.text_subtle),
         };
         let subject = r.subject.clone();
+        let n = r.conclusions.len();
+        let tip = format!(
+            "{} · {c}% — {} · {n} conclusion{} · {}",
+            r.subject,
+            r.headline,
+            if n == 1 { "" } else { "s" },
+            match r.then {
+                None => "formed this fortnight".to_string(),
+                Some(t) => format!("was {}% 14 days ago", pct(t)),
+            }
+        );
         let track = div()
             .relative()
             .flex_1()
@@ -265,7 +276,7 @@ pub(super) fn map(
                         )
                     }),
             );
-        div()
+        let row = div()
             .id(nid("insights-map-row", i as u64))
             .role(Role::Button)
             .flex()
@@ -326,7 +337,8 @@ pub(super) fn map(
                 .gap(space::S3)
                 .pr(space::S3),
             )
-            .on_click(cx.listener(move |this, _, _, cx| this.open_subject(subject.clone(), cx)))
+            .on_click(cx.listener(move |this, _, _, cx| this.open_subject(subject.clone(), cx)));
+        crate::ui::with_tip(row, tip)
     });
     panel_el = panel_el.child(
         div()

@@ -316,6 +316,7 @@ fn footer(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settings>)
         _ => view.label.clone(),
     };
     let pill = div()
+        .id("settings-rec")
         .flex()
         .items_center()
         .gap(px(6.))
@@ -338,17 +339,26 @@ fn footer(s: &Settings, p: &Palette, _: &mut Window, cx: &mut Context<Settings>)
         .font_weight(theme::W_MEDIUM)
         .text_color(fg)
         .child(div().flex_none().size(px(6.)).rounded_full().bg(dot))
-        .child(label);
+        .child(label)
+        .when(s.status.running, |d| {
+            crate::ui::with_tip(d, "Recording continues while you're in Settings")
+        });
     let lanes = div().flex().gap(px(4.)).ml_auto().children(
         [p.source_screen, p.source_mic, p.source_sysaudio]
             .into_iter()
             .zip(s.status.selected)
-            .map(|(c, on)| {
-                div()
-                    .size(px(6.))
-                    .rounded(px(1.))
-                    .bg(c)
-                    .opacity(if on { 1. } else { 0.35 })
+            .zip(["screen", "mic", "system audio"])
+            .enumerate()
+            .map(|(i, ((c, on), tip))| {
+                crate::ui::with_tip(
+                    div()
+                        .id(crate::ui::nid("settings-lane", i as u64))
+                        .size(px(6.))
+                        .rounded(px(1.))
+                        .bg(c)
+                        .opacity(if on { 1. } else { 0.35 }),
+                    tip,
+                )
             }),
     );
     let version = s

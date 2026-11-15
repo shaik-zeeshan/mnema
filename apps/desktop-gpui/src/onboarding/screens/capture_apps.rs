@@ -229,12 +229,17 @@ impl Onboarding {
                 let label = div()
                     .flex()
                     .items_center()
+                    .min_w_0()
                     .gap(px(8.))
                     .child(icon_or_initial(icon, &name, 18., tile))
-                    .child(name.clone());
-                option_row(nid("ob-app-cand", i as u64), label, false, false, &p)
-                    .on_click(cx.listener(move |this, _, _, cx| this.add_app(&bundle, &name, cx)))
-                    .into_any_element()
+                    // The list is the field's 190 px: a long name ends in "…".
+                    .child(div().min_w_0().truncate().child(name.clone()));
+                crate::ui::with_tip(
+                    option_row(nid("ob-app-cand", i as u64), label, false, false, &p),
+                    name.clone(),
+                )
+                .on_click(cx.listener(move |this, _, _, cx| this.add_app(&bundle, &name, cx)))
+                .into_any_element()
             })
             .collect();
         let empty = rows.is_empty();

@@ -120,13 +120,18 @@ pub fn render(
                 .on_click(cx.listener(|this, _, _, cx| this.close_subject(cx))),
         )
         .child(div().text_color(p.text_faint).child("/"))
-        .child(
+        .child(crate::ui::with_tip(
+            // `.in-crumb b`: one line with an ellipsis (the title below has it whole).
             div()
+                .id("insights-subject-crumb")
+                .min_w_0()
+                .truncate()
                 .text_size(text::BASE)
                 .font_weight(theme::W_SEMIBOLD)
                 .text_color(p.text_strong)
                 .child(subject.clone()),
-        )
+            subject.clone(),
+        ))
         .child(div().flex_1())
         .when(!tight, |d| {
             d.child(
@@ -465,14 +470,22 @@ fn chart(
             width: 2.,
             dashed: false,
         });
-        dots.push((x(s.formed_at_ms), h[0].confidence as f32, true));
+        let y0 = h[0].confidence;
+        dots.push((
+            x(s.formed_at_ms),
+            y0 as f32,
+            true,
+            format!("Formed · {}%", pct(y0)),
+        ));
         for e in s
             .evidence
             .iter()
             .filter(|e| e.stance == EvidenceStance::Support)
         {
             if let Some(at) = e.activity_started_at_ms {
-                dots.push((x(at), interpolate(&h, Some(at), s.confidence) as f32, false));
+                let y = interpolate(&h, Some(at), s.confidence);
+                let title = e.activity_title.as_deref().unwrap_or("Activity");
+                dots.push((x(at), y as f32, false, format!("{title} · {}%", pct(y))));
             }
         }
     }

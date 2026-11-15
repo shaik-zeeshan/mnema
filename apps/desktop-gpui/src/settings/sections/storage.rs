@@ -295,7 +295,9 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
             .flex()
             .items_center()
             .gap(space::S2)
-            .child(line(Tone::Danger, icons::ALERT, words, p))
+            .max_w_full()
+            // The error wraps beside Retry instead of running past the row.
+            .child(line(Tone::Danger, icons::ALERT, words, p).min_w_0())
             .when(!resolved, |d| {
                 d.child(
                     Button::new("storage-location-retry", "Retry")
@@ -324,12 +326,17 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                 .flex()
                 .items_center()
                 .gap(space::S2)
-                .child(line(
-                    Tone::Danger,
-                    icons::ALERT,
-                    format!("Cleanup failed: {e}"),
-                    p,
-                ))
+                .max_w_full()
+                // The error wraps beside Retry instead of running past the row.
+                .child(
+                    line(
+                        Tone::Danger,
+                        icons::ALERT,
+                        format!("Cleanup failed: {e}"),
+                        p,
+                    )
+                    .min_w_0(),
+                )
                 .child(
                     Button::new("retention-retry", "Retry")
                         .ghost()

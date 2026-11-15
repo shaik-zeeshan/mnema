@@ -219,24 +219,30 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
         .iter()
         .rev()
         .take(4)
-        .map(|e| {
+        .enumerate()
+        .map(|(i, e)| {
             let ok = e.str_at(&["outcome"]).is_none_or(|o| o == "success");
+            let tool = e.str_at(&["toolIdentity"]).unwrap_or("").to_string();
+            let command = e.str_at(&["commandType"]).unwrap_or("").replace('_', "-");
             log_row(vec![
-                cell(
-                    Some(92.),
-                    div()
-                        .font_weight(theme::W_MEDIUM)
-                        .text_color(p.text)
-                        .whitespace_nowrap(),
+                // Fixed columns: a long name or command ends in "…" (the tip has it all).
+                crate::ui::with_tip(
+                    cell(
+                        Some(92.),
+                        div()
+                            .font_weight(theme::W_MEDIUM)
+                            .text_color(p.text)
+                            .truncate(),
+                    )
+                    .child(tool.clone())
+                    .id(("dv-cli-tool", i)),
+                    tool,
                 )
-                .child(e.str_at(&["toolIdentity"]).unwrap_or("").to_string())
                 .into_any_element(),
-                cell(
-                    Some(64.),
-                    mono(
-                        e.str_at(&["commandType"]).unwrap_or("").replace('_', "-"),
-                        p.text,
-                    ),
+                crate::ui::with_tip(
+                    cell(Some(64.), mono(command.clone(), p.text).truncate())
+                        .id(("dv-cli-command", i)),
+                    command,
                 )
                 .into_any_element(),
                 cell(None, div().flex())
@@ -262,7 +268,8 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
     let runs: Vec<AnyElement> = d
         .runs
         .iter()
-        .map(|r| {
+        .enumerate()
+        .map(|(i, r)| {
             let n = |k: &str| r.num_at(&[k]).unwrap_or(0.) as i64;
             let kind = r.str_at(&["kind"]).unwrap_or("");
             let status = r.str_at(&["status"]).unwrap_or("");
@@ -315,17 +322,31 @@ pub fn tab(w: &DebugWindow, cx: &mut Context<DebugWindow>, p: &Palette) -> Vec<A
                 r.num_at(&["createdAtMs"])
                     .map_or(String::new(), |ms| clock(ms as i64, cx))
             );
+            // A failed run tips its error (Svelte), then the cut result.
+            let result_tip = match r.str_at(&["error"]).filter(|e| !e.is_empty()) {
+                Some(e) => format!("{e} \u{2014} {result}"),
+                None => result.clone(),
+            };
             log_row(vec![
-                cell(Some(150.), div().whitespace_nowrap().overflow_hidden())
-                    .child(crate::chat::inline_runs(&[
-                        (kind_label, Some((theme::W_MEDIUM, p.text))),
-                        (&window, None),
-                    ]))
-                    .into_any_element(),
+                // `.dv-log span { text-overflow: ellipsis }`; the tips hold the whole text.
+                crate::ui::with_tip(
+                    cell(Some(150.), div().truncate())
+                        .child(crate::chat::inline_runs(&[
+                            (kind_label, Some((theme::W_MEDIUM, p.text))),
+                            (&window, None),
+                        ]))
+                        .id(("dv-run-kind", i)),
+                    format!("{kind_label}{window}"),
+                )
+                .into_any_element(),
                 chip(label.to_string(), chip_kind, p).into_any_element(),
-                cell(None, div().truncate())
-                    .child(result)
-                    .into_any_element(),
+                crate::ui::with_tip(
+                    cell(None, div().truncate())
+                        .child(result)
+                        .id(("dv-run-result", i)),
+                    result_tip,
+                )
+                .into_any_element(),
                 mono(meta, p.text_subtle).into_any_element(),
             ])
         })

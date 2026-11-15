@@ -41,9 +41,17 @@ impl QuickRecall {
                 .text_size(text::BASE)
                 .font_weight(theme::W_MEDIUM)
                 .text_color(p.text_muted)
-                .child(self.tile(&l.result, p))
-                .child(name)
-                .child(div().ml_auto().child(ch))
+                .child(div().flex_none().child(self.tile(&l.result, p)))
+                // One line, cut with an ellipsis (the tooltip has the rest).
+                .child(crate::ui::with_tip(
+                    div()
+                        .id("qr-look-app")
+                        .min_w_0()
+                        .truncate()
+                        .child(name.clone()),
+                    name,
+                ))
+                .child(div().flex_none().ml_auto().child(ch))
         };
         let title = |t: String| {
             div()
@@ -63,7 +71,17 @@ impl QuickRecall {
                 .text_size(text::SM)
                 .text_color(p.text)
                 .child(a)
-                .child(div().text_size(text::XS).text_color(p.text_subtle).child(b))
+                // `.rc-side__when small`: one line, cut with an ellipsis (a page
+                // address; the tooltip has the rest).
+                .child(crate::ui::with_tip(
+                    div()
+                        .id("qr-look-when")
+                        .truncate()
+                        .text_size(text::XS)
+                        .text_color(p.text_subtle)
+                        .child(b.clone()),
+                    b,
+                ))
         };
         let text_box = |label: &str, n: usize, body: Div| {
             div()

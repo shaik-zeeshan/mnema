@@ -118,8 +118,19 @@ fn steps_list(chat: &Chat, t: &ChatTurn, live: bool, p: &Palette) -> Div {
                             }
                         }),
                 )
-                .child(SharedString::from(a.label.clone()))
-                .children(app_chip(chat, a, p))
+                // One line, cut with an ellipsis (the tooltip has the rest).
+                .child(with_tip(
+                    div()
+                        .id(nid(
+                            &format!("chat-step-label-{}", t.view.turn_index),
+                            i as u64,
+                        ))
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(a.label.clone())),
+                    a.label.clone(),
+                ))
+                .children(app_chip(chat, a, p).map(|c| c.flex_none()))
                 // Rows rise in (mx-rise 220 ms expo).
                 .with_animation(
                     nid(&format!("chat-step-rise-{}", t.view.turn_index), i as u64),
@@ -155,12 +166,14 @@ fn steps(chat: &Chat, t: &ChatTurn, p: &Palette, cx: &mut Context<Chat>) -> Opti
                 .flex()
                 .items_center()
                 .gap(px(8.))
+                .min_w_0()
                 .text_color(p.text_muted)
                 .child(
                     // `box-shadow: 0 0 0 3px glow` as a 12 px glow disc (GPUI
                     // shadows don't follow the radius).
                     div()
                         .size(px(12.))
+                        .flex_none()
                         .flex()
                         .items_center()
                         .justify_center()
@@ -169,7 +182,13 @@ fn steps(chat: &Chat, t: &ChatTurn, p: &Palette, cx: &mut Context<Chat>) -> Opti
                         .bg(p.accent_glow)
                         .child(div().size(px(6.)).rounded_full().bg(p.accent)),
                 )
-                .child(SharedString::from(format!("{label}…"))),
+                // One line; the full label is in the open steps list below.
+                .child(
+                    div()
+                        .min_w_0()
+                        .truncate()
+                        .child(SharedString::from(format!("{label}…"))),
+                ),
         )
     } else {
         summary(SharedString::from(format!("chat-steps-{ix}")), p)

@@ -166,7 +166,9 @@ pub fn render(
                         "Listen back before you save it."
                     },
                     p,
-                ))
+                )
+                // Wraps beside the button instead of running past the row.
+                .min_w_0())
                 .into_any_element(),
         ),
         Phase::Rejected(r) => Some(line(Tone::Warn, icons::ALERT, voice::rejection(r).1, p).into_any_element()),

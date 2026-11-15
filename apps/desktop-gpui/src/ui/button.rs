@@ -66,6 +66,7 @@ pub struct Button {
     force: Force,
     tip: Option<SharedString>,
     block: bool,
+    fit: bool,
     focus: Option<FocusHandle>,
     on_click: Option<ClickHandler>,
 }
@@ -106,6 +107,7 @@ impl Button {
             force: Force::None,
             tip: None,
             block: false,
+            fit: false,
             focus: None,
             on_click: None,
         }
@@ -114,6 +116,13 @@ impl Button {
     /// Full width, content at the start, the kbd pushed right (`.ch-side__tools .mx-btn`).
     pub fn block(mut self) -> Self {
         self.block = true;
+        self
+    }
+
+    /// A label that is data (a person's name): out of room the button shrinks
+    /// and the label ends in "…". Put the whole label in `.tip(..)`.
+    pub fn fit(mut self) -> Self {
+        self.fit = true;
         self
     }
 
@@ -380,7 +389,13 @@ impl RenderOnce for Button {
             .when(!self.disabled, |el| el.track_focus(&handle))
             .relative()
             .flex()
-            .flex_none()
+            .map(|el| {
+                if self.fit {
+                    el.min_w_0()
+                } else {
+                    el.flex_none()
+                }
+            })
             .items_center()
             .when(self.block, |el| el.w_full().justify_start())
             .when(!self.block, |el| el.justify_center())
@@ -410,7 +425,20 @@ impl RenderOnce for Button {
                 el.child(progress::spinner(size::SPIN_SM))
             })
             .children(before)
-            .children(self.label.clone())
+            .children(self.label.clone().map(|l| {
+                if self.fit {
+                    // The ellipsis clips to this box: at the 1.0 line height it would
+                    // shave the descenders, so the box is 2 px taller each way.
+                    div()
+                        .min_w_0()
+                        .py(px(2.))
+                        .truncate()
+                        .child(l)
+                        .into_any_element()
+                } else {
+                    l.into_any_element()
+                }
+            }))
             .children(after)
             .when_some(self.count.clone(), |el, n| {
                 el.child(
@@ -448,8 +476,9 @@ impl RenderOnce for Button {
                 el.on_click(move |e, window, cx| f(e, window, cx))
             });
         match self.tip {
-            Some(t) if !self.disabled => tooltip::with_tip(el, t).into_any_element(),
-            _ => el.into_any_element(),
+            // Kept while disabled: Svelte's tip says why the control is greyed out.
+            Some(t) => tooltip::with_tip(el, t).into_any_element(),
+            None => el.into_any_element(),
         }
     }
 }

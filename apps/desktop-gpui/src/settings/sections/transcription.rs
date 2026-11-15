@@ -134,7 +134,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                         .flex()
                         .gap(crate::theme::space::S2)
                         .w_full()
-                        .child(div().flex_1().child(TextInput::new(
+                        // `min_w_0`: the field gives way so the buttons stay in the row.
+                        .child(div().flex_1().min_w_0().child(TextInput::new(
                             "deepgram-key",
                             "Deepgram API key",
                             &s.inputs.deepgram_key,

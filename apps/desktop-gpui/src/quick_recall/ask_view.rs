@@ -12,7 +12,7 @@ use gpui_kit::{div, px, relative, AnyElement, Context, Div, Role, SharedString};
 use super::model::Cite;
 use super::results::{marked, source_glyph};
 use super::rules::NoticeTone;
-use super::view::{act, section};
+use super::view::{act, section, tipped};
 use super::{AskView, QuickRecall};
 use crate::chat::{blocks, prose};
 use crate::theme::{self, radius, size, space, text, Palette, FONT_MONO};
@@ -27,10 +27,11 @@ fn live_tag(label: String, idle: bool, p: &Palette) -> Div {
         .flex()
         .items_center()
         .gap(px(7.))
+        .min_w_0()
         .text_size(text::BASE)
         .font_weight(theme::W_MEDIUM)
         .text_color(p.text_muted)
-        .child(div().size(px(6.)).rounded_full().map(|d| {
+        .child(div().flex_none().size(px(6.)).rounded_full().map(|d| {
             if idle {
                 d.bg(p.chart_grey_4)
             } else {
@@ -38,7 +39,13 @@ fn live_tag(label: String, idle: bool, p: &Palette) -> Div {
                     .shadow(vec![crate::ui::spread(p.accent_glow, px(3.))])
             }
         }))
-        .child(label)
+        // One line: a long tool label ends in "…" instead of leaving the panel.
+        .child(
+            tipped("qr-live-tag", &label)
+                .min_w_0()
+                .truncate()
+                .child(label),
+        )
 }
 
 impl QuickRecall {
@@ -448,8 +455,9 @@ impl QuickRecall {
                 }
             });
         let audio = s.kind == "audio";
-        let detail: AnyElement = match &s.snippet {
-            Some(sn) if !sn.is_empty() => marked(sn, audio, p).into_any_element(),
+        // The tip holds a cut URL or app name; a snippet is an excerpt anyway.
+        let (detail, detail_tip): (AnyElement, String) = match &s.snippet {
+            Some(sn) if !sn.is_empty() => (marked(sn, audio, p).into_any_element(), String::new()),
             _ => {
                 let t = if audio {
                     if s.mic() {
@@ -466,7 +474,7 @@ impl QuickRecall {
                         }
                     })
                 };
-                div().child(t).into_any_element()
+                (div().child(t.clone()).into_any_element(), t)
             }
         };
         let glyph = if audio {
@@ -531,14 +539,18 @@ impl QuickRecall {
                     .whitespace_nowrap()
                     .text_size(text::MD)
                     .child(
-                        div()
+                        // Capped at the row so a long window title ends in "…"
+                        // (`.rc-row__t`) instead of being cut off mid-letter.
+                        tipped(("qr-cite-title", row), &title)
                             .flex_none()
+                            .max_w_full()
+                            .truncate()
                             .font_weight(theme::W_MEDIUM)
                             .text_color(p.text_strong)
                             .child(title),
                     )
                     .child(
-                        div()
+                        tipped(("qr-cite-detail", row), &detail_tip)
                             .min_w_0()
                             .overflow_hidden()
                             .text_ellipsis()

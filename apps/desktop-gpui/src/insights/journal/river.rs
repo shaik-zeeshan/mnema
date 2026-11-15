@@ -117,6 +117,7 @@ pub fn render(
                     Some(icon(IconName::TriangleAlert.path(), px(13.)).into_any_element()),
                     vec![
                         div()
+                            .min_w_0()
                             .child(format!(
                                 "Summaries are failing — {} turned away the last {}.",
                                 f.provider.as_deref().unwrap_or("the AI provider"),
@@ -154,7 +155,7 @@ pub fn render(
                 .child(crate::ui::notice::inline(
                     Tone::Neutral,
                     Some(icon(IconName::CircleOff.path(), px(13.)).into_any_element()),
-                    vec![div().child(day::pending_reason_copy(reason)).into_any_element()],
+                    vec![div().min_w_0().child(day::pending_reason_copy(reason)).into_any_element()],
                     p,
                 )),
         };
@@ -314,7 +315,7 @@ fn card(
         .items_center()
         .gap(px(9.))
         .child(swatch(col, 9.))
-        .child(
+        .child(crate::ui::with_tip(
             // `.in-act h4`: 600 LG strong; `.in-act--slim h4`: 500 MD.
             if slim {
                 div()
@@ -328,8 +329,14 @@ fn card(
                     .text_color(p.text_strong)
             }
             .tracking(-0.01)
+            // One line, cut with an ellipsis (the tooltip has the rest); without
+            // `min_w_0` it keeps its full width and runs past the card.
+            .min_w_0()
+            .truncate()
+            .id(nid("insights-act-title", id as u64))
             .child(a.title.clone()),
-        )
+            a.title.clone(),
+        ))
         .when(slim, |d| d.child(div().flex_1()).child(receipt_btn()));
     let open_sub = this.receipt.as_ref().map(|r| r.activity_id);
     let mut subs = div().flex().flex_col().mt(space::S2);
@@ -358,12 +365,14 @@ fn card(
                 .on_click(cx.listener(move |this, _, _, cx| this.toggle_receipt(sid, sspan, cx)))
                 .child(icon(IconName::CornerDownRight.path(), px(12.)))
                 .child(mono_label(stats::clock(*st, off), p).text_size(text::XS))
-                .child(
+                .child(crate::ui::with_tip(
                     div()
+                        .id(nid("insights-sub-title", sid as u64))
                         .truncate()
                         .text_color(p.text)
                         .child(s.activity.title.clone()),
-                )
+                    s.activity.title.clone(),
+                ))
                 .child(mono_label(format!("· {}", humanize_ms(en - st)), p).text_size(text::XS)),
         );
         if sub_open {

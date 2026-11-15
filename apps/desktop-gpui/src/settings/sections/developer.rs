@@ -227,7 +227,8 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
                             .flex()
                             .items_center()
                             .gap(space::S2)
-                            .child(crate::settings::row::line(crate::ui::Tone::Danger, crate::settings::icons::ALERT, e, p))
+                            // Wraps beside the dismiss button instead of pushing it out.
+                            .child(crate::settings::row::line(crate::ui::Tone::Danger, crate::settings::icons::ALERT, e, p).min_w_0())
                             .child(
                                 Button::icon_only("log-error-dismiss", crate::settings::icons::X, "Dismiss error")
                                     .ghost()

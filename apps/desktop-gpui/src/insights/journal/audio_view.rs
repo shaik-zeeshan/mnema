@@ -367,12 +367,21 @@ pub fn audio_box(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Di
                 .text_color(p.text_strong)
                 .child(
                     div()
+                        .flex_none()
                         .size(px(8.))
                         .rounded_full()
                         .bg(audio::color(t.color, p)),
                 )
-                .child(t.speaker.clone())
-                .child(label(format!("via {}", t.source)))
+                // One line, cut with "…" (the turn list has the full name).
+                .child(crate::ui::with_tip(
+                    div()
+                        .id("insights-receipt-audio-speaker")
+                        .min_w_0()
+                        .truncate()
+                        .child(t.speaker.clone()),
+                    t.speaker.clone(),
+                ))
+                .child(label(format!("via {}", t.source)).flex_none())
                 .into_any_element(),
             label(format!(
                 "spoken segment · {} · captured as audio",
@@ -411,7 +420,7 @@ pub fn audio_box(this: &Insights, p: &Palette, cx: &mut Context<Insights>) -> Di
                 crate::ui::notice::inline(
                     Tone::Danger,
                     None,
-                    vec![div().child(e).into_any_element()],
+                    vec![div().min_w_0().child(e).into_any_element()],
                     p,
                 )
             })),

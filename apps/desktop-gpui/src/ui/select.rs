@@ -13,7 +13,9 @@ use gpui_kit::{
 };
 
 use super::menu::{option_row, options_empty};
-use super::{focus_handle, focus_visible, nid, popover, progress, ring, Force, FIELD_RADIUS};
+use super::{
+    focus_handle, focus_visible, nid, popover, progress, ring, with_tip, Force, FIELD_RADIUS,
+};
 use crate::theme::{self, size, space, text, Palette};
 
 pub type OnPick = Rc<dyn Fn(usize, &mut Window, &mut App)>;
@@ -67,6 +69,8 @@ pub fn trigger(
         .when(look.open, |s| {
             s.with_transformation(Transformation::rotate(radians(std::f32::consts::PI)))
         });
+    // The chosen value may end in "…": tip it whole, but not over the open list.
+    let tip = value.clone().filter(|v| !look.open && !v.is_empty());
     div()
         .id(id)
         .test_support()
@@ -114,6 +118,7 @@ pub fn trigger(
                 el.child(chevron)
             }
         })
+        .when_some(tip, |el, t| with_tip(el, t))
 }
 
 /// The `.select-content` list box: raised surface, 4 px padding, 220 px max;

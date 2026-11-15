@@ -8,7 +8,7 @@ use gpui_kit::{div, px, AnyElement, Context};
 use crate::settings::row::{line, row, section};
 use crate::settings::{icons, on, reload, Settings};
 use crate::theme::{space, Palette};
-use crate::ui::chip::{chip, ChipKind};
+use crate::ui::chip::{chip, chip_fit, ChipKind};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::segmented::Segmented;
 use crate::ui::select::Select;
@@ -64,8 +64,15 @@ pub fn render(s: &Settings, p: &Palette, cx: &mut Context<Settings>) -> AnyEleme
         );
     } else {
         let active = match &m.effective_device {
-            Some(dev) => chip(dev.name.clone(), ChipKind::Mic, p),
-            None => chip("No active device", ChipKind::Neutral, p),
+            // A long device name ends in "\u{2026}"; the tooltip has it whole.
+            Some(dev) => crate::ui::with_tip(
+                chip_fit(dev.name.clone(), ChipKind::Mic, p)
+                    .max_w(px(260.))
+                    .id("mic-active-device"),
+                dev.name.clone(),
+            )
+            .into_any_element(),
+            None => chip("No active device", ChipKind::Neutral, p).into_any_element(),
         };
         rows.push(
             row("Active device")

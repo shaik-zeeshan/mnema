@@ -240,6 +240,7 @@ pub fn render(
                 .child(body),
         ))
         .children(default.map(|(_, model)| {
+            let tip = format!("Change the default in Settings → AI — {model}");
             with_tip(
                 div()
                     .id("chat-default-model")
@@ -274,7 +275,7 @@ pub fn render(
                             .text_color(p.text_faint)
                             .child(icon(IconName::ArrowRight.path(), px(12.))),
                     ),
-                "Change the default in Settings → AI",
+                tip,
             )
             .on_click(|_, _, cx| {
                 cx.defer(|cx| crate::window::open_settings(Some("intelligence"), cx))
@@ -369,15 +370,19 @@ fn row(
             )
             .into_any_element()
     } else {
-        div()
-            .overflow_hidden()
-            .whitespace_nowrap()
-            .text_ellipsis()
-            .font_weight(theme::W_MEDIUM)
-            .text_size(text::MD)
-            .line_height(relative(1.35))
-            .child(SharedString::from(title))
-            .into_any_element()
+        with_tip(
+            div()
+                .id(SharedString::from(format!("chat-row-title-{id}")))
+                .overflow_hidden()
+                .whitespace_nowrap()
+                .text_ellipsis()
+                .font_weight(theme::W_MEDIUM)
+                .text_size(text::MD)
+                .line_height(relative(1.35))
+                .child(SharedString::from(title.clone())),
+            title,
+        )
+        .into_any_element()
     };
     div()
         .id(key)

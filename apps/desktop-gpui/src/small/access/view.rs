@@ -13,7 +13,7 @@ use crate::ui::choice::{Choice, ChoiceOption};
 use crate::ui::empty::{empty, EmptyLayout};
 use crate::ui::window_strip::WindowStrip;
 use crate::ui::Tracking as _;
-use crate::ui::{icon, kicker, notice, skeleton, Button, Force, Tone};
+use crate::ui::{icon, kicker, notice, skeleton, with_tip, Button, Force, Tone};
 
 const TERMINAL: &str = "icons/square-terminal.svg";
 const ALERT: &str = "icons/triangle-alert.svg";
@@ -74,7 +74,7 @@ impl AccessRequest {
 
     fn who(&self, now_ms: i64, p: &Palette) -> AnyElement {
         let r = self.request().expect("request");
-        let (chip_label, _detail, warn) = identity_source(&r.source);
+        let (chip_label, detail, warn) = identity_source(&r.source);
         let (head, rest) = split_command(&r.command);
         let age = request_age(&r.created_at, now_ms);
         let top = div()
@@ -109,27 +109,36 @@ impl AccessRequest {
                             .tracking(-0.01)
                             .line_height(relative(1.3))
                             .text_color(p.text_strong)
+                            // One line, cut with "…": the heading above has the full name.
+                            .min_w_0()
+                            .truncate()
                             .child(r.tool.clone()),
                     )
-                    .child(chip(
-                        chip_label,
-                        if warn {
-                            ChipKind::Warn
-                        } else {
-                            ChipKind::Neutral
-                        },
-                        p,
+                    .child(with_tip(
+                        chip(
+                            chip_label,
+                            if warn {
+                                ChipKind::Warn
+                            } else {
+                                ChipKind::Neutral
+                            },
+                            p,
+                        )
+                        .id("ac-src"),
+                        detail,
                     )),
             )
             .children(age.map(|a| {
-                div()
+                let age = div()
+                    .id("ac-age")
                     .ml_auto()
                     .flex_none()
                     .font_family(FONT_MONO)
                     .text_size(text::SM)
                     .text_color(p.text_subtle)
                     .whitespace_nowrap()
-                    .child(a)
+                    .child(a);
+                with_tip(age, "Waiting \u{2014} the tool gives up after 2 min")
             }));
         let cmd = div()
             .px(px(10.))
@@ -557,9 +566,9 @@ impl Render for AccessRequest {
         let body: AnyElement = match &self.phase {
             Phase::Receipt(r) => Self::receipt(r, &p),
             Phase::Loading => Self::loading(&p),
-            Phase::LoadFailed(_) => {
+            Phase::LoadFailed(e) => {
                 let this = cx.entity().downgrade();
-                empty(
+                let card = empty(
                     EmptyLayout::Panel,
                     Tone::Danger,
                     ALERT,
@@ -575,7 +584,10 @@ impl Render for AccessRequest {
                     &p,
                 )
                 .px(space::S5)
-                .into_any_element()
+                .id("ac-load-failed");
+                // The backend's own reason, as Svelte's tooltip shows it.
+                card.when(!e.is_empty(), |el| with_tip(el, e.clone()))
+                    .into_any_element()
             }
             Phase::Empty => empty(
                 EmptyLayout::Panel,
@@ -616,12 +628,16 @@ impl Render for AccessRequest {
                     .flex_none()
                     .px(space::S5)
                     .pb(space::S3)
-                    .child(notice::inline(
-                        Tone::Danger,
-                        Some(icon(ALERT, px(13.)).into_any_element()),
-                        vec![div().child(e).into_any_element()],
-                        &p,
-                    ))
+                    // `.ac-err .mx-inline { flex-wrap: nowrap }`: a long error wraps beside its icon.
+                    .child(
+                        notice::inline(
+                            Tone::Danger,
+                            Some(icon(ALERT, px(13.)).into_any_element()),
+                            vec![div().min_w_0().child(e).into_any_element()],
+                            &p,
+                        )
+                        .flex_nowrap(),
+                    )
             });
         let fit = self.fit;
         let this = cx.entity().downgrade();

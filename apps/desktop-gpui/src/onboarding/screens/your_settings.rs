@@ -10,7 +10,7 @@ use crate::onboarding::flow::{self, Step};
 use crate::onboarding::parts::{self, display, head, Mark};
 use crate::onboarding::{storage, Onboarding};
 use crate::theme::{self, space, text, Palette, FONT_MONO};
-use crate::ui::kicker;
+use crate::ui::{kicker, with_tip};
 use crate::ui::Tracking as _;
 
 struct Row {
@@ -212,6 +212,13 @@ impl Onboarding {
             )
         };
         let dir = self.draft.save_directory.trim();
+        // The fact cuts the middle of a long path; the tip has all of it.
+        let saves_full = if dir.is_empty() {
+            self.probe.as_ref().map(|p| p.path.clone())
+        } else {
+            Some(dir.to_string())
+        }
+        .filter(|f| !f.is_empty());
         let saves = if dir.is_empty() {
             self.probe
                 .as_ref()
@@ -246,7 +253,11 @@ impl Onboarding {
             .flex()
             .gap(space::S7)
             .child(fact("Download", downloads))
-            .child(fact("Saves to", saves))
+            .child(
+                fact("Saves to", saves)
+                    .id("ob-fact-saves")
+                    .when_some(saves_full, |el, f| with_tip(el, f)),
+            )
             .child(fact("Keeps", keeps))
             .child(fact("Per day", format!("~{daily}")));
         let col = vec![

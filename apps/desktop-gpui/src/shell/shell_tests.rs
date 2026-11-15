@@ -422,9 +422,39 @@ fn full_bar_model() -> ShellModel {
     m
 }
 
-/// Which readouts show whole at `width`; panics if one shows only in part.
-fn readouts_at(cx: &mut TestAppContext, width: f32) -> Vec<usize> {
-    let model = full_bar_model();
+/// Which of `model`'s readouts show whole at `width`; panics if one shows only
+/// in part, or if the `?` or a flag runs out of the bar.
+fn readouts_at(cx: &mut TestAppContext, model: ShellModel, width: f32) -> Vec<usize> {
+    let mut shown = Vec::new();
+    readouts_at_then(cx, model, width, |window| {
+        let help = window.find("status-shortcuts").bounds();
+        let row = window.find("status-readouts").bounds();
+        for i in 0..3usize {
+            let Some(el) = window.try_find(("status-readout", i)) else {
+                break;
+            };
+            let b = el.bounds();
+            if b.top() >= row.bottom() {
+                continue; // wrapped onto the clipped line: gone whole
+            }
+            assert!(
+                b.left() >= row.left() && b.right() <= row.right() && b.right() <= help.left(),
+                "readout {i} is cut at {width}: {b:?} in {row:?}"
+            );
+            shown.push(i);
+        }
+    });
+    shown
+}
+
+/// Renders `model`'s bar at `width`, checks nothing in it overlaps or leaves the
+/// bar, then hands the window to `read`.
+fn readouts_at_then<R>(
+    cx: &mut TestAppContext,
+    model: ShellModel,
+    width: f32,
+    read: impl FnOnce(&mut Window) -> R,
+) -> R {
     let (window, _) = cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(AppearanceSetting::Dark, WindowAppearance::Dark, cx);
@@ -445,23 +475,19 @@ fn readouts_at(cx: &mut TestAppContext, width: f32) -> Vec<usize> {
         window.render_frame(cx);
         let help = window.find("status-shortcuts").bounds();
         assert!(help.right() <= px(width), "the ? stays inside at {width}");
-        let row = window.find("status-readouts").bounds();
-        let mut shown = Vec::new();
-        for i in 0..3usize {
-            let Some(el) = window.try_find(("status-readout", i)) else {
-                break;
-            };
-            let b = el.bounds();
-            if b.top() >= row.bottom() {
-                continue; // wrapped onto the clipped line: gone whole
+        // Left to right: flag, engine pill, `?`, none under the next.
+        let mut edge = help.left();
+        for id in ["status-engine", "status-flag"] {
+            if let Some(el) = window.try_find(id) {
+                let b = el.bounds();
+                assert!(
+                    b.right() <= edge,
+                    "{id} runs under its neighbour at {width}: {b:?}"
+                );
+                edge = b.left();
             }
-            assert!(
-                b.left() >= row.left() && b.right() <= row.right() && b.right() <= help.left(),
-                "readout {i} is cut at {width}: {b:?} in {row:?}"
-            );
-            shown.push(i);
         }
-        shown
+        read(window)
     })
     .unwrap()
 }
@@ -469,16 +495,49 @@ fn readouts_at(cx: &mut TestAppContext, width: f32) -> Vec<usize> {
 #[gpui_kit::test]
 fn status_readouts_drop_out_whole_never_cut(cx: &mut TestAppContext) {
     assert_eq!(
-        readouts_at(cx, 640.),
+        readouts_at(cx, full_bar_model(), 640.),
         [0usize; 0],
         "640: 'today' doesn't fit"
     );
     // Storage and "local only" go below 900 px.
-    assert_eq!(readouts_at(cx, 800.), [0], "800: today only");
     assert_eq!(
-        readouts_at(cx, 1280.),
+        readouts_at(cx, full_bar_model(), 800.),
+        [0],
+        "800: today only"
+    );
+    assert_eq!(
+        readouts_at(cx, full_bar_model(), 1280.),
         [0, 1, 2],
         "wide: today, storage, local only"
+    );
+    // The longest flag at the window's minimum width: its text gives way, not
+    // the `?` or its own action.
+    let mut flagged = full_bar_model();
+    flagged.status.running = true;
+    flagged.status.engine = None;
+    let rt = flagged.status.runtime.get_or_insert_with(Default::default);
+    for i in [0, 2] {
+        rt[i].requested = true;
+        rt[i].privacy_failed = true;
+        rt[i].restart_required = true;
+    }
+    readouts_at(cx, flagged.clone(), crate::window::MAIN_MIN.0);
+    // With the engine pill up too: it shrinks to its dot and the lanes drop their
+    // "· stopped", so the flag still shows its action and some of its text.
+    flagged.status.engine = Some(model::EngineFlag {
+        label: "needs reconnect",
+        error: true,
+        tip: "Sign in again".into(),
+    });
+    let width = crate::window::MAIN_MIN.0;
+    let sizes = readouts_at_then(cx, flagged, width, |window| {
+        ["status-flag", "status-engine"].map(|id| window.find(id).bounds().size.width)
+    });
+    let [flag_w, engine_w] = sizes;
+    assert!(flag_w >= px(120.), "the flag is squeezed to {flag_w:?}");
+    assert!(
+        engine_w >= px(20.),
+        "the engine dot is squeezed to {engine_w:?}"
     );
 }
 
