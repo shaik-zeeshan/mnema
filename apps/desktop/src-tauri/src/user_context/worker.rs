@@ -988,11 +988,12 @@ pub(crate) async fn run_conclusion_distillation(
 /// recompute its [`confidence::status_for`] (below the display floor → `faded`,
 /// leaving the visible dossier while its Confidence History is kept), persist the
 /// new value + status + `last_decayed_at_ms`, and append a Confidence History
-/// snapshot so the Subject trajectory can plot the arc. After the loop, prune the
-/// history to [`MAX_SNAPSHOTS_PER_CONCLUSION`] per Conclusion. Records a single
-/// `derivation_run` (kind `'confidence'`, **0 tokens** — decay uses no LLM) with
-/// the count touched. Resilient: every error is swallowed-with-log; it never
-/// panics the worker.
+/// snapshot so the Subject trajectory can plot the arc, and prune the history to
+/// [`MAX_SNAPSHOTS_PER_CONCLUSION`] per Conclusion, all in one transaction.
+/// Records a single `derivation_run` (kind `'confidence'`, **0 tokens** — decay
+/// uses no LLM) with the count touched, or a failed run if the read or the write
+/// fails. Resilient: every error is swallowed-with-log; it never panics the
+/// worker.
 ///
 /// A **pinned** Conclusion is exempt from decay (#99): `list_decayable_conclusions`
 /// already drops pinned rows from the set entirely, and the per-row `pinned` flag
@@ -1053,17 +1054,38 @@ pub(crate) async fn run_confidence_decay(
     // One transaction for the whole pass: stamps `last_decayed_at_ms = now` (the
     // NEXT pass anchors here), snapshots each (possibly-faded) value so the Subject
     // trajectory keeps the arc below the display floor, then prunes the history
-    // tail. An empty pass writes nothing. A failure rolls the pass back whole.
-    let mut touched = decayed_rows.len() as i64;
-    if let Err(error) = store
+    // tail. An empty pass writes nothing. A failure rolls the pass back whole and
+    // is recorded as a failed run. A row deleted/pinned since the read is skipped,
+    // so `touched` counts the rows actually written.
+    let touched = match store
         .apply_confidence_decay_pass(&decayed_rows, now, MAX_SNAPSHOTS_PER_CONCLUSION)
         .await
     {
-        crate::native_capture::debug_log::log_warn(format!(
-            "user context confidence decay: pass of {touched} conclusion(s) failed: {error}"
-        ));
-        touched = 0;
-    }
+        Ok(applied) => applied as i64,
+        Err(error) => {
+            crate::native_capture::debug_log::log_warn(format!(
+                "user context confidence decay: pass of {} conclusion(s) failed: {error}",
+                decayed_rows.len()
+            ));
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "confidence".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error.to_string()),
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            return false;
+        }
+    };
 
     let _ = store
         .insert_derivation_run(NewDerivationRun {

@@ -282,3 +282,46 @@ fn backfill_intensity_is_a_real_cloud_tier_knob() {
         assert_eq!(backfill_windows_per_tick(AiProviderKind::Ollama, tier), 1);
     }
 }
+
+/// End to end: a 30-day-silent Conclusion halves on the first beat (one write,
+/// one snapshot), and an immediate second beat finds nothing due.
+#[tokio::test]
+async fn confidence_decay_halves_a_month_silent_conclusion_then_waits_a_day() {
+    let dir = std::env::temp_dir().join(format!(
+        "worker-confidence-decay-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("dir");
+    let infra = app_infra::AppInfra::initialize(&dir).await.expect("infra");
+    let store = infra.user_context();
+    let id = store
+        .upsert_conclusion(app_infra::NewConclusion {
+            subject: "Rust".to_string(),
+            statement: "Writes async Rust".to_string(),
+            confidence: 0.8,
+            formed_at_ms: now_ms() - 30 * 24 * 60 * 60 * 1000,
+            last_supported_at_ms: now_ms() - 30 * 24 * 60 * 60 * 1000,
+        })
+        .await
+        .expect("seed");
+    let snapshots = store.list_confidence_history(id).await.expect("history").len();
+
+    assert!(run_confidence_decay(store, None, None).await, "first beat decays it");
+    let decayed = store.get_conclusion(id).await.expect("get").expect("present");
+    // Few ms between the seed and the beat's own clock: far under 1e-6 at 0.4.
+    assert!((decayed.confidence - 0.4).abs() < 1e-6, "{}", decayed.confidence);
+    let history = store.list_confidence_history(id).await.expect("history");
+    assert_eq!(history.len(), snapshots + 1, "exactly one new snapshot");
+
+    assert!(!run_confidence_decay(store, None, None).await, "nothing due yet");
+    let again = store.get_conclusion(id).await.expect("get").expect("present");
+    assert_eq!(again.confidence, decayed.confidence);
+    assert_eq!(again.updated_at_ms, decayed.updated_at_ms);
+    assert_eq!(
+        store.list_confidence_history(id).await.expect("history").len(),
+        snapshots + 1
+    );
+}

@@ -12,27 +12,31 @@ use crate::Result;
 
 impl UserContextStore {
     /// Persist one decay pass atomically: for each `(conclusion_id, confidence,
-    /// status)` the same UPDATE as [`UserContextStore::update_conclusion_confidence`]
-    /// (stamping `last_decayed_at_ms = now`) and the same Confidence History INSERT
-    /// as [`UserContextStore::insert_confidence_snapshot`], then the history prune
-    /// to `max_snapshots_per_conclusion`. An empty pass writes nothing, prune
-    /// included.
+    /// status)` update the row (stamping `last_decayed_at_ms = now`) and append a
+    /// Confidence History snapshot, then prune history to the newest
+    /// `max_snapshots_per_conclusion` per Conclusion (table-wide). An empty pass
+    /// writes nothing, prune included.
+    ///
+    /// A row deleted, dismissed or pinned since it was listed is skipped (no
+    /// update, no snapshot) rather than failing the pass. Returns the number of
+    /// rows actually decayed.
     pub async fn apply_confidence_decay_pass(
         &self,
         decayed: &[(i64, f64, ConclusionStatus)],
         now: i64,
         max_snapshots_per_conclusion: i64,
-    ) -> Result<()> {
+    ) -> Result<u64> {
         if decayed.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
+        let mut applied = 0u64;
         let updated_at_ms = now_ms();
         let mut transaction = self.db.begin_write().await?;
         for &(id, confidence, status) in decayed {
-            sqlx::query(
+            let updated = sqlx::query(
                 "UPDATE user_context_conclusions \
                  SET confidence = ?2, status = ?3, last_decayed_at_ms = ?4, updated_at_ms = ?5 \
-                 WHERE id = ?1",
+                 WHERE id = ?1 AND status IN ('visible', 'faded') AND COALESCE(pinned, 0) = 0",
             )
             .bind(id)
             .bind(confidence)
@@ -41,6 +45,12 @@ impl UserContextStore {
             .bind(updated_at_ms)
             .execute(&mut *transaction)
             .await?;
+            // Gone or no longer decayable: its history INSERT would fail the FK
+            // (deleted) or record a decay that did not happen.
+            if updated.rows_affected() == 0 {
+                continue;
+            }
+            applied += 1;
             sqlx::query(
                 "INSERT INTO user_context_confidence_history \
                     (conclusion_id, confidence, snapshot_at_ms) \
@@ -70,7 +80,7 @@ impl UserContextStore {
         .execute(&mut *transaction)
         .await?;
         transaction.commit().await?;
-        Ok(())
+        Ok(applied)
     }
 }
 
