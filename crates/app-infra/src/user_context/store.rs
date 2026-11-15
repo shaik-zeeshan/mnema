@@ -259,6 +259,12 @@ pub struct UpsertConclusionOutcome {
     pub supersede: SupersedeOutcome,
 }
 
+/// A Conclusion is decayed at most once per this interval. Confidence fades on a
+/// 30-day half-life, so a day moves it ~2%; re-writing every row on each beat was
+/// almost pure disk churn. "Due" is derived from the stored decay anchor, so it
+/// survives restarts with no extra state.
+pub const CONFIDENCE_DECAY_MIN_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// One Conclusion eligible for the confidence-decay beat, paired with the
 /// **decay anchor** the beat must decay *from* this pass (#95).
 ///
@@ -2093,15 +2099,24 @@ impl UserContextStore {
     /// full elapsed factor every pass, compounding decay). The
     /// `last_decayed_at_ms` column was written by every pass but never read until
     /// now.
-    pub async fn list_decayable_conclusions(&self) -> Result<Vec<DecayableConclusion>> {
+    ///
+    /// Only rows **due** at `now_ms` are returned: decay anchor at least
+    /// [`CONFIDENCE_DECAY_MIN_INTERVAL_MS`] old. Filtering in SQL keeps a beat with
+    /// nothing due from loading any evidence; pass `i64::MAX` for every row.
+    pub async fn list_decayable_conclusions(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<DecayableConclusion>> {
         let rows = sqlx::query(
             "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
                     last_supported_at_ms, updated_at_ms, \
                     COALESCE(last_decayed_at_ms, last_supported_at_ms) AS decay_anchor_ms \
              FROM user_context_conclusions \
              WHERE status IN ('visible', 'faded') AND COALESCE(pinned, 0) = 0 \
+               AND COALESCE(last_decayed_at_ms, last_supported_at_ms) <= ?1 \
              ORDER BY last_supported_at_ms ASC, id ASC",
         )
+        .bind(now_ms.saturating_sub(CONFIDENCE_DECAY_MIN_INTERVAL_MS))
         .fetch_all(self.db.read())
         .await?;
 
@@ -3009,7 +3024,7 @@ fn stance_from_str(value: &str) -> EvidenceStance {
 
 /// The stored snake_case string for a [`ConclusionStatus`] (matches the
 /// capture-types serde rename and the SQL `status` column).
-fn status_to_str(status: ConclusionStatus) -> &'static str {
+pub(super) fn status_to_str(status: ConclusionStatus) -> &'static str {
     match status {
         ConclusionStatus::Visible => "visible",
         ConclusionStatus::Faded => "faded",
@@ -4539,7 +4554,7 @@ mod tests {
 
             // The decay beat reads COALESCE(last_decayed_at_ms, last_supported_at_ms):
             // it must now be ~now (advanced by the reinforce), NOT the far-past 1_000.
-            let decayable = store.list_decayable_conclusions().await.expect("decayable");
+            let decayable = store.list_decayable_conclusions(i64::MAX).await.expect("decayable");
             assert_eq!(decayable.len(), 1, "the reinforced Conclusion is decayable");
             let anchor = decayable[0].decay_anchor_ms;
             assert!(
@@ -4598,7 +4613,7 @@ mod tests {
             .await
             .expect("set dismissed");
 
-        let decayable = store.list_decayable_conclusions().await.expect("decayable");
+        let decayable = store.list_decayable_conclusions(i64::MAX).await.expect("decayable");
         let ids: Vec<i64> = decayable.iter().map(|c| c.conclusion.id).collect();
         assert!(ids.contains(&visible), "visible is decayable");
         assert!(ids.contains(&faded), "faded is decayable (history still snapshotted)");
@@ -4839,14 +4854,14 @@ mod tests {
         let fetched = store.get_conclusion(pinned).await.expect("get").expect("present");
         assert!(fetched.pinned, "pinned column is read back as true");
 
-        let decayable = store.list_decayable_conclusions().await.expect("decayable");
+        let decayable = store.list_decayable_conclusions(i64::MAX).await.expect("decayable");
         let ids: Vec<i64> = decayable.iter().map(|c| c.conclusion.id).collect();
         assert!(!ids.contains(&pinned), "pinned is exempt from decay");
         assert!(ids.contains(&unpinned), "unpinned stays decayable");
 
         // Unpinning restores decayability.
         store.set_pinned(pinned, false).await.expect("unpin");
-        let after = store.list_decayable_conclusions().await.expect("decayable");
+        let after = store.list_decayable_conclusions(i64::MAX).await.expect("decayable");
         assert!(
             after.iter().any(|c| c.conclusion.id == pinned),
             "unpinned is decayable again"

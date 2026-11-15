@@ -17,6 +17,7 @@ mod capture_bounds;
 pub mod capture_source;
 pub mod conclusion_dedup;
 pub mod confidence;
+mod confidence_decay_pass;
 mod distillation_input;
 pub mod guardrail;
 pub(crate) mod lock_screen;
