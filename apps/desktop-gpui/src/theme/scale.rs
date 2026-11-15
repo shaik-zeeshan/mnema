@@ -153,6 +153,8 @@ pub mod breakpoint {
     use super::*;
     pub const CMD_HINTS: Pixels = px(1000.);
     pub const STATUS_WIDE: Pixels = px(900.);
+    /// Below this a status-bar flag's action only fits without the engine pill.
+    pub const STATUS_TIGHT: Pixels = px(720.);
     /// Insights' two-column grids (`.ex` / `.feed` / `.in-feed` / `.in-ex`) stack at or below.
     pub const INSIGHTS_ONE_COL: Pixels = px(1180.);
     /// `.in-read`: the stats drop under the headline, four across, at or below.

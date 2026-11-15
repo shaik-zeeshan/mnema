@@ -97,9 +97,11 @@ fn hover_case(
     Ok((before, after))
 }
 
-/// The same list inside the real Settings page (Intelligence › Transcription),
-/// where the founder's pointer found no hover: Parakeet's row (unselected).
-fn settings_case(cx: &mut VisualTestAppContext) -> anyhow::Result<([u8; 4], [u8; 4])> {
+/// The real Settings page on fixture data, at `tab`.
+fn open_settings(
+    cx: &mut VisualTestAppContext,
+    tab: &'static str,
+) -> anyhow::Result<AnyWindowHandle> {
     use mnema_gpui::settings::fixture::{settings_data, FixtureBackend};
     use mnema_gpui::shell::{Shell, ShellModel, Surface};
     let data = settings_data()?;
@@ -123,11 +125,46 @@ fn settings_case(cx: &mut VisualTestAppContext) -> anyhow::Result<([u8; 4], [u8;
     for step in 0..4 {
         cx.run_until_parked();
         if step == 1 {
-            cx.update(|cx| settings.update(cx, |s, cx| s.open_tab("transcription", cx)));
+            cx.update(|cx| settings.update(cx, |s, cx| s.open_tab(tab, cx)));
         }
         cx.update_window(w, |_, window, _| window.refresh())?;
     }
     settle(cx, w)?;
+    Ok(w)
+}
+
+/// A hover tooltip on real pixels: Appearance › Theme's "Light" option, one of
+/// the tooltips every segmented option carries. Saves the picture when asked.
+fn tooltip_case(cx: &mut VisualTestAppContext) -> anyhow::Result<bool> {
+    let w = open_settings(cx, "appearance")?;
+    let shown = |cx: &mut VisualTestAppContext| {
+        cx.update_window(w, |_, window, _| {
+            gpui_kit::test::TestWindowExt::try_find(window, "tooltip").is_some()
+        })
+    };
+    let b = cx.update_window(w, |_, window, _| {
+        let id = mnema_gpui::ui::nid("st-theme-opt", 1);
+        gpui_kit::test::TestWindowExt::find(window, id).bounds()
+    })?;
+    cx.simulate_mouse_move(w, b.center(), None, Modifiers::default());
+    settle(cx, w)?;
+    let early = shown(cx)?;
+    cx.advance_clock(theme::motion::TOOLTIP_DWELL);
+    settle(cx, w)?;
+    let late = shown(cx)?;
+    if let Some(dir) = std::env::var_os("VISUAL_TEST_OUTPUT_DIR") {
+        std::fs::create_dir_all(&dir)?;
+        cx.capture_screenshot(w)?
+            .save(std::path::Path::new(&dir).join("hover-tooltip.png"))?;
+    }
+    cx.update_window(w, |_, window, _| window.remove_window())?;
+    Ok(!early && late)
+}
+
+/// The same list inside the real Settings page (Intelligence › Transcription),
+/// where the founder's pointer found no hover: Parakeet's row (unselected).
+fn settings_case(cx: &mut VisualTestAppContext) -> anyhow::Result<([u8; 4], [u8; 4])> {
+    let w = open_settings(cx, "transcription")?;
     let row = |cx: &mut VisualTestAppContext| {
         cx.update_window(w, |_, window, _| {
             let id = mnema_gpui::ui::nid("tx-provider-opt", 0);
@@ -293,6 +330,9 @@ pub fn checks(cx: &mut VisualTestAppContext, filters: &[String]) -> anyhow::Resu
         failures.push(format!(
             "hover: Settings' provider list shows no hover fill ({before:?})"
         ));
+    }
+    if !tooltip_case(cx)? {
+        failures.push("hover: a segmented option shows no tooltip after its dwell".into());
     }
     // A tile's edge, halfway down its left border.
     let (before, after) = hover_case(cx, false, |b| point(b.left() + px(0.5), b.top() + px(30.)))?;

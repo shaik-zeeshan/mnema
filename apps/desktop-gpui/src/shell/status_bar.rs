@@ -405,7 +405,8 @@ pub fn render(
     cx: &mut Context<Shell>,
 ) -> impl IntoElement {
     let m = &shell.model.status;
-    let wide = window.viewport_size().width >= breakpoint::STATUS_WIDE;
+    let width = window.viewport_size().width;
+    let wide = width >= breakpoint::STATUS_WIDE;
     let rec = model::rec_view(m);
     let flag = model::status_flag(m).map(|f| {
         let (tone, tone_bg) = match f.tone {
@@ -453,16 +454,20 @@ pub fn render(
             None => el.into_any_element(),
         }
     });
-    // Under 900 px a flag, the lanes' words and the engine pill don't fit together
-    // (the web lets them overlap). The flag is the one to read, so the lanes drop
-    // their words and the engine pill shrinks to its dot; both keep their tooltip.
+    // Under 900 px the lanes' words, a flag and the engine pill don't fit together
+    // (the web lets them overlap), so they give way in that order: the lanes drop
+    // their words beside either pill; beside a flag, the one to read, the engine
+    // pill shrinks to its dot, and under 720 px goes, or it would cut the flag's
+    // action. The tooltips and the status popover still say all of it.
+    let terse = !wide && (flag.is_some() || m.engine.is_some());
     let compact = !wide && flag.is_some();
+    let tight = compact && width < breakpoint::STATUS_TIGHT;
     let resting =
         (flag.is_none() && rec.kind == RecMod::Paused && rec.clock.is_none()).then(|| {
             let t = "resumes when you’re back";
             with_tip(div().id("status-resting").min_w_0().truncate().child(t), t).into_any_element()
         });
-    let engine = m.engine.as_ref().map(|e| {
+    let engine = m.engine.as_ref().filter(|_| !tight).map(|e| {
         let tone = e.error.then_some((p.warn, p.warn_border));
         div()
             .flex()
@@ -564,7 +569,7 @@ pub fn render(
         .child(rec_pill(shell, p, cx))
         .children(record_controls(shell, p, cx))
         .child(sep(p))
-        .child(lanes(shell, compact, p, cx))
+        .child(lanes(shell, terse, p, cx))
         .child(div().flex_1())
         .children(flag)
         .children(resting)
@@ -589,3 +594,7 @@ pub fn render(
             .on_click(cx.listener(|this, _, _, cx| this.toggle_overlay(Overlay::Shortcuts, cx))),
         )
 }
+
+#[cfg(test)]
+#[path = "status_bar_tests.rs"]
+mod tests;

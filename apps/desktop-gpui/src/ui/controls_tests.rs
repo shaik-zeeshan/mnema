@@ -118,6 +118,34 @@ fn tooltip_dwells_350ms_not_349(cx: &mut TestAppContext) {
     assert!(present(cx, window, "tooltip"), "tooltip at 350 ms");
 }
 
+/// The tooltips the Svelte app's shared controls carry: every segmented option,
+/// a disabled button's reason, a closed dropdown's value.
+#[gpui_kit::test]
+fn shared_controls_show_their_tooltips(cx: &mut TestAppContext) {
+    let (window, _) = open(cx, |_, _, _| {
+        div()
+            .flex()
+            .gap(px(20.))
+            .child(Button::new("away", "Away"))
+            .child(Segmented::new("seg", "Range", ["Day", "Week"], 0))
+            .child(Button::new("off", "Run").disabled(true).tip("OCR is off"))
+            .child(super::select::Select::new(
+                "sel",
+                "Model",
+                ["A model"],
+                Some(0),
+            ))
+            .into_any_element()
+    });
+    for id in [nid("seg-opt", 1), "off".into(), "sel".into()] {
+        act(cx, window, |w, cx| w.hover("away", cx));
+        assert!(!present(cx, window, "tooltip"), "left over before {id:?}");
+        act(cx, window, |w, cx| w.hover(id.clone(), cx));
+        advance(cx, motion::TOOLTIP_DWELL);
+        assert!(present(cx, window, "tooltip"), "{id:?} shows no tooltip");
+    }
+}
+
 #[gpui_kit::test]
 fn tooltip_is_instant_on_keyboard_focus(cx: &mut TestAppContext) {
     let (window, _) = open(cx, tipped);
@@ -377,7 +405,14 @@ fn the_focus_ring_needs_focus_to_arrive_by_keyboard(cx: &mut TestAppContext) {
         let box_ = |id: &'static str, window: &mut Window, cx: &mut gpui_kit::App| {
             let handle = super::focus_handle(id, window, cx);
             let ring = super::focus_visible(&handle, super::Force::None, window);
-            (div().id(id).test_support().size(px(20.)).track_focus(&handle), ring)
+            (
+                div()
+                    .id(id)
+                    .test_support()
+                    .size(px(20.))
+                    .track_focus(&handle),
+                ring,
+            )
         };
         let (a, ring_a) = box_("a", window, cx);
         let (b, ring_b) = box_("b", window, cx);
