@@ -9,9 +9,10 @@
 #
 #   --dev      debug build, "Mnema GPUI Dev.app", day.mnema.gpui-dev, scheme
 #              mnema-gpui-dev, on a COPY of the Tauri dev sandbox (below).
-#   --release  release build (OPENBLAS_DYNAMIC_ARCH=1), "Mnema.app", day.mnema,
+#   --release  release build (OPENBLAS_DYNAMIC_ARCH=1), "mnema.app", day.mnema,
 #              scheme mnema: the shipped identity, so it runs on ~/.mnema (the
-#              same data, keychain and /Applications slot as the Tauri prod app).
+#              same data, keychain and /Applications slot as the Tauri prod app),
+#              plus mnema_<version>_aarch64.dmg to install from.
 #              A signed bundle (either mode) also gets <name>.app.tar.gz, the
 #              updater archive.
 #   --notarize notarytool submit + staple (release only): APPLE_ID, APPLE_PASSWORD
@@ -69,7 +70,9 @@ tauri_dir="$repo/apps/desktop/src-tauri"
 if [[ "$mode" == dev ]]; then
   bundle_id="day.mnema.gpui-dev"; scheme="mnema-gpui-dev"; name="Mnema GPUI Dev"; profile=debug
 else
-  bundle_id="day.mnema"; scheme="mnema"; name="Mnema"; profile=release
+  # "mnema", lowercase: the shipped Tauri app's bundle and display name (productName),
+  # so the Dock tile, the /Applications slot and the release asset names stay the same.
+  bundle_id="day.mnema"; scheme="mnema"; name="mnema"; profile=release
 fi
 app="$target/gpui-bundle/$name.app"
 
@@ -232,6 +235,21 @@ if [[ -n "$identity" ]]; then
   COPYFILE_DISABLE=1 tar --no-mac-metadata --no-xattrs -czf "$target/gpui-bundle/$name.app.tar.gz" \
     -C "$target/gpui-bundle" "$name.app"
   echo "bundle-gpui-app: archive $target/gpui-bundle/$name.app.tar.gz"
+fi
+
+if [[ "$mode" == release ]]; then # --release always has an identity (checked above)
+  # The install disk image: the app (ditto keeps its signature and symlinks) plus an
+  # Applications link to drag it onto.
+  dmg="$target/gpui-bundle/${name}_${version}_aarch64.dmg"
+  staging="$(mktemp -d "$target/gpui-bundle/dmg.XXXXXX")"
+  trap 'rm -rf "$staging"' EXIT
+  ditto "$app" "$staging/$name.app"
+  ln -s /Applications "$staging/Applications"
+  hdiutil create -volname "$name" -srcfolder "$staging" -ov -format UDZO "$dmg" >/dev/null
+  rm -rf "$staging"
+  trap - EXIT
+  codesign --force --sign "$identity" "$dmg"
+  echo "bundle-gpui-app: dmg $dmg"
 fi
 
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$app"
