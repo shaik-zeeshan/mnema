@@ -259,6 +259,13 @@ pub struct UpsertConclusionOutcome {
     pub supersede: SupersedeOutcome,
 }
 
+/// A Conclusion is decayed at most once per this interval. Confidence fades on a
+/// 30-day half-life, so a day moves it ~2%; re-writing every row on each beat was
+/// almost pure disk churn. "Due" is derived from the stored decay anchor, so it
+/// survives restarts with no extra state. A row whose anchor is in the future
+/// (clock was ahead when it was stamped) is always due, so one pass re-stamps it.
+pub const CONFIDENCE_DECAY_MIN_INTERVAL_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// One Conclusion eligible for the confidence-decay beat, paired with the
 /// **decay anchor** the beat must decay *from* this pass (#95).
 ///
@@ -1308,8 +1315,8 @@ impl UserContextStore {
         // trajectory honest and avoids a no-op row per unchanged/contradicted
         // reinforcement. This INSERT shares the conclusion upsert's transaction so
         // the rise and the stored confidence commit (or roll back) atomically.
-        // Bound: the decay beat's `prune_confidence_history` centrally caps history
-        // per Conclusion, so the up-step path needs no separate prune.
+        // Bound: the decay beat's pass (`apply_confidence_decay_pass`) centrally caps
+        // history per Conclusion, so the up-step path needs no separate prune.
         let moved_up = match previous_confidence {
             Some(prev) => confidence > prev,
             None => true,
@@ -1889,7 +1896,8 @@ impl UserContextStore {
 
     /// Append one **Confidence History** snapshot for a Conclusion. Snapshots are
     /// the time-series that powers the Subject trajectory line; they are tiny and
-    /// aggressively prunable (see [`prune_confidence_history`]).
+    /// aggressively prunable (the decay beat's
+    /// [`UserContextStore::apply_confidence_decay_pass`] prunes them).
     pub async fn insert_confidence_snapshot(
         &self,
         conclusion_id: i64,
@@ -1934,68 +1942,9 @@ impl UserContextStore {
             .collect())
     }
 
-    /// Prune **Confidence History** to the newest `max_per_conclusion` snapshots
-    /// per Conclusion, deleting older ones. Confidence History is aggressively
-    /// prunable: recency-weighting means old snapshots stop mattering, so the
-    /// trajectory keeps only its recent tail. Returns the number of rows deleted.
-    ///
-    /// `max_per_conclusion <= 0` is treated as "keep nothing" and deletes all
-    /// history (an explicit caller intent, not the worker's path — the worker
-    /// passes a positive cap).
-    pub async fn prune_confidence_history(&self, max_per_conclusion: i64) -> Result<u64> {
-        // Delete every snapshot that is NOT among the newest `max_per_conclusion`
-        // for its Conclusion. The subquery ranks each Conclusion's snapshots
-        // newest-first; rows ranked beyond the cap are removed.
-        let result = sqlx::query(
-            "DELETE FROM user_context_confidence_history \
-             WHERE id IN (\
-                 SELECT id FROM (\
-                     SELECT id, \
-                            ROW_NUMBER() OVER (\
-                                PARTITION BY conclusion_id \
-                                ORDER BY snapshot_at_ms DESC, id DESC\
-                            ) AS rn \
-                     FROM user_context_confidence_history\
-                 ) ranked \
-                 WHERE ranked.rn > ?1\
-             )",
-        )
-        .bind(max_per_conclusion.max(0))
-        .execute(self.db.write())
-        .await?;
-        Ok(result.rows_affected())
-    }
-
-    /// Persist a decayed confidence + recomputed visibility status for a
-    /// Conclusion and stamp `last_decayed_at_ms` (the decay-beat bookkeeping
-    /// column). Also bumps `updated_at_ms` so the surface re-sorts. Used by the
-    /// confidence-decay beat (#95).
-    pub async fn update_conclusion_confidence(
-        &self,
-        id: i64,
-        confidence: f64,
-        status: ConclusionStatus,
-        last_decayed_at_ms: i64,
-    ) -> Result<()> {
-        let now = now_ms();
-        sqlx::query(
-            "UPDATE user_context_conclusions \
-             SET confidence = ?2, status = ?3, last_decayed_at_ms = ?4, updated_at_ms = ?5 \
-             WHERE id = ?1",
-        )
-        .bind(id)
-        .bind(confidence)
-        .bind(status_to_str(status))
-        .bind(last_decayed_at_ms)
-        .bind(now)
-        .execute(self.db.write())
-        .await?;
-        Ok(())
-    }
-
     /// Set a Conclusion's visibility status directly (bumping `updated_at_ms`).
     /// A thin setter used where only the status changes (the confidence-decay
-    /// beat uses [`update_conclusion_confidence`]).
+    /// beat writes through [`UserContextStore::apply_confidence_decay_pass`]).
     pub async fn set_conclusion_status(
         &self,
         id: i64,
@@ -2028,15 +1977,29 @@ impl UserContextStore {
     /// full elapsed factor every pass, compounding decay). The
     /// `last_decayed_at_ms` column was written by every pass but never read until
     /// now.
-    pub async fn list_decayable_conclusions(&self) -> Result<Vec<DecayableConclusion>> {
+    ///
+    /// Only rows **due** at `now_ms` are returned: decay anchor at least
+    /// [`CONFIDENCE_DECAY_MIN_INTERVAL_MS`] old, or later than `now_ms` (a
+    /// future-dated anchor; `confidence::decay` leaves the value unchanged and the
+    /// pass re-stamps the anchor to `now`, so it heals in one pass). Filtering in
+    /// SQL keeps a beat with nothing due from loading any evidence; pass
+    /// `i64::MAX` for every row.
+    pub async fn list_decayable_conclusions(
+        &self,
+        now_ms: i64,
+    ) -> Result<Vec<DecayableConclusion>> {
         let rows = sqlx::query(
             "SELECT id, subject, statement, confidence, status, pinned, formed_at_ms, \
                     last_supported_at_ms, updated_at_ms, \
                     COALESCE(last_decayed_at_ms, last_supported_at_ms) AS decay_anchor_ms \
              FROM user_context_conclusions \
              WHERE status IN ('visible', 'faded') AND COALESCE(pinned, 0) = 0 \
+               AND (COALESCE(last_decayed_at_ms, last_supported_at_ms) <= ?1 \
+                    OR COALESCE(last_decayed_at_ms, last_supported_at_ms) > ?2) \
              ORDER BY last_supported_at_ms ASC, id ASC",
         )
+        .bind(now_ms.saturating_sub(CONFIDENCE_DECAY_MIN_INTERVAL_MS))
+        .bind(now_ms)
         .fetch_all(self.db.read())
         .await?;
 
@@ -2944,7 +2907,7 @@ fn stance_from_str(value: &str) -> EvidenceStance {
 
 /// The stored snake_case string for a [`ConclusionStatus`] (matches the
 /// capture-types serde rename and the SQL `status` column).
-fn status_to_str(status: ConclusionStatus) -> &'static str {
+pub(super) fn status_to_str(status: ConclusionStatus) -> &'static str {
     match status {
         ConclusionStatus::Visible => "visible",
         ConclusionStatus::Faded => "faded",
@@ -4362,60 +4325,6 @@ mod tests {
         });
     }
 
-    #[test]
-    fn prune_confidence_history_keeps_newest_n_per_conclusion() {
-        block_on(async {
-        let store = test_store().await;
-        let a = store
-            .upsert_conclusion(draft("Rust", "Learning Rust", 0.5))
-            .await
-            .expect("a");
-        let b = store
-            .upsert_conclusion(draft("Apple", "Likes Apple", 0.5))
-            .await
-            .expect("b");
-
-        for t in [1_000, 2_000, 3_000, 4_000, 5_000] {
-            store.insert_confidence_snapshot(a, 0.5, t).await.expect("snap a");
-        }
-        store.insert_confidence_snapshot(b, 0.5, 1_000).await.expect("snap b");
-
-        // Keep newest 2 per conclusion: A loses 3 of its 5, B keeps its single.
-        let deleted = store.prune_confidence_history(2).await.expect("prune");
-        assert_eq!(deleted, 3, "three of A's oldest snapshots removed");
-
-        let a_history = store.list_confidence_history(a).await.expect("a history");
-        let a_times: Vec<i64> = a_history.iter().map(|s| s.snapshot_at_ms).collect();
-        assert_eq!(a_times, vec![4_000, 5_000], "newest two kept");
-        // B is untouched (it had fewer than the cap).
-        assert_eq!(store.list_confidence_history(b).await.expect("b history").len(), 1);
-        });
-    }
-
-    #[test]
-    fn update_conclusion_confidence_persists_value_and_status() {
-        block_on(async {
-        let store = test_store().await;
-        let id = store
-            .upsert_conclusion(draft("Vim", "Used Vim", 0.6))
-            .await
-            .expect("upsert");
-
-        store
-            .update_conclusion_confidence(id, 0.10, ConclusionStatus::Faded, 9_999)
-            .await
-            .expect("update");
-
-        // A faded Conclusion is excluded from the visible-only list but appears
-        // with include_faded, carrying the decayed confidence.
-        assert!(store.list_conclusions(false).await.expect("visible").is_empty());
-        let faded = store.list_conclusions(true).await.expect("with faded");
-        assert_eq!(faded.len(), 1);
-        assert_eq!(faded[0].confidence, 0.10);
-        assert_eq!(faded[0].status, ConclusionStatus::Faded);
-        });
-    }
-
     /// #H3 regression: reinforcing a Conclusion must advance the decay anchor
     /// (`last_decayed_at_ms`) to `now`, because the reinforce path already decayed
     /// the prior value to `now` over silence. If it leaves the anchor stale, the
@@ -4474,7 +4383,7 @@ mod tests {
 
             // The decay beat reads COALESCE(last_decayed_at_ms, last_supported_at_ms):
             // it must now be ~now (advanced by the reinforce), NOT the far-past 1_000.
-            let decayable = store.list_decayable_conclusions().await.expect("decayable");
+            let decayable = store.list_decayable_conclusions(i64::MAX).await.expect("decayable");
             assert_eq!(decayable.len(), 1, "the reinforced Conclusion is decayable");
             let anchor = decayable[0].decay_anchor_ms;
             assert!(
@@ -4533,7 +4442,7 @@ mod tests {
             .await
             .expect("set dismissed");
 
-        let decayable = store.list_decayable_conclusions().await.expect("decayable");
+        let decayable = store.list_decayable_conclusions(i64::MAX).await.expect("decayable");
         let ids: Vec<i64> = decayable.iter().map(|c| c.conclusion.id).collect();
         assert!(ids.contains(&visible), "visible is decayable");
         assert!(ids.contains(&faded), "faded is decayable (history still snapshotted)");
@@ -4774,14 +4683,14 @@ mod tests {
         let fetched = store.get_conclusion(pinned).await.expect("get").expect("present");
         assert!(fetched.pinned, "pinned column is read back as true");
 
-        let decayable = store.list_decayable_conclusions().await.expect("decayable");
+        let decayable = store.list_decayable_conclusions(i64::MAX).await.expect("decayable");
         let ids: Vec<i64> = decayable.iter().map(|c| c.conclusion.id).collect();
         assert!(!ids.contains(&pinned), "pinned is exempt from decay");
         assert!(ids.contains(&unpinned), "unpinned stays decayable");
 
         // Unpinning restores decayability.
         store.set_pinned(pinned, false).await.expect("unpin");
-        let after = store.list_decayable_conclusions().await.expect("decayable");
+        let after = store.list_decayable_conclusions(i64::MAX).await.expect("decayable");
         assert!(
             after.iter().any(|c| c.conclusion.id == pinned),
             "unpinned is decayable again"

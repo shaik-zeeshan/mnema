@@ -159,16 +159,18 @@ pub(crate) async fn run_conclusion_distillation(
 }
 
 /// Run one **confidence-decay** pass (#95): the slowest, LLM-free beat. For each
-/// decayable Conclusion (`visible`/`faded`, never dismissed), apply the
+/// decayable Conclusion (`visible`/`faded`, never dismissed) that is due (decay
+/// anchor at least `CONFIDENCE_DECAY_MIN_INTERVAL_MS` old), apply the
 /// recency-weighted half-life [`confidence::decay`] over elapsed silence,
 /// recompute its [`confidence::status_for`] (below the display floor → `faded`,
 /// leaving the visible dossier while its Confidence History is kept), persist the
 /// new value + status + `last_decayed_at_ms`, and append a Confidence History
-/// snapshot so the Subject trajectory can plot the arc. After the loop, prune the
-/// history to [`MAX_SNAPSHOTS_PER_CONCLUSION`] per Conclusion. Records a single
-/// `derivation_run` (kind `'confidence'`, **0 tokens** — decay uses no LLM) with
-/// the count touched. Resilient: every error is swallowed-with-log; it never
-/// panics the worker.
+/// snapshot so the Subject trajectory can plot the arc, and prune the history to
+/// [`MAX_SNAPSHOTS_PER_CONCLUSION`] per Conclusion, all in one transaction.
+/// Records a single `derivation_run` (kind `'confidence'`, **0 tokens** — decay
+/// uses no LLM) with the count touched, or a failed run if the read or the write
+/// fails. Resilient: every error is swallowed-with-log; it never panics the
+/// worker.
 ///
 /// A **pinned** Conclusion is exempt from decay (#99): `list_decayable_conclusions`
 /// already drops pinned rows from the set entirely, and the per-row `pinned` flag
@@ -180,7 +182,7 @@ pub(crate) async fn run_confidence_decay(
     model_label: Option<String>,
 ) -> bool {
     let now = now_ms();
-    let conclusions = match store.list_decayable_conclusions().await {
+    let conclusions = match store.list_decayable_conclusions(now).await {
         Ok(conclusions) => conclusions,
         Err(error) => {
             let _ = store
@@ -203,7 +205,7 @@ pub(crate) async fn run_confidence_decay(
         }
     };
 
-    let mut touched = 0i64;
+    let mut decayed_rows = Vec::with_capacity(conclusions.len());
     for decayable in &conclusions {
         let conclusion = &decayable.conclusion;
         // A pinned Conclusion is exempt from decay (#99). `list_decayable_conclusions`
@@ -223,43 +225,44 @@ pub(crate) async fn run_confidence_decay(
             pinned,
         );
         let status = confidence::status_for(decayed, pinned);
-
-        // Stamp `last_decayed_at_ms = now` so the NEXT pass anchors here (this is
-        // what `update_conclusion_confidence` writes into `last_decayed_at_ms`).
-        if let Err(error) = store
-            .update_conclusion_confidence(conclusion.id, decayed, status, now)
-            .await
-        {
-            crate::debug_log::log_warn(format!(
-                "user context confidence decay: update failed for conclusion {}: {error}",
-                conclusion.id
-            ));
-            continue;
-        }
-        // Snapshot the (possibly-faded) value so the Subject trajectory keeps the
-        // arc even below the display floor (faded is not deleted).
-        if let Err(error) = store
-            .insert_confidence_snapshot(conclusion.id, decayed, now)
-            .await
-        {
-            crate::debug_log::log_warn(format!(
-                "user context confidence decay: snapshot failed for conclusion {}: {error}",
-                conclusion.id
-            ));
-        }
-        touched += 1;
+        decayed_rows.push((conclusion.id, decayed, status));
     }
 
-    // Aggressively prune the history tail (recency-weighting means old snapshots
-    // stop mattering). Best-effort: a prune error does not fail the beat.
-    if let Err(error) = store
-        .prune_confidence_history(MAX_SNAPSHOTS_PER_CONCLUSION)
+    // One transaction for the whole pass: stamps `last_decayed_at_ms = now` (the
+    // NEXT pass anchors here), snapshots each (possibly-faded) value so the Subject
+    // trajectory keeps the arc below the display floor, then prunes the history
+    // tail. An empty pass writes nothing. A failure rolls the pass back whole and
+    // is recorded as a failed run. A row deleted/pinned since the read is skipped,
+    // so `touched` counts the rows actually written.
+    let touched = match store
+        .apply_confidence_decay_pass(&decayed_rows, now, MAX_SNAPSHOTS_PER_CONCLUSION)
         .await
     {
-        crate::debug_log::log_warn(format!(
-            "user context confidence decay: history prune failed: {error}"
-        ));
-    }
+        Ok(applied) => applied as i64,
+        Err(error) => {
+            crate::debug_log::log_warn(format!(
+                "user context confidence decay: pass of {} conclusion(s) failed: {error}",
+                decayed_rows.len()
+            ));
+            let _ = store
+                .insert_derivation_run(NewDerivationRun {
+                    kind: "confidence".to_string(),
+                    window_start_ms: None,
+                    window_end_ms: None,
+                    status: "failed".to_string(),
+                    activities_derived: 0,
+                    conclusions_derived: 0,
+                    input_tokens: 0,
+                    output_tokens: 0,
+                    provider: provider_label,
+                    model: model_label,
+                    error: Some(error.to_string()),
+                    gate_drops: DistillationGateDrops::default(),
+                })
+                .await;
+            return false;
+        }
+    };
 
     let _ = store
         .insert_derivation_run(NewDerivationRun {
